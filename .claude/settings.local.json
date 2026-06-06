@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "defaultMode": "bypassPermissions",
+    "allow": [
+      "Bash(*)",
+      "Bash(mkdir -p $HOME/_git/__all/fSnippet/.claude/skills)",
+      "Bash(mv $HOME/_git/__all/fSnippet/.claude/agents/folder-test-runner.md $HOME/_git/__all/fSnippet/.claude/skills/folder-test-runner.md)",
+      "Bash(mkdir -p $HOME/_git/__all/fBoard/.claude/skills/capture/scripts/utils)",
+      "Bash(mkdir -p $HOME/_git/__all/fBoard/.claude/commands)",
+      "Bash(mkdir -p $HOME/_git/__all/fBoard/.claude/agents)",
+      "Bash(mkdir -p $HOME/_git/__all/fBoard/.claude/rules)",
+      "Bash(mkdir -p $HOME/_git/__all/fGoogleSheet/.claude/skills/capture/scripts/utils)",
+      "Bash(mkdir -p $HOME/_git/__all/fGoogleSheet/.claude/commands)",
+      "Bash(mkdir -p $HOME/_git/__all/fGoogleSheet/.claude/agents)",
+      "Bash(mkdir -p $HOME/_git/__all/fGoogleSheet/.claude/rules)",
+      "Bash(mkdir -p $HOME/_git/__all/fQRGen/.claude/skills/capture/scripts/utils)",
+      "Bash(mkdir -p $HOME/_git/__all/fQRGen/.claude/commands)",
+      "Bash(mkdir -p $HOME/_git/__all/fQRGen/.claude/agents)",
+      "Bash(mkdir -p $HOME/_git/__all/fQRGen/.claude/rules)",
+      "Bash(/dev/null find:*)",
+      "Bash(for proj:*)",
+      "Bash(do dir=~/_git/__all/$proj echo \"=== $proj ===\" cd \"$dir\")",
+      "Bash(cd:*)",
+      "Bash(TMUX=/opt/homebrew/bin/tmux)",
+      "Bash(/bin/sleep 1)",
+      "Bash($TMUX list-panes:*)",
+      "Bash(/usr/bin/say \"session ready\")",
+      "Bash(ls $HOME/.claude/skills/cdf*)",
+      "Bash(find $HOME/_git/___pm -name *.md -not -path */.git/*)",
+      "Bash(head -20 find $HOME/.openclaw -name cdf*)"
+    ],
+    "additionalDirectories": [
+      "$HOME/_git/___pm/.claude",
+      "$HOME/_git/__all/fSnippet/.claude/agents"
+    ]
+  }
+}
