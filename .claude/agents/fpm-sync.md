@@ -17,61 +17,35 @@ tools: Read, Bash, Grep, Glob
 
 ## 절차
 
-### 1. 사전 점검
-```bash
-SRC=~/_git/___pm
-DST=~/_git/__all/fpm
-[ -d "$DST/.git" ] || { echo "fpm repo 없음 — 먼저 분리 생성 필요"; exit 1; }
-# 개인정보가 ___pm tracked 에 섞여있지 않은지 재확인
-git -C "$SRC" ls-files | grep -iE 'Servers\.md$|^Projects\.md$|finfra-server-access|fapp-projects' \
-  && { echo "⚠️ 개인정보 tracked 발견 — 중단"; exit 1; } || echo "✅ clean"
-```
+동기화 로직 SSOT 는 **`scripts/fpm-sync.sh`** (에이전트·post-commit hook 공통). 에이전트는 이 스크립트를 실행하고 결과를 보고한다.
 
-### 2. publishable 스냅샷 export → fpm working tree 갱신
+### 1. 실행
 ```bash
-# tracked 파일만 export (개인정보 자동 제외, .git 미포함)
-# 기존 fpm tracked 파일을 ___pm HEAD 상태로 정렬
-TMP=$(mktemp -d)
-git -C "$SRC" archive HEAD | tar -x -C "$TMP"
-# fpm 의 추적 파일을 스냅샷으로 동기화 (개인 gitignore 항목은 fpm .gitignore 가 재차단)
-rsync -a --delete \
-  --exclude='.git/' --exclude='projects/' \
-  --exclude='Servers.md' --exclude='Projects.md' \
-  --exclude='data/finfra-server-access.md' --exclude='data/fapp-projects.md' \
-  "$TMP"/ "$DST"/
-rm -rf "$TMP"
+~/_git/___pm/scripts/fpm-sync.sh
 ```
-> `--delete` 는 ___pm 에서 삭제된 파일을 fpm 에도 반영. `--exclude` 는 만일을 위한 2차 개인정보 가드.
+스크립트가 수행: fpm repo 존재 확인 → 락 획득 → 개인정보 1차 가드(`git ls-files`) → `git archive HEAD` export → rsync(개인정보 exclude 2차 가드) → staged 개인정보 가드 → 변경 시에만 커밋(원본 HEAD short hash 포함). 결과 로그: `_doc_work/z_log/fpm-sync.log`.
 
-### 3. dry-run 보고 (커밋 전 필수)
-```bash
-git -C "$DST" add -A
-git -C "$DST" status --short
-git -C "$DST" diff --cached --stat | tail -20
-# 개인정보 staged 여부 최종 점검
-git -C "$DST" diff --cached --name-only | grep -iE 'Servers\.md$|^Projects\.md$|finfra-server-access|fapp-projects' \
-  && { echo "🚨 개인정보 staged — 커밋 중단, git -C $DST reset"; exit 1; } || echo "✅ 안전"
-```
-변경 요약을 사용자에게 보고. 변경 0건이면 "동기화할 변경 없음" 보고 후 종료.
+### 2. 보고
+스크립트 출력(`[fpm-sync] ...`)을 사용자에게 보고:
+* `동기화 완료 → fpm <hash>` → 반영된 파일 요약(`git -C ~/_git/__all/fpm show --stat HEAD`)
+* `변경 없음 — skip` → 동기화할 변경 없음
+* `🚨 개인정보 ...` → **즉시 중단**, 개인정보 유출 원인 진단 보고 (절대 우회 금지)
 
-### 4. 커밋
-```bash
-git -C "$DST" commit -q -m "Sync: ___pm publishable 업데이트 반영 ($(git -C "$SRC" rev-parse --short HEAD))"
-git -C "$DST" log --oneline -1
-```
-커밋 메시지에 원본 ___pm HEAD short hash 를 포함하여 추적성 확보.
-
-### 5. (선택) push
+### 3. (선택) push
 사용자가 "push" 명시 요청 시에만:
 ```bash
-git -C "$DST" push   # origin 이 설정된 경우
+git -C ~/_git/__all/fpm push   # origin 설정된 경우
 ```
+
+## 자동 트리거 (hook)
+
+`scripts/install-fpm-hook.sh` 가 `___pm` git **post-commit** 에 fpm-sync 블록을 설치 → `___pm` 커밋 시마다 자동·비차단 동기화(graphify hook 과 동일 패턴, 공존). 에이전트는 **수동·대화형 동기화**(부분 점검·디버깅·push) 용도.
 
 ## 종료 조건
 
-* 변경 반영 + 커밋 + 보고 완료 → 종료
-* 개인정보 staged 감지 → 즉시 중단 + 보고 (커밋 금지)
-* dry-run 결과 변경 0건 → 커밋 없이 종료
+* 스크립트 실행 + 결과 보고 완료 → 종료
+* 개인정보 가드 발동(exit 1) → 즉시 중단 + 원인 보고 (커밋 금지)
+* 변경 0건 → 커밋 없이 종료
 
 ## 메모
 
