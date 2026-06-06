@@ -97,13 +97,13 @@ date: 2026-04-18
   - 메커니즘: cdf로 pm tmux pane 확보 → Claude 부팅(필요 시) → 명령 전달 → Issue.md `✅ 완료` polling → commit hash 회수
   - SSOT: `~/_git/___pm/projects/<번호>`(경로), `~/_git/___pm/Projects.md`(Domain)
 * htm (HTML 렌더 + 양방향 Q&A + Live Dashboard, Issue18~24)
-  - `..hub` (a모드) / `/htm` — 응답을 HTML 문서로 Firefox 표시 (단방향 렌더)
+  - `..show` (a모드, 구 `..hub`) / `/htm` — 응답을 HTML 문서로 Firefox 표시 (단방향 렌더)
   - `..ask` (b모드, Issue126 신설) — 양방향 Q&A 폼 → server inbox 자동 회수
   - `..board` (c모드, Issue126) — Live Dashboard (SSE + polling fallback). 구 `..hub dash`/`..dashboard` 별칭 하위호환 유지
   - `..hub stop` / `..hub off` — 모드 해제
   - `/dashboard-server start|stop|status|restart` — b/c모드 백엔드 lifecycle 제어
   - 3-mode (트리거 ↔ content_type, Issue126):
-    * a모드 `..hub` (`response`) — HTML 렌더 (Issue45 이후 file:// 직접 표시)
+    * a모드 `..show` (`response`, 구 `..hub`) — HTML 렌더 (Issue45 이후 file:// 직접 표시)
     * b모드 `..ask` (`form`) — fetch POST + server inbox + Claude polling 자동 회수
     * c모드 `..board` (`dashboard`) — Live Dashboard (data 파일만 수정 → SSE push → 자동 갱신)
   - 자원 격리: `md5(cwd)[:8]` → PORT 9876+hash%100, STATE/INBOX/HASH별 폴더
@@ -113,8 +113,8 @@ date: 2026-04-18
     * skill: `~/.claude/skills/htm-server/` (Python stdlib HTTP+SSE)
     * commands: `/htm`, `/htm-server`
     * hooks:
-        - `htm-trigger.sh` (UserPromptSubmit, `..hub` 트리거)
-        - `htm-ask-intercept.sh` (PreToolUse AskUserQuestion, 트리거 무관 단일 form 회수 — `..hub`/`..ask`/자동)
+        - `htm-trigger.sh` (UserPromptSubmit, `..show`(구 `..hub`) 트리거)
+        - `htm-ask-intercept.sh` (PreToolUse AskUserQuestion, 트리거 무관 단일 form 회수 — `..show`/`..ask`/자동)
         - `htm-dash-notify.sh` (PostToolUse Edit|Write|MultiEdit, c모드 SSE notify)
     * arch SSOT: `~/.claude/_doc_arch/htm-mode-arch.md`
 

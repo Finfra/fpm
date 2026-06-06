@@ -160,7 +160,7 @@ task파일을 이슈에 등록하고 구현해줘. /dev
 
 # Hub
 
-## 3모드 트리거 (Issue126, 2026-06-03)
+## 3모드 트리거 (Issue126·133, 2026-06-03)
 | 트리거    | 모드 | content_type | 역할                          |
 | :-------- | :--- | :----------- | :---------------------------- |
 | `..show`  | a    | `response`   | 단방향 HTML 렌더 (구 `..hub`) |
@@ -173,13 +173,13 @@ task파일을 이슈에 등록하고 구현해줘. /dev
     - c모드: 구 `..hub dash` / `..dashboard` → `..board`
 * 트리거 파싱 = 글로벌 hook 책임, hub 서버는 content_type 만 판정 (서버 코드 무변경)
 
-## htm (a모드)
-SSOT: `~/.claude/_doc_arch/htm-mode-arch.md`
+## show (a모드)
+SSOT: `~/.claude/_doc_arch/hub-mode-arch.md`
 * 기본 on (prj 폴더) / 명시적 on (`..show`, 구 `..hub`)
 * HTML 문서 Write + Firefox open
 
 ## ask (b모드)
-* `..ask` 명시 트리거 또는 `AskUserQuestion` intercept (`htm-ask-intercept.sh`)
+* `..ask` 명시 트리거 또는 `AskUserQuestion` intercept (`ask-intercept.sh`)
 * HTML 폼 → fetch POST → server inbox → Claude polling 자동 회수 (Issue45 단일 경로)
 
 ## board (c모드, dashboard)
