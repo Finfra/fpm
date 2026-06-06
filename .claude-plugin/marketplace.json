@@ -11,8 +11,8 @@
   "plugins": [
     {
       "name": "fpm-core",
-      "source": "./",
-      "description": "fpm 핵심 SCAR — pm 프로젝트 관리, cdf/sshf 연동, hub 렌더. (스캐폴드 — 배포 대상 SCAR 셀렉션·경로 일반화 TODO)",
+      "source": "./plugins/fpm-core",
+      "description": "fpm 핵심 SCAR — pm 프로젝트 관리(cdf), hub 렌더 + 양방향 Q&A + Live Dashboard. 글로벌 hub/dashboard 스택 번들.",
       "version": "0.1.0"
     }
   ]

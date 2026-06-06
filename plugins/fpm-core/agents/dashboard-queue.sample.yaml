@@ -1,0 +1,55 @@
+# dashboard 큐 모드 — queue.yaml 스키마 샘플 / 레퍼런스 (Issue84)
+#
+# ⚠️ 글로벌 SCAR 변경 가드 (Issue46): 본 파일은 모든 프로젝트가 공유. cwd ≠ ~/.claude
+#   면 즉시 수정 금지 → ~/.claude/Issue.md 이슈 등록 후 처리. 설계 SSOT:
+#   ~/.claude/_doc_arch/dashboard.md. 절차: ~/.claude/rules/global-scar-change-rules.md
+#
+# 런타임 SSOT — dashboard-supervisor.sh 가 매 iteration 읽고 item status 를 갱신·flush.
+# 실제 큐는 OUT_DIR/<topic>.queue.yaml 로 생성됨 (본 파일은 스키마 레퍼런스 + 테스트 픽스처).
+# 스키마 정본: ~/_git/___pm/_doc_arch/hub_dashboard_detail.md "D3".
+
+title: sample-queue          # dashboard topic 식별자
+state: running               # running | waiting_input | removing | done | halted
+on_fail: continue            # continue: 실패해도 독립 항목 진행 / halt: 실패 즉시 큐 중단
+concurrency: 2               # 동시 running 상한 — 서로 다른 prj 항목 간 병렬도만 실질 제어
+supervisor_pid: null         # supervisor 가 매 iter 기록하는 자기 PID (content-authoritative).
+                             # 서버 /control remove 의 SIGUSR2 대상 — runner 가 .dash.yaml 로 전달.
+items:
+  - id: a                    # 큐 내 고유 식별자 (DAG 노드 키)
+    prj: 1                   # ___pm projects/{prj} 번호 → worker cwd 해석
+    issue: 57                # 대상 Issue.md 이슈 번호
+    parent: null             # 서브이슈면 부모 이슈 번호, 최상위면 null
+    depends: []              # 선행 item id 목록 (DAG 엣지) — 전부 done 이어야 ready 승격
+    prompt: "Issue57 진행"   # worker 주입 작업 지시 (supervisor 가 sentinel 출력 지시로 래핑)
+    status: ready            # blocked|ready|running|waiting_input|waiting_approval|done|failed|skipped|withdrawn
+    attempts: 0              # 디스패치 시도 횟수 (크래시 재주입 시 소비)
+    rc: null                 # 완료 시 sentinel rc (정수)
+    result: null             # 완료 결과 요약 — 후속 항목 prompt 의 {{a.result}} 치환원
+    detail_url: null         # 이슈 상세 링크 (graph 위젯 노드 클릭 대상)
+    started_at: null         # (Issue89 T12-B) running 첫 진입 시각 ISO — supervisor 자동 기록
+    ended_at: null           # (Issue89 T12-B) terminal 진입 시각 ISO — supervisor 자동 기록
+  - id: b
+    prj: 3
+    issue: 7
+    parent: null
+    depends: [a]             # a 완료 후 ready 로 승격
+    prompt: "Issue7 진행 — 선행 결과 참고: {{a.result}}"
+    status: blocked
+    attempts: 0
+    rc: null
+    result: null
+    detail_url: null
+    approval: true           # (Issue89 T12-A) 승인 게이트 — ready 도달 시 waiting_approval 로
+                             # 정지. 마커 <OUT_DIR>/.dash-approvals/<topic>__b 생성 시 디스패치.
+    approved: null           # supervisor 가 승인 마커 소비 시 true 로 set (재게이트 방지)
+  - id: c
+    prj: 1
+    issue: 57_2
+    parent: 57               # Issue57 의 서브이슈
+    depends: [a]
+    prompt: "Issue57 서브이슈 57_2 진행"
+    status: blocked
+    attempts: 0
+    rc: null
+    result: null
+    detail_url: null

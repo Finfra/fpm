@@ -9,9 +9,13 @@ GEMINI.md
 _doc_arch/
 _doc_work/
 _graphify/
+Prompts.md
+Issue.md
 
 # 개인정보 — 운영 필수(공개판은 *_org.md 예제 + install.sh 배치)
 Servers.md
+Projects.md
+
 # 개인정보 — 순수 개인/사업 내부 (예제 없음)
 data/finfra-server-access.md
 data/fapp-projects.md
