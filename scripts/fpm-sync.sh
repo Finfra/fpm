@@ -21,11 +21,17 @@ DST="${FPM_DST:-$HOME/_git/__all/fpm}"
 LOG_DIR="$SRC/_doc_work/z_log"
 LOG="$LOG_DIR/fpm-sync.log"
 
-# 개인정보 경로 패턴 (양방향 공통 가드)
+# 개인정보 경로 패턴 (양방향 공통 가드) — ___pm 에 tracked 되면 안 되는 파일만.
+# Issue.md/Prompts.md 는 ___pm 이 정당하게 tracked 하므로 여기 넣지 않음(넣으면 forward 매번 abort).
 PERSONAL_RE='Servers\.md$|^Projects\.md$|finfra-server-access|fapp-projects'
+# rsync 복사 제외 — 개인정보 + 내부 노트(Issue.md/Prompts.md, 공개판 비대상) + repo 전용 분기 파일(.gitignore/.vscode).
+# Issue.md/Prompts.md: ___pm 내부 이슈트래커·프롬프트. 공개 fpm 에 미러 금지 (Issue140 유출 방지).
+# .gitignore/.vscode: 공개판 fpm 과 ___pm 이 각자 보유 (공개 가드 .gitignore / 프로젝트별 peacock 색).
 EXCLUDES=(--exclude='.git/' --exclude='projects/'
           --exclude='Servers.md' --exclude='Projects.md'
-          --exclude='data/finfra-server-access.md' --exclude='data/fapp-projects.md')
+          --exclude='data/finfra-server-access.md' --exclude='data/fapp-projects.md'
+          --exclude='Issue.md' --exclude='Prompts.md'
+          --exclude='.gitignore' --exclude='.vscode/')
 
 log() { mkdir -p "$LOG_DIR" 2>/dev/null || true; printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >>"$LOG" 2>/dev/null || true; printf '[fpm-sync] %s\n' "$1"; }
 
