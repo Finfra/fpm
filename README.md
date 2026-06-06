@@ -19,6 +19,7 @@ date: 2026-06-06
 * **cdf** — 프로젝트 번호로 즉시 `cd`, 복수 지정 시 iTerm2 분할
 * **sshf** — `Servers.md` 의 id/name/alias 로 SSH 접속, 복수 지정 시 분할
 * **hub** — 매 작업 응답을 HTML 문서로 렌더하여 브라우저에 표시. 멀티 프로젝트 대시보드(활성 세션 보드·문서 아카이브·실시간 활동 피드)·양방향 Q&A 폼 제공 (`services/hub/`)
+* **board** — 장시간 작업을 tmux runner 로 모니터링하며 별도 Firefox 탭에 진행률을 실시간 동기. 채팅 스크롤 폭주 없이 관제하고 완료 시 자동 알림 (`..board <주제>`, hub Mode C dashboard agent)
 * **SCAR** — 프로젝트 관리용 Claude Code 커맨드/스킬/에이전트/룰 ([SCAR 개념 정의 →](https://finfra.kr/jg/2026/04/20/scar_define/))
 
 ## 설치
@@ -62,6 +63,22 @@ sshf 1 2 3     # 다중 서버 → iTerm2 분할
 
 내부: Python stdlib HTTP+SSE 단일 daemon, `127.0.0.1` 바인딩, token 인증. 상세: [services/hub/README.md](services/hub/README.md)
 
+## board — 장시간 작업 라이브 대시보드
+
+빌드·배포·큐 처리처럼 오래 걸리는 작업의 진행률을 채팅 스크롤을 어지럽히지 않고 별도 Firefox 탭에 실시간 동기하는 hub Mode C dashboard agent. tmux `pm` 세션의 `_<주제>` window 가 대시보드 1개 단위가 되어 background runner 가 주기적으로 데이터를 갱신한다. main turn 은 차단되지 않아 사용자는 곧바로 다음 작업을 이어갈 수 있다.
+
+```bash
+..board <주제>              # 라이브 대시보드 시작 (window 잔존, 로그 보존)
+..board <주제> --auto-kill # 완료 후 tmux window 자동 종료
+```
+
+| 모드            | 구성                                     | 용도                                              |
+| :-------------- | :--------------------------------------- | :------------------------------------------------ |
+| 순수 모니터링   | runner 1                                 | 외부 명령 주기 실행·진행률 시각화                 |
+| 큐 오케스트레이션 | supervisor + queue-runner + worker N    | 이슈·서브이슈를 DAG 큐로 등록, 위상 순서·동시성 처리 |
+
+finite 작업(worker_pid·큐)은 완료 시 main 세션의 백그라운드 폴러가 소요시간·결과·산출물을 채팅으로 자동 알림한다. hub(단발 응답·다단계 질문)와 board(장시간 모니터링)는 책임이 분리되어 있다.
+
 ## 구조
 
 | 경로                                 | 설명                                                   |
@@ -76,10 +93,13 @@ sshf 1 2 3     # 다중 서버 → iTerm2 분할
 
 ## Keyboard Maestro 연동 (선택)
 
-| 매크로                                  | 설명                                                 |
-| :-------------------------------------- | :--------------------------------------------------- |
-| `iterm - input num for broadcast input` | iTerm2 다중 패널 동시 입력 → cdf 로 각 디렉토리 이동 |
-| `ff_cdf`                                | Finder/iTerm 이동, 그 외 경로 붙여넣기               |
+| 매크로       | 설명                                                           |
+| :----------- | :------------------------------------------------------------- |
+| `cdf__base`  | cdf 프로젝트 목록 표시 → 번호 입력 → 해당 디렉토리 이동 (기반) |
+| `cdfv_ff`    | 핫키로 Finder/iTerm 컨텍스트에서 cdf 이동                      |
+| `cdf_claude` | cdf 이동 후 Claude Code(`cc`) 자동 실행                        |
+
+3개 매크로 모두 [keyboard-maestro/cdf.kmmacros](keyboard-maestro/cdf.kmmacros) 한 파일에 export 됨 (그룹 `3._FinderOpen_Folder`).
 
 상세: [keyboard-maestro/README.md](keyboard-maestro/README.md)
 
@@ -93,6 +113,7 @@ fpm 의 설계 개념을 다룬 글 모음.
 | Claude Code Harness 아키텍처    | <https://finfra.kr/jg/2026/04/21/harness_arch/>                  |
 | nPTiR — 공용 정의               | <https://finfra.kr/jg/2026/04/20/nptir_define/>                  |
 | Claude Code `..htm` (HTML 출력) | <https://finfra.kr/jg/2026/05/17/claude-code-html-output-htm-2/> |
+
 
 ## 라이선스
 
