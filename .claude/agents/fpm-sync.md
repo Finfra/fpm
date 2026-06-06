@@ -1,6 +1,6 @@
 ---
 name: fpm-sync
-description: ___pm(prj1)의 publishable 업데이트를 공개판 fpm(prj7, ~/_git/__all/fpm)으로 단방향 복사·커밋하는 에이전트. ___pm 에서 SCAR·hub·설치 파일을 수정한 뒤 "fpm 동기화", "fpm 반영", "fpm 업데이트" 요청 시 사용.
+description: ___pm(prj1) ↔ fpm(prj7, ~/_git/__all/fpm) 동기화 에이전트. 기본은 ___pm→fpm 단방향 복사·커밋. "fpm 동기화/반영/업데이트" 요청 시 forward, "fpm 역방향/되돌리기/fpm→pm 반영" 요청 시 사용자 동의 후 reverse 적용.
 tools: Read, Bash, Grep, Glob
 ---
 
@@ -10,10 +10,11 @@ tools: Read, Bash, Grep, Glob
 
 ## 불변식 (절대 위반 금지)
 
-* **단방향**: `___pm` → `fpm` 만. 역방향 복사 금지. `___pm` 은 **읽기 전용**으로 취급(수정·커밋 금지).
-* **개인정보 차단**: `___pm` 에서 untracked/gitignored 파일(`Servers.md`, `Projects.md`, `projects/`, `data/finfra-server-access.md`, `data/fapp-projects.md`, `_doc_arch/`, `_doc_work/`, `_graphify/` 등)은 **절대 복사 금지**. 복사 대상은 `git -C ~/_git/___pm ls-files`(tracked) 한정.
-* **push 금지(기본)**: 사용자가 명시 요청하지 않으면 `git push` 하지 않음. 커밋까지만.
-* **dry-run 우선**: 실제 덮어쓰기/커밋 전 변경 요약을 먼저 보고.
+* **기본은 forward(`___pm` → `fpm`)**. 역방향(`fpm` → `___pm`)은 **사용자 명시 동의 후에만** 적용(아래 "역방향 동기화" 참조). 동의 없는 reverse-apply 금지.
+* **개인정보 차단**: `Servers.md`, `Projects.md`, `projects/`, `data/finfra-server-access.md`, `data/fapp-projects.md`, `_doc_arch/`, `_doc_work/`, `_graphify/` 는 **양방향 절대 복사 금지**. 스크립트가 1·2차 가드.
+* **push 금지(기본)**: 사용자 명시 요청 없으면 `git push` 안 함.
+* **dry-run 우선**: 실제 덮어쓰기/커밋 전 변경 요약 먼저 보고. reverse 는 dry-run → 동의 → apply 순서 강제.
+* **reverse 는 ___pm 자동 커밋 금지**: working tree 만 변경. 사용자가 검토 후 직접 커밋.
 
 ## 절차
 
@@ -37,9 +38,32 @@ tools: Read, Bash, Grep, Glob
 git -C ~/_git/__all/fpm push   # origin 설정된 경우
 ```
 
-## 자동 트리거 (hook)
+## 역방향 동기화 (fpm → ___pm, 동의 필수)
 
-`scripts/install-fpm-hook.sh` 가 `___pm` git **post-commit** 에 fpm-sync 블록을 설치 → `___pm` 커밋 시마다 자동·비차단 동기화(graphify hook 과 동일 패턴, 공존). 에이전트는 **수동·대화형 동기화**(부분 점검·디버깅·push) 용도.
+fpm 쪽에서 발생한 변경(외부 기여·공개판 직접 수정)을 원본 ___pm 으로 되돌릴 때 사용. **반드시 dry-run → 사용자 동의 → apply** 순서. 자동화·hook 없음(수동 전용).
+
+### 1. dry-run (변경 미리보기, 적용 안 함)
+```bash
+~/_git/___pm/scripts/fpm-sync.sh reverse-dryrun
+```
+출력된 변경 목록(fpm → ___pm 로 적용될 파일)을 사용자에게 **그대로 제시**.
+
+### 2. 사용자 동의 확인 (필수 게이트)
+`AskUserQuestion` 으로 "위 N개 변경을 ___pm working tree 에 적용할까요?" 질문. **명시 동의 없으면 중단.** 변경 0건이면 동의 절차 생략하고 "되돌릴 변경 없음" 보고.
+
+### 3. apply (동의 후에만)
+```bash
+~/_git/___pm/scripts/fpm-sync.sh reverse-apply
+```
+* `--delete` 없음 → ___pm 고유 파일은 보존(삭제 안 함).
+* ___pm **working tree 만** 변경, 커밋 안 함. 개인정보 경로 혼입 시 스크립트가 중단.
+
+### 4. 보고
+적용 후 `git -C ~/_git/___pm status` 를 보여주고 "검토 후 직접 커밋하세요" 안내. **에이전트가 ___pm 을 커밋·push 하지 않음.**
+
+## 자동 트리거 (hook, forward 전용)
+
+`scripts/install-fpm-hook.sh` 가 `___pm` git **post-commit** 에 forward 블록을 설치 → `___pm` 커밋 시마다 자동·비차단 forward 동기화(graphify hook 과 동일 패턴, 공존). **reverse 는 자동화하지 않음**(동의 필수라 수동 전용). 에이전트는 수동·대화형(부분 점검·디버깅·push·reverse) 용도.
 
 ## 종료 조건
 
