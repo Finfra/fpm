@@ -1,0 +1,24 @@
+# htm Hub 설정 — server.py 가 기동 시 + 파일 mtime 변경 시 재로드
+# 활동 피드 패널 (Issue42). flat key:value 만 — server.py stdlib-only 경량 파서.
+feed_limit: 300            # 피드 보관·표시 최대 항목 수 (deque maxlen)
+feed_default_visible: true # 사이드바 최초 표시 여부 (런타임 토글은 localStorage)
+feed_poll_interval: 5      # 참고값 — 현재 /dashboards 폴링(5s)에 편승, 향후 분리 시 사용
+feed_show_project_emoji: true # 활동 피드 항목에 프로젝트 이모지 표시 (Issue47)
+feed_show_project_name: false  # 활동 피드 항목에 프로젝트명 표시 (Issue47)
+card_limit: 200             # htm 문서 카드 최대 표시 수 — mtime 최신순 (Issue52). 0 이면 무제한
+search_limit: 200          # 디스크 재스캔 시 디렉토리당 처리 파일 수 상한 — 파일명 unixtime 최신순 (Issue55). 0 이면 무제한
+live_session_limit: 6      # 활성 세션 카드(프로젝트 그룹)당 최대 세션 행 수 — 초과 시 마지막 행에 "외 N개 더" (Issue129). 0 이면 무제한
+
+# hub/htm 렌더 브라우저 open 동작 (Issue128/130) — 글로벌 hook 이 본 키를 grep 하여 분기 (server.py 미사용)
+#   소비처: ~/.claude/hooks/hub-{trigger,marker-detect,ask-intercept}.sh
+#
+# browser_focus — 렌더 시 브라우저로 포커스를 가져갈지
+#   false(기본) = 포커스 미탈취. `open -g`(백그라운드) — 다른 앱 입력 중 끼어들어 입력이 끊기는 문제 방지
+#   true        = foreground (브라우저로 포커스 가져감)
+browser_focus: false
+#
+# default_browser — 렌더에 사용할 브라우저
+#   firefox(기본) / chrome / edge / safari  (지원 타입 — app 명으로 매핑)
+#   그 외 값은 .app 절대 경로로 해석 (ex: default_browser: "/Applications/Brave Browser.app")
+#   매핑: firefox→Firefox, chrome→Google Chrome, edge→Microsoft Edge, safari→Safari
+default_browser: firefox

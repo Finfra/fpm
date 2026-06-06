@@ -1,0 +1,91 @@
+# Project
+# 주의: 폴더명은 대소문자 구분 (실제 폴더는 소문자 _doc_arch)
+_doc_work
+_doc_arch
+.claude
+CLAUDE.md
+Harness.md
+Issue.md
+noteForHuman.md
+PROMPTS.md
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+.TemporaryItems
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# Environment
+.env
+.env.*
+!.env.example
+*.local
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Archives
+*.zip
+*.tar.gz
+*.rar
+*.7z
+
+# Build outputs
+dist/
+build/
+out/
+target/
+*.o
+*.a
+*.so
+*.dylib
+
+# Dependencies
+node_modules/
+vendor/
+.pnp
+.pnp.js
+
+# Cache
+.cache/
+.parcel-cache/
+.npm
+.eslintcache
+.stylelintcache
+*.pyc
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+
+# Temp
+tmp/
+temp/
+*.tmp
+*.bak
+*.orig
+z_old/

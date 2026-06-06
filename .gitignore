@@ -1,0 +1,39 @@
+# Project
+projects/
+Projects.md
+report/qa-*.md
+report/pm-*.md
+report/fapp-*.md
+z_old/
+GEMINI.md
+_doc_arch/
+_doc_work/
+_graphify/
+
+# 개인정보 — 운영 필수(공개판은 *_org.md 예제 + install.sh 배치)
+Servers.md
+# 개인정보 — 순수 개인/사업 내부 (예제 없음)
+data/finfra-server-access.md
+data/fapp-projects.md
+
+# macOS
+.claude/worktrees/
+*.backup*
+.DS_Store
+._*
+.AppleDouble
+.LSOverride
+.Spotlight-V100
+.Trashes
+*.swp
+*~
+
+_doc_work/z_htm/
+__pycache__/
+*.pyc
+
+# htm-server hub registry — 런타임 상태 (server.py 가 자동 생성)
+data/hub/*.json
+
+# Playwright MCP 진단 부산물 (콘솔/스냅샷 캡처)
+.playwright-mcp/

@@ -1,0 +1,4 @@
+{
+  "window.title": "{{emoji}} ${rootName}${separator}${activeEditorShort}",
+  "peacock.color": "{{#color}}"
+}
