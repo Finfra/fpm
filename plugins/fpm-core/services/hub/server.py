@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
 htm-server — ___pm 소유 단일 공유 daemon
-- 127.0.0.1 바인딩 (외부 차단)
+- 기본 127.0.0.1 바인딩 (외부 차단). HTM_SERVER_HOST 로 옵트인 개방 (Issue141)
+  → 개방 시 Servers.md(check=O) 호스트 IP allowlist 로 source-IP 게이트
 - 다중 프로젝트 격리: cwd query param + md5(cwd)[:8] hash
 - 프로젝트별 token + inbox + SSE subscriber 분리, 포트·프로세스는 단일
 
-설계 SSOT: ~/_git/___pm/_doc_arch/htm_hub_server.md
+설계 SSOT: ~/_git/___pm/_doc_arch/hub_htm.md
 """
 
 import glob
@@ -21,6 +22,7 @@ import signal
 import subprocess
 import shlex
 import re
+import socket
 import threading
 from collections import deque
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -33,8 +35,17 @@ from spa_form import FORM_JS  # noqa: E402
 from spa_widgets import WIDGET_JS  # noqa: E402
 from spa_dashboard import DASHBOARD_JS  # noqa: E402
 
-HOST = "127.0.0.1"
+# Issue141: 기본 127.0.0.1(루프백 전용=외부 차단). 옵트인 개방 우선순위:
+#   env HTM_SERVER_HOST > hub_setting.yml bind_host > 기본 "127.0.0.1".
+#   env 미설정 시 yml 값을 main() 에서 적용(설정 로더가 정의된 뒤). 예: bind_host: 0.0.0.0
+_HOST_ENV = os.environ.get("HTM_SERVER_HOST")  # 미설정이면 None
+HOST = _HOST_ENV or "127.0.0.1"  # 잠정값 — main() 에서 yml override
 PORT = int(os.environ.get("HTM_SERVER_PORT", "9876"))
+
+# Issue141: source-IP allowlist. LOOPBACK 은 무조건 허용. HOST 가 루프백이 아닐 때
+# (옵트인 개방) startup 에서 Servers.md(check=O) 호스트를 resolve 하여 채운다.
+LOOPBACK_IPS = frozenset(("127.0.0.1", "::1"))
+ALLOWED_IPS = set()  # startup 에서 populate (개방 모드일 때만). 평소엔 빈 set.
 
 STATE_DIR = "/tmp/___pm/claude-htm-server"
 INBOX_ROOT = "/tmp/___pm/claude-htm-inbox"
@@ -418,6 +429,61 @@ PROJECTS_MD = os.environ.get("FPM_PROJECTS_MD", os.path.expanduser("~/_git/___pm
 _projects_color_cache: dict = {}
 _projects_color_cache_mtime: float = 0.0
 
+# Issue141: Servers.md — 원격 접근 allowlist 소스. check=O 행만 신뢰 대상.
+# FPM_SERVERS_MD env 로 경로 override (플러그인 설치 위치 적응 — FPM_PROJECTS_MD 대칭).
+SERVERS_MD = os.environ.get("FPM_SERVERS_MD", os.path.join(REPO_ROOT, "Servers.md"))
+# 사설망(RFC1918) prefix — 공개 호스트 경고 판정용.
+_PRIVATE_PREFIXES = ("10.", "192.168.", "127.", "169.254.") + tuple(
+    f"172.{i}." for i in range(16, 32))
+
+
+def _parse_servers_md(path: str) -> list:
+    """Servers.md 의 Favorite Servers 테이블 파싱 → [{name, host, check}] 리스트.
+    `| id | Name | ssh alias | Host | Port | User | Description | check |` 형식."""
+    rows = []
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                if not line.lstrip().startswith("|"):
+                    continue
+                cells = [c.strip() for c in line.strip().strip("|").split("|")]
+                if len(cells) < 8:
+                    continue
+                _id, name, _alias, host, _port, _user, _desc, check = cells[:8]
+                # 헤더·구분선 skip (id 가 숫자가 아닌 행).
+                if not _id.isdigit():
+                    continue
+                rows.append({"name": name, "host": host, "check": check})
+    except (FileNotFoundError, OSError) as e:
+        log(f"[allowlist] Servers.md 읽기 실패: {e}")
+    return rows
+
+
+def _load_server_allowlist() -> set:
+    """Servers.md 의 check=O 호스트를 IP 로 resolve 하여 allowlist set 반환.
+    resolve 실패 호스트는 skip+log. 공개 호스트(사설망 외)는 경고 log 로 가시화.
+    HOST 가 루프백이 아닐 때(옵트인 개방)만 startup 에서 호출된다."""
+    allowed = set()
+    for row in _parse_servers_md(SERVERS_MD):
+        if row["check"].upper() != "O":
+            continue
+        host = row["host"]
+        try:
+            ip = socket.gethostbyname(host)
+        except (socket.gaierror, OSError) as e:
+            log(f"[allowlist] resolve 실패 skip — {row['name']}({host}): {e}")
+            continue
+        allowed.add(ip)
+        public = not any(ip.startswith(p) for p in _PRIVATE_PREFIXES)
+        warn = "  ⚠️ 공개 IP — 노출 위험" if public else ""
+        log(f"[allowlist] 허용 — {row['name']}({host}) → {ip}{warn}")
+    return allowed
+
+
+def _ip_allowed(client_ip: str) -> bool:
+    """source IP 가 접근 허용 대상인지. 루프백은 무조건 허용, 그 외는 ALLOWED_IPS."""
+    return client_ip in LOOPBACK_IPS or client_ip in ALLOWED_IPS
+
 
 def _load_projects_colors() -> dict:
     """Projects.md 의 📋 프로젝트 테이블에서 cwd 경로 → peacock.color 매핑 추출."""
@@ -633,7 +699,9 @@ def project_meta(cwd: str) -> dict:
 HUB_SETTING_FILE = os.path.join(REPO_ROOT, "data", "hub_setting.yml")
 HUB_SETTING_DEFAULTS = {"feed_limit": 100, "feed_default_visible": True, "feed_poll_interval": 5,
                         "feed_show_project_emoji": True, "feed_show_project_name": True,
-                        "card_limit": 40, "search_limit": 200, "live_session_limit": 6}
+                        "card_limit": 40, "search_limit": 200, "live_session_limit": 6,
+                        # Issue141: bind 주소 (문자열). env HTM_SERVER_HOST 미설정 시 사용.
+                        "bind_host": "127.0.0.1"}
 _hub_setting_cache: dict = {}
 _hub_setting_cache_mtime: float = 0.0
 
@@ -660,8 +728,10 @@ def _load_hub_setting() -> dict:
                 key, val = key.strip(), val.strip()
                 if key not in HUB_SETTING_DEFAULTS:
                     continue
-                if val.lower() in ("true", "false"):
+                if isinstance(HUB_SETTING_DEFAULTS[key], bool):
                     setting[key] = (val.lower() == "true")
+                elif isinstance(HUB_SETTING_DEFAULTS[key], str):
+                    setting[key] = val  # Issue141: 문자열 키(bind_host 등) 그대로
                 else:
                     try:
                         setting[key] = int(val)
@@ -1081,6 +1151,12 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(204, {})
 
     def do_GET(self):
+        # Issue141: 전역 source-IP 게이트. 기본(127.0.0.1 bind)에선 루프백만 도달 →
+        # 항상 통과. 개방 모드(HTM_SERVER_HOST)에선 비-allowlist IP 를 여기서 차단
+        # → 토큰 노출 GET(/dashboards, /hub)·SSE 까지 일괄 보호.
+        if not _ip_allowed(self.client_address[0] if self.client_address else ""):
+            self._send_json(403, {"error": "ip not allowed"})
+            return
         parsed = urlparse(self.path)
         if parsed.path == "/":
             self.send_response(302)
@@ -1140,6 +1216,10 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(404, {"error": "not found"})
 
     def do_POST(self):
+        # Issue141: 전역 source-IP 게이트 (do_GET 대칭).
+        if not _ip_allowed(self.client_address[0] if self.client_address else ""):
+            self._send_json(403, {"error": "ip not allowed"})
+            return
         parsed = urlparse(self.path)
         if parsed.path == "/register":
             self._handle_register(parsed)
@@ -2274,7 +2354,7 @@ class Handler(BaseHTTPRequestHandler):
         항목을 hub 목록에서 제거. 실제 .dash.* / .html 파일은 삭제하지 않음 — hub 가
         추적하던 '연결'만 끊는다. 127.0.0.1 trust → 토큰 미요구."""
         client_ip = self.client_address[0] if self.client_address else ""
-        if client_ip not in ("127.0.0.1", "::1"):
+        if not _ip_allowed(client_ip):
             self._send_json(403, {"error": "localhost only"})
             return
         # Issue95: 디스크 권위적 tombstone — registry 미등록 orphan(.dash.*) 도 함께
@@ -2352,7 +2432,7 @@ class Handler(BaseHTTPRequestHandler):
         Issue136 dedup 이 cwd 당 1개로 줄이나, 본 버튼은 살아있는 좀비 자체를 제거해
         부활을 원천 차단한다. 127.0.0.1 trust → 토큰 미요구."""
         client_ip = self.client_address[0] if self.client_address else ""
-        if client_ip not in ("127.0.0.1", "::1"):
+        if not _ip_allowed(client_ip):
             self._send_json(403, {"error": "localhost only"})
             return
         # 빈 live 세션 스냅샷 수집 (content_type=="live" + live_label 빈)
@@ -2401,7 +2481,7 @@ class Handler(BaseHTTPRequestHandler):
         Issue53: 제거된 path 를 HTM_CLEARED tombstone 에 기록 — autoheal 이 feed
         버퍼에서 부활시키지 못하게 차단 (clear 무효화 방지)."""
         client_ip = self.client_address[0] if self.client_address else ""
-        if client_ip not in ("127.0.0.1", "::1"):
+        if not _ip_allowed(client_ip):
             self._send_json(403, {"error": "localhost only"})
             return
         qs = parse_qs(parsed.query)
@@ -2454,7 +2534,7 @@ class Handler(BaseHTTPRequestHandler):
         clear-* 의 일괄 제거와 달리 카드 1건만 hub 목록에서 제거. 실제 파일은 보존.
         query: type=htm|dash, path=<abs>. 127.0.0.1 trust."""
         client_ip = self.client_address[0] if self.client_address else ""
-        if client_ip not in ("127.0.0.1", "::1"):
+        if not _ip_allowed(client_ip):
             self._send_json(403, {"error": "localhost only"})
             return
         qs = parse_qs(parsed.query)
@@ -2525,7 +2605,7 @@ class Handler(BaseHTTPRequestHandler):
         디렉토리 스캔을 대체하는 단일 등록 경로. 동일 path 재등록 시 갱신(dedup).
         127.0.0.1 trust → 토큰 미요구."""
         client_ip = self.client_address[0] if self.client_address else ""
-        if client_ip not in ("127.0.0.1", "::1"):
+        if not _ip_allowed(client_ip):
             self._send_json(403, {"error": "localhost only"})
             return
         body, err = self._read_json_body()
@@ -2594,7 +2674,7 @@ class Handler(BaseHTTPRequestHandler):
         Issue55: htm 스캔은 HTM_CLEARED tombstone 을 skip(부활 차단, dash 측 Issue54 대칭),
         search_limit 으로 디렉토리당 처리 파일 수를 상한."""
         client_ip = self.client_address[0] if self.client_address else ""
-        if client_ip not in ("127.0.0.1", "::1"):
+        if not _ip_allowed(client_ip):
             self._send_json(403, {"error": "localhost only"})
             return
         with projects_lock:
@@ -2650,7 +2730,7 @@ class Handler(BaseHTTPRequestHandler):
         body: {event, cwd, summary, detail, ts}. project_meta(cwd) 로 name·color 보강.
         127.0.0.1 trust → 토큰 미요구. body 64KiB 상한 (_read_json_body 기본)."""
         client_ip = self.client_address[0] if self.client_address else ""
-        if client_ip not in ("127.0.0.1", "::1"):
+        if not _ip_allowed(client_ip):
             self._send_json(403, {"error": "localhost only"})
             return
         body, err = self._read_json_body()
@@ -2707,7 +2787,7 @@ class Handler(BaseHTTPRequestHandler):
         ?keep=N 지정 시 newest-first 기준 최신 N개를 보존하고 나머지만 제거,
         keep 미지정/0 → 전체 비움. 127.0.0.1 trust → 토큰 미요구."""
         client_ip = self.client_address[0] if self.client_address else ""
-        if client_ip not in ("127.0.0.1", "::1"):
+        if not _ip_allowed(client_ip):
             self._send_json(403, {"error": "localhost only"})
             return
         qs = parse_qs(parsed.query)
@@ -2741,7 +2821,7 @@ class Handler(BaseHTTPRequestHandler):
         cwd 는 Projects.md 등록 경로 또는 서버 projects 레지스트리 경로일 때만 허용 —
         localhost trust 라도 임의 경로 open 차단. 127.0.0.1 trust → 토큰 미요구."""
         client_ip = self.client_address[0] if self.client_address else ""
-        if client_ip not in ("127.0.0.1", "::1"):
+        if not _ip_allowed(client_ip):
             self._send_json(403, {"error": "localhost only"})
             return
         body, err = self._read_json_body()
@@ -2780,7 +2860,7 @@ class Handler(BaseHTTPRequestHandler):
         보안: localhost only + cwd 화이트리스트(open-project 동일) + sid 형식 엄격 검증
         (셸·URI 주입 차단)."""
         client_ip = self.client_address[0] if self.client_address else ""
-        if client_ip not in ("127.0.0.1", "::1"):
+        if not _ip_allowed(client_ip):
             self._send_json(403, {"error": "localhost only"})
             return
         body, err = self._read_json_body()
@@ -2823,7 +2903,7 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_open_settings_yml(self, parsed):
         """⚙️ 설정 버튼 — data/hub_setting.yml 을 VSCode 로 연다."""
         client_ip = self.client_address[0] if self.client_address else ""
-        if client_ip not in ("127.0.0.1", "::1"):
+        if not _ip_allowed(client_ip):
             self._send_json(403, {"error": "localhost only"})
             return
         if not os.path.isfile(HUB_SETTING_FILE):
@@ -2843,7 +2923,7 @@ class Handler(BaseHTTPRequestHandler):
         `..htm start/stop` 과 동일 효과 (STATE_FILE 기록). 시스템 OFF 플래그가 있으면
         effective off 는 유지되나 per-cwd 의도는 기록됨. 등록 프로젝트만 허용."""
         client_ip = self.client_address[0] if self.client_address else ""
-        if client_ip not in ("127.0.0.1", "::1"):
+        if not _ip_allowed(client_ip):
             self._send_json(403, {"error": "localhost only"})
             return
         body, err = self._read_json_body()
@@ -2886,7 +2966,7 @@ class Handler(BaseHTTPRequestHandler):
         """Project List 헤더 전체 토글 — 등록 프로젝트 전부를 target state(on/off)로 일괄 SET.
         flip 이 아닌 명시적 set 이라 mixed 상태도 일관되게 정렬됨. 등록 프로젝트만 허용."""
         client_ip = self.client_address[0] if self.client_address else ""
-        if client_ip not in ("127.0.0.1", "::1"):
+        if not _ip_allowed(client_ip):
             self._send_json(403, {"error": "localhost only"})
             return
         body, err = self._read_json_body()
@@ -2917,7 +2997,7 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_open_projects_md(self, parsed):
         """Project List 팝업의 'VSCode로 수정' — Projects.md 를 VSCode 로 연다 (고정 경로)."""
         client_ip = self.client_address[0] if self.client_address else ""
-        if client_ip not in ("127.0.0.1", "::1"):
+        if not _ip_allowed(client_ip):
             self._send_json(403, {"error": "localhost only"})
             return
         if not os.path.isfile(PROJECTS_MD):
@@ -6610,6 +6690,21 @@ def main():
     load_sessions()  # Issue17 Phase 1
     load_pids()      # Issue63: runner PID 등록분 복원 (재시작 후 /control 복구)
     load_feed()      # Issue42: hook 활동 피드 복원
+
+    # Issue141: env 미설정 시 hub_setting.yml bind_host 적용 (env > yml > 기본).
+    global HOST
+    if _HOST_ENV is None:
+        HOST = (_load_hub_setting().get("bind_host") or "127.0.0.1").strip() or "127.0.0.1"
+
+    # 개방 모드(HOST 가 루프백 아님)에서만 Servers.md allowlist 적재.
+    # 기본 127.0.0.1 이면 빈 set 유지 → 루프백만 통과(기존 동작 그대로).
+    if HOST not in LOOPBACK_IPS:
+        ALLOWED_IPS.update(_load_server_allowlist())
+        log(f"[allowlist] 개방 모드 — bind={HOST}, 허용 IP {len(ALLOWED_IPS)}개: "
+            f"{sorted(ALLOWED_IPS)} (+루프백)")
+        sys.stderr.write(
+            f"[hub] ⚠️ 외부 개방 모드 — bind={HOST}:{PORT}, "
+            f"allowlist {len(ALLOWED_IPS)} hosts (+loopback)\n")
 
     # Issue59: bind 를 PID_FILE 기록보다 먼저 수행 — bind 실패 시 PID_FILE 미생성·미삭제.
     #          (실패 경로의 cleanup 이 살아있는 다른 서버의 pid 파일을 지우던 버그 차단)

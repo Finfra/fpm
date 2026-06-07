@@ -36,6 +36,8 @@ b/c모드는 백엔드 서버를 사용한다. `/dashboard-server start|stop|sta
 | 변수 | 기본 | 용도 |
 | :--- | :--- | :--- |
 | `HTM_SERVER_PORT` | `9876` | hub 서버 포트 |
+| `HTM_SERVER_HOST` | `127.0.0.1` | bind 인터페이스. `0.0.0.0` 으로 원격 접근 개방(Issue141) — `Servers.md` check=O 호스트 IP allowlist 게이트. yml `bind_host` 보다 우선 |
+| `FPM_SERVERS_MD` | `<repo>/Servers.md` | 개방 모드 allowlist 소스 경로 override |
 | `FPM_PROJECTS_MD` | `~/_git/___pm/Projects.md` | 프로젝트 번호→경로·색상 매핑 SSOT (멀티 프로젝트 hub 색상용, 없으면 무색) |
 
 ## 주의 — 이중 등록
