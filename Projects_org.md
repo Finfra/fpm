@@ -1,7 +1,7 @@
 ---
 title: Project Registry (Example)
 description: Example project number→path mapping. install.sh가 Projects.md 부재 시 본 파일을 복사함.
-date: 2026-06-06
+date: 2026-06-08
 ---
 
 # Info
@@ -21,9 +21,24 @@ date: 2026-06-06
 | 60~99  | 일반 | 작업 / 외주      |
 | 100~   | 일반 | 외부 / 학습      |
 
-## setting Script
+### 📋 프로젝트
 
-`projects/` 폴더에 번호→경로 파일을 생성하는 스크립트. 자신의 경로로 교체할 것.
+| id  | 프로젝트명 | 한국어명칭  | Domain | 경로                | 설명             | 이모지 | color   |
+| :-- | :--------- | :---------- | :----- | :------------------ | :--------------- | :----- | :------ |
+| 0   | home       | 홈          | g      | `~`                 | 홈 디렉토리      | 😸      | #f3d2c9 |
+| 1   | pm         | 피엠        | g      | `~/_git/fpm`        | fpm 저장소 자신  | 🗓️🎯     | #ffffdd |
+| 2   | notes      | 노트        | g      | `~/Documents/notes` | 지식 베이스      | 💜      | #cfedd9 |
+| 3   | claude     | 클로드      | g      | `~/.claude`         | Claude Code 설정 | 🧠      | #f0d5cc |
+| 11  | myproj-web | 웹앱        | w      | `~/_git/myproj-web` | 예시 웹 프로젝트 | 🌐      | #c5e8f4 |
+| 51  | myproj-cli | 씨엘아이    | g(cli) | `~/_git/myproj-cli` | 예시 CLI 도구    | ⌨️      | #d1ddeb |
+| 81  | client-a   | 클라이언트A | g      | `~/work/client-a`   | 예시 외주 작업   | 💻      | #d4c9e3 |
+
+> 한국어명칭은 macOS `say` 음성 안내용 (선택).
+> `peacock.color`는 각 프로젝트 `.vscode/settings.json`에 반영 (`/peacock-sync`).
+
+### setting Script
+
+SSOT는 위 "📋 프로젝트" 표. 아래 스크립트가 표의 id→경로 매핑을 `projects/` 폴더에 1줄 파일로 풀어씀. 표 변경 시 함께 갱신할 것. 운영 환경에서는 `scripts/setup-projects.sh`로 분리 권장.
 
 ```zsh
 cd ~/_git/fpm/projects && rm -f *
@@ -35,21 +50,6 @@ echo "~/_git/myproj-web"          > 11
 echo "~/_git/myproj-cli"          > 51
 echo "~/work/client-a"            > 81
 ```
-
-### 📋 프로젝트
-
-| id  | 프로젝트명  | 한국어명칭 | Domain | 경로                | 설명               | 이모지 | color   |
-| :-- | :---------- | :--------- | :----- | :------------------ | :----------------- | :----- | :------ |
-| 0   | home        | 홈         | g      | `~`                 | 홈 디렉토리        | 😸      | #f3d2c9 |
-| 1   | pm          | 피엠       | g      | `~/_git/fpm`        | fpm 저장소 자신    | 🗓️🎯     | #ffffdd |
-| 2   | notes       | 노트       | g      | `~/Documents/notes` | 지식 베이스        | 💜      | #cfedd9 |
-| 3   | claude      | 클로드     | g      | `~/.claude`         | Claude Code 설정   | 🧠      | #f0d5cc |
-| 11  | myproj-web  | 웹앱       | w      | `~/_git/myproj-web` | 예시 웹 프로젝트   | 🌐      | #c5e8f4 |
-| 51  | myproj-cli  | 씨엘아이   | g(cli) | `~/_git/myproj-cli` | 예시 CLI 도구      | ⌨️      | #d1ddeb |
-| 81  | client-a    | 클라이언트A | g      | `~/work/client-a`   | 예시 외주 작업     | 💻      | #d4c9e3 |
-
-> 한국어명칭은 macOS `say` 음성 안내용 (선택).
-> `peacock.color`는 각 프로젝트 `.vscode/settings.json`에 반영 (`/peacock-sync`).
 
 # Reference
 
