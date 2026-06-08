@@ -223,6 +223,51 @@ form_js = (open(os.path.join(os.environ.get('CLAUDE_PLUGIN_ROOT', os.path.expand
            .replace('{OPEN_PROJECT_URL}', open_project_url)
            .replace('{PROJECT_CWD_JSON}', json.dumps(cwd)))
 
+# Issue143: 짝 a모드(..show 렌더) 페이지 탐색 → b 폼에 iframe+링크 임베드.
+# a(Claude Write, cwd z_htm)와 b(hook, OUT_DIR fallback /tmp)가 서로 다른 폴더일 수 있어
+# 후보 폴더(OUT_DIR + cwd z_htm + /tmp/___pm) 합집합에서 hub_htm_*_a_*.htm 중 mtime 최신 1개를 페어로 본다.
+import glob as _glob, re as _re, html as _htmlmod
+_cand_dirs = []
+for _d in (out_dir, (os.path.join(cwd, '_doc_work', 'z_htm') if cwd else ''), '/tmp/___pm'):
+    if _d and os.path.isdir(_d) and _d not in _cand_dirs:
+        _cand_dirs.append(_d)
+_a_files = []
+for _d in _cand_dirs:
+    _a_files += [f for f in _glob.glob(os.path.join(_d, 'hub_htm_*_a_*.htm')) if os.path.isfile(f)]
+a_pair = max(_a_files, key=lambda f: os.path.getmtime(f)) if _a_files else ''
+if a_pair:
+    a_title = os.path.basename(a_pair)
+    try:
+        with open(a_pair, encoding='utf-8') as _fh:
+            _m = _re.search(r'<title>(.*?)</title>', _fh.read(4000), _re.S)
+        if _m and _m.group(1).strip():
+            a_title = _m.group(1).strip()
+            for _pre in (f'{project_name} — ', f'{project_name} - '):
+                if a_title.startswith(_pre):
+                    a_title = a_title[len(_pre):]
+    except Exception:
+        pass
+    _t = _htmlmod.escape(a_title)
+    _p = _htmlmod.escape('file://' + a_pair)
+    _snippet = (
+        '<details class="show-pair" open style="margin:1rem 1.5rem;border:1px solid #c9b8e0;border-radius:10px;overflow:hidden;">\n'
+        '  <summary style="cursor:pointer;padding:0.6rem 1rem;background:hsl(273,30%,92%);color:#4a2d6b;font-weight:600;">'
+        f'🔗 관련 ..show 페이지: {_t} '
+        f'<a href="{_p}" target="_blank" style="margin-left:0.5rem;font-weight:400;">새 탭 ↗</a></summary>\n'
+        f'  <iframe src="{_p}" style="width:100%;height:55vh;border:0;border-top:1px solid #c9b8e0;"></iframe>\n'
+        '</details>'
+    )
+    show_embed_section = (
+        "\n### 🔗 관련 ..show(a모드) 페이지 임베드 (Issue143)\n"
+        f"직전 ..show 렌더(`{os.path.basename(a_pair)}`)를 폼에서 바로 확인하도록, 본문 `<main>` 최상단(질문 카드 앞)에 아래 스니펫을 그대로 삽입:\n"
+        "```html\n" + _snippet + "\n```\n"
+    )
+else:
+    show_embed_section = (
+        "\n### 🔗 관련 ..show(a모드) 페이지 임베드 (Issue143)\n"
+        "직전 ..show(a모드) 페이지 없음 — 임베드 스니펫 생략(무해).\n"
+    )
+
 project_header_guide = (
     "### 프로젝트 식별 헤더 (다중 탭 구분용 필수)\n"
     f"- 페이지 최상단 `<header>` 영역 배경에 프로젝트 컬러 적용: `background: {project_color}; color: white; padding: 1rem 1.5rem;`\n"
@@ -238,6 +283,7 @@ reason = (
     "AskUserQuestion 도구 호출 차단됨. 사용자가 채팅이 아닌 Firefox HTML 폼으로 답변하도록 다음 절차를 따르세요.\n\n"
     "### 질문 데이터 (인라인 JSON)\n```json\n" + questions_json + "\n```\n\n"
     + project_header_guide
+    + show_embed_section
     + f"\n### form 자동 회수 (___pm htm-server port {server_port}, cwd_hash `{cwd_hash}`)\n\n"
     "폼 \"전송\" 클릭 → 서버 inbox 로 직접 POST → Claude bash polling 회수. 사용자 paste 액션 불필요.\n\n"
     "**1. HTML form 생성** (file:// 으로 띄움):\n"
