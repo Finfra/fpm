@@ -31,7 +31,7 @@ date: 2026-05-31
    * 첫 토큰이 `queue` 또는 `--queue` 플래그 → **큐 모드** — 이후 토큰을 `<items>@<conc>` 로 파싱
    * 그 외 → **순수 모니터링 모드** — 첫 토큰을 `<topic>` 으로 추출
 2. 필수 인자(`<topic>` 또는 `<items>`) 비어있으면 1회 질의 후 종료
-3. `Agent` 도구 호출 (`subagent_type: "fpm-core:dashboard"` — 플러그인 네임스페이스 필수. bare `dashboard` 는 미존재) — prompt 에 모드·인자 명시
+3. `Agent` 도구 호출 (`subagent_type: "dashboard"`) — prompt 에 모드·인자 명시
 4. agent 가 `tmux new-window -t pm -n _<topic>` 생성 + runner 실행 (data 파일 갱신)
    * 순수 모니터링 — runner 1 + worker 0~1
    * 큐 — supervisor 1 + queue-runner 1 + worker N (lazy)
