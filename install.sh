@@ -2,7 +2,7 @@
 # install.sh — fpm 설치 스크립트 (멱등)
 #
 # 동작:
-#   1. <repo>/shell/fpm-functions.zsh 를 ~/.zshrc 에서 source (마커 가드 — 중복 방지)
+#   1. <repo>/sh/fpm.sh 부트스트랩을 ~/.zshrc 에서 source (FPM_BASE export + 마커 가드 — 중복 방지)
 #   2. ~/.info/__pmBasePath.txt 생성 → <repo>/projects
 #   3. projects/ 스캐폴드 (없으면 생성)
 #   4. 운영 필수 파일 배치: Servers.md / Projects.md 부재 시 *_org 예제 복사
@@ -15,16 +15,19 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INFO_DIR="$HOME/.info"
 BASEPATH_FILE="$INFO_DIR/__pmBasePath.txt"
 ZSHRC="$HOME/.zshrc"
-FUNC_FILE="$REPO_DIR/shell/fpm-functions.zsh"
+FUNC_FILE="$REPO_DIR/sh/fpm.sh"
 MARKER="# >>> fpm functions >>>"
 MARKER_END="# <<< fpm functions <<<"
 
 info()  { printf '\033[36m[fpm]\033[0m %s\n' "$1"; }
 warn()  { printf '\033[33m[fpm]\033[0m %s\n' "$1"; }
 
-# ── 1. fpm-functions.zsh source 라인 추가 (멱등) ──────────────
+# ── 1. fpm.sh 부트스트랩 source 라인 추가 (멱등) ──────────────
+# FPM_BASE 명시 export 후 sh/fpm.sh source (fpm.sh 헤더 권장 로드 규약).
+# fpm.sh 가 FPM_BASE 미설정 시 자기 위치로 self-detect 하나, 외부 소비자(KM·cron)
+# 캐시 정합성을 위해 install 단계에서 명시 export.
 if [[ ! -f "$FUNC_FILE" ]]; then
-    warn "함수 파일 없음: $FUNC_FILE"; exit 1
+    warn "부트스트랩 파일 없음: $FUNC_FILE"; exit 1
 fi
 if grep -qF "$MARKER" "$ZSHRC" 2>/dev/null; then
     info "~/.zshrc 에 이미 fpm 블록 존재 — skip"
@@ -32,10 +35,11 @@ else
     {
         echo ""
         echo "$MARKER"
+        echo "export FPM_BASE=\"$REPO_DIR\""
         echo "source \"$FUNC_FILE\""
         echo "$MARKER_END"
     } >> "$ZSHRC"
-    info "~/.zshrc 에 fpm 함수 source 추가"
+    info "~/.zshrc 에 fpm 부트스트랩 source 추가 (FPM_BASE=$REPO_DIR)"
 fi
 
 # ── 2. __pmBasePath.txt 생성 ──────────────────────────────────
