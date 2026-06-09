@@ -1,0 +1,29 @@
+# board_policy.yml — Mode C(dashboard) 운영 정책 데이터 SSOT (Issue152)
+#
+# hub_setting.yml(서버측 hub 설정)의 dashboard 짝. dashboard SCAR 스크립트의
+# 운영 상수(갱신 주기·견고성 임계·sentinel 경로)를 외부화하여 프로젝트 단위 튜닝을 가능하게 함.
+#
+# 소비처 — 각 스크립트가 기동 시 `_bp <key> <default>` 로 읽음 (stdlib grep 파싱, yq 불요):
+#   agents/fpm-dashboard-supervisor.sh   (큐 supervisor)
+#   agents/fpm-dashboard-runner.sh       (순수 모니터링 runner)
+#   agents/fpm-dashboard-queue-runner.sh (큐 시각화 runner)
+#
+# 우선순위: env VAR > board_policy.yml > 스크립트 기본값
+#   (env 주입 shim 이 항상 최우선 — 본 파일은 "기본값의 프로젝트 오버라이드" 역할)
+#
+# 형식: flat `key: value` 만 (server.py / _bp 경량 파서 호환). 값 뒤 `# 주석` 허용.
+# 아키텍처·스키마 SSOT: ~/.claude/_doc_arch/dashboard.md "## 운영 정책 (board_policy.yml)"
+
+# --- 갱신 주기 (초) ---
+interval_default: 5            # runner INTERVAL 기본 (worker_interval 미지정 시) — runner.sh
+interval_active: 3            # busy 시 poll 주기 — supervisor + queue-runner
+interval_idle_supervisor: 20  # idle 시 supervisor poll 주기 — supervisor.sh
+interval_idle_runner: 15      # idle 시 queue-runner 갱신 주기 — queue-runner.sh
+
+# --- 큐 supervisor 견고성 ---
+max_attempts: 2               # 항목당 최대 디스패치 시도 — supervisor.sh
+nosent_strikes: 10            # idle-무sentinel 연속 N회 → 재시도/failed (Issue101 D6) — supervisor.sh
+stuck_secs: 600               # 상태 불변 N초 → stuck 자가 진단 (Issue98) — supervisor.sh
+
+# --- 자원 경로 (베이스) ---
+sentinel_base: /tmp/___pm     # SENTINEL_DIR 베이스 (<sid>.sentinel 부착) — supervisor.sh
