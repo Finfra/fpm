@@ -24,7 +24,7 @@ source ~/.zshrc
 
 `install.sh` 가 수행하는 일:
 
-1. `~/.zshrc` 에 `shell/fpm-functions.zsh` source 라인 추가 (마커 가드 — 멱등)
+1. `~/.zshrc` 에 `FPM_BASE` export + `sh/fpm.sh` 부트스트랩 source 라인 추가 (마커 가드 — 멱등)
 2. `~/.info/__pmBasePath.txt` 생성 → `<repo>/projects`
 3. `projects/` 스캐폴드 생성 (`0`=home, `1`=repo)
 4. `Servers.md`/`Projects.md` 부재 시 `*_org.md` 예제 복사

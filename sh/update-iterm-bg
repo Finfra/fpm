@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+"""Projects.md의 color 컬럼을 읽어 $FPM_BASE/sh/fpm_aliases_iterm-bg.sh를 재생성.
+
+설치 위치 무관 동작: FPM_BASE(env) 우선, 없으면 본 스크립트 위치(sh/의 상위)로 self-detect.
+통합 드라이버 sh/fpm-projects-sync 의 [3/3] 단계가 본 스크립트를 호출함.
+단독 실행도 가능: python3 $FPM_BASE/sh/update-iterm-bg
+
+출력 파일: sh/fpm_aliases.sh 가 이 파일을 source.
+  (이전엔 ~/.zsh_aliases_iterm-bg.sh 로 생성만 되고 어디서도 source 안 되던 버그 →
+   설치 폴더 내부 sh/fpm_aliases_iterm-bg.sh 로 이동, fpm_aliases.sh 가 로드.)
+"""
+import os
+import re
+import sys
+
+FPM_BASE      = os.environ.get('FPM_BASE') or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROJECTS_MD   = os.path.join(FPM_BASE, 'Projects.md')
+ITERM_BG_FILE = os.path.join(FPM_BASE, 'sh', 'fpm_aliases_iterm-bg.sh')
+
+
+def parse_table(content):
+    projects = []
+    in_table = False
+    id_idx = name_idx = color_idx = None
+
+    for line in content.split('\n'):
+        if not line.startswith('|'):
+            if in_table:
+                break
+            continue
+
+        cols = [c.strip() for c in line.split('|')[1:-1]]
+
+        if ':-' in line:
+            continue
+
+        if 'id' in cols and any('color' in c.lower() for c in cols):
+            id_idx    = next(i for i, c in enumerate(cols) if c == 'id')
+            name_idx  = next((i for i, c in enumerate(cols) if c == '프로젝트명'), None)
+            color_idx = next(i for i, c in enumerate(cols) if 'color' in c.lower())
+            in_table  = True
+            continue
+
+        if in_table and id_idx is not None and len(cols) > color_idx:
+            proj_id = cols[id_idx]
+            name    = cols[name_idx] if name_idx is not None else ''
+            color   = cols[color_idx]
+            if proj_id.isdigit() and re.match(r'#[0-9a-fA-F]{3,6}', color):
+                projects.append((int(proj_id), name, color))
+
+    return sorted(projects)
+
+
+def generate_file(projects):
+    lines = [
+        '#!/bin/zsh',
+        '# iterm-bg (Projects.md color 기준)',
+        '# 자동 생성 파일 — 직접 수정 금지. $FPM_BASE/sh/update-iterm-bg 로 재생성할 것.',
+    ]
+    for pid, name, color in projects:
+        lines.append(f'alias iterm-bg-{pid}=\'iterm-bg "{color[1:]}"\'  # {name}')
+    lines.append('')
+    return '\n'.join(lines)
+
+
+def main():
+    with open(PROJECTS_MD, 'r') as f:
+        content = f.read()
+
+    projects = parse_table(content)
+    if not projects:
+        print('Error: 프로젝트를 찾지 못함', file=sys.stderr)
+        sys.exit(1)
+
+    new_content = generate_file(projects)
+    with open(ITERM_BG_FILE, 'w') as f:
+        f.write(new_content)
+
+    print(f'iterm-bg alias {len(projects)}개 → {ITERM_BG_FILE}')
+
+
+if __name__ == '__main__':
+    main()

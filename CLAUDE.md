@@ -18,7 +18,7 @@ date: 2026-03-26
     - `11`~`16` → macOS App(fApp) 관리 대상 프로젝트 경로
     - `51`~`57` → CLI / 라이브러리
     - **자동 생성** — `Projects.md`(SSOT) 편집 후 `fpm-projects-sync` 실행으로 재생성 (직접 편집 금지)
-* `sh/` - 개인 셸 도구 (비공개, fpm-sync 공개 미러 제외). 공개판은 `shell/fpm-functions.zsh`. **설치 위치 무관(`$FPM_BASE` 기반) — `~/_git/___pm`·`~/_git/__all/fpm` 등 어디에 두든 동작**
+* `sh/` - 셸 도구 (공개 미러 대상, 단일 SSOT 설치 페이로드 — Issue149). 구 `shell/fpm-functions.zsh` 중복 제거. 머신별 생성물 `fpm_aliases_iterm-bg.sh` 만 gitignored. **설치 위치 무관(`$FPM_BASE` 기반) — `~/_git/___pm`·`~/_git/__all/fpm` 등 어디에 두든 동작**
     - `fpm.sh` - **부트스트랩**: `$FPM_BASE` 확정(env 우선, 없으면 자기 위치 self-detect) 후 `fpm_function.sh`+`fpm_aliases.sh` 로드. `~/.zshrc`·`~/.bashrc` 에서 `export FPM_BASE=...` 후 source
     - `fpm_function.sh` - cdf/cdff/cdfc/cdfv/cdft + sshf 네비게이션 함수 (`$FPM_BASE` 기반)
     - `fpm_aliases.sh` - alias 모음 (생성된 iterm-bg alias 파일을 source)

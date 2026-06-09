@@ -66,7 +66,7 @@ sshf 1 2 3     # 다중 서버 → iTerm2 분할
 
 | 경로                                 | 설명                                                   |
 | :----------------------------------- | :----------------------------------------------------- |
-| `shell/fpm-functions.zsh`            | cdf·sshf 셸 함수군 (설치 페이로드)                     |
+| `sh/`                                | cdf·sshf 셸 함수군 + `fpm.sh` 부트스트랩 (설치 페이로드) |
 | `projects/`                          | 번호→경로 매핑 (개인 — gitignore, install 이 스캐폴드) |
 | `Projects_org.md` / `Servers_org.md` | 운영 필수 파일 예제 (install 이 실파일 배치)           |
 | `services/hub/`                      | hub HTTP+SSE 서버 (Python stdlib)                      |

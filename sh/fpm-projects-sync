@@ -1,0 +1,175 @@
+#!/usr/bin/env python3
+"""fpm-projects-sync — Projects.md(SSOT) 일괄 반영 통합 드라이버.
+
+Q1=수동 단일 명령 진입점. Projects.md 편집 후 `fpm-projects-sync` 1회 실행.
+3단계:
+  [1/3] projects/<id> 경로 인덱스 재생성 (cdf 계열용)
+  [2/3] 각 프로젝트 .vscode/settings.json 배경색(peacock) + window.title 이모지 반영
+  [3/3] sh/update-iterm-bg 호출 (iterm-bg alias 재생성)
+
+SSOT: $FPM_BASE/Projects.md 의 "📋 프로젝트" 표 (id / 경로 / 이모지 / color).
+설치 위치 무관 동작: FPM_BASE(env) 우선, 없으면 본 스크립트 위치(sh/의 상위)로 self-detect.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+
+PM_ROOT      = os.environ.get('FPM_BASE') or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROJECTS_MD  = os.path.join(PM_ROOT, 'Projects.md')
+PROJECTS_DIR = os.path.join(PM_ROOT, 'projects')
+UPDATE_ITERM = os.path.join(PM_ROOT, 'sh', 'update-iterm-bg')
+
+
+def parse_table(content):
+    rows = []
+    in_table = False
+    idx = {}
+    for line in content.split('\n'):
+        if not line.startswith('|'):
+            if in_table:
+                break
+            continue
+
+        cols = [c.strip() for c in line.split('|')[1:-1]]
+
+        if ':-' in line:
+            continue
+
+        # 헤더 행: id + color 컬럼 보유
+        if 'id' in cols and any('color' in c.lower() for c in cols):
+            idx['id']    = cols.index('id')
+            idx['path']  = next((i for i, c in enumerate(cols) if c == '경로'), None)
+            idx['emoji'] = next((i for i, c in enumerate(cols) if '이모지' in c), None)
+            idx['color'] = next(i for i, c in enumerate(cols) if 'color' in c.lower())
+            in_table = True
+            continue
+
+        if in_table:
+            pid = cols[idx['id']] if idx['id'] < len(cols) else ''
+            if not pid.isdigit():
+                continue
+            path  = cols[idx['path']].strip('`')  if idx['path']  is not None and idx['path']  < len(cols) else ''
+            emoji = cols[idx['emoji']]            if idx['emoji'] is not None and idx['emoji'] < len(cols) else ''
+            color = cols[idx['color']]            if idx['color'] < len(cols) else ''
+            rows.append({'id': int(pid), 'path': path, 'emoji': emoji, 'color': color})
+
+    return sorted(rows, key=lambda r: r['id'])
+
+
+def readable_fg(hexcolor):
+    """배경색 명도 기준 가독 전경색(어두움/밝음) 반환."""
+    h = (hexcolor or '').lstrip('#')
+    if len(h) == 3:
+        h = ''.join(c * 2 for c in h)
+    try:
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    except (ValueError, IndexError):
+        return '#1f1f1f'
+    lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
+    return '#15202b' if lum > 0.5 else '#e8e8e8'
+
+
+def gen_projects(rows):
+    """[1/3] projects/<id> 인덱스 파일 재생성 (기존 숫자 파일만 제거 후 재작성)."""
+    os.makedirs(PROJECTS_DIR, exist_ok=True)
+    for f in os.listdir(PROJECTS_DIR):
+        if f.isdigit():
+            os.remove(os.path.join(PROJECTS_DIR, f))
+    n = 0
+    for r in rows:
+        if not r['path']:
+            continue
+        with open(os.path.join(PROJECTS_DIR, str(r['id'])), 'w') as fh:
+            fh.write(r['path'] + '\n')
+        n += 1
+    print(f'[1/3] projects/ 인덱스 {n}개 재생성')
+
+
+def update_vscode(rows):
+    """[2/3] 각 프로젝트 .vscode/settings.json 에 배경색 + 이모지 반영 (다른 키 보존)."""
+    touched = skipped = missing = 0
+    for r in rows:
+        real = os.path.expanduser(r['path'])
+        if not os.path.isdir(real):
+            missing += 1
+            continue
+        if not re.match(r'#[0-9a-fA-F]{3,6}$', r['color'] or ''):
+            continue
+
+        vsdir = os.path.join(real, '.vscode')
+        settings_path = os.path.join(vsdir, 'settings.json')
+
+        data = {}
+        if os.path.isfile(settings_path):
+            raw = open(settings_path, encoding='utf-8').read()
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                # VSCode settings.json 은 JSONC — trailing comma 허용. strict json 은 거부하므로
+                # trailing comma 만 제거 후 재시도 (주석 있는 파일은 그래도 실패 → skip 하여 주석 보존).
+                try:
+                    data = json.loads(re.sub(r',(\s*[}\]])', r'\1', raw))
+                except json.JSONDecodeError:
+                    print(f'  ⚠️ 파싱 실패 — skip: {settings_path}')
+                    skipped += 1
+                    continue
+
+        base = r['color']
+        fg = readable_fg(base)
+
+        # peacock 가 색칠하는 배경 키만 merge (기존 colorCustomizations 다른 키 보존)
+        cc = data.get('workbench.colorCustomizations', {}) or {}
+        cc.update({
+            'titleBar.activeBackground':     base,
+            'titleBar.activeForeground':     fg,
+            'titleBar.inactiveBackground':   base + '99',
+            'titleBar.inactiveForeground':   fg + '99',
+            'activityBar.background':        base,
+            'activityBar.foreground':        fg,
+            'statusBar.background':          base,
+            'statusBar.foreground':          fg,
+            'statusBarItem.remoteBackground': base,
+            'statusBarItem.remoteForeground': fg,
+        })
+        data['workbench.colorCustomizations'] = cc
+        data['peacock.color'] = base
+        if r['emoji']:
+            data['window.title'] = f"{r['emoji']} ${{rootName}}${{separator}}${{activeEditorShort}}"
+
+        os.makedirs(vsdir, exist_ok=True)
+        with open(settings_path, 'w', encoding='utf-8') as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=2)
+            fh.write('\n')
+        touched += 1
+
+    print(f'[2/3] .vscode 갱신 {touched}개 (디렉토리 없음 {missing}, 파싱skip {skipped})')
+
+
+def run_iterm():
+    """[3/3] iterm-bg alias 재생성 위임."""
+    if os.access(UPDATE_ITERM, os.X_OK):
+        subprocess.run([sys.executable, UPDATE_ITERM], check=False)
+        print('[3/3] iterm-bg alias 재생성 (sh/update-iterm-bg)')
+    else:
+        print(f'[3/3] skip — {UPDATE_ITERM} 실행 불가')
+
+
+def main():
+    with open(PROJECTS_MD, encoding='utf-8') as f:
+        content = f.read()
+
+    rows = parse_table(content)
+    if not rows:
+        print('Error: Projects.md 테이블 파싱 실패 (id/color 헤더 확인)', file=sys.stderr)
+        sys.exit(1)
+
+    gen_projects(rows)
+    update_vscode(rows)
+    run_iterm()
+    print(f'✅ fpm-projects-sync 완료 — {len(rows)}개 프로젝트')
+
+
+if __name__ == '__main__':
+    main()
