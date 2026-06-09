@@ -23,7 +23,7 @@ date: 2026-03-29
 1. `~/_git/___pm/Projects.md` 읽기 — 테이블에서 `id`와 `경로` 추출
 2. projects.json 읽기
 3. 각 항목의 `rootPath`를 Projects.md 경로와 비교하여 `id` 결정
-    - `~` 는 `/Users/nowage`로 치환하여 비교
+    - `~` 는 `$HOME`로 치환하여 비교
 4. `name`을 `{zero-padded id}.{현재 name에서 기존 id prefix 제거 후 원본명}` 형식으로 교체
     - 이미 `숫자.이름` 형식이면 숫자 부분만 교체
     - 형식이 없는 경우 `{id}.{현재name}` 으로 설정

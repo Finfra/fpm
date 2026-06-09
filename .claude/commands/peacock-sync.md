@@ -19,7 +19,7 @@ date: 2026-04-14
 ## 1. 프로젝트 목록 수집
 
 `~/_git/___pm/Projects.md` 테이블에서 `id`, `프로젝트명`, `경로`, `peacock.color` 추출.
-`~` → `/Users/nowage` 치환하여 절대경로로 변환.
+`~` → `$HOME` 치환하여 절대경로로 변환.
 
 ## 2. 각 프로젝트 .vscode/settings.json에서 peacock.color 읽기
 
@@ -59,7 +59,7 @@ pm = re.sub(
 )
 ```
 
-업데이트 후 `python3 ~/.bin/update-iterm-bg` 실행.
+업데이트 후 `python3 ~/_git/___pm/sh/fpm-projects-sync` 실행.
 
 ### 인자 `pm`
 
@@ -74,7 +74,7 @@ new_raw = re.sub(
 ```
 
 `.vscode/settings.json`이 없는 프로젝트는 건너뜀.
-업데이트 후 `python3 ~/.bin/update-iterm-bg` 실행.
+업데이트 후 `python3 ~/_git/___pm/sh/fpm-projects-sync` 실행.
 
 ## 4. 결과 출력
 

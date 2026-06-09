@@ -17,6 +17,14 @@ date: 2026-03-26
     - `3` → `~/.claude`
     - `11`~`16` → macOS App(fApp) 관리 대상 프로젝트 경로
     - `51`~`57` → CLI / 라이브러리
+    - **자동 생성** — `Projects.md`(SSOT) 편집 후 `fpm-projects-sync` 실행으로 재생성 (직접 편집 금지)
+* `sh/` - 개인 셸 도구 (비공개, fpm-sync 공개 미러 제외). 공개판은 `shell/fpm-functions.zsh`. **설치 위치 무관(`$FPM_BASE` 기반) — `~/_git/___pm`·`~/_git/__all/fpm` 등 어디에 두든 동작**
+    - `fpm.sh` - **부트스트랩**: `$FPM_BASE` 확정(env 우선, 없으면 자기 위치 self-detect) 후 `fpm_function.sh`+`fpm_aliases.sh` 로드. `~/.zshrc`·`~/.bashrc` 에서 `export FPM_BASE=...` 후 source
+    - `fpm_function.sh` - cdf/cdff/cdfc/cdfv/cdft + sshf 네비게이션 함수 (`$FPM_BASE` 기반)
+    - `fpm_aliases.sh` - alias 모음 (생성된 iterm-bg alias 파일을 source)
+    - `fpm_aliases_iterm-bg.sh` - **자동 생성** (gitignore). `update-iterm-bg` 산출물, `fpm_aliases.sh` 가 로드
+    - `fpm-projects-sync` - **통합 드라이버**: `Projects.md` → `projects/` 인덱스 + 각 `.vscode` 배경색(peacock)·이모지 + iterm-bg alias 일괄 반영 (수동 단일 명령, `$FPM_BASE` 기반)
+    - `update-iterm-bg` - `Projects.md` color → `$FPM_BASE/sh/fpm_aliases_iterm-bg.sh` alias 재생성 (드라이버 [3/3]. 이전엔 `~/.zsh_aliases_iterm-bg.sh` 로 생성만 되고 미로드 → 설치 폴더 내부로 이동 후 `fpm_aliases.sh` 가 source)
 * `README.md` - 프로젝트 번호-경로 매핑 문서
 
 # 프로젝트 도메인 매핑
@@ -27,7 +35,7 @@ date: 2026-03-26
 
 # cdf 함수군 (핵심 메커니즘)
 
-`~/.zsh_functions`에 정의된 셸 함수. 공용 헬퍼 `_pm_manager()`가 `~/.info/__pmBasePath.txt`에서 베이스 경로(`projects/`)를 읽어 동작함.
+`sh/fpm_function.sh`(부트스트랩 `sh/fpm.sh` 가 source)에 정의된 셸 함수. 공용 헬퍼 `_pm_manager()`가 `$FPM_BASE/projects` 를 베이스 경로로 사용함 (FPM_BASE 미설정 시 legacy `~/.info/__pmBasePath.txt` fallback).
 
 | 함수   | 설명                                                   | 사용 예시                 |
 | :----- | ------------------------------------------------------ | ------------------------- |
@@ -61,6 +69,7 @@ fApp(macOS 앱 11~16) 일괄 관리용 커맨드:
 | `fapp-restart`                       | fApp 프로세스 종료 후 재실행                   |
 | `cdf`                                | tmux pm 세션 범용 관리 (window/pane 생성·명령전달) |
 | `cdf-fapp`                           | fApp 기본값 설정 후 `/cdf` 위임                |
+| `sync-jma`                           | jm4 ↔ jma 양방향 rsync 동기화(git 미사용). target(social/data/fapp/public/all) + direction(push/pull). prj 4,9,11~16,25,26 |
 
 프로젝트 관리 커맨드 (글로벌 `~/.claude/commands/`):
 
@@ -90,6 +99,10 @@ fApp(macOS 앱 11~16) 일괄 관리용 커맨드:
 # 프로젝트 추가/변경
 
 `projects/` 폴더에 번호 파일을 생성하고 경로를 한 줄로 기록. `README.md`도 함께 업데이트할 것.
+
+## gitignore 정책
+
+프로젝트 docs(`.claude/`·`CLAUDE.md`·`Issue.md`·`_doc_arch/`·`_doc_work/`·`noteForHuman.md`)의 로컬전용 ignore 표준·적용 판정 SSOT: [`_doc_arch/gitignore-policy.md`](_doc_arch/gitignore-policy.md). 요지 — 미추적 프로젝트만 표준 블록 적용, 이미 git 추적 중이면 special reason 으로 skip.
 
 ## graphify
 

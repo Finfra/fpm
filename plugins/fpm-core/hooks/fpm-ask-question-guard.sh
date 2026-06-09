@@ -1,5 +1,5 @@
 #!/bin/bash
-# ask-question-guard.sh — Stop hook (Issue72, 2026-05-20)
+# fpm-ask-question-guard.sh — Stop hook (Issue72, 2026-05-20)
 #
 # ⚠️ 글로벌 SCAR 변경 가드 (Issue46): 본 hook 은 모든 프로젝트가 공유. cwd ≠ ~/.claude
 #   면 즉시 수정 금지 → ~/.claude/Issue.md 이슈 등록 후 처리. 설계 SSOT:
@@ -8,7 +8,7 @@
 #
 # 배경 (Issue72):
 #   hub Mode B(AskUserQuestion PreToolUse intercept → Firefox 폼 자동 회수)는
-#   ask-intercept.sh 가 AskUserQuestion 도구 호출만 가로챔. Claude 가 결정
+#   fpm-ask-intercept.sh 가 AskUserQuestion 도구 호출만 가로챔. Claude 가 결정
 #   질문을 *평문*으로 출력하면 인터셉트 대상이 없어 Mode B 가 조용히 우회됨.
 #   설계상 한계(코드 버그 아님)이며, 본 hook 이 재발 방지 가드 역할.
 #
@@ -152,12 +152,12 @@ reason = (
     "Firefox 폼 자동 회수(Mode B)를 우회합니다.\n\n"
     "### 조치\n"
     "- 동일 결정 질문을 `AskUserQuestion` 도구로 재호출하세요. intercept hook "
-    "(`ask-intercept.sh`)이 자동으로 Firefox 폼 + 서버 회수로 분기합니다.\n"
+    "(`fpm-ask-intercept.sh`)이 자동으로 Firefox 폼 + 서버 회수로 분기합니다.\n"
     "- 옵션은 2~4개로 정리 (5개 이상이면 핵심 4개로 압축).\n"
     "- 단순 confirm(yes/no)도 `AskUserQuestion` 2-option 으로 정형화 권장.\n"
     "- **오탐인 경우**(결정 질문이 아닌 정보성 응답): 질문 표현을 제거하고 "
     "응답을 평서문으로 마무리하세요. AskUserQuestion 강제 아님.\n\n"
-    "상세 규칙: `commands/hub.md` '선택지 자동 승격' 섹션."
+    "상세 규칙: `commands/fpm-hub.md` '선택지 자동 승격' 섹션."
 )
 print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=False))
 PYEOF

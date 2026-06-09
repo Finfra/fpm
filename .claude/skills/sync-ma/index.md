@@ -19,7 +19,7 @@ jm4(로컬)의 프로젝트를 ma에 동기화하는 통합 스킬.
 | `finfraHome` | 10          | ~/_git/__all/finfraHome                             | finfra.kr 홈페이지 동기화            |
 | `fapp`       | 11~16       | fApp 6개 프로젝트                                   | macOS 앱 프로젝트 일괄 동기화        |
 | `public`     | 25, 26      | fSnippet/_public, fWarrange/_public                 | _public 프로젝트 rsync 전용 동기화   |
-| `cyberTech`  | 81          | /Users/nowage/work/work-cyberTech                   | 사이버 테크 외주 프로젝트 동기화     |
+| `exampleProj`  | 81          | $HOME/work/work-exampleProj                   | 외주 프로젝트 예시 동기화     |
 | `all`        | -           | claude → bin → pm → finfraHome → fapp → public 순차 | 전체 동기화                          |
 | (생략)       | -           | Usage출력                                           | 기본값                               |
 
@@ -29,9 +29,9 @@ ex) `/sync-ma pm`, `/sync-ma 1`, `/sync-ma 10` 모두 유효
 
 | 파라미터       | 값                 |
 | :------------- | :----------------- |
-| `target_host`  | `nowage@ma`       |
+| `target_host`  | `user@ma`       |
 | `target_agent` | `sma`              |
-| `local_host`   | `nowage@jm4.local` |
+| `local_host`   | `user@host.local` |
 
 # 대상별 설정
 
@@ -46,7 +46,7 @@ ex) `/sync-ma pm`, `/sync-ma 1`, `/sync-ma 10` 모두 유효
 
 Phase 절차:
 * Phase 1: 로컬 git commit (push 없음)
-* Phase 2: sma로 ma commit 후 `git pull nowage@jm4.local:~/.claude`
+* Phase 2: sma로 ma commit 후 `git pull user@host.local:~/.claude`
 * Phase 3: 스킵 (remote 없음)
 * Phase 4: rsync (추가 exclude 적용)
 * Phase 5: 결과 요약
@@ -62,7 +62,7 @@ Phase 절차:
 
 Phase 절차:
 * Phase 1: 로컬 git commit (push 없음)
-* Phase 2: sma로 ma commit 후 `git pull nowage@jm4.local:~/.bin`
+* Phase 2: sma로 ma commit 후 `git pull user@host.local:~/.bin`
 * Phase 3: 스킵 (remote 없음)
 * Phase 4: rsync
 * Phase 5: 결과 요약
@@ -100,18 +100,18 @@ Phase 절차:
 * Phase 4: rsync (6개 순차)
 * Phase 5: 프로젝트별 결과 요약
 
-## cyberTech
+## exampleProj
 
 | 항목            | 값                                        |
 | :-------------- | :---------------------------------------- |
 | `sync_type`     | `git-local`                               |
-| `paths`         | `/Users/nowage/work/work-cyberTech`       |
-| `commit_msg`    | `Sync: sync-cyberTech-ma`                 |
+| `paths`         | `$HOME/work/work-exampleProj`       |
+| `commit_msg`    | `Sync: sync-exampleProj-ma`                 |
 | `rsync_exclude` | (없음)                                    |
 
 Phase 절차:
 * Phase 1: 로컬 git commit (push 없음 — remote 미설정)
-* Phase 2: sma로 ma commit 후 `git pull nowage@jm4.local:/Users/nowage/work/work-cyberTech`
+* Phase 2: sma로 ma commit 후 `git pull user@host.local:$HOME/work/work-exampleProj`
 * Phase 3: 스킵 (remote 없음)
 * Phase 4: rsync
 * Phase 5: 결과 요약

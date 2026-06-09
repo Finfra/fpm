@@ -1,5 +1,5 @@
 #!/bin/bash
-# hub-session-topic.sh — UserPromptSubmit hook: 세션 카드 제목을 현재 작업(프롬프트)으로 갱신
+# fpm-hub-session-topic.sh — UserPromptSubmit hook: 세션 카드 제목을 현재 작업(프롬프트)으로 갱신
 #
 # ⚠️ 글로벌 SCAR 변경 가드 (Issue46): 본 hook 은 모든 프로젝트가 공유. cwd ≠ ~/.claude
 #   면 즉시 수정 금지 → ~/.claude/Issue.md 이슈 등록 후 처리. 설계 SSOT:
@@ -18,7 +18,7 @@
 #   5. fire-and-forget (--max-time 2, 백그라운드) — 프롬프트 처리 지연 방지
 #
 # 서버측: live_label 우선 카드 렌더(server.py:1965)·register 마다 갱신(server.py:3920).
-# hub-session-register.sh(SessionStart) 와 병행 — 첫 프롬프트 전까지만 win fallback.
+# fpm-hub-session-register.sh(SessionStart) 와 병행 — 첫 프롬프트 전까지만 win fallback.
 
 input=$(cat)
 

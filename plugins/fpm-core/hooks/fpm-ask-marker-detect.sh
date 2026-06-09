@@ -1,5 +1,5 @@
 #!/bin/bash
-# ask-marker-detect.sh — Stop hook (Issue43, 2026-05-19)
+# fpm-ask-marker-detect.sh — Stop hook (Issue43, 2026-05-19)
 #
 # ⚠️ 글로벌 SCAR 변경 가드 (Issue46): 본 hook 은 모든 프로젝트가 공유. cwd ≠ ~/.claude
 #   면 즉시 수정 금지 → ~/.claude/Issue.md 이슈 등록 후 처리. 설계 SSOT:
@@ -23,7 +23,7 @@
 #   ] }
 #   htm-form:auto:v1:END -->
 #
-# 본 hook 은 hooks/ask-intercept.sh (PreToolUse AskUserQuestion) 와 동일 인프라
+# 본 hook 은 hooks/fpm-ask-intercept.sh (PreToolUse AskUserQuestion) 와 동일 인프라
 # 재사용 (server inbox + bash polling, cwd_hash 격리, OUT_DIR 규칙).
 #
 # 이력:
@@ -194,7 +194,7 @@ err = os.environ.get('VALIDATION_ERR', '')
 reason = (
     "## htm-form:auto 마커 schema 위반 (Issue43)\n\n"
     f"에러: {err}\n\n"
-    "마커 JSON 을 schema 에 맞게 수정 후 응답 재작성. schema 명세: commands/hub.md 'Mode D 자동 폼 마커' 섹션."
+    "마커 JSON 을 schema 에 맞게 수정 후 응답 재작성. schema 명세: commands/fpm-hub.md 'Mode D 자동 폼 마커' 섹션."
 )
 print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=False))
 PYEOF
@@ -353,10 +353,10 @@ except Exception:
 q1_quoted = shlex.quote(q1_sig) if q1_sig else "''"
 sid_quoted = shlex.quote(sid) if sid else "''"
 
-# Issue68: 폼 JS 템플릿 SSOT — hooks/ask-form-template.js 단일 출처에서 읽어 placeholder 치환
+# Issue68: 폼 JS 템플릿 SSOT — hooks/fpm-ask-form-template.js 단일 출처에서 읽어 placeholder 치환
 # Issue132: {OPEN_PROJECT_URL}+{PROJECT_CWD_JSON} 치환 (Mode D 는 submit-session-btn 없음 → dead code, literal leak 방지용)
 open_project_url = f"http://127.0.0.1:{server_port}/open-project"
-form_js = (open(os.path.join(os.environ.get('CLAUDE_PLUGIN_ROOT', os.path.expanduser('~/.claude')), 'hooks/ask-form-template.js'), encoding='utf-8').read()
+form_js = (open(os.path.join(os.environ.get('CLAUDE_PLUGIN_ROOT', os.path.expanduser('~/.claude')), 'hooks/fpm-ask-form-template.js'), encoding='utf-8').read()
            .replace('{ANSWER_URL}', answer_url)
            .replace('{OPEN_PROJECT_URL}', open_project_url)
            .replace('{PROJECT_CWD_JSON}', json.dumps(cwd)))
@@ -384,7 +384,7 @@ reason = (
     "   - select 카드는 '기타 (직접 입력)' `<input type=\"text\" class=\"q-other\">` 추가\n"
     "   - **`<button id=\"submit-btn\">전송</button>`** + `<button onclick=\"window.close()\">닫기 ✕</button>`\n"
     "   - `<div id=\"status\">` 전송 결과 표시\n"
-    "   - JavaScript (SSOT: `hooks/ask-form-template.js`, Issue68 — `{ANSWER_URL}` 치환 완료본. 아래 블록을 그대로 `<script>` 에 삽입. Mode D 는 submit-close-btn 없음 → 템플릿이 null-safe 처리):\n"
+    "   - JavaScript (SSOT: `hooks/fpm-ask-form-template.js`, Issue68 — `{ANSWER_URL}` 치환 완료본. 아래 블록을 그대로 `<script>` 에 삽입. Mode D 는 submit-close-btn 없음 → 템플릿이 null-safe 처리):\n"
     "```js\n" + form_js + "```\n\n"
     "**2. 저장 + Firefox open**:\n"
     "   ```bash\n"

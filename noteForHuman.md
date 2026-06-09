@@ -64,9 +64,9 @@ date: 2026-04-20
 4. `↑` → `ctl+a` → del*n (숫자만 남김) → `sleep 0.` → `ctl+e` → `&&vscode .` → Enter
 
 ```
-╭─nowage@jm4 ~
+╭─user@jm4 ~
 ╰─$ cdf 0
-╭─nowage@jm4 ~/_git/___pm ‹main●›
+╭─user@jm4 ~/_git/___pm ‹main●›
 ╰─$ sleep 0.2&&vscode .
 ```
 
@@ -186,6 +186,7 @@ SSOT: `~/.claude/_doc_arch/hub-mode-arch.md`
 SSOT: `_doc_arch/hub_dashboard_tmux_design.md` / Ops: `~/.claude/agents/dashboard.md`, `.claude/commands/dashboard.md`
 * `..board <topic>` (구 `..dashboard` 별칭) — tmux window 1:1 매칭 + `_<topic>` 접두사 (로컬 pm 세션)
 * 각 dashboard = pmux window 자동 생명주기 관리
+* 재현 키트: 9개 시나리오 재현 프롬프트·fixture → `_doc_work/board/` (s1~s9, 인덱스 `_doc_work/board/README.md`) (Issue148)
 
 #### 시나리오 1: 대량 순차 파일 생성 (폴더 1000개)
 폴더 1000개를 1초 간격 생성 → progress 실시간 추적 (n/1000) → 소요 시간 기록

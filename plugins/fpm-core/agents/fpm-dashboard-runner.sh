@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# dashboard-runner.sh — tmux 기반 dashboard data 갱신 daemon
+# fpm-dashboard-runner.sh — tmux 기반 dashboard data 갱신 daemon
 #
 # ⚠️ 글로벌 SCAR 변경 가드 (Issue46): 본 runner는 모든 프로젝트가 공유. cwd ≠ ~/.claude
 #   면 즉시 수정 금지 → ~/.claude/Issue.md 이슈 등록 후 처리. 설계 SSOT:
-#   ~/.claude/_doc_arch/dashboard.md, ~/_git/___pm/_doc_arch/hub_dashboard_tmux_design.md
+#   ~/.claude/_doc_arch/fpm-dashboard.md, ~/_git/___pm/_doc_arch/hub_dashboard_tmux_design.md
 #   절차: ~/.claude/rules/global-scar-change-rules.md
 #
 # tmux pane에서 실행됨. data 파일을 주기 갱신 (HTTP 없음, 파일 기반).

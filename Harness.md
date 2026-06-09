@@ -1,5 +1,5 @@
 ---
-name: /Users/nowage/_git/___pm/Harness
+name: Harness
 description: Document
 date: 2026-04-18
 ---
@@ -143,6 +143,64 @@ date: 2026-04-18
 * capture
 * capture-ui-list (m 도메인 전용: 맥 개발 UI 캡처 리스트 관리)
 
+# ___pm / fpm
+
+PM 도구 프로젝트 쌍. `___pm`(prj1) = 개발 원본 SSOT, `fpm`(prj7, `~/_git/__all/fpm`) = 공개 마켓플레이스 배포판. `fpm-sync` agent 로 ___pm → fpm 단방향 복사·커밋(역방향은 사용자 동의 후).
+
+## ___pm 로컬 SCAR (g 도메인 — 로컬 진입 → 글로벌 `-g` 위임)
+
+### 프로젝트 관리 (pm)
+* skill: `pm` (생성·삭제·업데이트·조회 공통 로직)
+* commands (글로벌 `~/.claude/commands/`):
+    - /pm-new      프로젝트 타입별 초기화 (general/web/mac)
+    - /pm-del      안전 제거 (backup/done/keep)
+    - /pm-update   기존 프로젝트 SCAR·템플릿 최신화
+    - /pm-query    조회·검색
+    - /pm-do       prj간 명령 위임 + 동기 블로킹 + `* depends:` 자동 해결
+* SSOT: `projects/<번호>`(경로), `Projects.md`(Domain)
+
+### 디렉토리 이동·tmux (cdf)
+* skill: `cdf` (pm tmux window/pane 생성·명령 전달)
+* commands: /cdf · /cdf-fapp · /cdf-ma · /cdf-fapp-ma
+* shell func (`~/.zsh_functions`): cdf · cdff(Finder) · cdfc(clipboard) · cdfv(VSCode)
+
+### fApp 일괄 관리 (fapp, prj 11~16·25·26)
+* skill: `fapp` (상태 인식 CMD 라우팅)
+* agents: `fapp-parallel`(병렬) · `fapp-serial`(순차)
+* commands: /fapp-build · /fapp-run(-ma) · /fapp-kill(-ma) · /fapp-pull(-ma) · /fapp-push · /fapp-capture(-ma) · /fapp-restart · /fapp-parallel · /fapp-serial
+
+### 개발·이슈 (로컬 진입 → -g 위임)
+* /dev — → dev-g
+* skill: `issue` → issue-*-g
+    - /issue-reg · /issue-fix · /issue-closer
+
+### 동기화 (sync)
+* skill: `sync-ma` (jm4 → ma)
+* commands: /sync-ma · /sync-jma (jm4 ↔ jma 양방향 rsync)
+
+### 유틸
+* /peacock-sync — Projects.md peacock.color ↔ .vscode/settings.json
+* /server-check — Servers.md SSH 서버 상태
+* /vscode-projects-update — Projects.md ↔ 각 프로젝트 .vscode 갱신
+* /gq · /graphify-prune — graphify 보조
+
+### rules
+* graphify-rules · issue-rules
+
+## fpm — 마켓플레이스 배포판 (prj7, `~/_git/__all/fpm`)
+
+글로벌 `~/.claude` 의 hub/dashboard + pm/cdf SCAR 를 Claude Code 플러그인으로 번들 설치하는 공개판.
+
+* marketplace: `.claude-plugin/marketplace.json` → plugin `fpm-core`
+* fpm-core 번들:
+    - commands: pm-new/del/do/query/update · cdf · hub · dashboard · dashboard-server
+    - skills: pm · cdf
+    - agents: dashboard (+ runner·queue·supervisor 스크립트)
+    - hooks: hub-trigger · ask-intercept · ask-form-template · board-notify · hub-doc-register · hub-session-* · ask-*
+    - services: hub (Python stdlib HTTP+SSE 서버)
+* 동기화: `fpm-sync` agent — ___pm(원본) → fpm(공개판) 단방향 복사·커밋
+* 라이선스: 듀얼 (개인 무료 / 기업 유료) — `COMMERCIAL.md`
+
 # fCapture
 ## main
 * dev
@@ -180,7 +238,7 @@ date: 2026-04-18
     - /issue-closer-g
 * capture
 
-# work-cyberTech
+# work-exampleProj
 ## main
 * dev
 * issue
@@ -234,27 +292,4 @@ date: 2026-04-18
     - /issue-closer-g
 * capture
 
-# ___pm (g 도메인 — 로컬 진입 커맨드 → 글로벌 `-g` 위임 방식)
-## main
-* dev                  (로컬 `/dev` → `dev-g` 스킬 위임. `.claude/commands/dev.md`)
-* issue                (로컬 `/issue-*` → `issue-*-g` 위임. `.claude/commands/issue-*` + `skills/issue`)
-    - /issue-reg
-    - /issue-fix
-    - /issue-closer
-* fapp
-* cdf
-* pm
-    - /pm-new
-    - /pm-del
-    - /pm-update
-    - /pm-query
-* sync-ma
-    - /sync-ma
-
-## extend
-* /fapp-*
-* /issue-*
-* /pm-*
-* /cdf-*
-* /sync-ma
 

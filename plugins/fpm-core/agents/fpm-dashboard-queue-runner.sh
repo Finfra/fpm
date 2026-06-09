@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# dashboard-queue-runner.sh — dashboard 큐 모드 시각화 runner (Issue84, tmux 재설계 Tier 2)
+# fpm-dashboard-queue-runner.sh — dashboard 큐 모드 시각화 runner (Issue84, tmux 재설계 Tier 2)
 #
 # ⚠️ 글로벌 SCAR 변경 가드 (Issue46): 본 runner 는 모든 프로젝트가 공유. cwd ≠ ~/.claude
 #   면 즉시 수정 금지 → ~/.claude/Issue.md 이슈 등록 후 처리. 설계 SSOT:
-#   ~/.claude/_doc_arch/dashboard.md, ~/_git/___pm/_doc_arch/hub_dashboard_tmux_design.md
+#   ~/.claude/_doc_arch/fpm-dashboard.md, ~/_git/___pm/_doc_arch/hub_dashboard_tmux_design.md
 #   절차: ~/.claude/rules/global-scar-change-rules.md
 #
 # tmux window 의 runner pane 에서 실행됨. queue.yaml(supervisor 가 갱신하는 SSOT)을 읽어
 # graph·progress·badge·text·log 위젯으로 시각화 → .dash.yaml write (파일 기반, HTTP 없음).
-# 순수 모니터링 모드 runner(dashboard-runner.sh)와 별개.
+# 순수 모니터링 모드 runner(fpm-dashboard-runner.sh)와 별개.
 #
 # 환경변수 (필수):
 #   QUEUE_FILE       queue.yaml 절대경로 (supervisor 와 공유 SSOT, 읽기 전용)
@@ -84,7 +84,7 @@ else:
 # Q&A 질문 위젯 (Issue102) — waiting_input item 의 question 필드를 사용자에게 노출.
 #   worker 가 .waiting sentinel 에 질문을 적으면 supervisor 가 item.question 에 기록한다.
 #   사용자가 답변 마커(<OUT_DIR>/.dash-answers/<topic>__<id>, 내용=답변)를 생성하면
-#   supervisor ②.6 이 worker 를 재개시킨다 (상세: _doc_arch/dashboard.md Q&A 재개 프로토콜).
+#   supervisor ②.6 이 worker 를 재개시킨다 (상세: _doc_arch/fpm-dashboard.md Q&A 재개 프로토콜).
 qa_lines = []
 for it in waiting:
     qn = it.get('question')

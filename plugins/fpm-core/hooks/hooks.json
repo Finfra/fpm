@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/ask-intercept.sh",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fpm-ask-intercept.sh",
             "timeout": 5
           }
         ]
@@ -18,11 +18,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/board-notify.sh"
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fpm-board-notify.sh"
           },
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/hub-doc-register.sh"
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fpm-hub-doc-register.sh"
           }
         ]
       }
@@ -33,12 +33,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/ask-marker-detect.sh",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fpm-ask-marker-detect.sh",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/ask-question-guard.sh",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fpm-ask-question-guard.sh",
             "timeout": 10
           }
         ]
@@ -49,7 +49,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/hub-session-register.sh",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fpm-hub-session-register.sh",
             "timeout": 5,
             "statusMessage": "Registering hub live session..."
           }
@@ -61,7 +61,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/hub-session-end.sh",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fpm-hub-session-end.sh",
             "timeout": 5
           }
         ]
@@ -72,13 +72,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/hub-trigger.sh",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fpm-hub-trigger.sh",
             "timeout": 5,
             "statusMessage": "Checking hub trigger..."
           },
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/hub-session-topic.sh",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fpm-hub-session-topic.sh",
             "timeout": 5,
             "statusMessage": "Updating hub session topic..."
           }

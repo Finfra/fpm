@@ -3930,10 +3930,13 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
 
     @classmethod
     def _render_nodegraph_svg(cls, nodes, edges, value=None) -> str:
-        """graph/dag/tree → 레이어드 DAG SVG. chart(시계열)와 별개.
-        입력: nodes=[{id,label,status}|str], edges=[{from,to}|[a,b]].
+        """graph/dag/tree → 레이어드 DAG SVG (이슈 트리 강화판). chart(시계열)와 별개.
+        입력: nodes=[{id,label,status,progress?,sub?,current?}|str], edges=[{from,to}|[a,b]].
           top-level 미존재 시 value dict({nodes,edges}) 또는 JSON 문자열 fallback.
-        토폴로지 레벨로 행 배치, 노드 박스 + 엣지 선. 빈 그래프 → 빈 문자열."""
+        노드: 상태 아이콘(✅🔴🟢⏳🚫⬜) + 상태색 테두리 + 연한 tint 배경 + 라벨 +
+          (sub 보조줄) + (이슈별 progress 바). current=true → 굵은 강조 + 외곽 글로우.
+          progress/sub 유무에 따라 노드 높이 동적(전 노드 균일). 토폴로지 레벨로 행 배치.
+        빈 그래프 → 빈 문자열."""
         if not nodes and value is not None:
             v = cls._coerce_widget_value(value)
             if isinstance(v, dict):
@@ -3941,7 +3944,31 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
                 edges = edges or v.get("edges")
         if not isinstance(nodes, list) or not nodes:
             return ""
-        # 노드 정규화
+
+        def _norm_prog(p):
+            """progress 필드 → (pct 0~100, 라벨). 파싱 실패 → None."""
+            if p is None:
+                return None
+            mx = None
+            lab = None
+            raw = p
+            if isinstance(p, dict):
+                raw = p.get("value")
+                mx = p.get("max")
+                lab = p.get("label")
+            try:
+                val = float(raw)
+            except (TypeError, ValueError):
+                return None
+            if isinstance(mx, (int, float)) and not isinstance(mx, bool) and mx:
+                pct = val / float(mx) * 100.0
+                lab = lab or f"{val:g}/{mx:g}"
+            else:
+                pct = val
+                lab = lab or f"{pct:.0f}%"
+            return (max(0.0, min(100.0, pct)), str(lab))
+
+        # 노드 정규화 (강화 필드: progress/sub/current)
         norm = []
         ids = []
         for nd in nodes:
@@ -3949,10 +3976,18 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
                 nid = str(nd.get("id", nd.get("label", "")))
                 label = str(nd.get("label", nid))
                 st = str(nd.get("status", "") or "").lower()
+                prog = _norm_prog(nd.get("progress"))
+                sub = nd.get("sub") or nd.get("note") or ""
+                sub = str(sub)
+                cur = bool(nd.get("current"))
             else:
                 nid = label = str(nd)
                 st = ""
-            norm.append({"id": nid, "label": label, "status": st})
+                prog = None
+                sub = ""
+                cur = False
+            norm.append({"id": nid, "label": label, "status": st,
+                         "prog": prog, "sub": sub, "current": cur})
             ids.append(nid)
         idset = set(ids)
         # 엣지 정규화 (from,to)
@@ -3968,11 +4003,6 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
                 E.append((a, b))
         # 레벨 산출 (parent level+1, 사이클 방어로 노드수 cap)
         level = {nid: 0 for nid in ids}
-        children = {nid: [] for nid in ids}
-        indeg = {nid: 0 for nid in ids}
-        for a, b in E:
-            children[a].append(b)
-            indeg[b] += 1
         for _ in range(len(ids)):
             changed = False
             for a, b in E:
@@ -3988,7 +4018,15 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             rows[level[nid]].append(nid)
         maxlvl = max(level.values()) if level else 0
         maxw = max((len(r) for r in rows.values()), default=1)
-        NW, NH, GX, GY = 150.0, 34.0, 24.0, 30.0
+        # 노드 높이 — sub/progress 유무로 동적 결정(전 노드 균일 배치)
+        has_sub = any(n["sub"] for n in norm)
+        has_prog = any(n["prog"] for n in norm)
+        NW, GX, GY = 198.0, 26.0, 34.0
+        PAD = 9.0
+        LABEL_H = 19.0
+        SUB_H = 15.0 if has_sub else 0.0
+        PROG_H = 18.0 if has_prog else 0.0
+        NH = PAD * 2 + LABEL_H + SUB_H + PROG_H
         W = max(1.0, maxw) * (NW + GX) + GX
         H = (maxlvl + 1) * (NH + GY) + GY
         pos = {}
@@ -3999,32 +4037,73 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             y = GY + lvl * (NH + GY)
             for i, nid in enumerate(row):
                 pos[nid] = (x0 + i * (NW + GX), y)
-        scolor = {"done": "hsl(140,55%,45%)", "running": "hsl(210,70%,52%)",
-                  "active": "hsl(210,70%,52%)", "pending": "hsl(0,0%,65%)",
-                  "error": "hsl(0,70%,55%)", "waiting": "hsl(40,80%,50%)"}
+        # 상태 → (아이콘, 테두리색, 배경 tint, 텍스트색)
+        st_map = {
+            "done":       ("✅", "hsl(140,55%,42%)", "hsl(140,55%,96%)", "hsl(140,45%,30%)"),
+            "running":    ("🟢", "hsl(210,72%,52%)", "hsl(210,72%,96%)", "hsl(210,58%,38%)"),
+            "active":     ("🟢", "hsl(210,72%,52%)", "hsl(210,72%,96%)", "hsl(210,58%,38%)"),
+            "error":      ("🔴", "hsl(0,72%,55%)",   "hsl(0,72%,97%)",   "hsl(0,58%,44%)"),
+            "unresolved": ("🔴", "hsl(0,72%,55%)",   "hsl(0,72%,97%)",   "hsl(0,58%,44%)"),
+            "open":       ("🔴", "hsl(0,72%,55%)",   "hsl(0,72%,97%)",   "hsl(0,58%,44%)"),
+            "waiting":    ("⏳", "hsl(40,85%,48%)",  "hsl(42,90%,95%)",  "hsl(38,70%,36%)"),
+            "blocked":    ("🚫", "hsl(0,0%,55%)",    "hsl(0,0%,95%)",    "hsl(0,0%,38%)"),
+            "pending":    ("⬜", "hsl(0,0%,62%)",    "hsl(0,0%,97%)",    "hsl(0,0%,42%)"),
+        }
+        DEF = ("•", "hsl(273,40%,55%)", "hsl(273,40%,97%)", "hsl(273,30%,40%)")
         parts = [f'<svg class="w-graph" viewBox="0 0 {W:.0f} {H:.0f}" preserveAspectRatio="xMidYMid meet">']
-        # 엣지
+        # 엣지 (부모 박스 하단 중앙 → 자식 상단 중앙)
         for a, b in E:
             ax, ay = pos[a]
             bx, by = pos[b]
             parts.append(
-                f'<line x1="{ax + NW/2:.1f}" y1="{ay + NH:.1f}" x2="{bx + NW/2:.1f}" y2="{by:.1f}" '
-                f'stroke="#bbb" stroke-width="1.5"/>')
+                f'<line x1="{ax + NW / 2:.1f}" y1="{ay + NH:.1f}" x2="{bx + NW / 2:.1f}" y2="{by:.1f}" '
+                f'stroke="#c4c4cc" stroke-width="1.6"/>')
         # 노드
         for nd in norm:
             nid = nd["id"]
             if nid not in pos:
                 continue
             x, y = pos[nid]
-            col = scolor.get(nd["status"], "hsl(273,40%,55%)")
-            lab = nd["label"]
-            if len(lab) > 20:
-                lab = lab[:19] + "…"
+            icon, bcol, fill, tcol = st_map.get(nd["status"], DEF)
+            sw = 3.0 if nd["current"] else 1.8
+            if nd["current"]:  # 현재 노드 외곽 글로우
+                parts.append(
+                    f'<rect x="{x - 4:.1f}" y="{y - 4:.1f}" width="{NW + 8:.0f}" height="{NH + 8:.0f}" '
+                    f'rx="10" fill="none" stroke="{bcol}" stroke-width="1.2" opacity="0.35"/>')
             parts.append(
-                f'<rect x="{x:.1f}" y="{y:.1f}" width="{NW:.0f}" height="{NH:.0f}" rx="6" '
-                f'fill="#fff" stroke="{col}" stroke-width="2"/>'
-                f'<text x="{x + NW/2:.1f}" y="{y + NH/2 + 4:.1f}" text-anchor="middle" '
-                f'class="graph-lbl" fill="{col}">{html.escape(lab)}</text>')
+                f'<rect x="{x:.1f}" y="{y:.1f}" width="{NW:.0f}" height="{NH:.0f}" rx="7" '
+                f'fill="{fill}" stroke="{bcol}" stroke-width="{sw}"/>')
+            tx = x + PAD
+            lab_y = y + PAD + LABEL_H - 5
+            lab = nd["label"]
+            if len(lab) > 22:
+                lab = lab[:21] + "…"
+            parts.append(
+                f'<text x="{tx:.1f}" y="{lab_y:.1f}" class="graph-lbl" fill="{tcol}">'
+                f'{html.escape(icon)} {html.escape(lab)}</text>')
+            if has_sub and nd["sub"]:
+                sub = nd["sub"]
+                if len(sub) > 30:
+                    sub = sub[:29] + "…"
+                parts.append(
+                    f'<text x="{tx:.1f}" y="{lab_y + SUB_H:.1f}" class="graph-sub" '
+                    f'fill="#8a8a93">{html.escape(sub)}</text>')
+            if has_prog:
+                pby = y + NH - PAD - 11.0
+                lab_w = 40.0 if nd["prog"] else 0.0
+                bar_x = x + PAD
+                bar_w = NW - PAD * 2 - lab_w
+                parts.append(
+                    f'<rect x="{bar_x:.1f}" y="{pby:.1f}" width="{bar_w:.1f}" height="9" '
+                    f'rx="4.5" fill="#e6e6ee"/>')
+                if nd["prog"]:
+                    pct, plab = nd["prog"]
+                    parts.append(
+                        f'<rect x="{bar_x:.1f}" y="{pby:.1f}" width="{bar_w * pct / 100.0:.1f}" '
+                        f'height="9" rx="4.5" fill="{bcol}"/>')
+                    parts.append(
+                        f'<text x="{x + NW - PAD:.1f}" y="{pby + 8:.1f}" text-anchor="end" '
+                        f'class="graph-prog-lab" fill="{tcol}">{html.escape(plab)}</text>')
         parts.append("</svg>")
         return "".join(parts)
 
@@ -4286,8 +4365,10 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
   .w-badge-dead, .w-badge-error {{ background: #fde3e3; color: #c33; }}
   .w-badge-pending {{ background: #fff4e0; color: #b80; }}
   .w-badge-warn {{ background: #fff4e0; color: #b80; }}
-  .w-graph {{ width: 100%; max-height: 320px; display: block; margin-top: 0.2rem; }}
-  .graph-lbl {{ font-size: 12px; font-weight: 600; }}
+  .w-graph {{ width: 100%; max-height: 560px; display: block; margin-top: 0.2rem; }}
+  .graph-lbl {{ font-size: 12.5px; font-weight: 700; }}
+  .graph-sub {{ font-size: 10.5px; font-weight: 400; }}
+  .graph-prog-lab {{ font-size: 10px; font-weight: 700; }}
   .w-log {{ background: #1e1e22; color: #d6d6d6; padding: 0.5rem 0.7rem; border-radius: 4px; font-family: ui-monospace, Menlo, monospace; font-size: 0.78rem; line-height: 1.45; white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow: auto; margin: 0.2rem 0 0; }}
   .w-diff {{ background: #1e1e22; padding: 0.5rem 0.7rem; border-radius: 4px; font-family: ui-monospace, Menlo, monospace; font-size: 0.78rem; line-height: 1.45; white-space: pre-wrap; max-height: 260px; overflow: auto; margin: 0.2rem 0 0; }}
   .w-diff span {{ display: block; }}

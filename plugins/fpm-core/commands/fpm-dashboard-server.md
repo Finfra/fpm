@@ -1,5 +1,5 @@
 ---
-name: dashboard-server
+name: fpm-dashboard-server
 description: dashboard agent(Mode C) 전용 ___pm 서버 lifecycle wrapper (start/stop/status/restart). SSOT는 ~/_git/___pm/_doc_arch/hub_htm.md
 date: 2026-05-19
 ---
@@ -86,15 +86,15 @@ tail -20 /tmp/___pm/claude-htm-server/server.log 2>/dev/null
 # 비고
 
 * 서버 파일 시스템 경로 (`/tmp/___pm/claude-htm-server/`, Issue64 — `/tmp` 평면 흩어짐 방지. `server.py` 의 `htm-server` 이름) 는 ___pm 측 호환성을 위해 유지. 슬래시 커맨드 명칭만 `/dashboard-server` 로 변경 (Issue37 → Issue45 에서 hub 도 동일 서버 사용으로 통합)
-* hub 스킬 Q&A 회수 (Issue45) — `..show` 트리거(구 `..hub`) + AskUserQuestion 호출 시 `ask-intercept.sh` 가 본 서버 healthz·register·answer 사용. 서버 down 시 fail-loud
+* hub 스킬 Q&A 회수 (Issue45) — `..show` 트리거(구 `..hub`) + AskUserQuestion 호출 시 `fpm-ask-intercept.sh` 가 본 서버 healthz·register·answer 사용. 서버 down 시 fail-loud
 
 # 참조
 
 * 설계 SSOT: `~/_git/___pm/_doc_arch/hub_htm.md`
 * ___pm 측 역할 갱신 이슈: `~/_git/___pm/Issue.md` Issue25
 * 클라이언트 hook:
-    - `~/.claude/hooks/board-notify.sh` (Mode C dashboard data 변경 notify)
-    - `~/.claude/hooks/ask-intercept.sh` (Issue45 hub Q&A form 자동 회수)
-* dashboard agent: `~/.claude/agents/dashboard.md`
-* dashboard wrapper: `~/.claude/commands/dashboard.md`
+    - `~/.claude/hooks/fpm-board-notify.sh` (Mode C dashboard data 변경 notify)
+    - `~/.claude/hooks/fpm-ask-intercept.sh` (Issue45 hub Q&A form 자동 회수)
+* dashboard agent: `~/.claude/agents/fpm-dashboard.md`
+* dashboard wrapper: `~/.claude/commands/fpm-dashboard.md`
 * hub 스킬 분리 이슈: `~/.claude/Issue.md` Issue37

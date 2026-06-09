@@ -1,5 +1,5 @@
 ---
-name: pm-update
+name: fpm-pm-update
 description: 기존 프로젝트 SCAR·템플릿·폴더 구조를 최신 pm-new 기준으로 업데이트. pm 스킬 기반.
 date: 2026-04-11
 ---

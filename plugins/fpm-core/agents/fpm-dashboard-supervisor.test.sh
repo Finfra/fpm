@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# dashboard-supervisor.test.sh — worker_busy / worker_ready / detect_sentinel 회귀 픽스처
+# fpm-dashboard-supervisor.test.sh — worker_busy / worker_ready / detect_sentinel 회귀 픽스처
 #
 # ⚠️ 글로벌 SCAR 변경 가드 (Issue46): 본 테스트는 모든 프로젝트가 공유. cwd ≠ ~/.claude
 #   면 즉시 수정 금지 → ~/.claude/Issue.md 이슈 등록 후 처리. 설계 SSOT:
-#   ~/.claude/_doc_arch/dashboard.md. 절차: ~/.claude/rules/global-scar-change-rules.md
+#   ~/.claude/_doc_arch/fpm-dashboard.md. 절차: ~/.claude/rules/global-scar-change-rules.md
 #
 # 회귀 차단 — (1) busy-detection: idle 샘플('✻ Cogitated for Ns')이 busy 로 판정되거나,
 #   장기 Bash 대기('Waiting…'·'shell still running')가 idle 로 판정되면 실패.
 #   ⏵⏵(Issue93)→✻(Issue98 D4)→장기Bash(Issue101 D6) busy 판정 회귀 패턴 차단.
 #   (2) detect_sentinel: Issue100 파일 sentinel + Issue102 WAITING 질문 파싱 —
 #   .done/.waiting/.withdrawn 폴링·.done 우선순위·.waiting 의 'WAITING\t<질문>' 파싱.
-# 실행: bash ~/.claude/agents/dashboard-supervisor.test.sh
+# 실행: bash ~/.claude/agents/fpm-dashboard-supervisor.test.sh
 
 set -uo pipefail
 SELFDIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -23,7 +23,7 @@ export TOPIC="selftest"
 mkdir -p "$OUT_DIR"
 : > "$QUEUE_FILE"
 # shellcheck source=/dev/null
-source "$SELFDIR/dashboard-supervisor.sh"
+source "$SELFDIR/fpm-dashboard-supervisor.sh"
 
 PASS=0; FAIL=0
 ok() { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }

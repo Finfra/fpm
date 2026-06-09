@@ -13,8 +13,8 @@
     ],
     "defaultMode": "bypassPermissions",
     "additionalDirectories": [
-      "/Users/nowage/_git/__all/social",
-      "/Users/nowage/_git/__all/finfraHome/.claude/commands"
+      "$HOME/_git/__all/social",
+      "$HOME/_git/__all/finfraHome/.claude/commands"
     ]
   },
   "hooks": {
@@ -24,8 +24,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "jq -r '.tool_input.file_path // \"\"' | { read -r f; [[ \"$f\" == *Projects.md ]] && python3 ~/.bin/update-iterm-bg; } 2>/dev/null || true",
-            "statusMessage": "iterm-bg alias \uc5c5\ub370\uc774\ud2b8 \uc911..."
+            "command": "jq -r '.tool_input.file_path // \"\"' | { read -r f; [[ \"$f\" == *Projects.md ]] && python3 ~/_git/___pm/sh/fpm-projects-sync; } 2>/dev/null || true",
+            "statusMessage": "Projects.md \ub3d9\uae30\ud654 \uc911 (projects/\u00b7.vscode\u00b7iterm-bg)..."
           }
         ]
       }

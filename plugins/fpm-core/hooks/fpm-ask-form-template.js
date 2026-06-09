@@ -1,13 +1,13 @@
-// ask-form-template.js — hub Q&A form JS SSOT 템플릿 (Issue68)
+// fpm-ask-form-template.js — hub Q&A form JS SSOT 템플릿 (Issue68)
 //
 // ⚠️ 글로벌 SCAR 변경 가드 (Issue46): 본 template 은 모든 프로젝트가 공유.
 //   cwd ≠ ~/.claude 면 즉시 수정 금지 → ~/.claude/Issue.md 이슈 등록 후 처리.
 //   설계 SSOT: ~/.claude/_doc_arch/hub-mode-arch.md. 절차: ~/.claude/rules/global-scar-change-rules.md
 //
 // 소비처 (3 생성 경로 — 본 파일이 단일 출처):
-//   - hooks/ask-intercept.sh   (Mode B — AskUserQuestion intercept)
-//   - hooks/ask-marker-detect.sh   (Mode D — <!-- htm-form:auto --> 마커)
-//   - commands/hub.md              (hub 스킬 본문)
+//   - hooks/fpm-ask-intercept.sh   (Mode B — AskUserQuestion intercept)
+//   - hooks/fpm-ask-marker-detect.sh   (Mode D — <!-- htm-form:auto --> 마커)
+//   - commands/fpm-hub.md              (hub 스킬 본문)
 // 주입 placeholder:
 //   {ANSWER_URL}        → ___pm htm-server answer 엔드포인트 절대 URL
 //   {OPEN_PROJECT_URL}  → ___pm htm-server /open-project 엔드포인트 (Issue132 — VSCode focus)
@@ -107,7 +107,7 @@ if (closeBtn) closeBtn.addEventListener('click', async () => {
 });
 
 // Issue132: submit-session-btn (전송 후 해당 세션으로) — POST 성공 시 /open-project 로
-// 프로젝트 cwd 를 VSCode 로 열어(=세션 포커스) 폼 창 닫기. proj-badge(hub.md)와 동일 endpoint.
+// 프로젝트 cwd 를 VSCode 로 열어(=세션 포커스) 폼 창 닫기. proj-badge(fpm-hub.md)와 동일 endpoint.
 // null-safe — Mode D 는 버튼 없음. open-project 실패 시 alert(fail-loud) + 창 유지.
 const sessionBtn = document.getElementById('submit-session-btn');
 if (sessionBtn) sessionBtn.addEventListener('click', async () => {

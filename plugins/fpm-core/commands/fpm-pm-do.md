@@ -1,10 +1,10 @@
 ---
-name: pm-do
+name: fpm-pm-do
 description: 다른 prj로 명령 위임 후 완료 시까지 동기 블로킹. 의존성(* depends:) 자동 해결 지원
 date: 2026-05-16
 ---
 
-skill: "pm-do"
+skill: "fpm-pm-do"
 
 # 사용법
 

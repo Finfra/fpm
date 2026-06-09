@@ -1,5 +1,5 @@
 ---
-title: cdf
+title: fpm-cdf
 description: "pm tmux 세션의 window/pane을 생성·관리함. @N 윈도우 인덱스, :NAME 윈도우 이름, projects/ 번호로 pane 구성. 완료 후 WIN_NAME 출력."
 date: 2026-04-18
 ---

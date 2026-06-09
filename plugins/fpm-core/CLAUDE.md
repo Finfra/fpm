@@ -6,10 +6,10 @@
 
 | 분류 | 항목 |
 | :--- | :--- |
-| Commands | `hub`, `dashboard`, `dashboard-server`, `pm-new`, `pm-del`, `pm-update`, `pm-query`, `pm-do`, `cdf` |
-| Skills | `pm`, `cdf` |
-| Agents | `dashboard` (+ runner/supervisor/queue-runner) |
-| Hooks | `hub-trigger`, `ask-intercept`, `ask-marker-detect`, `ask-question-guard`, `board-notify`, `hub-session-{register,end,topic}`, `hub-doc-register` |
+| Commands | `fpm-hub`, `fpm-dashboard`, `fpm-dashboard-server`, `fpm-pm-new`, `fpm-pm-del`, `fpm-pm-update`, `fpm-pm-query`, `fpm-pm-do`, `fpm-cdf` |
+| Skills | `fpm-pm`, `fpm-cdf` |
+| Agents | `fpm-dashboard` (+ runner/supervisor/queue-runner) |
+| Hooks | `fpm-hub-trigger`, `fpm-ask-intercept`, `fpm-ask-marker-detect`, `fpm-ask-question-guard`, `fpm-board-notify`, `fpm-hub-session-{register,end,topic}`, `fpm-hub-doc-register` |
 | Services | `services/hub/server.py` (hub/dashboard 백엔드, Python stdlib HTTP+SSE) |
 
 ## 3-mode 트리거
@@ -18,15 +18,15 @@
 * **b모드 `..ask`** — 양방향 Q&A 폼 → 서버 inbox 자동 회수
 * **c모드 `..board`** — Live Dashboard (tmux runner + SSE 실시간 push)
 
-hook(`hub-trigger`)이 트리거를 감지하여 매 응답을 자동 HTML 렌더 모드로 전환한다. 프로젝트 폴더에서 기본 on, 비프로젝트는 off.
+hook(`fpm-hub-trigger`)이 트리거를 감지하여 매 응답을 자동 HTML 렌더 모드로 전환한다. 프로젝트 폴더에서 기본 on, 비프로젝트는 off.
 
 ## hub 서버 lifecycle
 
-b/c모드는 백엔드 서버를 사용한다. `/dashboard-server start|stop|status|restart` 로 관리:
+b/c모드는 백엔드 서버를 사용한다. `/fpm-dashboard-server start|stop|status|restart` 로 관리:
 
 ```bash
-/dashboard-server start    # ${CLAUDE_PLUGIN_ROOT}/services/hub/server.py 기동
-/dashboard-server status   # healthz + PID
+/fpm-dashboard-server start    # ${CLAUDE_PLUGIN_ROOT}/services/hub/server.py 기동
+/fpm-dashboard-server status   # healthz + PID
 ```
 
 서버 경로는 `${CLAUDE_PLUGIN_ROOT}` 로 해석되어 설치 위치에 자동 적응한다.

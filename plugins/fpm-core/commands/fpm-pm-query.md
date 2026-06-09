@@ -1,5 +1,5 @@
 ---
-name: pm-query
+name: fpm-pm-query
 description: 등록된 프로젝트 정보 조회·검색 (전체 목록/상세/타입 필터/검색)
 date: 2026-04-11
 ---
