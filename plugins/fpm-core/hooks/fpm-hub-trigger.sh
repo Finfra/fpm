@@ -1,5 +1,5 @@
 #!/bin/bash
-# hub-trigger.sh — UserPromptSubmit hook
+# fpm-hub-trigger.sh — UserPromptSubmit hook
 #
 # ⚠️ 글로벌 SCAR 변경 가드 (Issue46): 본 hook 은 모든 프로젝트가 공유. cwd ≠ ~/.claude
 #   면 즉시 수정 금지 → ~/.claude/Issue.md 이슈 등록 후 처리. 설계 SSOT:
@@ -304,7 +304,7 @@ else:
         "   Agent(\n"
         "     description='dashboard 시작',\n"
         "     subagent_type='dashboard',\n"
-        "     prompt='topic=<TOPIC>; cwd=" + cwd + "; htm-server 활성. tmux pane 에서 runner 시작 + dashboard push. ~/.claude/agents/dashboard.md 절차 따를 것.'\n"
+        "     prompt='topic=<TOPIC>; cwd=" + cwd + "; htm-server 활성. tmux pane 에서 runner 시작 + dashboard push. ~/.claude/agents/fpm-dashboard.md 절차 따를 것.'\n"
         "   )\n"
         "   ```\n"
         "3. agent 반환 결과를 채팅에 그대로 전달 (요약 + stable URL + pane 명령 + 핵심 데이터)\n\n"
@@ -361,7 +361,7 @@ fi
 # Issue126 (2026-06-03): `..ask <주제>` — b모드(양방향 Q&A 폼) 명시 진입점
 # 기존 b모드는 트리거 단어 없이 AskUserQuestion intercept 로만 진입했으나, 이제 단일 단어
 #   `..ask` 로 "나에게 물어봐" 모드를 직접 호출. 플래그 touch → 후속 AskUserQuestion 을
-#   ask-intercept.sh 가 동일 form 자동 회수 경로로 처리 (인프라 재사용).
+#   fpm-ask-intercept.sh 가 동일 form 자동 회수 경로로 처리 (인프라 재사용).
 # 매칭: `..ask` 가 render 분기보다 먼저 평가되도록 bare `..show`/`..hub` 분기 위에 배치.
 if printf '%s' "$prompt" | grep -qiE '(^|[[:space:]])\.\.ask([[:space:]]|$)'; then
   touch "$FLAG_FILE"
@@ -387,7 +387,7 @@ context = (
     "### 처리 절차 (필수)\n"
     "1. 주제에 대해 사용자가 선택할 **2~4개 옵션**을 도출 (권장안은 첫 옵션 + label 끝 `(권장)`).\n"
     "   - 옵션 도출에 정보 제공·비교가 필요하면 먼저 간단한 본문 HTML(a모드 절차)로 옵션 설명·trade-off 렌더 후 폼 분리. trivial 하면 본문 생략하고 바로 폼.\n"
-    "2. **`AskUserQuestion` 도구 호출** — `ask-intercept.sh` (PreToolUse hook)가 가로채 "
+    "2. **`AskUserQuestion` 도구 호출** — `fpm-ask-intercept.sh` (PreToolUse hook)가 가로채 "
     "form HTML 생성·Firefox open·server inbox 자동 회수 지시를 주입함. 그 지시를 그대로 따를 것.\n"
     "   - 호출 예: `AskUserQuestion(questions=[{\"question\":\"...\",\"header\":\"...\",\"multiSelect\":false,"
     "\"options\":[{\"label\":\"A (권장)\",\"description\":\"...\"}, ...]}])`\n"
@@ -566,7 +566,7 @@ context = (
     "   - 예: `HTML 저장. /tmp/___pm/hub_htm_20260531_143022_a_topic.htm. Firefox 열림.` + 핵심 요약\n"
     "   - **Issue60 의무**: 브라우저 표시 안 됐을 가능성(Firefox 종료·hidden·미설치·원격 SSH·다른 데스크톱) 항상 가정. **채팅 fallback 텍스트가 1차 채널**, Firefox 는 보조. 채팅만 읽어도 내용 파악·경로 재오픈 가능해야 함. 본문 핵심 요약은 3줄 이내, 표·코드 dump 금지\n\n"
     "### 후속 질문 (form 자동 회수, Issue45)\n"
-    "- hub 모드(`..show`) 활성 중 `AskUserQuestion` 도구는 PreToolUse hook (`ask-intercept.sh`) 이 자동 deny\n"
+    "- hub 모드(`..show`) 활성 중 `AskUserQuestion` 도구는 PreToolUse hook (`fpm-ask-intercept.sh`) 이 자동 deny\n"
     "- deny reason 에 form HTML 생성·Firefox open·fetch POST·inbox polling 절차 포함 — 그 지시를 그대로 따를 것\n"
     "- 회수: 사용자 폼 \"전송\" → fetch POST → server inbox → Claude bash polling → JSON Read·rm → answers 추출 → 흐름 재개\n"
     "- 서버 down 시: intercept hook 이 fail-loud reason 주입 (`/dashboard-server start` 후 재시도 또는 `..hub stop` 안내). paste-back fallback 없음\n"
@@ -579,7 +579,7 @@ context = (
     "- **동작**: 텍스트 bullet dump 금지. 응답 본문(HTML)은 옵션 설명·비교만, 결정 요청은 반드시 `AskUserQuestion` 호출로 분리. intercept hook 이 form 자동 회수 분기\n"
     "- **호출 예**: `AskUserQuestion(questions=[{\"question\":\"...\",\"header\":\"...\",\"multiSelect\":false,\"options\":[{\"label\":\"A (권장)\",\"description\":\"...\"}, ...]}])` — 권장안은 `options[0]` + label 끝 `(권장)`\n"
     "- **예외** (텍스트 유지): 단순 비교표·정보성 답변·코드 dump·옵션 5개 이상·simple confirm 외 정보성 응답\n"
-    "- 상세: `~/.claude/commands/hub.md`\n"
+    "- 상세: `~/.claude/commands/fpm-hub.md`\n"
 )
 
 print(json.dumps({"hookSpecificOutput": {
@@ -680,10 +680,10 @@ context = (
     "7. 채팅 응답(caveman 유지): 한 줄 헤드라인 + 핵심 bullet 2~3개 + 저장 경로. "
     "채팅 fallback 이 1차 채널 (Firefox 미표시 가정 — 채팅만 읽어도 내용 파악·재오픈 가능해야 함)\n\n"
     "### 후속 질문\n"
-    "- `AskUserQuestion` 호출 시 PreToolUse hook(`ask-intercept.sh`)이 form 자동 회수 — deny reason 절차를 그대로 따를 것\n"
+    "- `AskUserQuestion` 호출 시 PreToolUse hook(`fpm-ask-intercept.sh`)이 form 자동 회수 — deny reason 절차를 그대로 따를 것\n"
     "- 선택지 자동 승격: 응답이 2~4 선택지 + 결정 요청 문구면 텍스트 dump 금지 → `AskUserQuestion` 호출로 분리\n\n"
     "### 상세 / 해제\n"
-    "- HTML 템플릿·mermaid·폼 규약: `~/.claude/commands/hub.md`\n"
+    "- HTML 템플릿·mermaid·폼 규약: `~/.claude/commands/fpm-hub.md`\n"
     "- 이 폴더에서 hub 끄기: `..hub stop` (per-folder 영구 off — `~/.claude/.hub-state/` 기록). 다시 켜기: `..hub start`\n"
 )
 

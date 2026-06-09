@@ -1,5 +1,5 @@
 ---
-name: pm-new
+name: fpm-pm-new
 description: 프로젝트 타입별 초기화 (general/web/mac). pm 스킬 기반.
 date: 2026-04-11
 ---

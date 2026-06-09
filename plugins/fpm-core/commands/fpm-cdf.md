@@ -1,5 +1,5 @@
 ---
-name: cdf
+name: fpm-cdf
 description: "pm tmux 세션의 window/pane을 생성·관리하고 명령을 전달함"
 date: 2026-04-04
 ---

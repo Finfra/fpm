@@ -1,5 +1,5 @@
 #!/bin/bash
-# hub-session-register.sh — SessionStart hook: claude 세션을 hub live 카드로 등록
+# fpm-hub-session-register.sh — SessionStart hook: claude 세션을 hub live 카드로 등록
 #
 # ⚠️ 글로벌 SCAR 변경 가드 (Issue46): 본 hook 은 모든 프로젝트가 공유. cwd ≠ ~/.claude
 #   면 즉시 수정 금지 → ~/.claude/Issue.md 이슈 등록 후 처리. 설계 SSOT:

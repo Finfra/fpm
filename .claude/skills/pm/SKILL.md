@@ -78,6 +78,8 @@ Commands: /issue-reg-m, /issue-fix-m, /issue-closer-m
 
 # .gitignore 케이스 무결성 검증 (필수)
 
+> 적용/skip 판정·표준 블록 정책 SSOT: [`_doc_arch/gitignore-policy.md`](../../../_doc_arch/gitignore-policy.md). 요지 — docs(`.claude/`·`CLAUDE.md`·`Issue.md`·`_doc_arch/`·`_doc_work/`·`noteForHuman.md`)는 **미추적 프로젝트만** 로컬전용 ignore, **이미 git 추적 중이면 special reason 으로 skip**.
+
 `.gitignore` 템플릿(`data/template/gitignore`)에 적힌 폴더 패턴은 실제 생성 폴더명과 **대소문자 완전 일치**해야 함. macOS HFS+ 기본은 case-insensitive지만 APFS·Linux·git 인덱스는 case-sensitive — 한쪽이 다르면 `.gitignore` 매칭이 조용히 실패함.
 
 ## pm-new 실행 시

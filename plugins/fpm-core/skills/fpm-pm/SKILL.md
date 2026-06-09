@@ -1,5 +1,5 @@
 ---
-title: pm
+title: fpm-pm
 description: 프로젝트 관리 스킬 (생성·삭제·업데이트·조회). pm-new, pm-del, pm-update, pm-query 커맨드의 공통 로직.
 date: 2026-04-11
 ---

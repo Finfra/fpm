@@ -1,5 +1,5 @@
 #!/bin/bash
-# ask-intercept.sh — PreToolUse hook (matcher: AskUserQuestion)
+# fpm-ask-intercept.sh — PreToolUse hook (matcher: AskUserQuestion)
 #
 # ⚠️ 글로벌 SCAR 변경 가드 (Issue46): 본 hook 은 모든 프로젝트가 공유. cwd ≠ ~/.claude
 #   면 즉시 수정 금지 → ~/.claude/Issue.md 이슈 등록 후 처리. 설계 SSOT:
@@ -15,7 +15,7 @@
 #   - 플래그 있음 + 서버 실패                 → deny + 서버 재시작 안내 + 종료 옵션 제시
 #   - Mode C(Live Dashboard) 는 본 hook 영향 받지 않음 (별도 dashboard agent)
 #
-# Issue126 (2026-06-03): b모드 명시 트리거 `..ask` 신설. `..ask` 는 hub-trigger.sh 에서
+# Issue126 (2026-06-03): b모드 명시 트리거 `..ask` 신설. `..ask` 는 fpm-hub-trigger.sh 에서
 #   .hub-mode-active 플래그를 touch 하므로, 본 hook 은 트리거 종류(자동 모드 / `..show` / `..ask`)와
 #   무관하게 동일 form 자동 회수 경로를 재사용함 (플래그 기반 단일 진입 — 별도 분기 불필요).
 #   Issue133 (2026-06-03): a모드 render 트리거 `..hub`→`..show` rename (토글 `..hub stop` 등은 보존).
@@ -215,10 +215,10 @@ except Exception:
 q1_quoted = shlex.quote(q1_sig) if q1_sig else "''"
 sid_quoted = shlex.quote(sid) if sid else "''"
 
-# Issue68: 폼 JS 템플릿 SSOT — hooks/ask-form-template.js 단일 출처에서 읽어 placeholder 치환
+# Issue68: 폼 JS 템플릿 SSOT — hooks/fpm-ask-form-template.js 단일 출처에서 읽어 placeholder 치환
 # Issue132: {OPEN_PROJECT_URL} + {PROJECT_CWD_JSON} 치환 (전송 후 해당 세션으로 버튼)
 open_project_url = f"http://127.0.0.1:{server_port}/open-project"
-form_js = (open(os.path.join(os.environ.get('CLAUDE_PLUGIN_ROOT', os.path.expanduser('~/.claude')), 'hooks/ask-form-template.js'), encoding='utf-8').read()
+form_js = (open(os.path.join(os.environ.get('CLAUDE_PLUGIN_ROOT', os.path.expanduser('~/.claude')), 'hooks/fpm-ask-form-template.js'), encoding='utf-8').read()
            .replace('{ANSWER_URL}', answer_url)
            .replace('{OPEN_PROJECT_URL}', open_project_url)
            .replace('{PROJECT_CWD_JSON}', json.dumps(cwd)))
@@ -296,7 +296,7 @@ reason = (
     "   - **`<button id=\"submit-session-btn\">전송 후 해당 세션으로</button>`** (Issue132 — POST 성공 시 `/open-project` 로 VSCode 세션 포커스 후 `window.close()`)\n"
     "   - `<button onclick=\"window.close()\">닫기 ✕</button>`\n"
     "   - `<div id=\"status\">` (전송 결과 표시 영역)\n"
-    "   - JavaScript (SSOT: `hooks/ask-form-template.js`, Issue68 — `{ANSWER_URL}` 치환 완료본. 아래 블록을 그대로 `<script>` 에 삽입):\n"
+    "   - JavaScript (SSOT: `hooks/fpm-ask-form-template.js`, Issue68 — `{ANSWER_URL}` 치환 완료본. 아래 블록을 그대로 `<script>` 에 삽입):\n"
     "```js\n" + form_js + "```\n\n"
     "**2. 저장 + Firefox open**:\n"
     "   ```bash\n"

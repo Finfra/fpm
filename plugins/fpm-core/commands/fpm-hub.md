@@ -1,5 +1,5 @@
 ---
-name: htm
+name: fpm-hub
 description: 요청을 HTML 문서로 렌더링하여 Firefox에 표시. Q&A 폼은 ___pm htm-server 로 자동 회수 (Issue45 단일 경로).
 date: 2026-05-19
 ---
@@ -28,7 +28,7 @@ Chrome 은 일반 브라우저로 유지, Firefox 는 hub·dashboard 전용으�
 
 `/hub on` / `/hub off` (또는 자연어 `..hub on` / `..hub off`)는 **렌더링 명령이 아니라 폴더별 hub 자동 모드(Issue83) 토글**.
 
-* `ARGUMENTS` 가 `on` 또는 `off` 면 — `hub-trigger.sh` (UserPromptSubmit hook)가 이미 `~/.claude/.hub-state/<hash>` 상태 파일을 전환함. 본 커맨드는 **렌더·폼·Firefox open 절차 전부 skip**. 한 줄로 상태 확인만 출력하고 종료.
+* `ARGUMENTS` 가 `on` 또는 `off` 면 — `fpm-hub-trigger.sh` (UserPromptSubmit hook)가 이미 `~/.claude/.hub-state/<hash>` 상태 파일을 전환함. 본 커맨드는 **렌더·폼·Firefox open 절차 전부 skip**. 한 줄로 상태 확인만 출력하고 종료.
 * `on` → 다음 턴부터 매 응답 자동 HTML 렌더 (trivial 응답은 Issue85 로 skip)
 * `off` → 프로젝트 폴더라도 자동 렌더 안 함 (`..hub stop` 과 동일 효과)
 * 인자 없는 `/show` 또는 `/show <요청>` 은 HTML 렌더 (아래 절차). `/hub <요청>` 도 deprecated alias 로 동일 동작
@@ -53,7 +53,7 @@ Chrome 은 일반 브라우저로 유지, Firefox 는 hub·dashboard 전용으�
 
 * info-filler 등 agent 가 자유 텍스트 N개 응답을 요구하는 경우
 * `AskUserQuestion` 도구는 옵션 `minItems: 2` 강제라 free-text only 미지원
-* 응답 본문에 v1 sentinel 쌍 마커 1회 삽입 → `ask-marker-detect.sh` (Stop hook) 가 자동 감지 → form HTML 생성·Firefox open·polling 지시 주입
+* 응답 본문에 v1 sentinel 쌍 마커 1회 삽입 → `fpm-ask-marker-detect.sh` (Stop hook) 가 자동 감지 → form HTML 생성·Firefox open·polling 지시 주입
 
 ### sentinel 토큰 (v1)
 
@@ -112,7 +112,7 @@ Chrome 은 일반 브라우저로 유지, Firefox 는 hub·dashboard 전용으�
 ### 동작 흐름
 
 1. Claude 응답 본문에 v1 sentinel 쌍 마커 작성 + 응답 종료
-2. Stop hook (`ask-marker-detect.sh`) 발동:
+2. Stop hook (`fpm-ask-marker-detect.sh`) 발동:
     - `.hub-mode-active` 플래그 없음 → 무동작
     - 플래그 있음 + BEGIN/END 매칭 → JSON 파싱·schema 검증 → server healthz/register → reason 주입 (`decision: "block"`)
 3. Claude 다음 turn:
@@ -236,7 +236,7 @@ AskUserQuestion intercept (form 자동 회수) 시점에는 위 3요소에 **다
 (간소화 허용: 'Q1: A, Q2: B' 자유 텍스트도 OK)
 ```
 
-폼 자체 status 메시지에도 "전송 완료" 표시 후 작은 글씨로 동일 경고를 첨부하여 사용자가 늦은 전송이 회수되지 않을 수 있음을 인지시킴 (`hooks/ask-intercept.sh` submit handler).
+폼 자체 status 메시지에도 "전송 완료" 표시 후 작은 글씨로 동일 경고를 첨부하여 사용자가 늦은 전송이 회수되지 않을 수 있음을 인지시킴 (`hooks/fpm-ask-intercept.sh` submit handler).
 
 ## 사용
 
@@ -372,7 +372,7 @@ ex)
    - 서버 미가동 시 curl 실패 → 무시 (**fail-soft** — hub 본 기능 차단 금지). 등록 누락분은 hub `🔄 디스크 재스캔` 버튼으로 수거 가능
    - 등록 대상은 본문 HTML(mode a) + B모드 질문 폼(mode b, `hub_htm_*_b_*.htm`, Issue80). Mode D 폼(mode c, `hub_htm_*_c_*.htm`)만 transient 산출물이므로 등록 제외
    - 엔드포인트 SSOT: `~/_git/___pm/_doc_arch/hub_htm.md` `POST /register-doc` 섹션
-   - **Issue73/Issue80**: PostToolUse hook `~/.claude/hooks/hub-doc-register.sh` 가 `*/_doc_work/z_htm/hub_htm_*_*.htm`(`_c_` auto 제외) Write 시 동일 등록을 자동 수행. 본 step 의 수동 curl 은 hook 미작동 환경(서버 down·hook 미설치) 대비 fallback. 중복 등록은 server 측 동일 path dedup 처리
+   - **Issue73/Issue80**: PostToolUse hook `~/.claude/hooks/fpm-hub-doc-register.sh` 가 `*/_doc_work/z_htm/hub_htm_*_*.htm`(`_c_` auto 제외) Write 시 동일 등록을 자동 수행. 본 step 의 수동 curl 은 hook 미작동 환경(서버 down·hook 미설치) 대비 fallback. 중복 등록은 server 측 동일 path dedup 처리
 8. 채팅 응답(caveman 형식)에는 한 줄 헤드라인 + 핵심 bullet 2~3개 + 저장 경로 표기 (위 "채팅 응답 표시 규칙" 참조)
 
 ## 다이어그램 우선 렌더 (Issue82)
@@ -489,12 +489,12 @@ Mode C(Live Dashboard) 본문은 dashboard agent 로 분리됨. 본 커맨드(`/
 
 | 호출                  | 처리 SCAR                                                            |
 | :-------------------- | :------------------------------------------------------------------- |
-| `..board <topic>` (Issue126) | `hub-trigger.sh` UserPromptSubmit hook 이 자동 dashboard agent 호출 (c모드 단일 단어 트리거) |
+| `..board <topic>` (Issue126) | `fpm-hub-trigger.sh` UserPromptSubmit hook 이 자동 dashboard agent 호출 (c모드 단일 단어 트리거) |
 | `..hub dash <topic>` / `..dashboard <topic>` | 하위호환 별칭 (Issue41) — deprecation 예정                  |
-| `/dashboard <topic>`  | 명시적 wrapper 커맨드 (`~/.claude/commands/dashboard.md`)             |
+| `/dashboard <topic>`  | 명시적 wrapper 커맨드 (`~/.claude/commands/fpm-dashboard.md`)             |
 
-dashboard agent 본문 SSOT: [`~/.claude/agents/dashboard.md`](../agents/dashboard.md)
-dashboard 서버 lifecycle wrapper: [`~/.claude/commands/dashboard-server.md`](dashboard-server.md)
+dashboard agent 본문 SSOT: [`~/.claude/agents/fpm-dashboard.md`](../agents/fpm-dashboard.md)
+dashboard 서버 lifecycle wrapper: [`~/.claude/commands/fpm-dashboard-server.md`](fpm-dashboard-server.md)
 
 서버 (`htm-server` daemon, ___pm 소유) 는 dashboard agent 단독 클라이언트. hub 스킬 (본 커맨드) 은 서버 미사용.
 
@@ -504,9 +504,9 @@ dashboard 서버 lifecycle wrapper: [`~/.claude/commands/dashboard-server.md`](d
 
 | 모드 | 트리거          | 역할                          | 처리 hook/SCAR                          |
 | :--- | :-------------- | :---------------------------- | :-------------------------------------- |
-| a    | `..show` / `/show` (구 `..hub`/`/hub` deprecated, Issue133) | 단방향 HTML 렌더 | `hub-trigger.sh` → 본문 HTML            |
-| b    | `..ask <주제>`  | 양방향 Q&A 폼 ("나에게 물어봐") | `hub-trigger.sh` (플래그 touch) → `AskUserQuestion` → `ask-intercept.sh` form 자동 회수 |
-| c    | `..board <topic>` | dashboard agent (실시간 모니터링) | `hub-trigger.sh` → dashboard agent dispatch |
+| a    | `..show` / `/show` (구 `..hub`/`/hub` deprecated, Issue133) | 단방향 HTML 렌더 | `fpm-hub-trigger.sh` → 본문 HTML            |
+| b    | `..ask <주제>`  | 양방향 Q&A 폼 ("나에게 물어봐") | `fpm-hub-trigger.sh` (플래그 touch) → `AskUserQuestion` → `fpm-ask-intercept.sh` form 자동 회수 |
+| c    | `..board <topic>` | dashboard agent (실시간 모니터링) | `fpm-hub-trigger.sh` → dashboard agent dispatch |
 
 * **b모드 `..ask`**: 플래그를 touch 한 뒤 Claude 가 `AskUserQuestion` 을 호출하면 intercept hook 이 동일 form 회수 경로로 처리. `..ask` 트리거 없이 자동 모드 중 `AskUserQuestion` 만으로도 진입 가능 (트리거는 명시 진입점).
 * **c모드 `..board`**: 별칭 `..hub dash` / `..dashboard` / `/dashboard` 하위호환 유지 (deprecation 예정 — 즉시 제거 금지).
@@ -523,7 +523,7 @@ dashboard 서버 lifecycle wrapper: [`~/.claude/commands/dashboard-server.md`](d
 
 ## 양방향 Q&A (form 자동 회수) — Issue45
 
-`..show` 트리거(구 `..hub`)가 발동되면 `~/.claude/.hub-mode-active` 플래그 파일이 생성되어 양방향 모드 활성. 후속 `AskUserQuestion` 호출은 `ask-intercept.sh` (PreToolUse hook) 가 가로채 form HTML 생성 + ___pm htm-server inbox 자동 회수 지시를 주입.
+`..show` 트리거(구 `..hub`)가 발동되면 `~/.claude/.hub-mode-active` 플래그 파일이 생성되어 양방향 모드 활성. 후속 `AskUserQuestion` 호출은 `fpm-ask-intercept.sh` (PreToolUse hook) 가 가로채 form HTML 생성 + ___pm htm-server inbox 자동 회수 지시를 주입.
 
 ### 동작 원리
 
@@ -591,7 +591,7 @@ hub 모드 미활성(`.hub-mode-active` 없음) → 본 규칙 적용 안 함. A
 
 ### Form HTML 템플릿 요구사항
 
-기본 HTML 템플릿(시스템 폰트·다크모드·max-width 820px) 위에 form 컨트롤 + fetch POST 추가. 폼 JS 는 SSOT `~/.claude/hooks/ask-form-template.js` 단일 출처 (Issue68) — intercept hook 이 `{ANSWER_URL}` 치환 완료본을 reason 에 인라인 주입함.
+기본 HTML 템플릿(시스템 폰트·다크모드·max-width 820px) 위에 form 컨트롤 + fetch POST 추가. 폼 JS 는 SSOT `~/.claude/hooks/fpm-ask-form-template.js` 단일 출처 (Issue68) — intercept hook 이 `{ANSWER_URL}` 치환 완료본을 reason 에 인라인 주입함.
 
 ```html
 <form id="qa-form">
@@ -613,7 +613,7 @@ hub 모드 미활성(`.hub-mode-active` 없음) → 본 규칙 적용 안 함. A
 </form>
 
 <script>
-/* JS 템플릿 SSOT (Issue68): ~/.claude/hooks/ask-form-template.js
+/* JS 템플릿 SSOT (Issue68): ~/.claude/hooks/fpm-ask-form-template.js
    - hub 모드 활성 시: ask-intercept hook 이 reason 에 `{ANSWER_URL}` 치환 완료본 JS 를
      직접 주입함 → hook 이 준 JS 를 그대로 이 위치에 삽입 (htm.md 별도 참조 불필요).
    - hook 미경유로 직접 폼을 작성하는 경우: 위 SSOT 파일을 Read 하여 `{ANSWER_URL}` 를
@@ -671,8 +671,8 @@ hub 모드 미활성(`.hub-mode-active` 없음) → 본 규칙 적용 안 함. A
 
 ### 관련 산출물
 
-- `~/.claude/hooks/hub-trigger.sh` (UserPromptSubmit, `..show` 감지[구 `..hub` deprecated] + 플래그 touch + 본문 HTML 지시 주입)
-- `~/.claude/hooks/ask-intercept.sh` (PreToolUse matcher=AskUserQuestion, healthz 판정 + form 자동 회수 지시 또는 fail-loud)
+- `~/.claude/hooks/fpm-hub-trigger.sh` (UserPromptSubmit, `..show` 감지[구 `..hub` deprecated] + 플래그 touch + 본문 HTML 지시 주입)
+- `~/.claude/hooks/fpm-ask-intercept.sh` (PreToolUse matcher=AskUserQuestion, healthz 판정 + form 자동 회수 지시 또는 fail-loud)
 - `~/.claude/.hub-mode-active` (플래그 파일, 빈 파일이면 활성)
 - `${CLAUDE_PLUGIN_ROOT}/services/hub/server.py` — `/healthz`, `/register`, `/answer` endpoint (플러그인 번들, `/dashboard-server` 가 lifecycle 관리)
 - `/tmp/___pm/claude-htm-inbox/{cwd_hash}/{sid}/{ts}.json` — 답변 파일 (Issue90 sid 서브폴더 세션 격리, Claude Read 후 삭제)
