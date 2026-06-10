@@ -3078,6 +3078,7 @@ class Handler(BaseHTTPRequestHandler):
 <html lang="ko">
 <head>
 <meta charset="utf-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎯</text></svg>">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Issue{html.escape(issue_id)} — prj {html.escape(prj)}</title>
 <style>
@@ -4322,6 +4323,7 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
 <html lang="ko">
 <head>
 <meta charset="utf-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎯</text></svg>">
 <title>{esc(title)}</title>
 <style>
   body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 1100px; margin: 1rem auto; padding: 0 1rem; color: #222; }}
@@ -4970,8 +4972,9 @@ HUB_HTML = """<!doctype html>
 <html lang="ko">
 <head>
 <meta charset="utf-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎯</text></svg>">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PM Hub</title>
+<title>fPm Hub</title>
 <style>
 /* Issue28: 흰색 배경 고정. @media prefers-color-scheme dark override 제거 (다중 탭 일관성). */
 :root { --fg:#111; --bg:#fff; --muted:#666; --border:#ddd; --card:#fafafa; --code-bg:#f0f0f0; }
@@ -5229,7 +5232,7 @@ main { padding: 1.5rem; max-width: 1600px; margin: 0 auto; display: flex; gap: 1
 <body>
 <header>
   <div class="header-text">
-    <h1>🎯📊 PM Hub<span id="hub-headline"></span></h1>
+    <h1>🎯📊 fPm Hub<span id="hub-headline"></span></h1>
     <div class="sub" id="hub-important">로딩 중...</div>
   </div>
   <div class="header-actions">
@@ -6429,6 +6432,7 @@ SESSION_SHELL_HTML = """<!doctype html>
 <html lang="ko">
 <head>
 <meta charset="utf-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎯</text></svg>">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{TITLE}</title>
 <style>
