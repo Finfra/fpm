@@ -3,7 +3,7 @@
 #
 # ⚠️ 글로벌 SCAR 변경 가드 (Issue46): 본 daemon 은 모든 프로젝트가 공유. cwd ≠ ~/.claude
 #   면 즉시 수정 금지 → ~/.claude/Issue.md 이슈 등록 후 처리. 설계 SSOT:
-#   ~/.claude/_doc_arch/fpm-dashboard.md. 절차: ~/.claude/rules/global-scar-change-rules.md
+#   ~/.claude/_doc_arch/dashboard.md. 절차: ~/.claude/rules/global-scar-change-rules.md
 #
 # tmux window 의 supervisor pane 에서 실행됨. queue.yaml(런타임 SSOT)을 위상 스케줄로 구동:
 # blocked→ready 승격 → send-keys 로 worker 명령 주입 → capture-pane + sentinel 파일로 완료 감지 → cursor 진행.
@@ -34,7 +34,7 @@
 #   - 큐 전부 terminal → state=done 후 exit
 #
 # 설계: ~/_git/___pm/_doc_arch/hub_dashboard_tmux_design.md (tmux 파일 기반)
-# 클라이언트: ~/.claude/_doc_arch/fpm-dashboard.md
+# 클라이언트: ~/.claude/_doc_arch/dashboard.md
 
 set -uo pipefail
 
@@ -47,16 +47,26 @@ if [ "${BASH_VERSINFO:-0}" -lt 4 ]; then
   exit 1
 fi
 
+# board_policy.yml 로더 (Issue152) — 운영 상수 SSOT. 우선순위: env VAR > board_policy.yml > 인자 기본값.
+#   flat `key: value` 만 grep 파싱 (yq 불요). 정책 파일·키 부재 시 인자 기본값으로 무해 fallback.
+BOARD_POLICY="${BOARD_POLICY:-${FPM_BASE:-$HOME/_git/___pm}/data/board_policy.yml}"
+_bp() {  # _bp <key> <default>
+  local v
+  v=$(grep -E "^$1:[[:space:]]" "$BOARD_POLICY" 2>/dev/null | head -1 \
+      | sed -E "s/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//") || true
+  printf '%s' "${v:-$2}"
+}
+
 QUEUE_FILE="${QUEUE_FILE:?QUEUE_FILE required}"
 TOPIC="${TOPIC:?TOPIC required}"
 OUT_DIR="${OUT_DIR:-$(dirname "$QUEUE_FILE")}"
 SESSION="${SESSION:-pm}"
 WINDOW="${WINDOW:-dash-$TOPIC}"
-INTERVAL_ACTIVE="${INTERVAL_ACTIVE:-3}"
-INTERVAL_IDLE="${INTERVAL_IDLE:-20}"
-MAX_ATTEMPTS="${MAX_ATTEMPTS:-2}"
-NOSENT_STRIKES="${NOSENT_STRIKES:-10}"
-STUCK_SECS="${STUCK_SECS:-600}"
+INTERVAL_ACTIVE="${INTERVAL_ACTIVE:-$(_bp interval_active 3)}"
+INTERVAL_IDLE="${INTERVAL_IDLE:-$(_bp interval_idle_supervisor 20)}"
+MAX_ATTEMPTS="${MAX_ATTEMPTS:-$(_bp max_attempts 2)}"
+NOSENT_STRIKES="${NOSENT_STRIKES:-$(_bp nosent_strikes 10)}"
+STUCK_SECS="${STUCK_SECS:-$(_bp stuck_secs 600)}"
 
 LOG_FILE="$OUT_DIR/$TOPIC.supervisor.log"
 WORKERS_FILE="$OUT_DIR/$TOPIC.workers"          # 런타임 worker 맵: "<prj> <pane_id>" 줄
@@ -70,7 +80,7 @@ ORIG_PPID=$PPID   # Issue120: 부모(tmux pane) PID — orphan guard 기준
 #   SID(=md5(QUEUE_FILE)[:12])로 수행. SID는 HTTP session ID가 아니라 파일 격리키.
 #   worker가 sentinel 파일을 기록하면 supervisor가 폴링함.
 SID="${SID:-$(python3 -c 'import hashlib,sys; print(hashlib.md5(sys.argv[1].encode()).hexdigest()[:12])' "$QUEUE_FILE")}"
-SENTINEL_DIR="${SENTINEL_DIR:-/tmp/___pm/${SID}.sentinel}"
+SENTINEL_DIR="${SENTINEL_DIR:-$(_bp sentinel_base /tmp/___pm)/${SID}.sentinel}"
 
 mkdir -p "$OUT_DIR" "$APPROVAL_DIR" "$ANSWERS_DIR" "$SENTINEL_DIR"
 : > "$WORKERS_FILE"
