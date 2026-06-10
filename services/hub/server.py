@@ -425,7 +425,13 @@ def _session_ai_title(cwd: str, sid: str):
 
 
 # Issue28: Projects.md peacock.color 매핑 (cwd 경로 → hex 컬러). mtime 기반 캐시.
-PROJECTS_MD = os.path.expanduser("~/_git/___pm/Projects.md")
+# 경로 해석 우선순위: FPM_PROJECTS_MD env > 저장소 루트(REPO_ROOT)/Projects.md > 옛 ___pm 경로 fallback.
+# (___pm → fpm 이동 등 저장소 경로 변경에 견고)
+PROJECTS_MD = os.environ.get("FPM_PROJECTS_MD", "")
+if not PROJECTS_MD:
+    PROJECTS_MD = os.path.join(REPO_ROOT, "Projects.md")
+    if not os.path.exists(PROJECTS_MD):
+        PROJECTS_MD = os.path.expanduser("~/_git/___pm/Projects.md")
 _projects_color_cache: dict = {}
 _projects_color_cache_mtime: float = 0.0
 
