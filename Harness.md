@@ -247,6 +247,15 @@ PM 도구 프로젝트 쌍. `___pm`(prj1) = 개발 원본 SSOT, `fpm`(prj7, `~/_
     - /issue-closer-g
 * capture
 
+# finfraHome (w 도메인)
+## main
+* dev
+* issue
+    - /issue-reg-w
+    - /issue-fix-w
+    - /issue-closer-w
+* capture
+
 # social (w 도메인)
 ## main
 * dev
