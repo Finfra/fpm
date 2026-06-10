@@ -34,5 +34,17 @@
     "cwd": "/Users/nowage/_git/fpm",
     "title": "fpm — 훅 설정 점검 결과",
     "registered_at": 1781075260.94487
+  },
+  {
+    "path": "/Users/nowage/_git/fpm/_doc_work/z_htm/hub_htm_20260610_160820_b_git-pull-strategy.htm",
+    "cwd": "/Users/nowage/_git/fpm",
+    "title": "fpm — Git Pull 전략 선택",
+    "registered_at": 1781093621.4124138
+  },
+  {
+    "path": "/Users/nowage/_git/fpm/_doc_work/z_htm/hub_htm_20260610_160835_b_git-push-changes.htm",
+    "cwd": "/Users/nowage/_git/fpm",
+    "title": "fpm — Git Push 처리 방법",
+    "registered_at": 1781093745.257041
   }
 ]

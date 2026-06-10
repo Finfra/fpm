@@ -1,6 +1,18 @@
 [
   {
     "event": "session_end",
+    "cwd": "/Users/nowage/_git/fpm",
+    "cwd_hash": "7e889dee",
+    "name": "fpm",
+    "color": "hsl(352, 60%, 45%)",
+    "emoji": "",
+    "summary": "세션 종료 (prompt_input_exit)",
+    "detail": "",
+    "ts": 1781093574,
+    "id": "1781093574019"
+  },
+  {
+    "event": "session_end",
     "cwd": "/Users/nowage/_git/___common",
     "cwd_hash": "6a047432",
     "name": "___common",
