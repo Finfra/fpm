@@ -82,7 +82,7 @@ mark_status() {
 # worker_pid 종료
 kill_worker() {
   local wpid
-  wpid=$(read_data | python3 -c "import json,sys; print(json.load(sys.stdin).get('worker_pid', ''))" 2>/dev/null || echo "")
+  wpid=$(read_data | python3 -c "import json,sys; print(json.load(sys.stdin).get('worker_pid') or '')" 2>/dev/null || echo "")
   if [[ -n "$wpid" ]] && kill -0 "$wpid" 2>/dev/null; then
     kill -TERM "$wpid" 2>/dev/null || true
     sleep 0.5
@@ -157,7 +157,7 @@ PYTHON
   write_data "$data"
 
   # Check worker completion
-  wpid=$(echo "$data" | python3 -c "import json,sys; print(json.load(sys.stdin).get('worker_pid', ''))" 2>/dev/null || echo "")
+  wpid=$(echo "$data" | python3 -c "import json,sys; print(json.load(sys.stdin).get('worker_pid') or '')" 2>/dev/null || echo "")
   if [[ -n "$wpid" ]] && ! kill -0 "$wpid" 2>/dev/null; then
     mark_status done
     exit 0

@@ -211,14 +211,44 @@ print(hashlib.md5(cwd.encode('utf-8')).hexdigest()[:12] if cwd else 'unknown')")
 fi
 SID=$(printf '%s' "$SID" | tr -c 'A-Za-z0-9-' '-' | cut -c1-32)
 
-read -r PROJECT_NAME PROJECT_COLOR <<< "$(CWD_VAL="$cwd" python3 -c "
-import hashlib, os
+# Issue157: 색 = peacock.color 실색 (.vscode/settings.json walk-up → Projects.md → hsl 해시 fallback)
+# name = peacock 찾은 프로젝트 루트 basename (z_htm 등 하위폴더 보정)
+read -r PROJECT_NAME PROJECT_COLOR <<< "$(CWD_VAL="$cwd" python3 <<'PYEOF'
+import hashlib, os, re
 cwd = os.environ.get('CWD_VAL', '')
-h = hashlib.md5(cwd.encode('utf-8')).hexdigest()[:8] if cwd else ''
-name = (os.path.basename(cwd) or cwd or 'unknown').replace(' ', '_')
-color = (f'hsl({int(h[:4],16) % 360},60%,45%)' if h else 'hsl(220,60%,45%)')
-print(name, color)
-")"
+root = ''
+color = ''
+d = cwd
+while d and d != '/':
+    p = os.path.join(d, '.vscode', 'settings.json')
+    if os.path.isfile(p):
+        try:
+            m = re.search(r'"peacock\.color"\s*:\s*"(#[0-9A-Fa-f]{3,8})"', open(p, encoding='utf-8').read())
+            if m:
+                color = m.group(1); root = d; break
+        except Exception:
+            pass
+    d = os.path.dirname(d)
+if not color:
+    bt = chr(96)
+    try:
+        for line in open(os.path.expanduser('~/_git/___pm/Projects.md'), encoding='utf-8'):
+            cells = [c.strip().strip(bt) for c in line.split('|')]
+            paths = [c for c in cells if c.startswith('~/') or c.startswith('/')]
+            hexes = [c for c in cells if re.fullmatch(r'#[0-9A-Fa-f]{3,8}', c)]
+            if paths and hexes:
+                ph = os.path.expanduser(paths[0]).rstrip('/')
+                if (cwd == ph or cwd.startswith(ph + '/')) and len(ph) > len(root or ''):
+                    root = ph; color = hexes[-1]
+    except Exception:
+        pass
+if not color:
+    h = hashlib.md5(cwd.encode('utf-8')).hexdigest()[:8] if cwd else ''
+    color = ('hsl(%d,60%%,45%%)' % (int(h[:4], 16) % 360)) if h else 'hsl(220,60%,45%)'
+name = os.path.basename(root or cwd) or cwd or 'unknown'
+print(name.replace(' ', '_'), color.replace(' ', ''))
+PYEOF
+)"
 
 # OUT_DIR
 if [ -n "$cwd" ] && [ -d "$cwd/_doc_work/z_htm" ]; then
@@ -328,6 +358,8 @@ inbox_dir = os.environ.get('INBOX_DIR', '')
 cwd = os.environ.get('PROJECT_CWD', '')
 open_cmd = os.environ.get('HTM_OPEN_CMD', 'open -g -a Firefox')
 cwd_q = urllib.parse.quote(cwd) if cwd else ''
+# Issue157: 헤더 버튼(open-project/open-session)용 프로젝트 루트 — cwd 가 _doc_work/z_htm 하위면 보정
+project_root = cwd.split('/_doc_work/')[0] if cwd and '/_doc_work/' in cwd else cwd
 
 ask_path = f"{out_dir}/hub_htm_<YYYYMMDD_HHMMSS>_c_<주제>.htm"  # 날짜시간=`date +%Y%m%d_%H%M%S`, 주제=핵심 10자 내외 kebab, mode c=auto 폼(Mode D, doc-register 제외)
 path_note = "프로젝트 로컬 (_doc_work/z_htm/)" if not out_dir.startswith('/tmp') else "/tmp/___pm fallback"
@@ -361,14 +393,38 @@ form_js = (open(os.path.join(os.environ.get('CLAUDE_PLUGIN_ROOT', os.path.expand
            .replace('{OPEN_PROJECT_URL}', open_project_url)
            .replace('{PROJECT_CWD_JSON}', json.dumps(cwd)))
 
+# Issue132/157: CANONICAL 헤더 블록 — a/b/c/D 통일. 헤더 밖 비클릭 div 금지(Issue88/157)
 project_header_guide = (
-    "### 프로젝트 식별 헤더 (다중 탭 구분용 필수)\n"
-    f"- `<header>` 배경: `background: {project_color}; color: white; padding: 1rem 1.5rem;`\n"
-    f"- 우측 정렬 프로젝트 명칭: `<div style=\"text-align: right; color: #666; font-size: 0.9em; padding: 0.2rem 1.5rem;\">📁 {project_name}</div>`\n"
-    "  - **글자색 주의 (Issue77)**: proj-name `<div>` 는 컬러 `<header>` **밖**, 흰 `body` 배경 위. 글자색은 흰 배경 기준 어두운 hex(`#666`)로 고정. `var(--muted)` 등 미정의 가능 변수 사용 금지 — 폼에 변수 선언 미보장 시 흰색 계열로 렌더되어 invisible.\n"
-    f"- `<title>` prefix: `\"{project_name} — <원래 제목>\"`\n"
-    "- **Hub 링크 (필수)**: 헤더 우측 상단에 `<a href=\"http://127.0.0.1:9876/hub\" target=\"_blank\">🗂 Hub</a>` 배치 — 통합 모니터링 페이지 진입점\n"
-)
+    "### ⚠️ CANONICAL 헤더 블록 (Issue132/157) — verbatim 복붙. 즉흥 재작성·헤더 밖 div 금지\n"
+    "폼 `<body>` 최상단에 아래 `<header>` 그대로 삽입 (`{질문제목}` 만 치환). "
+    "배지·세션·Hub·닫기 4개 모두 `<header>` 안 동일 행 — 헤더 밖 비클릭 `<div>` 절대 금지(Issue88/157):\n"
+    "```html\n"
+    "<header>\n"
+    "  <h1>{질문제목}</h1>\n"
+    "  <nav class=\"header-actions\">\n"
+    "    <a class=\"proj-badge\" href=\"#\" title=\"클릭 → VSCode 로 __PNAME__ 열기\"\n"
+    "       onclick=\"event.preventDefault();fetch('http://127.0.0.1:__SPORT__/open-project',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'__ROOT__'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('VSCode 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — VSCode 열기 실패');});\">📁 __PNAME__</a>\n"
+    "    <a class=\"sess-link\" href=\"#\" title=\"클릭 → 이 문서를 만든 세션 탭으로 포커스\"\n"
+    "       onclick=\"event.preventDefault();fetch('http://127.0.0.1:__SPORT__/open-session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'__ROOT__',sid:'__SID__'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('세션 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — 세션 열기 실패');});\">🖥 세션</a>\n"
+    "    <a class=\"hub-link\" href=\"http://127.0.0.1:__SPORT__/hub\" target=\"_blank\" title=\"통합 모니터링 Hub\">🎯</a>\n"
+    "    <button type=\"button\" onclick=\"window.close()\">닫기 ✕</button>\n"
+    "  </nav>\n"
+    "</header>\n"
+    "```\n"
+    "```css\n"
+    "header { position: sticky; top: 0; z-index: 100; display: flex; align-items: center;\n"
+    "  justify-content: space-between; gap: 1rem; flex-wrap: wrap; padding: 0.9rem 1.4rem;\n"
+    "  background: __PCOLOR__; color: #1a1a1a; }\n"
+    "header h1 { margin: 0; font-size: 1.15rem; flex: 1 1 auto; min-width: 0; }\n"
+    "header .header-actions { display: flex; align-items: center; gap: 0.5rem; flex: 0 0 auto; }\n"
+    "header .proj-badge, header .sess-link, header .hub-link, header button { color: #1a1a1a; text-decoration: none;\n"
+    "  cursor: pointer; white-space: nowrap; background: rgba(0,0,0,0.08);\n"
+    "  border: 1px solid rgba(0,0,0,0.15); padding: 0.2rem 0.6rem; border-radius: 6px; font-size: 0.85rem; }\n"
+    "header .proj-badge:hover, header .sess-link:hover, header .hub-link:hover, header button:hover {\n"
+    "  background: rgba(0,0,0,0.16); text-decoration: underline; }\n"
+    "```\n"
+    "- `<title>` prefix: `\"__PNAME__ — <질문제목>\"`. 색=peacock 실색(Issue58/157), 글자 #1a1a1a — 흰 글자 금지(파스텔 위 invisible).\n"
+).replace("__PNAME__", project_name).replace("__PCOLOR__", project_color).replace("__ROOT__", project_root).replace("__SID__", sid).replace("__SPORT__", server_port)
 
 reason = (
     "## htm-form:auto 마커 감지 — Mode D 자동 폼 회수 (Issue43)\n\n"

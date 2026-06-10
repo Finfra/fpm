@@ -179,8 +179,12 @@ data = {
     'iter': int(os.environ['ITER']),
     'updated_at': datetime.datetime.now().isoformat(),
     'queue_state': qstate,
+    # Issue140: 위젯 width/type authoring 보강 — graph→width:2(노드 겹침 회피),
+    #   supervisor 로그→type:log+width:full(.w-log max-height 260+scroll, text 의 .w-value 세로폭발 회피),
+    #   table(5컬럼)→width:2. 정본: ___pm board/README "## dashboard 위젯 레이아웃 규칙"
+    #   (dynamic_eval 불요 — queue-runner 가 매 iter dash.yaml 통째 재생성하여 content 갱신)
     'widgets': [
-        {'id': 'queue-graph', 'type': 'graph', 'title': '이슈 DAG',
+        {'id': 'queue-graph', 'type': 'graph', 'title': '이슈 DAG', 'width': 2,
          'nodes': nodes, 'edges': edges},
         {'id': 'queue-progress', 'type': 'progress', 'title': '진행률',
          'value': pct, 'label': '%d/%d done' % (done, total)},
@@ -191,9 +195,10 @@ data = {
         {'id': 'queue-qa', 'type': 'text', 'title': '⏸ 입력 대기 질문 (Q&A)',
          'content': qa_content},
         {'id': 'queue-cost', 'type': 'table', 'title': '작업 소요 (큐 전체 %s)' % queue_elapsed,
+         'width': 2,
          'columns': ['item', 'status', '시작', '종료', '소요'],
          'rows': cost_rows},
-        {'id': 'supervisor-log', 'type': 'text', 'title': 'supervisor 로그',
+        {'id': 'supervisor-log', 'type': 'log', 'title': 'supervisor 로그', 'width': 'full',
          'content': log_tail or '(로그 없음)'},
     ],
 }
