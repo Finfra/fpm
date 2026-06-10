@@ -32,3 +32,23 @@ default_browser: firefox
 #   우선순위: env HTM_SERVER_HOST > 본 bind_host > 기본 127.0.0.1.
 #   변경 후 `/dashboard-server restart` 로 재기동해야 적용됨.
 bind_host: 127.0.0.1
+
+# render_target (Issue153) — ..show / hub 자동 렌더의 "보여주는 경로" 를 결정.
+#   글로벌 hook(~/.claude/hooks/fpm-hub-trigger.sh)이 본 키를 grep 하여 분기 (server.py 미사용).
+#   소비처(hook 분기 로직)는 글로벌 ~/.claude/Issue.md Issue141 에서 구현 — 본 키는 데이터 SSOT(자리 선점).
+#
+#   목적: 이 한 줄로 모든 ..show 가 어떻게 표시될지 일괄 전환. (개별 SCAR 수정 없이 hook 한 곳이 적용)
+#
+#   local-open(기본) = file://<절대경로> 를 브라우저로 직접 open. 현행 동작. 같은 머신에서만 열람.
+#   hub             = hub 서버 경유 → http://<advertise_host>:9876/view?path=<절대경로> 로 표시.
+#                     로컬·원격(SSH)·타 기기 모두 hub 서버 한 곳을 통해 도달. 원격 실접근은 bind_host 개방 전제.
+#   both            = 로컬 open + hub URL 동시 (브라우저 표시 + 채팅에 URL 병기)
+#
+#   ⚠️ bind_host 와는 별개 축: render_target=출력 경로(hook 소비) / bind_host=서버 수신 게이트(server.py 소비).
+#      render_target: hub 라도 원격 머신에서 열려면 bind_host: 0.0.0.0 (+ Servers.md allowlist) 가 전제 — 조합 의존.
+render_target: local-open
+
+# advertise_host (Issue153) — render_target: hub|both 일 때 URL 에 박을 호스트.
+#   127.0.0.1(기본) = 로컬 전용. LAN IP(192.168.x.x)·도메인(finfra.iptime.org) 으로 두면 원격 머신에서 접근.
+#   bind_host: 0.0.0.0 이어야 advertise_host 가 원격 실효를 가짐.
+advertise_host: 127.0.0.1
