@@ -46,9 +46,14 @@ bind_host: 127.0.0.1
 #
 #   ⚠️ bind_host 와는 별개 축: render_target=출력 경로(hook 소비) / bind_host=서버 수신 게이트(server.py 소비).
 #      render_target: hub 라도 원격 머신에서 열려면 bind_host: 0.0.0.0 (+ Servers.md allowlist) 가 전제 — 조합 의존.
-render_target: local-open
+render_target: hub
 
-# advertise_host (Issue153) — render_target: hub|both 일 때 URL 에 박을 호스트.
-#   127.0.0.1(기본) = 로컬 전용. LAN IP(192.168.x.x)·도메인(finfra.iptime.org) 으로 두면 원격 머신에서 접근.
-#   bind_host: 0.0.0.0 이어야 advertise_host 가 원격 실효를 가짐.
-advertise_host: 127.0.0.1
+# advertise_host (Issue153) — render_target: hub|both 일 때 URL 에 박을 호스트. **optional(생략 가능)**.
+#   적용 규칙 (Issue153 — 사용자 결정):
+#     - render_target: local-open → URL 미사용(file:// 직접 open). advertise_host·bind_host 둘 다 생략 가능.
+#                                   (bind_host 는 hub 서버 listen 용도로만 의미 — 생략 시 서버 기본 127.0.0.1)
+#     - render_target: hub|both   → advertise_host 명시 시 그 값을 URL host 로. **생략 시 bind_host 값으로 fallback**.
+#   값: 127.0.0.1(로컬) / LAN IP(192.168.x.x) / 도메인(finfra.iptime.org).
+#   ⚠️ 생략 + bind_host: 0.0.0.0 조합 금지 — URL 이 http://0.0.0.0 이 되어 브라우저 접속 불가.
+#      0.0.0.0 으로 열 때는 advertise_host 를 구체 IP·도메인으로 반드시 명시.
+# advertise_host: 192.168.1.5   # 원격 LAN 접근 시 주석 해제. 현재는 생략 → bind_host(127.0.0.1) fallback → 로컬 hub 경유
