@@ -551,7 +551,7 @@ context = (
     "1-A. **본문 HTML 작성 여부 판단 (Issue62)**:\n"
     "    - **Skip 조건**: prompt 가 단발 질의/선택 요청이고 응답 본문이 질문 재진술 외 trivial (설명·표·정답 spoiler 가 폼 답 선택을 무의미하게 만들 위험). ex) `1+2 답 물어봐`, `A/B 골라줘`, `yes/no` — 이 경우 본 섹션 step 2~7 건너뛰고 바로 후속 질문(AskUserQuestion) 호출. intercept hook 이 form HTML 단독 생성·open·polling. 채팅 fallback 도 폼 안내만 표시 (본문 경로 생략)\n"
     "    - **본문 작성 조건 (기본)**: 응답이 정보 전달(설명·코드·표·비교·자료) 포함. 폼은 그 뒤 결정 요청 분리용. step 2~8 진행\n"
-    "2. 응답 본문을 **완전한 HTML 문서**로 작성 — `<!DOCTYPE html>`, `<html lang=\"ko\">`, `<head>`(meta charset/viewport, `<title>` prefix `\"" + project_name + " — <원래 제목>\"`), `<style>` (시스템 폰트, max-width 820px, line-height 1.7, 다크모드 `@media (prefers-color-scheme: dark)`), `<body>` 전체 포함\n"
+    "2. 응답 본문을 **완전한 HTML 문서**로 작성 — `<!DOCTYPE html>`, `<html lang=\"ko\">`, `<head>`(meta charset/viewport, 🎯 favicon `<link rel=\"icon\" href=\"data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎯</text></svg>\">`, `<title>` prefix `\"" + project_name + " — <원래 제목>\"`), `<style>` (시스템 폰트, max-width 820px, line-height 1.7, 다크모드 `@media (prefers-color-scheme: dark)`), `<body>` 전체 포함\n"
     + canonical_header +
     "4. **HTML 본문은 caveman 압축 적용 제외** — 자연스러운 한국어 산문·완전한 문장·풍부한 설명. caveman 은 사용자에게 보내는 채팅 응답에만 적용\n"
     "5. 표·리스트·코드블록·`<h1>`~`<h4>`·`<blockquote>` 자유 사용. 코드블록은 배경+padding, 인용구는 좌측 보더\n"
@@ -670,7 +670,7 @@ context = (
     "판단 모호하면 렌더 (기본 on 정책 유지)\n"
     "1. trivial 단발 질의(yes/no, A/B 선택, 정답 spoiler 위험)면 본문 HTML skip → 바로 `AskUserQuestion` 호출 (intercept 가 폼 처리)\n"
     "2. 그 외 — 응답 본문을 **완전한 HTML 문서**로 작성: `<!DOCTYPE html>`, `<html lang=\"ko\">`, "
-    "`<head>`(meta charset/viewport, `<title>` prefix `\"" + project_name + " — <제목>\"`), "
+    "`<head>`(meta charset/viewport, 🎯 favicon `<link rel=\"icon\" href=\"data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎯</text></svg>\">`, `<title>` prefix `\"" + project_name + " — <제목>\"`), "
     "`<style>`(시스템 폰트, max-width 820px, line-height 1.7, 다크모드 `@media (prefers-color-scheme: dark)`), `<body>`\n"
     + canonical_header +
     "4. HTML 본문은 **caveman 압축 제외** — 자연스러운 한국어 산문·완전한 문장. 표·코드블록·blockquote 자유. "
