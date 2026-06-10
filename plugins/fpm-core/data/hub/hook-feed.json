@@ -1,0 +1,98 @@
+[
+  {
+    "event": "session_end",
+    "cwd": "/Users/nowage/_git/___common",
+    "cwd_hash": "6a047432",
+    "name": "___common",
+    "color": "hsl(140, 60%, 45%)",
+    "emoji": "",
+    "summary": "세션 종료 (other)",
+    "detail": "",
+    "ts": 1781082057,
+    "id": "1781082057349"
+  },
+  {
+    "event": "session_end",
+    "cwd": "/Users/nowage/_git/fpm",
+    "cwd_hash": "7e889dee",
+    "name": "fpm",
+    "color": "hsl(352, 60%, 45%)",
+    "emoji": "",
+    "summary": "세션 종료 (other)",
+    "detail": "",
+    "ts": 1781082051,
+    "id": "1781082051450"
+  },
+  {
+    "event": "session_end",
+    "cwd": "/Users/nowage/Documents/finfra/fSnippetData",
+    "cwd_hash": "ce5c1fd8",
+    "name": "fSnippetData",
+    "color": "hsl(268, 60%, 45%)",
+    "emoji": "",
+    "summary": "세션 종료 (other)",
+    "detail": "",
+    "ts": 1781082051,
+    "id": "1781082051080"
+  },
+  {
+    "event": "session_end",
+    "cwd": "/Users/nowage/_git/__all/fSnippet/_public",
+    "cwd_hash": "3d31ec39",
+    "name": "_public",
+    "color": "hsl(185, 60%, 45%)",
+    "emoji": "",
+    "summary": "세션 종료 (other)",
+    "detail": "",
+    "ts": 1781082050,
+    "id": "1781082050849"
+  },
+  {
+    "event": "session_end",
+    "cwd": "/Users/nowage/_git/__all/fSnippet",
+    "cwd_hash": "ff40d0b1",
+    "name": "fSnippet",
+    "color": "hsl(184, 60%, 45%)",
+    "emoji": "",
+    "summary": "세션 종료 (other)",
+    "detail": "",
+    "ts": 1781082050,
+    "id": "1781082050354"
+  },
+  {
+    "event": "session_end",
+    "cwd": "/Users/nowage/_git/fpm",
+    "cwd_hash": "7e889dee",
+    "name": "fpm",
+    "color": "hsl(352, 60%, 45%)",
+    "emoji": "",
+    "summary": "세션 종료 (other)",
+    "detail": "",
+    "ts": 1781075168,
+    "id": "1781075168347"
+  },
+  {
+    "event": "session_end",
+    "cwd": "/Users/nowage/_git/fpm",
+    "cwd_hash": "7e889dee",
+    "name": "fpm",
+    "color": "hsl(352, 60%, 45%)",
+    "emoji": "",
+    "summary": "세션 종료 (other)",
+    "detail": "",
+    "ts": 1781075119,
+    "id": "1781075119113"
+  },
+  {
+    "event": "session_end",
+    "cwd": "/Users/nowage/_git/___common",
+    "cwd_hash": "6a047432",
+    "name": "___common",
+    "color": "hsl(140, 60%, 45%)",
+    "emoji": "",
+    "summary": "세션 종료 (other)",
+    "detail": "",
+    "ts": 1781075095,
+    "id": "1781075095694"
+  }
+]
