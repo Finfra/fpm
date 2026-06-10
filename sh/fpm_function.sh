@@ -1,7 +1,10 @@
+# shellcheck shell=bash
 # sh/fpm_function.sh — finfra pm 네비게이션 함수 (cdf 계열 + sshf 계열)
 #
 # fpm.sh 부트스트랩이 FPM_BASE export 후 본 파일을 source.
 # 모든 경로는 $FPM_BASE 기반 → 설치 위치 무관(~/_git/___pm, ~/_git/__all/fpm 등) 동작.
+# zsh / bash 양쪽 호환 (regex 매치·배열 인덱스·word-split 을 셸 분기로 처리).
+#   예외 chpwd : zsh 전용 디렉토리 훅 — bash 에선 자동 호출 안 됨(함수 정의만 존재).
 # alias 는 sh/fpm_aliases.sh 로 분리됨.
 #
 # === TOC ===
@@ -14,6 +17,22 @@
 #   _sshf_file / _sshf_resolve : 공용 내부 헬퍼
 #   sshf  : Servers.md id/name/alias 로 SSH 접속 (다중 키 → iTerm2 분할)
 # ===========
+
+# --- 셸 호환 헬퍼 (zsh / bash 양쪽 지원) ---
+# _fpm_rematch <string> <regex> : [[ =~ ]] 매치 후 캡처 그룹을 $_M1 $_M2 로 노출.
+#   zsh 는 $match[n], bash 는 $BASH_REMATCH[n] 로 매치 결과 위치가 달라 통합 래핑.
+#   반환 0=매치 성공, 1=실패. 최대 2 그룹 (cdf 범위·인덱스 파싱에 충분).
+_fpm_rematch() {
+    _M1=""; _M2=""
+    if [ -n "${ZSH_VERSION:-}" ]; then
+        [[ "$1" =~ $2 ]] || return 1
+        _M1="${match[1]}"; _M2="${match[2]}"
+    else
+        [[ "$1" =~ $2 ]] || return 1
+        _M1="${BASH_REMATCH[1]}"; _M2="${BASH_REMATCH[2]}"
+    fi
+    return 0
+}
 
 # --- CDF (인덱스 기반 디렉토리 이동) ---
 # _pm_manager : 베이스 경로 관리 및 목록 출력 공용 함수
@@ -76,8 +95,8 @@ _cdf_base() {
     local -a indices
     local subfolder=""
     for token in "${raw_indices[@]}"; do
-        if [[ "$token" =~ ^([0-9]+)-([0-9]+)$ ]]; then
-            local from=${match[1]} to=${match[2]}
+        if _fpm_rematch "$token" '^([0-9]+)-([0-9]+)$'; then
+            local from=$_M1 to=$_M2
             for ((i=from; i<=to; i++)); do indices+=("$i"); done
             elif [[ "$token" =~ ^[0-9]+$ ]]; then
             indices+=("$token")
@@ -265,8 +284,8 @@ cdft() {
     # @N 윈도우 인덱스 추출
     local -a filtered_args
     for arg in "$@"; do
-        if [[ "$arg" =~ ^@([0-9]+)$ ]]; then
-            WIN_NUM="${match[1]}"
+        if _fpm_rematch "$arg" '^@([0-9]+)$'; then
+            WIN_NUM="$_M1"
             TARGET_WIN=$($TMUX_CMD display-message -t "pm:$WIN_NUM" -p '#W' 2>/dev/null)
             [[ -z "$TARGET_WIN" ]] && TARGET_WIN="win-$WIN_NUM" && WIN_CREATE_IDX="$WIN_NUM"
         else
@@ -277,8 +296,8 @@ cdft() {
     # :NAME 윈도우 이름 추출
     local -a filtered_args2
     for arg in "${filtered_args[@]}"; do
-        if [[ "$arg" =~ ^:([A-Za-z][A-Za-z0-9_-]*)$ ]]; then
-            TARGET_WIN="${match[1]}"
+        if _fpm_rematch "$arg" '^:([A-Za-z][A-Za-z0-9_-]*)$'; then
+            TARGET_WIN="$_M1"
         else
             filtered_args2+=("$arg")
         fi
@@ -300,8 +319,8 @@ cdft() {
 
     # 숫자 토큰 → PANES (범위 확장: 11-16 → 11 12 13 14 15 16)
     for token in "${before_args[@]}"; do
-        if [[ "$token" =~ ^([0-9]+)-([0-9]+)$ ]]; then
-            local from=${match[1]} to=${match[2]}
+        if _fpm_rematch "$token" '^([0-9]+)-([0-9]+)$'; then
+            local from=$_M1 to=$_M2
             for ((i=from; i<=to; i++)); do PANES+=("$i"); done
             elif [[ "$token" =~ ^[0-9]+$ ]]; then
             PANES+=("$token")
@@ -388,7 +407,15 @@ cdft() {
         [[ "$win" != "$ACTIVE_WIN" ]] && WIN_ORDER="$WIN_ORDER $win"
     done
 
-    for win in ${=WIN_ORDER}; do
+    # WIN_ORDER 공백구분 → 배열. zsh 는 unquoted 변수 word-split 미수행($= flag 필요),
+    # bash 는 unquoted 시 IFS split. eval 로 zsh 전용 ${=..} 구문을 bash 파싱서 격리.
+    local -a _win_list
+    if [ -n "${ZSH_VERSION:-}" ]; then
+        eval '_win_list=(${=WIN_ORDER})'
+    else
+        _win_list=($WIN_ORDER)
+    fi
+    for win in "${_win_list[@]}"; do
         for pane_info in $($TMUX_CMD list-panes -t "pm:$win" -F '#P:#{pane_current_path}' 2>/dev/null); do
             local pane_idx=${pane_info%%:*}
             local pane_dir=${pane_info#*:}
@@ -517,14 +544,17 @@ sshf() {
             # (cdf는 cd가 즉시 끝나 순서 무관하나 ssh는 세션 점유)
             # 분할은 항상 원래 pane(현재 셸) 바로 아래에 삽입됨 → 역순(n→2)으로
             # 분할해야 위→아래 정순(2,3,...,n) 배치됨.
-            local i n
-            for (( i=${#names[@]}; i>=2; i-- )); do
+            # zsh 배열 1-base / bash 0-base → lo(첫)·hi(끝) 인덱스로 통합.
+            local i n lo=0
+            [ -n "${ZSH_VERSION:-}" ] && lo=1
+            local hi=$(( lo + ${#names[@]} - 1 ))
+            for (( i=hi; i>lo; i-- )); do
                 n="${names[$i]}"
                 osascript -e "tell application \"iTerm2\" to tell current session of current window to tell (split horizontally with default profile) to write text \"ssh ${n}\""
                 sleep 0.1
             done
-            # 1번 서버: 현재 창 (마지막, 블로킹 OK)
-            ssh "${names[1]}"
+            # 첫 서버: 현재 창 (마지막, 블로킹 OK)
+            ssh "${names[$lo]}"
             return 0
         fi
     fi

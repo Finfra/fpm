@@ -3,7 +3,7 @@
 #
 # ⚠️ 글로벌 SCAR 변경 가드 (Issue46): 본 runner는 모든 프로젝트가 공유. cwd ≠ ~/.claude
 #   면 즉시 수정 금지 → ~/.claude/Issue.md 이슈 등록 후 처리. 설계 SSOT:
-#   ~/.claude/_doc_arch/fpm-dashboard.md, ~/_git/___pm/_doc_arch/hub_dashboard_tmux_design.md
+#   ~/.claude/_doc_arch/dashboard.md, ~/_git/___pm/_doc_arch/hub_dashboard_tmux_design.md
 #   절차: ~/.claude/rules/global-scar-change-rules.md
 #
 # tmux pane에서 실행됨. data 파일을 주기 갱신 (HTTP 없음, 파일 기반).
@@ -29,7 +29,16 @@
 
 set -uo pipefail
 
-INTERVAL="${INTERVAL:-5}"
+# board_policy.yml 로더 (Issue152) — 운영 상수 SSOT. 우선순위: env VAR > board_policy.yml > 인자 기본값.
+BOARD_POLICY="${BOARD_POLICY:-${FPM_BASE:-$HOME/_git/___pm}/data/board_policy.yml}"
+_bp() {  # _bp <key> <default>
+  local v
+  v=$(grep -E "^$1:[[:space:]]" "$BOARD_POLICY" 2>/dev/null | head -1 \
+      | sed -E "s/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//") || true
+  printf '%s' "${v:-$2}"
+}
+
+INTERVAL="${INTERVAL:-$(_bp interval_default 5)}"
 : "${DATA_FILE:?DATA_FILE required}"
 : "${TOPIC:?TOPIC required}"
 : "${WIN_NAME:?WIN_NAME required}"
