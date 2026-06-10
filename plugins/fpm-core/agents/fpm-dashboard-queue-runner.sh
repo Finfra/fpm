@@ -3,7 +3,7 @@
 #
 # ⚠️ 글로벌 SCAR 변경 가드 (Issue46): 본 runner 는 모든 프로젝트가 공유. cwd ≠ ~/.claude
 #   면 즉시 수정 금지 → ~/.claude/Issue.md 이슈 등록 후 처리. 설계 SSOT:
-#   ~/.claude/_doc_arch/fpm-dashboard.md, ~/_git/___pm/_doc_arch/hub_dashboard_tmux_design.md
+#   ~/.claude/_doc_arch/dashboard.md, ~/_git/___pm/_doc_arch/hub_dashboard_tmux_design.md
 #   절차: ~/.claude/rules/global-scar-change-rules.md
 #
 # tmux window 의 runner pane 에서 실행됨. queue.yaml(supervisor 가 갱신하는 SSOT)을 읽어
@@ -28,8 +28,17 @@
 
 set -uo pipefail
 
-INTERVAL_ACTIVE="${INTERVAL_ACTIVE:-3}"
-INTERVAL_IDLE="${INTERVAL_IDLE:-15}"
+# board_policy.yml 로더 (Issue152) — 운영 상수 SSOT. 우선순위: env VAR > board_policy.yml > 인자 기본값.
+BOARD_POLICY="${BOARD_POLICY:-${FPM_BASE:-$HOME/_git/___pm}/data/board_policy.yml}"
+_bp() {  # _bp <key> <default>
+  local v
+  v=$(grep -E "^$1:[[:space:]]" "$BOARD_POLICY" 2>/dev/null | head -1 \
+      | sed -E "s/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//") || true
+  printf '%s' "${v:-$2}"
+}
+
+INTERVAL_ACTIVE="${INTERVAL_ACTIVE:-$(_bp interval_active 3)}"
+INTERVAL_IDLE="${INTERVAL_IDLE:-$(_bp interval_idle_runner 15)}"
 : "${QUEUE_FILE:?QUEUE_FILE required}"
 : "${DATA_FILE:?DATA_FILE required}"
 SUPERVISOR_LOG="${SUPERVISOR_LOG:-}"
@@ -84,7 +93,7 @@ else:
 # Q&A 질문 위젯 (Issue102) — waiting_input item 의 question 필드를 사용자에게 노출.
 #   worker 가 .waiting sentinel 에 질문을 적으면 supervisor 가 item.question 에 기록한다.
 #   사용자가 답변 마커(<OUT_DIR>/.dash-answers/<topic>__<id>, 내용=답변)를 생성하면
-#   supervisor ②.6 이 worker 를 재개시킨다 (상세: _doc_arch/fpm-dashboard.md Q&A 재개 프로토콜).
+#   supervisor ②.6 이 worker 를 재개시킨다 (상세: _doc_arch/dashboard.md Q&A 재개 프로토콜).
 qa_lines = []
 for it in waiting:
     qn = it.get('question')
