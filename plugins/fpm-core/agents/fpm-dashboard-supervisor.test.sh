@@ -3,7 +3,7 @@
 #
 # ⚠️ 글로벌 SCAR 변경 가드 (Issue46): 본 테스트는 모든 프로젝트가 공유. cwd ≠ ~/.claude
 #   면 즉시 수정 금지 → ~/.claude/Issue.md 이슈 등록 후 처리. 설계 SSOT:
-#   ~/.claude/_doc_arch/fpm-dashboard.md. 절차: ~/.claude/rules/global-scar-change-rules.md
+#   ~/.claude/_doc_arch/dashboard.md. 절차: ~/.claude/rules/global-scar-change-rules.md
 #
 # 회귀 차단 — (1) busy-detection: idle 샘플('✻ Cogitated for Ns')이 busy 로 판정되거나,
 #   장기 Bash 대기('Waiting…'·'shell still running')가 idle 로 판정되면 실패.

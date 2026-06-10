@@ -4,7 +4,7 @@ description: tmux 기반 dashboard agent wrapper. window 1:1 매칭으로 runner
 date: 2026-05-31
 ---
 
-> ⚠️ **글로벌 SCAR 변경 가드 (Issue46)**: 본 커맨드는 모든 프로젝트가 공유. cwd ≠ `~/.claude/` 면 즉시 수정 금지 → `~/.claude/Issue.md` 이슈 등록 후 처리. 영속 설계 SSOT: `~/.claude/_doc_arch/fpm-dashboard.md`. 절차: `~/.claude/rules/global-scar-change-rules.md`
+> ⚠️ **글로벌 SCAR 변경 가드 (Issue46)**: 본 커맨드는 모든 프로젝트가 공유. cwd ≠ `~/.claude/` 면 즉시 수정 금지 → `~/.claude/Issue.md` 이슈 등록 후 처리. 영속 설계 SSOT: `~/.claude/_doc_arch/dashboard.md`. 절차: `~/.claude/rules/global-scar-change-rules.md`
 
 # /dashboard {topic}
 

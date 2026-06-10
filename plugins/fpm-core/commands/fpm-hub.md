@@ -8,7 +8,7 @@ date: 2026-05-19
 
 # /hub — HTML 결과 렌더 (Issue45 단일 모드)
 
-> **Issue133**: a모드 render 트리거가 `..hub`/`/hub` → **`..show`/`/show`** 로 rename 됨 (우산명 `hub` 와 충돌 해소). `/hub <요청>`·`..hub <요청>` 는 한시적 deprecated alias (동작 동일 + `..show` 안내 첨부). 우산 토글 `/hub on|off|start|stop`·`..hub …` 는 `hub` 유지. 본 커맨드 문서는 `/show` 슬래시(`commands/show.md`)가 참조하는 렌더 절차 SSOT.
+> **Issue133**: a모드 render 트리거가 `..hub`/`/hub` → **`..show`/`/show`** 로 rename 됨 (우산명 `hub` 와 충돌 해소). `/hub <요청>`·`..hub <요청>` 는 한시적 deprecated alias (동작 동일 + `..show` 안내 첨부). 우산 토글 `/hub on|off|start|stop`·`..hub …` 는 `hub` 유지. 본 커맨드 문서는 `/show` 슬래시(`commands/fpm-show.md`)가 참조하는 렌더 절차 SSOT.
 
 요청을 처리한 결과를 완전한 HTML 문서로 작성하여 Firefox 로 자동 표시함. 본문 HTML 은 `file://` 직접 open. Q&A 폼은 ___pm htm-server (port 9876) 로 fetch POST → inbox → bash polling 자동 회수.
 
@@ -284,7 +284,7 @@ ex)
             2. 일치 행의 `peacock.color` 컬럼 hex 값 사용 (ex: `#f0d5cc` for `~/.claude`)
             3. 일치 행이 없으면 fallback `hsl(hue, 60%, 45%)` (hue = cwd md5 hash 앞 4자 % 360)
         * peacock.color 는 파스텔 톤이므로 헤더 텍스트 색은 `#1a1a1a` (어두운 글자) 사용. 닫기 버튼도 `background: rgba(0,0,0,0.08); color: #1a1a1a; border: 1px solid rgba(0,0,0,0.15)` 등 어두운 글자 대비로 설정
-        * **⚠️ CANONICAL 헤더 블록 (Issue132) — 아래 HTML·CSS 를 verbatim 복붙하고 placeholder 2개만 치환**. 즉흥 재작성 금지 (정적 `<span>`·순서 뒤바뀜·헤더 밖 overflow 재발 원인). 치환: `{프로젝트명}`(ex `.claude`) · `{cwd 절대경로}`(ex `$HOME/.claude`, Projects.md 등록 경로와 정확히 일치해야 서버 화이트리스트 통과) · `{session_id}`(🎯 세션 버튼 — 현재 세션 ID. hook 경유 시 자동 임베드, 수동 작성 시 hook 입력 `session_id`. 부재 시 cwd_hash fallback → 워크스페이스만 open). `{제목}` 만 콘텐츠별로 채움. 색은 아래 `:root --project-color` (위 PROJECT_COLOR 규칙) 가 결정.
+        * **⚠️ CANONICAL 헤더 블록 (Issue132) — 아래 HTML·CSS 를 verbatim 복붙하고 placeholder 2개만 치환**. 즉흥 재작성 금지 (정적 `<span>`·순서 뒤바뀜·헤더 밖 overflow 재발 원인). 치환: `{프로젝트명}`(ex `.claude`) · `{cwd 절대경로}`(ex `$HOME/.claude`, Projects.md 등록 경로와 정확히 일치해야 서버 화이트리스트 통과) · `{session_id}`(🖥 세션 버튼 — 현재 세션 ID. hook 경유 시 자동 임베드, 수동 작성 시 hook 입력 `session_id`. 부재 시 cwd_hash fallback → 워크스페이스만 open). `{제목}` 만 콘텐츠별로 채움. 색은 아래 `:root --project-color` (위 PROJECT_COLOR 규칙) 가 결정.
             ```html
             <header>
               <h1>{제목}</h1>
@@ -292,8 +292,8 @@ ex)
                 <a class="proj-badge" href="#" title="클릭 → VSCode 로 {프로젝트명} 열기"
                    onclick="event.preventDefault();fetch('http://127.0.0.1:9876/open-project',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'{cwd 절대경로}'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('VSCode 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — VSCode 열기 실패');});">📁 {프로젝트명}</a>
                 <a class="sess-link" href="#" title="클릭 → 이 문서를 만든 세션 탭으로 포커스"
-                   onclick="event.preventDefault();fetch('http://127.0.0.1:9876/open-session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'{cwd 절대경로}',sid:'{session_id}'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('세션 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — 세션 열기 실패');});">🎯 세션</a>
-                <a class="hub-link" href="http://127.0.0.1:9876/hub" target="_blank">🗂 Hub</a>
+                   onclick="event.preventDefault();fetch('http://127.0.0.1:9876/open-session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'{cwd 절대경로}',sid:'{session_id}'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('세션 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — 세션 열기 실패');});">🖥 세션</a>
+                <a class="hub-link" href="http://127.0.0.1:9876/hub" target="_blank" title="통합 모니터링 Hub">🎯</a>
                 <button type="button" onclick="window.close()">닫기 ✕</button>
               </nav>
             </header>
@@ -320,7 +320,7 @@ ex)
               background: rgba(0,0,0,0.16); text-decoration: underline;
             }
             ```
-            * **블록 불변식 (재발 차단)**: (1) 배지 = `<a class="proj-badge" onclick=...POST /open-project...>` — 정적 `<span>` 금지(Issue103, 클릭 시 VSCode 프로젝트 열기). 세션 = `<a class="sess-link" onclick=...POST /open-session {cwd,sid}...>`(Issue137, 클릭 시 이 문서를 만든 세션 탭 포커스 — `sid` 미치환 시 워크스페이스만 graceful degrade). (2) 순서 = `📁 배지` → `🎯 세션` → `🗂 Hub` → `닫기 ✕`. (3) 배지·세션·Hub·닫기 넷 모두 `<header>` 바 **안** `.header-actions` 동일 행 — 헤더 **밖** `.proj-name` div 금지(Issue88, sticky 단일 블록 고정). (4) `display:flex; justify-content:space-between` + `flex-wrap` → 우측 overflow 방지. (5) `<header>` 자체가 `position:sticky; top:0`(Issue74).
+            * **블록 불변식 (재발 차단)**: (1) 배지 = `<a class="proj-badge" onclick=...POST /open-project...>` — 정적 `<span>` 금지(Issue103, 클릭 시 VSCode 프로젝트 열기). 세션 = `<a class="sess-link" onclick=...POST /open-session {cwd,sid}...>`(Issue137, 클릭 시 이 문서를 만든 세션 탭 포커스 — `sid` 미치환 시 워크스페이스만 graceful degrade). (2) 순서 = `📁 배지` → `🖥 세션` → `🎯 Hub` → `닫기 ✕` (Hub=🎯 단독·세션=🖥, Issue157). (3) 배지·세션·Hub·닫기 넷 모두 `<header>` 바 **안** `.header-actions` 동일 행 — 헤더 **밖** `.proj-name` div 금지(Issue88, sticky 단일 블록 고정). (4) `display:flex; justify-content:space-between` + `flex-wrap` → 우측 overflow 방지. (5) `<header>` 자체가 `position:sticky; top:0`(Issue74).
             * **sticky 무효화 방지**: 조상 요소(`html`, `body`, 본문 컨테이너)에 `overflow: hidden` / `overflow: clip` 금지 — sticky 컨텍스트를 깨뜨려 헤더가 다시 스크롤됨.
             * 서버가 `Access-Control-Allow-Origin: null` 을 보내므로 file://(origin null) htm 에서도 fetch 허용. 성공 시 무음(VSCode 가시적 open), 실패(서버 미가동·비등록 경로) 시 `alert` fail-loud. endpoint = `/hub` 활성 세션 카드와 동일(Issue101/Issue42).
     - **컬러 영역 자식 인라인 요소 contrast (Issue16_4, Issue58 갱신)**:
