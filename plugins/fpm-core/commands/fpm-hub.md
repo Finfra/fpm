@@ -264,6 +264,7 @@ ex)
 3. **HTML 본문은 caveman 압축 적용 제외** — 자연스러운 한국어 산문·완전한 문장·풍부한 설명 사용. caveman 은 채팅 응답에만 적용
 4. HTML 템플릿 요구사항 (필수):
     - `<!DOCTYPE html>`, `<html lang="ko">`, `<meta charset="utf-8">`, viewport meta
+    - **🎯 favicon (Issue155)**: `<head>` 에 인라인 SVG data URI favicon 삽입 — `<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎯</text></svg>">`. 별도 `.ico` 파일·네트워크 요청 없이 브라우저 탭에 🎯 아이콘 표시 (SVG 속성은 작은따옴표 → 외곽 `href="..."` 와 충돌 없음)
     - **`<title>` 필수 prefix (Issue22)**: `"{프로젝트명} — <원래 제목>"` 형식 (브라우저 탭 구분)
     - 시스템 폰트: `-apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif`
     - 본문 컨테이너: `max-width: 820px; margin: 0 auto; padding: 0 1.5rem 2rem 1.5rem`
