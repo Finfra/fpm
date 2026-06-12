@@ -53,20 +53,23 @@ date: 2026-04-20
     - nPTiR = needs(of human), Plan, Task, issue, Report
       [Issue.md, _doc_work/{plan,tasks,report}]
 
-# fpm 공개 미러 (publishable, Issue150·151)
+# fpm 공개 미러 (fpm-sync, Issue150·151·158)
 
-___pm(개인) → 공개 미러 fpm(prj7, github.com/Finfra/fpm) 단방향 동기화. post-commit hook 가 매 커밋마다 자동 forward.
+___pm(개인) ↔ 공개 미러 fpm(prj7, github.com/Finfra/fpm) 양방향 동기화. post-commit hook 가 매 커밋마다 자동 forward. 역방향(reverse)·배포(deploy)·정책편집(policy)은 `fpm-sync` 단일 스킬에서 수행 (Issue158: publishable 스킬 흡수, deploy→sync 네이밍 통일).
 
 ## 핵심 경로
 * **정책 데이터 SSOT**: `data/publishable-policy.yml` — `exclude`(제외)/`personal_guard`(개인정보 가드)/`sanitize`(치환) 목록. 변경은 이 파일만 편집
-* **실행기**: `scripts/fpm-sync.sh` — YAML 읽어 동기화(yq 1차/python3 fallback). 정책 하드코딩 없음
-* **편집 스킬**: `.claude/skills/publishable/` — `publishable.sh {show|validate|exclude add·rm|sanitize add|dry-run}`
+* **통합 dispatcher**: `scripts/fpm-sync.sh <forward|deploy|reverse|policy>` — hook·스킬 공용 진입점. 정책 YAML 직독
+* **결정성 헬퍼**: `scripts/fpm-guard.sh`(개인정보 abort) · `scripts/fpm-sanitize.sh`(치환) · `scripts/fpm-policy-lib.sh`(파서)
+* **스킬**: `.claude/skills/fpm-sync/` — forward/deploy/reverse/policy 오케스트레이션. (구 `publishable` 스킬은 deprecated shim)
 * **아키텍처 SSOT**: `_doc_arch/publishable-policy.md` (로컬 전용)
 * **sync 로그**: `_doc_work/z_log/fpm-sync.log` — 매 sync 타임스탬프 append (로컬 전용, gitignored). `tail -f` 로 추적
 
 ## 운영
 * 수동 sync: `bash scripts/fpm-sync.sh forward` (단, hook 가 커밋마다 자동 실행)
-* dry-run: `bash .claude/skills/publishable/publishable.sh dry-run`
+* 배포: `bash scripts/fpm-sync.sh deploy [patch|minor|major] [--no-push]` (버전 bump+tag+push)
+* 역방향 미리보기: `bash scripts/fpm-sync.sh reverse` (적용은 `reverse --apply`, working tree 만)
+* 정책 편집: `bash scripts/fpm-sync.sh policy show|validate|exclude|guard|sanitize ...`
 * push 는 정책상 수동(검토 게이트): `git -C ~/_git/__all/fpm push`
 * 모델: denylist — exclude 안 된 tracked 파일은 전부 publishable. allowlist 없음
 
