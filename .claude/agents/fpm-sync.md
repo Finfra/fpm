@@ -44,16 +44,16 @@ fpm 쪽에서 발생한 변경(외부 기여·공개판 직접 수정)을 원본
 
 ### 1. dry-run (변경 미리보기, 적용 안 함)
 ```bash
-~/_git/___pm/scripts/fpm-sync.sh reverse-dryrun
+~/_git/___pm/scripts/fpm-sync.sh reverse
 ```
-출력된 변경 목록(fpm → ___pm 로 적용될 파일)을 사용자에게 **그대로 제시**.
+출력된 변경 목록(fpm → ___pm 로 적용될 파일)을 사용자에게 **그대로 제시**. (구 `reverse-dryrun` alias 도 동작)
 
 ### 2. 사용자 동의 확인 (필수 게이트)
 `AskUserQuestion` 으로 "위 N개 변경을 ___pm working tree 에 적용할까요?" 질문. **명시 동의 없으면 중단.** 변경 0건이면 동의 절차 생략하고 "되돌릴 변경 없음" 보고.
 
 ### 3. apply (동의 후에만)
 ```bash
-~/_git/___pm/scripts/fpm-sync.sh reverse-apply
+~/_git/___pm/scripts/fpm-sync.sh reverse --apply
 ```
 * `--delete` 없음 → ___pm 고유 파일은 보존(삭제 안 함).
 * ___pm **working tree 만** 변경, 커밋 안 함. 개인정보 경로 혼입 시 스크립트가 중단.
