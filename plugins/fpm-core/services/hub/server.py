@@ -5121,6 +5121,15 @@ main { padding: 1.5rem; max-width: 1600px; margin: 0 auto; display: flex; gap: 1
 .htm-chip-rm:hover { opacity: 1; }
 .htm-filter-sel { font-size: 0.78em; padding: 0.22rem 0.45rem; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg); cursor: pointer; }
 .htm-prj-selected { outline: 2.5px solid hsl(220,80%,50%); outline-offset: -1px; }
+/* Issue160: 섹션 접기/펼치기 토글 — 접힘 시 헤더(제목·카운트)만 남기고 본문·컨트롤 숨김 */
+.sec-toggle { background: none; border: 1px solid var(--border); border-radius: 4px; color: var(--muted); cursor: pointer; font-size: 0.8em; line-height: 1; padding: 0.15rem 0.4rem; flex-shrink: 0; }
+.sec-toggle:hover { background: rgba(127,127,127,.12); color: var(--fg); }
+section.sec-collapsed > .grid { display: none; }
+section.sec-collapsed .btn-zombie,
+section.sec-collapsed .dash-controls,
+section.sec-collapsed .htm-filter-sel,
+section.sec-collapsed .htm-filter-chips,
+section.sec-collapsed .htm-bar-right { display: none; }
 /* Issue42: 활동 피드 패널 (우측 1/3 aside) */
 .hub-feed { flex: 1; min-width: 280px; max-width: 420px; align-self: stretch;
   position: sticky; top: 0; max-height: 100vh; overflow-y: auto;
@@ -5186,12 +5195,12 @@ main { padding: 1.5rem; max-width: 1600px; margin: 0 auto; display: flex; gap: 1
 </div>
 <div class="error-bar" id="error-bar"></div>
 <section id="live-sessions-section" style="display:none">
-  <h2 class="section-title">📡 활성 세션 <span id="live-count" class="count-badge"></span><button class="btn-zombie" id="btn-zombie" title="빈(프롬프트 전) 좀비 claude 세션을 일괄 종료 후 새로고침 — 작업 중(제목 있는) 세션·dashboard 는 보존">🧟 좀비 킬러</button></h2>
+  <h2 class="section-title"><button class="sec-toggle" data-sec="live-sessions-section" title="섹션 접기">▾</button>📡 활성 세션 <span id="live-count" class="count-badge"></span><button class="btn-zombie" id="btn-zombie" title="빈(프롬프트 전) 좀비 claude 세션을 일괄 종료 후 새로고침 — 작업 중(제목 있는) 세션·dashboard 는 보존">🧟 좀비 킬러</button></h2>
   <div class="grid" id="live-grid"></div>
 </section>
 <section id="dashboard-section" style="display:none">
   <div class="dash-section-bar">
-    <h2 class="section-title">📊 dashboard</h2>
+    <h2 class="section-title"><button class="sec-toggle" data-sec="dashboard-section" title="섹션 접기">▾</button>📊 dashboard</h2>
     <span class="dash-controls">
       <label>filter: <select id="filter-status">
         <option value="all" selected>모두 보기</option>
@@ -5212,6 +5221,7 @@ main { padding: 1.5rem; max-width: 1600px; margin: 0 auto; display: flex; gap: 1
 <section id="htm-docs-section" style="display:none">
   <div class="htm-section-bar">
     <div class="htm-bar-left">
+      <button class="sec-toggle" data-sec="htm-docs-section" title="섹션 접기">▾</button>
       <span class="htm-bar-title">📄 hub 문서 <span id="htm-count" class="count-badge"></span></span>
       <select id="htm-prj-filter" class="htm-filter-sel" title="프로젝트 필터 추가 (복수 선택 가능 — 오늘 추가분은 항상 표시)"><option value="">+ 프로젝트 필터</option></select>
       <div class="htm-filter-chips" id="htm-filter-chips"></div>
@@ -6353,6 +6363,35 @@ document.getElementById('btn-settings').addEventListener('click', async () => {
     }
   }, 5000);
 })();
+
+// Issue160: 섹션 접기/펼치기 — 활성 세션/dashboard/hub 문서 3개 섹션을 헤더만 남기고 접음.
+// 상태는 localStorage 영속. reload() 재렌더는 grid innerHTML 만 교체하므로
+// <section> 의 sec-collapsed 클래스는 유지됨 (Issue104 expandedCards 와 동일 원리).
+const SEC_COLLAPSE_KEY = 'hubSecCollapsed';
+function secCollapseState() {
+  try { return JSON.parse(localStorage.getItem(SEC_COLLAPSE_KEY) || '{}'); } catch (e) { return {}; }
+}
+function applySecCollapse() {
+  const st = secCollapseState();
+  document.querySelectorAll('.sec-toggle').forEach(btn => {
+    const sec = document.getElementById(btn.dataset.sec);
+    if (!sec) return;
+    const on = !!st[btn.dataset.sec];
+    sec.classList.toggle('sec-collapsed', on);
+    btn.textContent = on ? '▸' : '▾';
+    btn.title = on ? '섹션 펼치기' : '섹션 접기';
+  });
+}
+document.querySelectorAll('.sec-toggle').forEach(btn => {
+  btn.addEventListener('click', e => {
+    e.stopPropagation();
+    const st = secCollapseState();
+    st[btn.dataset.sec] = !st[btn.dataset.sec];
+    try { localStorage.setItem(SEC_COLLAPSE_KEY, JSON.stringify(st)); } catch (e2) {}
+    applySecCollapse();
+  });
+});
+applySecCollapse();
 
 reload();
 setInterval(reload, 5000);
