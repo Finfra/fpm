@@ -9,11 +9,12 @@ feed_show_project_name: false  # 피드 항목 프로젝트명 표시 (Issue47)
 card_limit: 200            # htm 카드 최대 표시 수, mtime 최신순 (0=무제한, Issue52)
 search_limit: 200          # 디스크 재스캔 디렉토리당 파일 상한 (0=무제한, Issue55)
 live_session_limit: 6      # 세션 카드(프로젝트 그룹)당 최대 행, 초과 시 "외 N개 더" (0=무제한, Issue129)
+live_session_order: updated # 활성세션 정렬 — updated(최근갱신순) / created(세션 시작순 고정, 점프 방지) (Issue159)
 
 browser_focus: false       # 렌더 시 브라우저 포커스 탈취 (false=백그라운드 open -g, Issue128)
 default_browser: firefox   # 렌더 브라우저 — firefox/chrome/edge/safari 또는 .app 절대경로 (Issue130)
 
 bind_host: 127.0.0.1       # hub 서버 listen 인터페이스 (0.0.0.0=원격 개방+allowlist, restart 필요, Issue141)
+# advertise_host: 192.168.1.5  # hub|both URL host. 생략 시 bind_host fallback. ⚠️0.0.0.0+생략 금지 (Issue153)
 
 render_target: hub         # ..show 표시 경로 — local-open(file://) / hub(서버 경유 URL) / both (Issue153, hook 미구현🔧)
-# advertise_host: 192.168.1.5  # hub|both URL host. 생략 시 bind_host fallback. ⚠️0.0.0.0+생략 금지 (Issue153)
