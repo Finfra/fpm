@@ -703,6 +703,7 @@ HUB_SETTING_DEFAULTS = {"feed_limit": 100, "feed_default_visible": True, "feed_p
                         # Issue141: bind 주소 (문자열). env HTM_SERVER_HOST 미설정 시 사용.
                         "bind_host": "127.0.0.1",
                         # Issue159: 활성세션 정렬 — updated(최근갱신순) / created(세션 시작순 고정)
+                        #   / project(Projects.md 번호순, 미등록 cwd 는 끝)
                         "live_session_order": "updated"}
 _hub_setting_cache: dict = {}
 _hub_setting_cache_mtime: float = 0.0
@@ -2284,11 +2285,18 @@ class Handler(BaseHTTPRequestHandler):
             _empty_live_seen.add(h2)
             _deduped.append(r)
         results = _deduped
-        # Issue159: 활성세션 정렬 옵션 — live_session_order=created 면 세션 시작 시각
-        #   오름차순 고정(행·카드 점프 방지). Issue136 dedup 은 updated_age 오름차순을
+        # Issue159: 활성세션 정렬 옵션 — created=세션 시작 시각 오름차순 고정,
+        #   project=Projects.md 번호 오름차순(미등록 cwd 는 끝, 2차 키 created).
+        #   둘 다 행·카드 점프 방지. Issue136 dedup 은 updated_age 오름차순을
         #   전제하므로 재정렬은 반드시 dedup 이후에 적용한다. 기본 updated 는 현행 유지.
-        if _load_hub_setting().get("live_session_order") == "created":
+        _order = _load_hub_setting().get("live_session_order", "updated")
+        if _order == "created":
             results.sort(key=lambda x: x.get("created") or 0)
+        elif _order == "project":
+            _prj_id = {os.path.expanduser(r["path"]).rstrip("/"): r["id"]
+                       for r in _load_projects_list()}
+            results.sort(key=lambda x: (_prj_id.get((x.get("cwd") or "").rstrip("/"), 10**9),
+                                        x.get("created") or 0))
         # Issue63: terminal(done/stopped) dashboard 세션 TTL prune — 1h 경과분은
         #   sessions 테이블에서 완전 제거하여 sessions.json 무한 성장 차단.
         #   detail page 회람을 위해 1h 동안은 entry 유지 (활성 목록엔 이미 미노출).
