@@ -145,7 +145,7 @@ date: 2026-04-18
 
 # ___pm / fpm
 
-PM 도구 프로젝트 쌍. `___pm`(prj1) = 개발 원본 SSOT, `fpm`(prj7, `~/_git/__all/fpm`) = 공개 마켓플레이스 배포판. `fpm-sync` agent 로 ___pm → fpm 단방향 복사·커밋(역방향은 사용자 동의 후).
+PM 도구 프로젝트 쌍. `___pm`(prj1) = 개발 원본 SSOT, `fpm`(prj7, `~/_git/__all/fpm`) = 공개 마켓플레이스 배포판. `fpm-sync` 스킬·agent 로 ___pm ↔ fpm 동기화(기본 forward, 역방향 reverse·배포 deploy·정책 policy 통합 — Issue158). `scripts/fpm-sync.sh <forward|deploy|reverse|policy>` 단일 dispatcher, 개인정보 가드는 결정성 sh 헬퍼.
 
 ## ___pm 로컬 SCAR (g 도메인 — 로컬 진입 → 글로벌 `-g` 위임)
 
@@ -198,7 +198,10 @@ PM 도구 프로젝트 쌍. `___pm`(prj1) = 개발 원본 SSOT, `fpm`(prj7, `~/_
     - agents: dashboard (+ runner·queue·supervisor 스크립트)
     - hooks: hub-trigger · ask-intercept · ask-form-template · board-notify · hub-doc-register · hub-session-* · ask-*
     - services: hub (Python stdlib HTTP+SSE 서버)
-* 동기화: `fpm-sync` agent — ___pm(원본) → fpm(공개판) 단방향 복사·커밋
+* 동기화: `fpm-sync` 스킬/agent — ___pm(원본) ↔ fpm(공개판). dispatcher `scripts/fpm-sync.sh <forward|deploy|reverse|policy>`
+    - forward(기본·hook 자동) / deploy(버전 bump+tag+push) / reverse(되돌리기, 동의 후 `--apply`) / policy(공개 정책 편집)
+    - 결정성 헬퍼: `fpm-policy-lib.sh`(파서) · `fpm-guard.sh`(개인정보 abort) · `fpm-sanitize.sh`(치환)
+    - 구 `fpm-deploy.sh`·`publishable` 스킬 → deprecated shim (Issue158)
 * 라이선스: 듀얼 (개인 무료 / 기업 유료) — `COMMERCIAL.md`
 
 # fCapture
