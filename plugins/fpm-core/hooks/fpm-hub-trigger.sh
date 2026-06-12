@@ -94,7 +94,7 @@ read -r PROJECT_NAME PROJECT_COLOR <<< "$(CWD_VAL="$cwd" python3 <<'PYEOF'
 import hashlib, os, re
 cwd = os.environ.get('CWD_VAL', '')
 root = ''
-color = ''
+hexcol = ''
 # 1. nearest ancestor .vscode/settings.json peacock.color
 d = cwd
 while d and d != '/':
@@ -103,12 +103,12 @@ while d and d != '/':
         try:
             m = re.search(r'"peacock\.color"\s*:\s*"(#[0-9A-Fa-f]{3,8})"', open(p, encoding='utf-8').read())
             if m:
-                color = m.group(1); root = d; break
+                hexcol = m.group(1); root = d; break
         except Exception:
             pass
     d = os.path.dirname(d)
 # 2. Projects.md prefix 매칭 fallback
-if not color:
+if not hexcol:
     bt = chr(96)
     try:
         for line in open(os.path.expanduser('~/_git/___pm/Projects.md'), encoding='utf-8'):
@@ -118,13 +118,36 @@ if not color:
             if paths and hexes:
                 ph = os.path.expanduser(paths[0]).rstrip('/')
                 if (cwd == ph or cwd.startswith(ph + '/')) and len(ph) > len(root or ''):
-                    root = ph; color = hexes[-1]
+                    root = ph; hexcol = hexes[-1]
     except Exception:
         pass
-# 3. hsl 해시 fallback (임의색 — 최후 수단)
-if not color:
-    h = hashlib.md5(cwd.encode('utf-8')).hexdigest()[:8] if cwd else ''
-    color = ('hsl(%d,60%%,45%%)' % (int(h[:4], 16) % 360)) if h else 'hsl(220,60%,45%)'
+# 3. hex → HSL + 가독성 클램프 (Issue157)
+def _hex_to_hsl(hx):
+    hx = hx.lstrip('#')
+    if len(hx) == 3:
+        hx = ''.join(c*2 for c in hx)
+    r = int(hx[0:2],16)/255.0; g = int(hx[2:4],16)/255.0; b = int(hx[4:6],16)/255.0
+    mx = max(r,g,b); mn = min(r,g,b); l = (mx+mn)/2.0; dlt = mx-mn
+    if dlt == 0:
+        return 0.0, 0.0, l
+    s = dlt/(2-mx-mn) if l > 0.5 else dlt/(mx+mn)
+    if mx == r: h = ((g-b)/dlt) % 6
+    elif mx == g: h = (b-r)/dlt + 2
+    else: h = (r-g)/dlt + 4
+    return h*60, s, l
+if hexcol:
+    h, s, l = _hex_to_hsl(hexcol)
+else:
+    hsh = hashlib.md5(cwd.encode('utf-8')).hexdigest()[:8] if cwd else ''
+    if hsh:
+        h = int(hsh[:4], 16) % 360; s = 0.55; l = 0.85
+    else:
+        h = 220; s = 0.30; l = 0.85
+# Issue157: 너무 밝은 peacock(>82%)는 darken, 채도 클램프. hue(프로젝트 정체성) 유지.
+if l > 0.82: l = 0.80
+if s > 0.72: s = 0.72
+if s < 0.40: s = 0.45
+color = 'hsl(%d,%d%%,%d%%)' % (round(h), round(s*100), round(l*100))
 name = os.path.basename(root or cwd) or cwd or 'unknown'
 print(name.replace(' ', '_'), color.replace(' ', ''))
 PYEOF
@@ -533,7 +556,7 @@ if [ -n "$HUB_RENDER_TRIGGER" ]; then
 import os, json
 
 project_name = os.environ.get('PROJECT_NAME', 'unknown')
-project_color = os.environ.get('PROJECT_COLOR', 'hsl(220,60%,45%)')
+project_color = os.environ.get('PROJECT_COLOR', 'hsl(220,30%,90%)')
 cwd = os.environ.get('PROJECT_CWD', '')
 sid = os.environ.get('SID', 'unknown')
 sid_full = os.environ.get('SID_FULL', sid)
@@ -589,8 +612,8 @@ canonical_header = (
     "    <a class=\"proj-badge\" href=\"#\" title=\"클릭 → VSCode 로 __PNAME__ 열기\"\n"
     "       onclick=\"event.preventDefault();fetch('http://127.0.0.1:9876/open-project',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'__CWD__'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('VSCode 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — VSCode 열기 실패');});\">📁 __PNAME__</a>\n"
     "    <a class=\"sess-link\" href=\"#\" title=\"클릭 → 이 문서를 만든 세션 탭으로 포커스\"\n"
-    "       onclick=\"event.preventDefault();fetch('http://127.0.0.1:9876/open-session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'__CWD__',sid:'__SID__'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('세션 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — 세션 열기 실패');});\">🖥 세션</a>\n"
-    "    <a class=\"hub-link\" href=\"http://127.0.0.1:9876/hub\" target=\"_blank\" title=\"통합 모니터링 Hub\">🎯</a>\n"
+    "       onclick=\"event.preventDefault();fetch('http://127.0.0.1:9876/open-session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'__CWD__',sid:'__SID__'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('세션 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — 세션 열기 실패');});\">🆚 세션</a>\n"
+    "    <a class=\"hub-link\" href=\"http://127.0.0.1:9876/hub\" target=\"_blank\" title=\"통합 모니터링 Hub\">🎯📊</a>\n"
     "    <button type=\"button\" onclick=\"window.close()\">닫기 ✕</button>\n"
     "  </nav>\n"
     "</header>\n"
@@ -608,7 +631,7 @@ canonical_header = (
     "  background: rgba(0,0,0,0.16); text-decoration: underline; }\n"
     "```\n"
     "   불변식 (재발 차단): 배지=`<a class=\"proj-badge\" onclick=...POST /open-project...>` (정적 span 금지·Issue103), 세션=`<a class=\"sess-link\" onclick=...POST /open-session {cwd,sid}...>` (Issue137) → "
-    "순서 `📁 배지`→`🖥 세션`→`🎯 Hub`→`닫기 ✕` → 넷 모두 `<header>` 안 `.header-actions` 동일 행 (헤더 밖 div 금지·Issue88) → "
+    "순서 `📁 배지`→`🆚 세션`→`🎯📊 Hub`→`닫기 ✕` → 넷 모두 `<header>` 안 `.header-actions` 동일 행 (헤더 밖 div 금지·Issue88) → "
     "flex+space-between+wrap 로 우측 overflow 방지. 조상(`html`/`body`/컨테이너)에 `overflow:hidden|clip` 금지 (sticky 무효화).\n"
 ).replace("__PNAME__", project_name).replace("__PCOLOR__", project_color).replace("__CWD__", cwd).replace("__SID__", sid_full)
 
@@ -699,7 +722,7 @@ if [ "$EFFECTIVE" = "on" ]; then
 import os, json
 
 project_name = os.environ.get('PROJECT_NAME', 'unknown')
-project_color = os.environ.get('PROJECT_COLOR', 'hsl(220,60%,45%)')
+project_color = os.environ.get('PROJECT_COLOR', 'hsl(220,30%,90%)')
 cwd = os.environ.get('PROJECT_CWD', '')
 sid = os.environ.get('SID', 'unknown')
 sid_full = os.environ.get('SID_FULL', sid)
@@ -736,8 +759,8 @@ canonical_header = (
     "    <a class=\"proj-badge\" href=\"#\" title=\"클릭 → VSCode 로 __PNAME__ 열기\"\n"
     "       onclick=\"event.preventDefault();fetch('http://127.0.0.1:9876/open-project',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'__CWD__'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('VSCode 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — VSCode 열기 실패');});\">📁 __PNAME__</a>\n"
     "    <a class=\"sess-link\" href=\"#\" title=\"클릭 → 이 문서를 만든 세션 탭으로 포커스\"\n"
-    "       onclick=\"event.preventDefault();fetch('http://127.0.0.1:9876/open-session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'__CWD__',sid:'__SID__'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('세션 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — 세션 열기 실패');});\">🖥 세션</a>\n"
-    "    <a class=\"hub-link\" href=\"http://127.0.0.1:9876/hub\" target=\"_blank\" title=\"통합 모니터링 Hub\">🎯</a>\n"
+    "       onclick=\"event.preventDefault();fetch('http://127.0.0.1:9876/open-session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'__CWD__',sid:'__SID__'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('세션 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — 세션 열기 실패');});\">🆚 세션</a>\n"
+    "    <a class=\"hub-link\" href=\"http://127.0.0.1:9876/hub\" target=\"_blank\" title=\"통합 모니터링 Hub\">🎯📊</a>\n"
     "    <button type=\"button\" onclick=\"window.close()\">닫기 ✕</button>\n"
     "  </nav>\n"
     "</header>\n"
@@ -755,7 +778,7 @@ canonical_header = (
     "  background: rgba(0,0,0,0.16); text-decoration: underline; }\n"
     "```\n"
     "   불변식 (재발 차단): 배지=`<a class=\"proj-badge\" onclick=...POST /open-project...>` (정적 span 금지·Issue103), 세션=`<a class=\"sess-link\" onclick=...POST /open-session {cwd,sid}...>` (Issue137) → "
-    "순서 `📁 배지`→`🖥 세션`→`🎯 Hub`→`닫기 ✕` → 넷 모두 `<header>` 안 `.header-actions` 동일 행 (헤더 밖 div 금지·Issue88) → "
+    "순서 `📁 배지`→`🆚 세션`→`🎯📊 Hub`→`닫기 ✕` → 넷 모두 `<header>` 안 `.header-actions` 동일 행 (헤더 밖 div 금지·Issue88) → "
     "flex+space-between+wrap 로 우측 overflow 방지. 조상(`html`/`body`/컨테이너)에 `overflow:hidden|clip` 금지 (sticky 무효화).\n"
 ).replace("__PNAME__", project_name).replace("__PCOLOR__", project_color).replace("__CWD__", cwd).replace("__SID__", sid_full)
 

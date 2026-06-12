@@ -217,7 +217,7 @@ read -r PROJECT_NAME PROJECT_COLOR <<< "$(CWD_VAL="$cwd" python3 <<'PYEOF'
 import hashlib, os, re
 cwd = os.environ.get('CWD_VAL', '')
 root = ''
-color = ''
+hexcol = ''
 d = cwd
 while d and d != '/':
     p = os.path.join(d, '.vscode', 'settings.json')
@@ -225,11 +225,11 @@ while d and d != '/':
         try:
             m = re.search(r'"peacock\.color"\s*:\s*"(#[0-9A-Fa-f]{3,8})"', open(p, encoding='utf-8').read())
             if m:
-                color = m.group(1); root = d; break
+                hexcol = m.group(1); root = d; break
         except Exception:
             pass
     d = os.path.dirname(d)
-if not color:
+if not hexcol:
     bt = chr(96)
     try:
         for line in open(os.path.expanduser('~/_git/___pm/Projects.md'), encoding='utf-8'):
@@ -239,12 +239,35 @@ if not color:
             if paths and hexes:
                 ph = os.path.expanduser(paths[0]).rstrip('/')
                 if (cwd == ph or cwd.startswith(ph + '/')) and len(ph) > len(root or ''):
-                    root = ph; color = hexes[-1]
+                    root = ph; hexcol = hexes[-1]
     except Exception:
         pass
-if not color:
-    h = hashlib.md5(cwd.encode('utf-8')).hexdigest()[:8] if cwd else ''
-    color = ('hsl(%d,60%%,45%%)' % (int(h[:4], 16) % 360)) if h else 'hsl(220,60%,45%)'
+def _hex_to_hsl(hx):
+    hx = hx.lstrip('#')
+    if len(hx) == 3:
+        hx = ''.join(c*2 for c in hx)
+    r = int(hx[0:2],16)/255.0; g = int(hx[2:4],16)/255.0; b = int(hx[4:6],16)/255.0
+    mx = max(r,g,b); mn = min(r,g,b); l = (mx+mn)/2.0; dlt = mx-mn
+    if dlt == 0:
+        return 0.0, 0.0, l
+    s = dlt/(2-mx-mn) if l > 0.5 else dlt/(mx+mn)
+    if mx == r: h = ((g-b)/dlt) % 6
+    elif mx == g: h = (b-r)/dlt + 2
+    else: h = (r-g)/dlt + 4
+    return h*60, s, l
+if hexcol:
+    h, s, l = _hex_to_hsl(hexcol)
+else:
+    hsh = hashlib.md5(cwd.encode('utf-8')).hexdigest()[:8] if cwd else ''
+    if hsh:
+        h = int(hsh[:4], 16) % 360; s = 0.55; l = 0.85
+    else:
+        h = 220; s = 0.30; l = 0.85
+# Issue157: 가독성 보장 — 너무 밝은 peacock(>82%)는 darken, 채도 클램프. hue(프로젝트 정체성) 유지.
+if l > 0.82: l = 0.80
+if s > 0.72: s = 0.72
+if s < 0.40: s = 0.45
+color = 'hsl(%d,%d%%,%d%%)' % (round(h), round(s*100), round(l*100))
 name = os.path.basename(root or cwd) or cwd or 'unknown'
 print(name.replace(' ', '_'), color.replace(' ', ''))
 PYEOF
@@ -350,7 +373,7 @@ marker_data = os.environ.get('QUESTIONS_JSON', '{}')
 out_dir = os.environ.get('OUT_DIR', '/tmp/___pm')
 sid = os.environ.get('SID', '')
 project_name = os.environ.get('PROJECT_NAME', 'unknown')
-project_color = os.environ.get('PROJECT_COLOR', 'hsl(220,60%,45%)')
+project_color = os.environ.get('PROJECT_COLOR', 'hsl(220,30%,90%)')
 server_port = os.environ.get('SERVER_PORT', '9876')
 server_token = os.environ.get('SERVER_TOKEN', '')
 cwd_hash = os.environ.get('CWD_HASH', '')
@@ -405,8 +428,8 @@ project_header_guide = (
     "    <a class=\"proj-badge\" href=\"#\" title=\"클릭 → VSCode 로 __PNAME__ 열기\"\n"
     "       onclick=\"event.preventDefault();fetch('http://127.0.0.1:__SPORT__/open-project',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'__ROOT__'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('VSCode 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — VSCode 열기 실패');});\">📁 __PNAME__</a>\n"
     "    <a class=\"sess-link\" href=\"#\" title=\"클릭 → 이 문서를 만든 세션 탭으로 포커스\"\n"
-    "       onclick=\"event.preventDefault();fetch('http://127.0.0.1:__SPORT__/open-session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'__ROOT__',sid:'__SID__'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('세션 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — 세션 열기 실패');});\">🖥 세션</a>\n"
-    "    <a class=\"hub-link\" href=\"http://127.0.0.1:__SPORT__/hub\" target=\"_blank\" title=\"통합 모니터링 Hub\">🎯</a>\n"
+    "       onclick=\"event.preventDefault();fetch('http://127.0.0.1:__SPORT__/open-session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'__ROOT__',sid:'__SID__'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('세션 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — 세션 열기 실패');});\">🆚 세션</a>\n"
+    "    <a class=\"hub-link\" href=\"http://127.0.0.1:__SPORT__/hub\" target=\"_blank\" title=\"통합 모니터링 Hub\">🎯📊</a>\n"
     "    <button type=\"button\" onclick=\"window.close()\">닫기 ✕</button>\n"
     "  </nav>\n"
     "</header>\n"
