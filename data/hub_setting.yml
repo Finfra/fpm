@@ -13,6 +13,7 @@ live_session_order: project # 활성세션 정렬 — updated(최근갱신순) /
 
 browser_focus: false       # 렌더 시 브라우저 포커스 탈취 (false=백그라운드 open -g, Issue128)
 default_browser: chrome    # 렌더 브라우저 — firefox/chrome/edge/safari 또는 .app 절대경로 (Issue130)
+browser_tab_reuse: true    # hub 탭 재사용 — true=기존 :9876 탭 1개에 덮어쓰기(누적 제거, chrome/safari/edge만) / false=매번 새 탭(firefox 등) (Issue162)
 
 bind_host: 127.0.0.1       # hub 서버 listen 인터페이스 (0.0.0.0=원격 개방+allowlist, restart 필요, Issue141)
 # advertise_host: 192.168.0.10  # hub|both URL host. 생략 시 bind_host fallback. ⚠️0.0.0.0+생략 금지 (Issue153)

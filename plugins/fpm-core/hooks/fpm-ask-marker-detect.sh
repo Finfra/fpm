@@ -350,9 +350,17 @@ case "$_db" in
 esac
 # browser_focus: false(기본)=백그라운드 open(-g, 포커스 미탈취), true=foreground
 if grep -qE '^[[:space:]]*browser_focus:[[:space:]]*true' "$HUB_SETTING_FILE" 2>/dev/null; then
-  HTM_OPEN_CMD="open -a \"$_app\""
+  _focus="true"; HTM_OPEN_CMD="open -a \"$_app\""
 else
-  HTM_OPEN_CMD="open -g -a \"$_app\""
+  _focus="false"; HTM_OPEN_CMD="open -g -a \"$_app\""
+fi
+# Issue162: browser_tab_reuse=true & 재사용 가능 브라우저(chrome/edge/safari) → 탭 재사용 helper 로 치환.
+#   match=:9876 origin → /hub 대시보드 + htm-doc?path=… 모든 hub URL 단일 탭. file:// 등 미매칭은 새 탭(폴백 동등).
+_reuse=$(grep -E '^[[:space:]]*browser_tab_reuse:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//')
+_helper="$HOME/_git/___pm/plugins/fpm-core/hooks/fpm-browser-open.sh"
+case "$_app" in "Google Chrome"|"Microsoft Edge"|"Safari") _reusable=1 ;; *) _reusable=0 ;; esac
+if [ "$_reuse" = "true" ] && [ "$_reusable" = "1" ] && [ -f "$_helper" ]; then
+  HTM_OPEN_CMD="bash \"$_helper\" -a \"$_app\" -f \"$_focus\" -r true -m http://127.0.0.1:9876"
 fi
 
 QUESTIONS_JSON="$MARKER_DATA" \
