@@ -5,7 +5,7 @@
 #   1. <repo>/sh/fpm.sh 부트스트랩을 ~/.zshrc 에서 source (FPM_BASE export + 마커 가드 — 중복 방지)
 #   2. ~/.info/__pmBasePath.txt 생성 → <repo>/projects
 #   3. projects/ 스캐폴드 (없으면 생성)
-#   4. 운영 필수 파일 배치: Servers.md / Projects.md 부재 시 *_org 예제 복사
+#   4. 운영 필수 파일 배치: Servers.md / Projects.md / data/hub_setting.yml 부재 시 *_org 예제 복사
 #   5. hub 서버 안내 출력
 #
 # 사용: bash install.sh            (또는 ./install.sh)
@@ -111,6 +111,7 @@ place_org() {
 }
 place_org "Servers.md"  "Servers_org.md"
 place_org "Projects.md" "Projects_org.md"
+place_org "data/hub_setting.yml" "data/hub_setting_org.yml"
 
 # ── 5. 안내 ──────────────────────────────────────────────────
 cat <<EOF
