@@ -9,18 +9,18 @@
     "panel.border": "#ffffff",
     "sash.hoverBorder": "#ffffff",
     "sideBar.border": "#ffffff",
-    "statusBar.background": "#ffffdd",
-    "statusBar.border": "#ffffdd",
-    "statusBar.debuggingBackground": "#ddddff",
-    "statusBar.debuggingBorder": "#ddddff",
-    "statusBarItem.hoverBackground": "#ffffaa",
-    "statusBarItem.remoteBackground": "#ffffdd",
+    "statusBar.background": "#eeeedd",
+    "statusBar.border": "#eeeedd",
+    "statusBar.debuggingBackground": "#ddddee",
+    "statusBar.debuggingBorder": "#ddddee",
+    "statusBarItem.hoverBackground": "#ddddbb",
+    "statusBarItem.remoteBackground": "#eeeedd",
     "tab.activeBorder": "#ffffff",
-    "titleBar.activeBackground": "#ffffdd",
-    "titleBar.border": "#ffffdd",
-    "titleBar.inactiveBackground": "#ffffdd99"
+    "titleBar.activeBackground": "#eeeedd",
+    "titleBar.border": "#eeeedd",
+    "titleBar.inactiveBackground": "#eeeedd99"
   },
-  "peacock.color": "#ffffdd",
+  "peacock.color": "#eeeedd",
   "window.title": "🗓️🎯🔌 ${rootName}${separator}${activeEditorShort}",
   "peacock.remoteColor": "#ff3d00"
 }

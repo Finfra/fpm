@@ -295,4 +295,13 @@ PM 도구 프로젝트 쌍. `___pm`(prj1) = 개발 원본 SSOT, `fpm`(prj7, `~/_
     - /issue-closer-g
 * capture
 
+# test1 (g 도메인, fpm 테스트용)
+## main
+* dev
+* issue
+    - /issue-reg-g
+    - /issue-fix-g
+    - /issue-closer-g
+* capture
+
 
