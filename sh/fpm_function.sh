@@ -639,3 +639,23 @@ server-check() {
     echo
     echo "Source: $servers_file"
 }
+
+# --- hub 브라우저 열기 ($FPM_BASE/plugins/fpm-core/hooks/fpm-browser-open.sh) ---
+# fhub : 터미널(iTerm 등)에서 hub 대시보드를 브라우저 탭 1개 재사용하며 열기 (Issue162).
+#   Keyboard Maestro 매크로 "fPm hub page Open" 의 CLI 버전.
+#   default_browser(hub_setting.yml)를 따르되 firefox(탭 재사용 불가)면 chrome 으로 강제.
+#   match=origin(:9876) → /hub·?path=… 모든 hub URL 을 단일 탭으로 재사용.
+#   Usage: fhub [url]   ex) fhub  /  fhub http://127.0.0.1:9876/hub
+fhub() {
+    local url="${1:-http://127.0.0.1:9876/hub}"
+    local helper="$FPM_BASE/plugins/fpm-core/hooks/fpm-browser-open.sh"
+    [[ -f "$helper" ]] || { echo "fhub: helper 없음 ($helper)" >&2; return 1; }
+    local db
+    db=$(grep -E '^[[:space:]]*default_browser:' "$FPM_BASE/data/hub_setting.yml" 2>/dev/null \
+         | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//; s/^"//; s/"$//')
+    case "$db" in
+        chrome|Chrome|safari|Safari|edge|Edge) ;;   # 탭 재사용 가능 → 그대로
+        *) db=chrome ;;                              # firefox/미설정 → chrome 강제
+    esac
+    bash "$helper" -a "$db" -f true -r true -m "http://127.0.0.1:9876" "$url"
+}

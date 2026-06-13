@@ -150,7 +150,16 @@ open /Applications/_nowage_app/$app.app
 ## show (a모드)
 SSOT: `~/.claude/_doc_arch/hub-mode-arch.md`
 * 기본 on (prj 폴더) / 명시적 on (`..show`, 구 `..hub`)
-* HTML 문서 Write + Firefox open
+* HTML 문서 Write + 브라우저 open (`default_browser` / `browser_tab_reuse` 따름 — 아래 섹션)
+
+## 브라우저 / 탭 재사용 (Issue162, 2026-06-13)
+hub 렌더가 어느 브라우저로 어떻게 열리는지는 `data/hub_setting.yml` 의 `default_browser` + `browser_tab_reuse` 가 결정. 핵심 트레이드오프는 "탭 재사용 가능 여부" 단 하나:
+
+* **Firefox** = 탭 재사용 **불가**. 네이티브·CLI·AppleScript 어느 경로로도 tab 제어가 안 됨(scriptable tab 사전 부재). 렌더할 때마다 새 탭이 무한 누적되는 것을 감수해야 함.
+* **Chrome / Safari / Edge** = AppleScript 로 기존 `:9876` hub 탭을 찾아 재사용 가능 → **권장**. `browser_tab_reuse: true` + `default_browser: chrome` 조합이면 hub 탭이 항상 1개로 유지됨.
+* 매칭은 origin(`http://127.0.0.1:9876`) prefix 기준이라 `/hub` 대시보드와 응답별 `htm-doc?path=…` 가 **같은 탭 하나**로 통합됨(기존 탭에 URL 덮어쓰기 = Issue162 Q2 "단일 탭 통합" 결정). 대시보드를 항상 따로 보존하고 싶으면 `browser_tab_reuse: false` 로 끄거나 대시보드만 별도 창으로 분리할 것.
+* 터미널(iTerm 등)에서는 `fhub` 한 줄로 동일 동작 — Keyboard Maestro 매크로 "fPm hub page Open" 의 CLI 버전이며, hook 과 공용 helper(`plugins/fpm-core/hooks/fpm-browser-open.sh`)를 공유함.
+* 구 Issue130 의 "Chrome=일반 / Firefox=hub 전용 분리" 권장은 Firefox 탭 누적 문제 때문에 철회됨.
 
 ## ask (b모드)
 * `..ask` 명시 트리거 또는 `AskUserQuestion` intercept (`ask-intercept.sh`)
