@@ -704,7 +704,10 @@ HUB_SETTING_DEFAULTS = {"feed_limit": 100, "feed_default_visible": True, "feed_p
                         "bind_host": "127.0.0.1",
                         # Issue159: 활성세션 정렬 — updated(최근갱신순) / created(세션 시작순 고정)
                         #   / project(Projects.md 번호순, 미등록 cwd 는 끝)
-                        "live_session_order": "updated"}
+                        "live_session_order": "updated",
+                        # Issue166: 명령(프롬프트) 전 빈 live 세션 표시 여부.
+                        #   false(기본)=전체 숨김 / true=프로젝트당 최신 1개 표시(Issue136 dedup)
+                        "live_session_show_empty": False}
 _hub_setting_cache: dict = {}
 _hub_setting_cache_mtime: float = 0.0
 
@@ -2270,6 +2273,9 @@ class Handler(BaseHTTPRequestHandler):
         #   빈 세션은 정보가 없으므로 가장 최근(updated_age 최소) 1개만 남기고 collect
         #   단계에서 숨긴다. title 있는 live·dashboard 세션은 전부 유지(중요 정보).
         #   results 는 updated_age 오름차순 정렬 상태 → 순회 시 첫 빈 세션이 최신.
+        # Issue166: live_session_show_empty=false(기본) 면 빈 live 세션 전체 숨김.
+        #   true 면 종전 Issue136 동작(프로젝트당 최신 1개)으로 노출.
+        _show_empty = _load_hub_setting().get("live_session_show_empty", False)
         _empty_live_seen = set()
         _deduped = []
         for r in results:
@@ -2279,6 +2285,8 @@ class Handler(BaseHTTPRequestHandler):
             if not is_empty_live:
                 _deduped.append(r)
                 continue
+            if not _show_empty:
+                continue  # Issue166: 명령 전 빈 세션 전체 숨김 (기본값)
             h2 = r.get("cwd_hash")
             if h2 in _empty_live_seen:
                 continue  # 이 프로젝트의 빈 live 세션 이미 1개 표시함 → 숨김
