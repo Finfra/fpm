@@ -82,9 +82,23 @@ python3 server.py
 
 `keyboard-maestro/README.md` 참조 — `.kmmacros` import + Accessibility 권한.
 
-# 제거
+# 제거 / 클린 재설치
+
+`uninstall.sh` 가 설치 흔적을 백업한 뒤 제거합니다 (멱등):
 
 ```bash
-# ~/.zshrc 의 fpm 블록(# >>> fpm functions >>> ~ # <<<) 삭제
-rm ~/.info/__pmBasePath.txt
+bash uninstall.sh
+```
+
+제거 대상:
+
+1. `~/.zshrc` / `~/.bashrc` 의 fpm 블록 (`# >>> fpm functions >>>` ~ `# <<<`)
+2. `~/.info/__pmBasePath.txt`
+
+백업 위치: `<repo>/_doc_work/z_done/fpm-uninstall-<날짜시각>/` (환경변수 `FPM_BACKUP_DIR` 로 변경 가능). `projects/`·`Projects.md`·`Servers.md` 등 사용자 데이터는 **보존**되며, 필요 시 백업 확인 후 직접 삭제하세요.
+
+클린 재설치(백업·제거 후 재설치) 는 한 번에:
+
+```bash
+bash install.sh --clean
 ```

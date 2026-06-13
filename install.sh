@@ -8,7 +8,8 @@
 #   4. 운영 필수 파일 배치: Servers.md / Projects.md 부재 시 *_org 예제 복사
 #   5. hub 서버 안내 출력
 #
-# 사용: bash install.sh   (또는 ./install.sh)
+# 사용: bash install.sh            (또는 ./install.sh)
+#       bash install.sh --clean   클린 재설치 — uninstall.sh 로 기존 흔적 백업·제거 후 설치
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,6 +21,31 @@ MARKER_END="# <<< fpm functions <<<"
 
 info()  { printf '\033[36m[fpm]\033[0m %s\n' "$1"; }
 warn()  { printf '\033[33m[fpm]\033[0m %s\n' "$1"; }
+
+# ── 0. 인자 파싱 ──────────────────────────────────────────────
+CLEAN=0
+for arg in "$@"; do
+    case "$arg" in
+        --clean) CLEAN=1 ;;
+        -h|--help)
+            echo "usage: install.sh [--clean]"
+            echo "  --clean : uninstall.sh 로 기존 fpm 흔적 백업·제거 후 설치 (클린 재설치)"
+            exit 0 ;;
+        *) warn "알 수 없는 인자: $arg (무시)" ;;
+    esac
+done
+
+# --clean: 설치 전 백업+제거 (uninstall.sh 위임)
+if [[ "$CLEAN" -eq 1 ]]; then
+    if [[ -f "$REPO_DIR/uninstall.sh" ]]; then
+        info "--clean: uninstall.sh 로 기존 흔적 백업 후 제거"
+        bash "$REPO_DIR/uninstall.sh"
+        echo ""
+        info "클린 제거 완료 — 신규 설치 진행"
+    else
+        warn "--clean 지정됐으나 uninstall.sh 없음 — 백업 없이 설치 진행 (멱등 재설치)"
+    fi
+fi
 
 # ── 1. fpm.sh 부트스트랩 source 라인 추가 (멱등, zsh + bash 양쪽) ──
 # FPM_BASE 명시 export 후 sh/fpm.sh source (fpm.sh 헤더 권장 로드 규약).
@@ -104,5 +130,8 @@ cat <<EOF
   → http://127.0.0.1:9876/hub
 
 [선택] Keyboard Maestro 매크로:  keyboard-maestro/README.md
+
+제거:  bash uninstall.sh        (셸 흔적 백업 후 제거)
+클린 재설치:  bash install.sh --clean
 ────────────────────────────────────────────
 EOF
