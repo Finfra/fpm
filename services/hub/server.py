@@ -22,6 +22,7 @@ import signal
 import subprocess
 import shlex
 import re
+import tempfile
 import socket
 import threading
 from collections import deque
@@ -751,6 +752,231 @@ def _load_hub_setting() -> dict:
     return setting
 
 
+# Issue168: 설정 모달 UI 스키마 — ⚙️ 버튼이 여는 인앱 3탭 설정창의 분류·위젯·유효값·적용방식.
+#   탭(tab): basic(기본)/session(세션관리)/advanced(고급)
+#   위젯(widget): toggle(bool)/select/number/text
+#   적용(apply): auto(server.py mtime 재로드) / hook(글로벌 hook grep, 다음 렌더 turn) / restart(서버 재시작 필요)
+#   분류 SSOT: _doc_arch/hub_settings_ui.md (본 상수는 그 미러)
+HUB_SETTING_SCHEMA = [
+    # 탭 1: 기본 — 렌더·브라우저
+    {"key": "default_browser", "tab": "basic", "widget": "select",
+     "options": ["firefox", "chrome", "edge", "safari"], "allow_custom": True,
+     "apply": "hook", "comment": "렌더 브라우저 (firefox/chrome/edge/safari 또는 .app 절대경로)"},
+    {"key": "browser_focus", "tab": "basic", "widget": "toggle",
+     "apply": "hook", "comment": "렌더 시 브라우저 포커스 탈취 (false=백그라운드)"},
+    {"key": "browser_tab_reuse", "tab": "basic", "widget": "toggle",
+     "apply": "hook", "comment": "hub 탭 재사용 (chrome/safari/edge 만, firefox 는 항상 새 탭)"},
+    {"key": "render_target", "tab": "basic", "widget": "select",
+     "options": ["local-open", "hub", "both"],
+     "apply": "hook", "comment": "..show 표시 경로 — local-open(file://)/hub(서버 URL)/both"},
+    {"key": "feed_default_visible", "tab": "basic", "widget": "toggle",
+     "apply": "auto", "comment": "피드 사이드바 최초 표시 여부"},
+    # 탭 2: 세션관리 — 세션·피드·표시 상한 (전부 server.py 소비 → auto)
+    {"key": "live_session_limit", "tab": "session", "widget": "number", "min": 0,
+     "apply": "auto", "comment": "세션 카드당 최대 행 (0=무제한)"},
+    {"key": "live_session_order", "tab": "session", "widget": "select",
+     "options": ["updated", "created", "project"],
+     "apply": "auto", "comment": "활성세션 정렬 — updated/created/project"},
+    {"key": "live_session_show_empty", "tab": "session", "widget": "toggle",
+     "apply": "auto", "comment": "명령 전 빈 live 세션 표시 (false=숨김)"},
+    {"key": "card_limit", "tab": "session", "widget": "number", "min": 0,
+     "apply": "auto", "comment": "htm 카드 최대 표시 수 (0=무제한)"},
+    {"key": "search_limit", "tab": "session", "widget": "number", "min": 0,
+     "apply": "auto", "comment": "디스크 재스캔 디렉토리당 파일 상한 (0=무제한)"},
+    {"key": "feed_limit", "tab": "session", "widget": "number", "min": 1,
+     "apply": "auto", "comment": "피드 보관·표시 최대 항목 수"},
+    {"key": "feed_show_project_emoji", "tab": "session", "widget": "toggle",
+     "apply": "auto", "comment": "피드 항목 프로젝트 이모지 표시"},
+    {"key": "feed_show_project_name", "tab": "session", "widget": "toggle",
+     "apply": "auto", "comment": "피드 항목 프로젝트명 표시"},
+    # 탭 3: 고급 — 네트워크
+    {"key": "bind_host", "tab": "advanced", "widget": "text",
+     "apply": "restart", "comment": "hub 서버 listen 인터페이스 (127.0.0.1/0.0.0.0/IP). 변경 시 restart 필요"},
+    {"key": "advertise_host", "tab": "advanced", "widget": "text", "optional": True,
+     "apply": "hook", "comment": "hub|both URL host (생략 시 bind_host fallback). 0.0.0.0+생략 금지"},
+    {"key": "feed_poll_interval", "tab": "advanced", "widget": "number", "min": 1,
+     "apply": "auto", "comment": "피드 폴링 주기(초, 참고값)"},
+]
+HUB_SETTING_SCHEMA_BY_KEY = {s["key"]: s for s in HUB_SETTING_SCHEMA}
+# advertise_host 는 yml 에서 기본 주석 처리(`# advertise_host: ...`)된 optional 키.
+_HOST_RE = re.compile(r"^[A-Za-z0-9._\-]*$")
+
+
+def _cast_setting_value(schema: dict, val: str):
+    """raw 문자열 val 을 schema widget 기준 타입으로 캐스팅."""
+    w = schema["widget"]
+    if w == "toggle":
+        return val.lower() == "true"
+    if w == "number":
+        try:
+            return int(val)
+        except ValueError:
+            return 0
+    return val  # select / text → 문자열 그대로
+
+
+def _load_hub_setting_raw() -> dict:
+    """Issue168: hub_setting.yml 의 **모든** 스키마 키 현재값을 반환 (HUB_SETTING_DEFAULTS
+    화이트리스트 제한 없이 — browser_*·render_target·advertise_host 등 hook 소비 키 포함).
+    주석 처리된 optional 키(advertise_host)는 미설정(빈 문자열)으로 반환. server.py 의
+    _load_hub_setting 캐시와 독립 — 파일 직독."""
+    values = {}
+    # 스키마 기본값(파일에 라인 없을 때 폴백): toggle→False, number→0, str→""
+    for s in HUB_SETTING_SCHEMA:
+        if s["widget"] == "toggle":
+            values[s["key"]] = bool(HUB_SETTING_DEFAULTS.get(s["key"], False))
+        elif s["widget"] == "number":
+            values[s["key"]] = int(HUB_SETTING_DEFAULTS.get(s["key"], 0))
+        else:
+            values[s["key"]] = str(HUB_SETTING_DEFAULTS.get(s["key"], ""))
+    try:
+        with open(HUB_SETTING_FILE, encoding="utf-8") as f:
+            for line in f:
+                # 주석 전용 라인은 무시 (optional 키 주석은 미설정 의미 → 폴백 유지)
+                stripped = line.lstrip()
+                if stripped.startswith("#") or ":" not in stripped:
+                    continue
+                body = line.split("#", 1)[0].strip()  # inline 주석 제거
+                if ":" not in body:
+                    continue
+                key, _, val = body.partition(":")
+                key, val = key.strip(), val.strip()
+                if key in HUB_SETTING_SCHEMA_BY_KEY:
+                    values[key] = _cast_setting_value(HUB_SETTING_SCHEMA_BY_KEY[key], val)
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        log(f"_load_hub_setting_raw failed: {e}")
+    return values
+
+
+def _validate_setting(schema: dict, val) -> str:
+    """단일 키 값 검증. 통과 시 None, 실패 시 에러 문자열."""
+    w = schema["widget"]
+    if w == "toggle":
+        if not isinstance(val, bool):
+            return f"{schema['key']}: bool required"
+    elif w == "number":
+        if not isinstance(val, int) or isinstance(val, bool):
+            return f"{schema['key']}: integer required"
+        if val < schema.get("min", 0):
+            return f"{schema['key']}: must be >= {schema.get('min', 0)}"
+    elif w == "select":
+        if val in schema["options"]:
+            return None
+        if schema.get("allow_custom") and isinstance(val, str) and val.startswith("/") and val.endswith(".app"):
+            return None
+        return f"{schema['key']}: must be one of {schema['options']} (or .app path)"
+    elif w == "text":
+        if not isinstance(val, str):
+            return f"{schema['key']}: string required"
+        if not schema.get("optional") and not val:
+            return f"{schema['key']}: required"
+        if not _HOST_RE.match(val):
+            return f"{schema['key']}: invalid host chars"
+    return None
+
+
+def _setting_to_yml_value(schema: dict, val) -> str:
+    """파이썬 값 → yml 표기 문자열."""
+    if schema["widget"] == "toggle":
+        return "true" if val else "false"
+    return str(val)
+
+
+def _write_hub_setting(payload: dict, client_mtime: float = None):
+    """Issue168: payload(변경 diff)를 hub_setting.yml 에 주석 보존하며 기록.
+    라인 in-place 치환(inline 주석 보존) + temp→os.replace 원자적 쓰기.
+    반환 (ok, restart_required, status_code, err)."""
+    if not isinstance(payload, dict) or not payload:
+        return False, [], 400, "empty payload"
+    # 1. 키 화이트리스트 + 값 검증
+    for key, val in payload.items():
+        sc = HUB_SETTING_SCHEMA_BY_KEY.get(key)
+        if sc is None:
+            return False, [], 400, f"unknown key: {key}"
+        err = _validate_setting(sc, val)
+        if err:
+            return False, [], 400, err
+    # 2. 위험 조합 차단: 결과 bind_host=0.0.0.0 + advertise_host 빈값
+    cur = _load_hub_setting_raw()
+    merged = dict(cur)
+    merged.update(payload)
+    if merged.get("bind_host") == "0.0.0.0" and not (merged.get("advertise_host") or "").strip():
+        return False, [], 400, "bind_host 0.0.0.0 requires advertise_host (URL 좀비 가드)"
+    # 3. 동시편집 감지 (선택): client_mtime 제공 시 현재 mtime 과 비교
+    try:
+        cur_mtime = os.stat(HUB_SETTING_FILE).st_mtime
+    except FileNotFoundError:
+        return False, [], 500, "hub_setting.yml not found"
+    if client_mtime is not None and abs(cur_mtime - float(client_mtime)) > 1e-6:
+        return False, [], 409, "file changed externally — reload"
+    # 4. 라인 in-place 치환
+    try:
+        with open(HUB_SETTING_FILE, encoding="utf-8") as f:
+            lines = f.readlines()
+    except OSError as e:
+        return False, [], 500, f"read failed: {e}"
+
+    active_re = re.compile(r"^(\s*)([a-z_]+)(\s*:\s*)(\S+)(\s*#.*)?(\r?\n?)$")
+    comment_re = re.compile(r"^(\s*)#\s*([a-z_]+)(\s*:\s*)(\S+)(\s*#.*)?(\r?\n?)$")
+    handled = set()
+    out = []
+    for line in lines:
+        m = active_re.match(line)
+        if m and m.group(2) in payload:
+            key = m.group(2)
+            sc = HUB_SETTING_SCHEMA_BY_KEY[key]
+            new_val = (payload[key] or "").strip() if sc["widget"] == "text" else payload[key]
+            # optional text 키가 빈값 → 라인을 다시 주석 처리
+            if sc["widget"] == "text" and sc.get("optional") and not new_val:
+                out.append(f"{m.group(1)}# {key}{m.group(3)}{m.group(4)}{m.group(5) or ''}{m.group(6)}")
+            else:
+                yval = _setting_to_yml_value(sc, new_val)
+                out.append(f"{m.group(1)}{key}{m.group(3)}{yval}{m.group(5) or ''}{m.group(6)}")
+            handled.add(key)
+            continue
+        cm = comment_re.match(line)
+        if cm and cm.group(2) in payload and cm.group(2) not in handled:
+            key = cm.group(2)
+            sc = HUB_SETTING_SCHEMA_BY_KEY[key]
+            new_val = (payload[key] or "").strip()
+            if new_val:
+                # 주석 → 활성화
+                yval = _setting_to_yml_value(sc, new_val)
+                out.append(f"{cm.group(1)}{key}{cm.group(3)}{yval}{cm.group(5) or ''}{cm.group(6)}")
+                handled.add(key)
+                continue
+            # 빈값 → 주석 라인 유지 (미설정)
+            handled.add(key)
+        out.append(line)
+    # 5. payload 에 있으나 파일에 라인 없는 키 → 파일 끝 append
+    tail = []
+    for key, val in payload.items():
+        if key in handled:
+            continue
+        sc = HUB_SETTING_SCHEMA_BY_KEY[key]
+        if sc["widget"] == "text" and sc.get("optional") and not (val or "").strip():
+            continue  # 미설정 optional → append 안 함
+        tail.append(f"{key}: {_setting_to_yml_value(sc, val)}\n")
+    if tail:
+        if out and not out[-1].endswith("\n"):
+            out[-1] += "\n"
+        out.extend(tail)
+    # 6. 원자적 쓰기
+    try:
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(HUB_SETTING_FILE), prefix=".hub_setting_", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.writelines(out)
+        os.replace(tmp, HUB_SETTING_FILE)
+    except OSError as e:
+        return False, [], 500, f"write failed: {e}"
+    # 7. restart 필요 키 집계 (값이 실제 변경된 restart 키만)
+    restart_required = [k for k in payload
+                        if HUB_SETTING_SCHEMA_BY_KEY[k]["apply"] == "restart" and cur.get(k) != payload[k]]
+    return True, restart_required, 200, None
+
+
 # Issue87: 중요 이벤트 판정 모듈 임계값 — _compute_important_events 가 참조.
 #   상수로 분리하여 판정 기준을 한곳에서 조정 가능하게 한다.
 IMPORTANT_RESPONSE_WAIT_SEC = 300    # 응답 정체 판정 하한 (5분)
@@ -1201,6 +1427,9 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/file-stat":
             self._handle_file_stat(parsed)
             return
+        if parsed.path == "/api/settings":
+            self._handle_get_settings(parsed)
+            return
         if parsed.path == "/hub":
             self._handle_hub(parsed)
             return
@@ -1285,6 +1514,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/open-settings-yml":
             self._handle_open_settings_yml(parsed)
+            return
+        if parsed.path == "/api/settings":
+            self._handle_post_settings(parsed)
             return
         # Issue17 Phase 1
         if parsed.path == "/session/register":
@@ -2941,6 +3173,44 @@ class Handler(BaseHTTPRequestHandler):
             return
         log("POST /open-settings-yml — hub_setting.yml")
         self._send_json(200, {"status": "opened", "path": HUB_SETTING_FILE})
+
+    def _handle_get_settings(self, parsed):
+        """Issue168: GET /api/settings — 현재 yml 값 + schema 반환 (설정 모달 폼 렌더용)."""
+        client_ip = self.client_address[0] if self.client_address else ""
+        if not _ip_allowed(client_ip):
+            self._send_json(403, {"error": "localhost only"})
+            return
+        try:
+            mtime = os.stat(HUB_SETTING_FILE).st_mtime
+        except FileNotFoundError:
+            mtime = 0.0
+        self._send_json(200, {
+            "values": _load_hub_setting_raw(),
+            "schema": HUB_SETTING_SCHEMA,
+            "mtime": mtime,
+        })
+
+    def _handle_post_settings(self, parsed):
+        """Issue168: POST /api/settings — 변경 diff 를 yml 에 주석 보존 기록."""
+        client_ip = self.client_address[0] if self.client_address else ""
+        if not _ip_allowed(client_ip):
+            self._send_json(403, {"error": "localhost only"})
+            return
+        body, err = self._read_json_body()
+        if err:
+            self._send_json(400, {"error": err})
+            return
+        payload = body.get("values") if isinstance(body, dict) else None
+        if not isinstance(payload, dict):
+            self._send_json(400, {"error": "values object required"})
+            return
+        client_mtime = body.get("mtime") if isinstance(body, dict) else None
+        ok, restart_required, code, werr = _write_hub_setting(payload, client_mtime)
+        if not ok:
+            self._send_json(code, {"error": werr})
+            return
+        log(f"POST /api/settings — keys={list(payload.keys())} restart={restart_required}")
+        self._send_json(200, {"status": "saved", "restart_required": restart_required})
 
     def _handle_htm_toggle(self, parsed):
         """Project List 토글 버튼 — 프로젝트의 per-cwd htm 상태 파일을 on↔off 플립.
@@ -5032,6 +5302,53 @@ span.imp-chip:hover { filter: brightness(1.12); }
 .btn-settings { flex: none; background: transparent; border: none;
   color: white; padding: 0.4rem 0.5rem; border-radius: 6px; font-size: 1.1em; cursor: pointer; line-height: 1; }
 .btn-settings:hover { background: rgba(255,255,255,0.2); }
+/* Issue168: 설정 모달 (3탭) */
+.set-tabs { display: flex; gap: 0.3rem; border-bottom: 1px solid var(--border); margin-bottom: 0.9rem; }
+.set-tab { background: transparent; border: none; border-bottom: 2px solid transparent; color: var(--muted);
+  padding: 0.5rem 0.9rem; font-size: 0.95em; cursor: pointer; }
+.set-tab:hover { color: var(--fg); }
+.set-tab.active { color: var(--fg); border-bottom-color: hsl(220,80%,55%); font-weight: 600; }
+.set-pane { display: none; }
+.set-pane.active { display: block; }
+.set-row { display: flex; align-items: center; gap: 0.7rem; padding: 0.5rem 0; border-bottom: 1px dashed var(--border); }
+.set-row:last-child { border-bottom: none; }
+.set-row label.set-key { flex: 0 0 13.5em; font-family: ui-monospace, monospace; font-size: 0.9em; }
+.set-row .set-input { flex: 0 0 auto; }
+.set-row .set-input input[type=number] { width: 6em; }
+.set-row .set-input input[type=text] { width: 14em; }
+.set-row .set-input select, .set-row .set-input input { padding: 0.25rem 0.4rem; border: 1px solid var(--border);
+  border-radius: 5px; background: var(--bg); color: var(--fg); font-size: 0.9em; }
+.set-row .set-desc { flex: 1 1 auto; min-width: 0; font-size: 0.78em; color: var(--muted); }
+.set-row .set-badge { flex: 0 0 auto; font-size: 0.72em; padding: 0.05rem 0.4rem; border-radius: 9px; white-space: nowrap; }
+.set-badge.b-auto { background: #d3f0d3; color: #1a5d1a; }
+.set-badge.b-hook { background: #d0e4f7; color: #134a78; }
+.set-badge.b-restart { background: #fbe3c5; color: #8a4b08; }
+.set-badge { cursor: help; }
+/* Issue168: 배지 hover 즉시 풍선 도움말 (position:fixed → modal-body overflow 비절단, 배지 위쪽 표시) */
+#set-tip { position: fixed; z-index: 3000; max-width: 270px; background: #222; color: #fff;
+  padding: 0.5rem 0.7rem; border-radius: 7px; font-size: 0.8rem; line-height: 1.55; text-align: left;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.35); pointer-events: none; white-space: normal; }
+#set-tip[hidden] { display: none; }
+#set-tip::after { content: ''; position: absolute; top: 100%; border: 7px solid transparent;
+  border-top-color: #222; left: var(--tip-arrow, 50%); transform: translateX(-50%); }
+/* 토글 스위치 */
+.set-sw { width: 2.4em; height: 1.3em; border-radius: 999px; border: none; padding: 0; cursor: pointer;
+  position: relative; background: rgba(128,128,128,0.45); transition: background 0.15s; }
+.set-sw.on { background: #2ca02c; }
+.set-sw .set-sw-knob { width: 1em; height: 1em; border-radius: 50%; background: #fff; position: absolute;
+  top: 50%; transform: translateY(-50%); left: 0.15em; transition: left 0.15s; box-shadow: 0 1px 2px rgba(0,0,0,0.3); }
+.set-sw.on .set-sw-knob { left: calc(100% - 1.15em); }
+.set-warn { background: rgba(250,180,80,0.15); border: 1px solid rgba(200,120,20,0.4); border-radius: 6px;
+  padding: 0.5rem 0.7rem; font-size: 0.8em; margin-bottom: 0.8rem; line-height: 1.5; }
+.set-ok-btn { flex: none; background: #2ca02c; color: #fff; border: 1px solid #1a7a1a; border-radius: 5px;
+  padding: 0.4rem 1.1rem; font-size: 0.95em; cursor: pointer; }
+.set-ok-btn:hover { background: #1a7a1a; }
+.set-ok-btn:disabled { opacity: 0.5; cursor: default; }
+@media (prefers-color-scheme: dark) {
+  .set-badge.b-auto { background: #1e3a1e; color: #8fd98f; }
+  .set-badge.b-hook { background: #16314a; color: #8ec6f0; }
+  .set-badge.b-restart { background: #4a3410; color: #e0a860; }
+}
 /* Project List 팝업 모달 */
 .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 2000;
   display: flex; align-items: center; justify-content: center; }
@@ -5364,6 +5681,33 @@ section.sec-collapsed .htm-bar-right { display: none; }
     </div>
   </div>
 </div>
+<div class="modal-backdrop" id="set-modal" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-label="hub 설정" style="width:min(720px,94vw)">
+    <div class="modal-head">
+      <span class="modal-title">⚙️ hub 설정</span>
+      <button class="modal-close" id="set-close" title="닫기 (ESC)" aria-label="닫기">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="set-tabs" id="set-tabs">
+        <button class="set-tab active" data-tab="basic">기본</button>
+        <button class="set-tab" data-tab="session">세션관리</button>
+        <button class="set-tab" data-tab="advanced">고급</button>
+      </div>
+      <div class="set-pane active" data-pane="basic" id="set-pane-basic"></div>
+      <div class="set-pane" data-pane="session" id="set-pane-session"></div>
+      <div class="set-pane" data-pane="advanced" id="set-pane-advanced">
+        <div class="set-warn">⚠️ <code>bind_host: 0.0.0.0</code> + <code>advertise_host</code> 생략 = hub 접근 불가. 0.0.0.0 개방 시 advertise_host 를 구체 IP·도메인으로 명시 (Issue153). <code>bind_host</code> 변경은 서버 restart 필요.</div>
+      </div>
+    </div>
+    <div class="modal-foot" style="gap:0.5rem">
+      <button class="pl-edit-btn" id="set-open-file" title="hub_setting.yml 을 VSCode 로 열기" style="background:#555;border-color:#444">📄 설정 파일 열기</button>
+      <span style="flex:1 1 auto"></span>
+      <button class="cf-btn cf-cancel" id="set-cancel">취소</button>
+      <button class="set-ok-btn" id="set-save">💾 저장</button>
+    </div>
+  </div>
+</div>
+<div id="set-tip" hidden></div>
 <script>
 const grid = document.getElementById('grid');
 const updated = document.getElementById('updated');
@@ -6411,15 +6755,151 @@ document.getElementById('pl-edit').addEventListener('click', () => {
   openProject(plSelectedPath);
 });
 
-document.getElementById('btn-settings').addEventListener('click', async () => {
+// Issue168: 설정 모달 (3탭) — ⚙️ 클릭 시 GET /api/settings → 폼 렌더 → 변경 diff 저장
+const setModal = document.getElementById('set-modal');
+let setSchema = [], setInitial = {}, setMtime = 0;
+
+function setEsc(html) {
+  return String(html).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+const SET_BADGE_TIP = {
+  auto: '🟢 자동 — 저장 즉시 적용. hub 서버가 파일 변경을 감지해 자동 재로드합니다. 추가 조작 불필요.',
+  hook: '🔵 다음턴 — 다음 렌더부터 적용. Claude 가 다음 응답을 그릴 때 새 값으로 동작합니다.',
+  restart: '🟠 restart — 서버 재시작 필요. /dashboard-server restart 를 해야 반영됩니다 (bind_host 등 기동 시 1회만 읽는 값).',
+};
+function setBadge(apply) {
+  const m = {auto: ['b-auto','🟢 자동'], hook: ['b-hook','🔵 다음턴'], restart: ['b-restart','🟠 restart']}[apply] || ['',''];
+  const tip = SET_BADGE_TIP[apply] || '';
+  return `<span class="set-badge ${m[0]}" data-tip="${setEsc(tip)}">${m[1]}</span>`;
+}
+function setRenderField(s, val) {
+  const id = 'setf-' + s.key;
+  if (s.widget === 'toggle') {
+    const on = val === true;
+    return `<button type="button" class="set-sw ${on?'on':''}" id="${id}" data-key="${s.key}" data-type="toggle" role="switch" aria-checked="${on}"><span class="set-sw-knob"></span></button>`;
+  }
+  if (s.widget === 'select') {
+    const opts = s.options.slice();
+    const isCustom = s.allow_custom && val && !opts.includes(val);
+    let html = `<select id="${id}" data-key="${s.key}" data-type="select">`;
+    for (const o of opts) html += `<option value="${setEsc(o)}" ${o===val?'selected':''}>${setEsc(o)}</option>`;
+    if (s.allow_custom) html += `<option value="__custom__" ${isCustom?'selected':''}>사용자 지정(.app)</option>`;
+    html += '</select>';
+    if (s.allow_custom) html += ` <input type="text" id="${id}-c" data-key="${s.key}" data-type="custom" value="${isCustom?setEsc(val):''}" placeholder="/Applications/X.app" style="${isCustom?'':'display:none'};width:13em">`;
+    return html;
+  }
+  if (s.widget === 'number') {
+    return `<input type="number" id="${id}" data-key="${s.key}" data-type="number" min="${s.min||0}" value="${setEsc(val)}">`;
+  }
+  return `<input type="text" id="${id}" data-key="${s.key}" data-type="text" value="${setEsc(val)}" placeholder="${s.optional?'(생략 가능)':''}">`;
+}
+function setRenderForm() {
+  for (const tab of ['basic','session','advanced']) {
+    const pane = document.getElementById('set-pane-' + tab);
+    // advanced 탭은 경고 배너 보존 → 배너 이후만 재구성
+    const warn = pane.querySelector('.set-warn');
+    pane.innerHTML = '';
+    if (warn) pane.appendChild(warn);
+    for (const s of setSchema.filter(x => x.tab === tab)) {
+      const row = document.createElement('div');
+      row.className = 'set-row';
+      row.innerHTML = `<label class="set-key" for="setf-${s.key}" title="${setEsc(s.comment||'')}">${setEsc(s.key)}</label>`
+        + `<span class="set-input">${setRenderField(s, setInitial[s.key])}</span>`
+        + `<span class="set-desc" title="${setEsc(s.comment||'')}">${setEsc(s.comment||'')}</span>`
+        + setBadge(s.apply);
+      pane.appendChild(row);
+    }
+  }
+  // 토글 스위치 클릭
+  setModal.querySelectorAll('.set-sw').forEach(b => b.addEventListener('click', () => {
+    const on = !b.classList.contains('on');
+    b.classList.toggle('on', on); b.setAttribute('aria-checked', on);
+  }));
+  // 사용자 지정 select → 텍스트 토글
+  setModal.querySelectorAll('select[data-type="select"]').forEach(sel => sel.addEventListener('change', () => {
+    const c = document.getElementById('setf-' + sel.dataset.key + '-c');
+    if (c) c.style.display = sel.value === '__custom__' ? '' : 'none';
+  }));
+}
+function setReadForm() {
+  // 현재 폼 값 수집 → {key: value}
+  const cur = {};
+  for (const s of setSchema) {
+    const el = document.getElementById('setf-' + s.key);
+    if (!el) continue;
+    if (s.widget === 'toggle') cur[s.key] = el.classList.contains('on');
+    else if (s.widget === 'number') cur[s.key] = parseInt(el.value, 10) || 0;
+    else if (s.widget === 'select') {
+      if (el.value === '__custom__') { const c = document.getElementById('setf-' + s.key + '-c'); cur[s.key] = c ? c.value.trim() : ''; }
+      else cur[s.key] = el.value;
+    } else cur[s.key] = el.value.trim();
+  }
+  return cur;
+}
+async function openSettings() {
+  try {
+    const r = await fetch('/api/settings');
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    setSchema = j.schema; setInitial = j.values; setMtime = j.mtime;
+    setRenderForm();
+    setModal.hidden = false;
+  } catch (e) { toast('❌ 설정 로드 실패: ' + e.message, 'err'); }
+}
+function closeSettings() { setModal.hidden = true; }
+async function saveSettings() {
+  const cur = setReadForm();
+  const diff = {};
+  for (const k in cur) if (JSON.stringify(cur[k]) !== JSON.stringify(setInitial[k])) diff[k] = cur[k];
+  if (Object.keys(diff).length === 0) { toast('변경 없음', 'ok'); closeSettings(); return; }
+  try {
+    const r = await fetch('/api/settings', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({values: diff, mtime: setMtime})});
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    toast('✅ 저장됨', 'ok');
+    if (j.restart_required && j.restart_required.length)
+      toast('♻️ 재시작 필요: ' + j.restart_required.join(', ') + ' — /dashboard-server restart', 'err');
+    closeSettings();
+  } catch (e) { toast('❌ 저장 실패: ' + e.message, 'err'); }
+}
+// Issue168: 배지 hover → 즉시 풍선 도움말 (배지 위쪽, modal-body overflow 비절단)
+const setTip = document.getElementById('set-tip');
+function setTipShow(badge) {
+  const tip = badge.getAttribute('data-tip'); if (!tip) return;
+  setTip.textContent = tip; setTip.hidden = false;
+  const br = badge.getBoundingClientRect();
+  const tw = setTip.offsetWidth, th = setTip.offsetHeight, gap = 9;
+  let left = br.left + br.width/2 - tw/2;
+  left = Math.max(8, Math.min(left, window.innerWidth - tw - 8));
+  let top = br.top - th - gap;            // 기본: 배지 위쪽
+  if (top < 8) top = br.bottom + gap;     // 위 공간 부족 시에만 아래로
+  setTip.style.left = left + 'px';
+  setTip.style.top = top + 'px';
+  setTip.style.setProperty('--tip-arrow', (br.left + br.width/2 - left) + 'px');
+}
+function setTipHide() { setTip.hidden = true; }
+setModal.addEventListener('mouseover', e => { const b = e.target.closest('.set-badge'); if (b) setTipShow(b); });
+setModal.addEventListener('mouseout', e => { if (e.target.closest('.set-badge')) setTipHide(); });
+document.getElementById('btn-settings').addEventListener('click', openSettings);
+document.getElementById('set-close').addEventListener('click', () => { setTipHide(); closeSettings(); });
+document.getElementById('set-cancel').addEventListener('click', closeSettings);
+document.getElementById('set-save').addEventListener('click', saveSettings);
+setModal.addEventListener('click', e => { if (e.target === setModal) closeSettings(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !setModal.hidden) closeSettings(); });
+document.getElementById('set-tabs').addEventListener('click', e => {
+  const t = e.target.closest('.set-tab'); if (!t) return;
+  setModal.querySelectorAll('.set-tab').forEach(x => x.classList.toggle('active', x === t));
+  setModal.querySelectorAll('.set-pane').forEach(p => p.classList.toggle('active', p.dataset.pane === t.dataset.tab));
+});
+document.getElementById('set-open-file').addEventListener('click', async () => {
   try {
     const r = await fetch('/open-settings-yml', {method: 'POST'});
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
     toast('✅ VSCode 에서 hub_setting.yml 열기', 'ok');
-  } catch (e) {
-    toast('❌ ' + e.message, 'err');
-  }
+    closeSettings();
+  } catch (e) { toast('❌ ' + e.message, 'err'); }
 });
 
 // Issue115: dashboard 데이터 파일 자동 리프레쉬 폴링
