@@ -69,7 +69,9 @@ fi
 case "$app" in
   "Google Chrome"|"Microsoft Edge")
     # Chromium 계열 — KM 매크로와 동일 로직 + URL 덮어쓰기(htm-doc 단일 탭 재사용)
-    osascript - "$url" "$match" "$focus" "$app" <<'OSA'
+    # Issue150: doFocus=false 면 윈도우 raise/탭 전환 skip (URL 만 덮어씀 → 포커스 미탈취).
+    #           탭 미발견(notfound)은 osascript 가 반환 → shell 이 _fallback_open(-g) 처리.
+    osa_result=$(osascript - "$url" "$match" "$focus" "$app" <<'OSA'
 on run argv
   set theURL to item 1 of argv
   set theMatch to item 2 of argv
@@ -85,24 +87,34 @@ on run argv
           set i to i + 1
           if (URL of t) starts with theMatch then
             set URL of t to theURL
-            set active tab index of w to i
-            set index of w to 1
+            -- Issue150: 전면화(탭 활성·윈도우 raise)는 focus 요청 시에만
+            if doFocus then
+              set active tab index of w to i
+              set index of w to 1
+            end if
             set found to true
             exit repeat
           end if
         end repeat
         if found then exit repeat
       end repeat
-      if not found then open location theURL
+      if not found then return "notfound"
       if doFocus then activate
     end tell
   end using terms from
+  return "reused"
 end run
 OSA
+)
+    # 탭 미발견 → focus 정책 존중하는 폴백 열기 (doFocus=false 면 open -g 백그라운드)
+    if [[ "$osa_result" == "notfound" ]]; then
+      _fallback_open
+    fi
     ;;
   "Safari")
     # Safari — Apple Events 자동화 허용(개발자 메뉴) 사전 설정 필요할 수 있음
-    osascript - "$url" "$match" "$focus" <<'OSA'
+    # Issue150: doFocus=false 면 current tab 전환 skip, notfound 는 shell 폴백
+    osa_result=$(osascript - "$url" "$match" "$focus" <<'OSA'
 on run argv
   set theURL to item 1 of argv
   set theMatch to item 2 of argv
@@ -115,18 +127,24 @@ on run argv
         set i to i + 1
         if (URL of t) starts with theMatch then
           set URL of t to theURL
-          set current tab of w to t
+          -- Issue150: 현재 탭 전환은 focus 요청 시에만
+          if doFocus then set current tab of w to t
           set found to true
           exit repeat
         end if
       end repeat
       if found then exit repeat
     end repeat
-    if not found then open location theURL
+    if not found then return "notfound"
     if doFocus then activate
   end tell
+  return "reused"
 end run
 OSA
+)
+    if [[ "$osa_result" == "notfound" ]]; then
+      _fallback_open
+    fi
     ;;
   *)
     # Firefox 등 tab 미제어 브라우저 — 폴백
