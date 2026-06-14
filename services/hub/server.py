@@ -35,6 +35,7 @@ from validators import validate_dashboard, DASH_WIDGET_TYPES  # noqa: E402
 from spa_form import FORM_JS  # noqa: E402
 from spa_widgets import WIDGET_JS  # noqa: E402
 from spa_dashboard import DASHBOARD_JS  # noqa: E402
+import i18n  # noqa: E402  # Issue169: hub UI 다국어 catalog + t(key, lang)
 
 # Issue141: 기본 127.0.0.1(루프백 전용=외부 차단). 옵트인 개방 우선순위:
 #   env HTM_SERVER_HOST > hub_setting.yml bind_host > 기본 "127.0.0.1".
@@ -708,7 +709,9 @@ HUB_SETTING_DEFAULTS = {"feed_limit": 100, "feed_default_visible": True, "feed_p
                         "live_session_order": "updated",
                         # Issue166: 명령(프롬프트) 전 빈 live 세션 표시 여부.
                         #   false(기본)=전체 숨김 / true=프로젝트당 최신 1개 표시(Issue136 dedup)
-                        "live_session_show_empty": False}
+                        "live_session_show_empty": False,
+                        # Issue169: hub UI 언어 — en(영어, 기본) / ko(한국어). 설계: _doc_arch/localization.md
+                        "language": "en"}
 _hub_setting_cache: dict = {}
 _hub_setting_cache_mtime: float = 0.0
 
@@ -762,13 +765,22 @@ HUB_SETTING_SCHEMA = [
     {"key": "default_browser", "tab": "basic", "widget": "select",
      "options": ["firefox", "chrome", "edge", "safari"], "allow_custom": True,
      "apply": "hook", "comment": "렌더 브라우저 (firefox/chrome/edge/safari 또는 .app 절대경로)"},
+    # Issue170: 3-way 브라우저 자동 open 동작. browser_focus 흡수(off/background/foreground).
+    {"key": "browser_open", "tab": "basic", "widget": "select",
+     "options": ["off", "background", "foreground"],
+     "apply": "hook", "comment": "브라우저 자동 open — off(채팅 URL만)/background(open -g, 포커스 미탈취)/foreground(포커스 탈취)"},
     {"key": "browser_focus", "tab": "basic", "widget": "toggle",
-     "apply": "hook", "comment": "렌더 시 브라우저 포커스 탈취 (false=백그라운드)"},
+     "apply": "hook", "deprecated": True,
+     "comment": "[deprecated → browser_open] 포커스 탈취. hook 이 browser_open 미설정 시에만 fallback 참조"},
     {"key": "browser_tab_reuse", "tab": "basic", "widget": "toggle",
-     "apply": "hook", "comment": "hub 탭 재사용 (chrome/safari/edge 만, firefox 는 항상 새 탭)"},
+     "apply": "hook", "comment": "/hub 단일 탭 재사용 (Issue171). 렌더(..show/..ask)는 값 무관 항상 새 탭. 🚧 신 의미 hook 구현 글로벌 Issue153"},
     {"key": "render_target", "tab": "basic", "widget": "select",
      "options": ["local-open", "hub", "both"],
      "apply": "hook", "comment": "..show 표시 경로 — local-open(file://)/hub(서버 URL)/both"},
+    # Issue169: hub UI 언어 (en/ko). 저장 후 hub 페이지 reload 시 반영. 설계: _doc_arch/localization.md
+    {"key": "language", "tab": "basic", "widget": "select",
+     "options": ["en", "ko"],
+     "apply": "auto", "comment": "hub UI 언어 — en(영어, 기본)/ko(한국어). 저장 후 페이지 reload 반영"},
     {"key": "feed_default_visible", "tab": "basic", "widget": "toggle",
      "apply": "auto", "comment": "피드 사이드바 최초 표시 여부"},
     # 탭 2: 세션관리 — 세션·피드·표시 상한 (전부 server.py 소비 → auto)
@@ -1430,6 +1442,12 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/settings":
             self._handle_get_settings(parsed)
             return
+        if parsed.path == "/api/i18n":
+            # Issue169 Stage8: 클라이언트 JS i18n 사전 (lang= 쿼리, en merge)
+            qs = parse_qs(parsed.query or "")
+            lang = i18n.norm_lang((qs.get("lang") or [""])[0])
+            self._send_json(200, {"lang": lang, "dict": i18n.merged(lang)})
+            return
         if parsed.path == "/hub":
             self._handle_hub(parsed)
             return
@@ -1809,6 +1827,22 @@ class Handler(BaseHTTPRequestHandler):
         text = re.sub(r"\s+", " ", text).strip()
         return text[:200]
 
+    @staticmethod
+    def _extract_html_sid(abs_path: str) -> str:
+        """Issue169: htm 문서를 만든 세션 sid 추출. canonical 헤더의 세션 링크
+        onclick(`sid:'<sid>'`) 또는 vscode URI(`open?session=<sid>`)에서 발췌.
+        hub 카드 '🆚 세션' 버튼이 /open-session 으로 그 세션 탭을 포커스하게 함.
+        전역 hook(register-doc) 의존 없이 파일 자체에서 회수. 실패 시 빈 문자열."""
+        try:
+            with open(abs_path, encoding="utf-8", errors="replace") as f:
+                data = f.read(65536)
+        except OSError:
+            return ""
+        m = re.search(r"sid:'([A-Za-z0-9_-]{1,128})'", data)
+        if not m:
+            m = re.search(r"open\?session=([A-Za-z0-9_-]{1,128})", data)
+        return m.group(1) if m else ""
+
     def _scan_htm_docs_in(self, directory: str, skip: set = None,
                           limit: int = 0) -> list:
         """Issue40: directory 에서 htm 스킬 단발 출력(claude-htm-*.html) 스캔.
@@ -1950,6 +1984,7 @@ class Handler(BaseHTTPRequestHandler):
             missing = not os.path.isfile(path)
             mtime, mtime_ts = "", 0
             summary = ""  # Issue70: htm-doc 카드 본문 2줄 요약
+            doc_sid = ""  # Issue169: 문서 생성 세션 sid (🆚 세션 버튼용)
             if not missing:
                 try:
                     st = os.stat(path)
@@ -1957,13 +1992,15 @@ class Handler(BaseHTTPRequestHandler):
                     mtime = time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime_ts))
                     # Issue45: mtime 불변 시 재추출 생략. Issue70: {title,summary} dict 캐시
                     doc_c = doc_cache_get(path, mtime_ts)
-                    if doc_c is None or not isinstance(doc_c, dict):
+                    if doc_c is None or not isinstance(doc_c, dict) or "sid" not in doc_c:
                         doc_c = {"title": self._extract_html_title(path),
-                                 "summary": self._extract_html_summary(path)}
+                                 "summary": self._extract_html_summary(path),
+                                 "sid": self._extract_html_sid(path)}
                         doc_cache_put(path, mtime_ts, doc_c)
                     if doc_c.get("title"):
                         title = doc_c["title"]
                     summary = doc_c.get("summary", "")
+                    doc_sid = doc_c.get("sid", "")
                 except OSError:
                     missing = True
             h = cwd_hash(cwd) if cwd else "__tmp__"
@@ -2007,6 +2044,7 @@ class Handler(BaseHTTPRequestHandler):
                 "path": path, "path_display": path_display,
                 "view_url": view_url, "virtual": not bool(p), "missing": missing,
                 "is_ask": is_ask, "answered": answered, "qa_failed": qa_failed,
+                "sid": doc_sid,  # Issue169: 🆚 세션 포커스용
             })
         results.sort(key=lambda x: x["mtime_ts"], reverse=True)
         # Issue52: card_limit — mtime 최신 N개만 hub 카드로 노출 (registry 는 미변경)
@@ -2588,6 +2626,14 @@ class Handler(BaseHTTPRequestHandler):
                      "true" if setting.get("feed_show_project_emoji", True) else "false")
             .replace("{FEED_SHOW_PROJECT_NAME}",
                      "true" if setting.get("feed_show_project_name", True) else "false"))
+        # Issue169: i18n — {T:key} placeholder 를 현재 language 로 1패스 치환(서버 정적).
+        #   차후 마이그레이션은 HUB_HTML 에 {T:key} 추가 + locale 항목 추가만으로 동작(핸들러 무변경).
+        lang = i18n.norm_lang(setting.get("language"))
+        # Stage8: JS 런타임 합성용 사전·lang 을 인라인 주입 (window.__i18n / window.__lang)
+        html_str = (html_str
+            .replace("{I18N_LANG}", lang)
+            .replace("{I18N_JSON}", json.dumps(i18n.merged(lang), ensure_ascii=False)))
+        html_str = re.sub(r"\{T:([\w.]+)\}", lambda m: i18n.t(m.group(1), lang), html_str)
         body = html_str.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -3184,9 +3230,19 @@ class Handler(BaseHTTPRequestHandler):
             mtime = os.stat(HUB_SETTING_FILE).st_mtime
         except FileNotFoundError:
             mtime = 0.0
+        # Issue169 Stage2: 필드 설명(comment)을 현재 language 로 번역(settings.field.<key>).
+        #   키 부재 시 schema 내장 comment(ko) fallback.
+        lang = i18n.norm_lang(_load_hub_setting().get("language"))
+        schema = []
+        for s in HUB_SETTING_SCHEMA:
+            item = dict(s)
+            tk = "settings.field." + s["key"]
+            tr = i18n.t(tk, lang)
+            item["comment"] = s["comment"] if tr == tk else tr
+            schema.append(item)
         self._send_json(200, {
             "values": _load_hub_setting_raw(),
-            "schema": HUB_SETTING_SCHEMA,
+            "schema": schema,
             "mtime": mtime,
         })
 
@@ -5440,6 +5496,9 @@ main { padding: 1.5rem; max-width: 1600px; margin: 0 auto; display: flex; gap: 1
 .actions { margin-top: 0.6rem; display: flex; gap: 0.4rem; }
 .actions a, .actions button { font-size: 0.8em; padding: 0.3rem 0.6rem; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--fg); cursor: pointer; text-decoration: none; white-space: nowrap; flex-shrink: 0; }
 .actions a:hover { background: var(--card); }
+/* Issue169: 열기(↗) 이모지 버튼 + 🆚 세션 버튼 */
+.actions .doc-open { font-size: 1em; line-height: 1; }
+.actions .doc-sess { font-weight: 600; }
 .actions .stop { background: #c33; color: white; border-color: #c33; }
 .actions .stop:hover { background: #a22; }
 .actions .approve-btn { background: #e8a020; color: white; border-color: #c8861a; font-weight: 600; }
@@ -5547,7 +5606,7 @@ section.sec-collapsed .htm-bar-right { display: none; }
 .feed-title-label { font-weight: 600; font-size: 0.95em; }
 .feed-actions { display: flex; gap: 0.3rem; align-items: center; }
 #feed-toggle, #feed-collapse-all, #feed-keep, #feed-clear { background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
-  cursor: pointer; padding: 0.2rem 0.55rem; font-size: 0.8em; color: var(--fg); }
+  cursor: pointer; padding: 0.2rem 0.55rem; font-size: 0.8em; color: var(--fg); white-space: nowrap; }
 #feed-toggle:hover, #feed-collapse-all:hover, #feed-keep:hover { background: var(--code-bg); }
 #feed-clear:hover { background: #fee2e2; border-color: #fca5a5; }
 .feed-list { padding: 0.5rem; display: flex; flex-direction: column; gap: 0.4rem; }
@@ -5583,11 +5642,11 @@ section.sec-collapsed .htm-bar-right { display: none; }
 <header>
   <div class="header-text">
     <h1>🎯📊 fPm Hub<span id="hub-headline"></span></h1>
-    <div class="sub" id="hub-important">로딩 중...</div>
+    <div class="sub" id="hub-important">{T:common.loading}</div>
   </div>
   <div class="header-actions">
-    <button class="btn-project-list" id="btn-project-list" title="Projects.md 프로젝트 목록 보기">📋 Projects</button>
-    <button class="btn-settings" id="btn-settings" title="hub_setting.yml 설정파일 열기">⚙️</button>
+    <button class="btn-project-list" id="btn-project-list" title="{T:projectList.openTitle}">📋 Projects</button>
+    <button class="btn-settings" id="btn-settings" title="{T:settings.openBtnTitle}">⚙️</button>
   </div>
 </header>
 <main>
@@ -5596,45 +5655,45 @@ section.sec-collapsed .htm-bar-right { display: none; }
   <span id="hub-stats">—</span>
   <span class="hub-controls">
     <span id="updated" style="font-size:0.85em;color:var(--muted)">—</span>
-    <button class="btn-rescan" id="btn-rescan" title="등록 프로젝트 디스크를 1회 수동 스캔하여 누락된 htm/dash 산출물을 registry 에 수거">🔄 디스크 재스캔</button>
+    <button class="btn-rescan" id="btn-rescan" title="{T:statusbar.rescanTitle}">{T:statusbar.rescan}</button>
   </span>
 </div>
 <div class="error-bar" id="error-bar"></div>
 <section id="live-sessions-section" style="display:none">
-  <h2 class="section-title"><button class="sec-toggle" data-sec="live-sessions-section" title="섹션 접기">▾</button>📡 활성 세션 <span id="live-count" class="count-badge"></span><button class="btn-zombie" id="btn-zombie" title="빈(프롬프트 전) 좀비 claude 세션을 일괄 종료 후 새로고침 — 작업 중(제목 있는) 세션·dashboard 는 보존">🧟 좀비 킬러</button></h2>
+  <h2 class="section-title"><button class="sec-toggle" data-sec="live-sessions-section" title="{T:common.collapseSection}">▾</button>{T:liveSessions.title} <span id="live-count" class="count-badge"></span><button class="btn-zombie" id="btn-zombie" title="{T:liveSessions.zombieTitle}">{T:liveSessions.zombie}</button></h2>
   <div class="grid" id="live-grid"></div>
 </section>
 <section id="dashboard-section" style="display:none">
   <div class="dash-section-bar">
-    <h2 class="section-title"><button class="sec-toggle" data-sec="dashboard-section" title="섹션 접기">▾</button>📊 dashboard</h2>
+    <h2 class="section-title"><button class="sec-toggle" data-sec="dashboard-section" title="{T:common.collapseSection}">▾</button>📊 dashboard</h2>
     <span class="dash-controls">
       <label>filter: <select id="filter-status">
-        <option value="all" selected>모두 보기</option>
-        <option value="running">활성만</option>
+        <option value="all" selected>{T:dashboard.filter.all}</option>
+        <option value="running">{T:dashboard.filter.running}</option>
         <option value="done">done</option>
         <option value="stopped">stopped</option>
       </select></label>
       <label>sort: <select id="sort-by">
-        <option value="recent">최근 활동순</option>
-        <option value="name">이름순</option>
-        <option value="progress">진행률순</option>
+        <option value="recent">{T:dashboard.sort.recent}</option>
+        <option value="name">{T:dashboard.sort.name}</option>
+        <option value="progress">{T:dashboard.sort.progress}</option>
       </select></label>
-      <button class="btn-clear" id="btn-clear-done" title="status가 done/stopped/stale 인 dashboard 를 hub 목록(registry)에서 제거 — 실제 파일은 보존">🧹 done/stopped/stale 정리</button>
+      <button class="btn-clear" id="btn-clear-done" title="{T:dashboard.clearTitle}">{T:dashboard.clear}</button>
     </span>
   </div>
-  <div class="grid" id="grid"><div class="empty">로딩 중...</div></div>
+  <div class="grid" id="grid"><div class="empty">{T:common.loading}</div></div>
 </section>
 <section id="htm-docs-section" style="display:none">
   <div class="htm-section-bar">
     <div class="htm-bar-left">
-      <button class="sec-toggle" data-sec="htm-docs-section" title="섹션 접기">▾</button>
-      <span class="htm-bar-title">📄 hub 문서 <span id="htm-count" class="count-badge"></span></span>
-      <select id="htm-prj-filter" class="htm-filter-sel" title="프로젝트 필터 추가 (복수 선택 가능 — 오늘 추가분은 항상 표시)"><option value="">+ 프로젝트 필터</option></select>
+      <button class="sec-toggle" data-sec="htm-docs-section" title="{T:common.collapseSection}">▾</button>
+      <span class="htm-bar-title">{T:htmDocs.title} <span id="htm-count" class="count-badge"></span></span>
+      <select id="htm-prj-filter" class="htm-filter-sel" title="{T:htmDocs.filterTitle}"><option value="">{T:htmDocs.filterAdd}</option></select>
       <div class="htm-filter-chips" id="htm-filter-chips"></div>
     </div>
     <div class="htm-bar-right">
-      <button class="htm-btn keep" id="btn-htm-keep" title="mtime 최신 12개만 hub 목록에 남기고 나머지를 registry 에서 제거 — 실제 .html 파일은 보존">🧹 최신 12개만 남기기</button>
-      <button class="htm-btn" id="btn-htm-clear" title="모든 hub 문서를 hub 목록(registry)에서 제거 — 실제 .html 파일은 보존">🗑 hub 목록 전체 제거</button>
+      <button class="htm-btn keep" id="btn-htm-keep" title="{T:htmDocs.keepTitle}">{T:htmDocs.keep}</button>
+      <button class="htm-btn" id="btn-htm-clear" title="{T:htmDocs.clearTitle}">{T:htmDocs.clear}</button>
     </div>
   </div>
   <div class="grid" id="htm-grid"></div>
@@ -5642,73 +5701,82 @@ section.sec-collapsed .htm-bar-right { display: none; }
 </div>
 <aside class="hub-feed" id="hub-feed">
   <div class="feed-head">
-    <span class="feed-title-label">🔔 활동 피드 <span id="feed-count" class="count-badge"></span></span>
+    <span class="feed-title-label">{T:feed.title} <span id="feed-count" class="count-badge"></span></span>
     <span class="feed-actions">
-      <button id="feed-collapse-all" title="펼친 항목 모두 줄이기">⊟</button>
-      <button id="feed-keep" title="최신 20개만 남기고 나머지 제거">🧹 20개만</button>
-      <button id="feed-clear" title="활동 피드 전체 비우기">🗑 클리어</button>
-      <button id="feed-toggle" title="피드 숨기기">◀ 숨기기</button>
+      <button id="feed-collapse-all" title="{T:feed.collapseAllTitle}">⊟</button>
+      <button id="feed-keep" title="{T:feed.keepTitle}">{T:feed.keep}</button>
+      <button id="feed-clear" title="{T:feed.clearTitle}">{T:feed.clear}</button>
+      <button id="feed-toggle" title="{T:feed.hideTitle}">{T:feed.hide}</button>
     </span>
   </div>
-  <div class="feed-list" id="feed-list"><div class="feed-empty">로딩 중...</div></div>
+  <div class="feed-list" id="feed-list"><div class="feed-empty">{T:common.loading}</div></div>
 </aside>
-<div class="feed-strip" id="feed-strip" title="활동 피드 보기">▶ 활동 피드</div>
+<div class="feed-strip" id="feed-strip" title="{T:feed.showTitle}">{T:feed.show}</div>
 </main>
 <div class="toast" id="toast"></div>
 <div class="modal-backdrop" id="pl-modal" hidden>
   <div class="modal" role="dialog" aria-modal="true" aria-label="Project List">
     <div class="modal-head">
       <span class="modal-title">📋 Project List</span>
-      <button class="modal-close" id="pl-close" title="닫기 (ESC)" aria-label="닫기">✕</button>
+      <button class="modal-close" id="pl-close" title="{T:settings.close}" aria-label="{T:common.close}">✕</button>
     </div>
-    <div class="modal-body" id="pl-body"><div class="empty">로딩 중...</div></div>
+    <div class="modal-body" id="pl-body"><div class="empty">{T:common.loading}</div></div>
     <div class="modal-foot">
-      <span id="pl-foot-status">hub 토글 → 자동 렌더 on/off · 행 클릭 → 선택 · 더블클릭/버튼 → VSCode 로 열기 · ESC · ✕ · 바깥 클릭으로 닫기</span>
-      <button class="pl-edit-btn" id="pl-edit" title="선택한 프로젝트를 VSCode 로 열기">✏️ VSCode로 열기</button>
+      <span id="pl-foot-status">{T:projectList.footStatus}</span>
+      <button class="pl-edit-btn" id="pl-edit" title="{T:projectList.openSelectedTitle}">{T:projectList.openVscode}</button>
     </div>
   </div>
 </div>
 <div class="modal-backdrop" id="cf-modal" hidden>
-  <div class="modal" role="dialog" aria-modal="true" aria-label="확인" style="width:min(440px,92vw)">
+  <div class="modal" role="dialog" aria-modal="true" aria-label="{T:common.confirm}" style="width:min(440px,92vw)">
     <div class="modal-head">
-      <span class="modal-title">⚠️ 확인</span>
-      <button class="modal-close" id="cf-x" title="취소 (ESC)" aria-label="취소">✕</button>
+      <span class="modal-title">{T:common.confirmTitle}</span>
+      <button class="modal-close" id="cf-x" title="{T:common.cancelEsc}" aria-label="{T:common.cancel}">✕</button>
     </div>
     <div class="modal-body"><p id="cf-msg" style="white-space:pre-line;line-height:1.65;margin:0"></p></div>
     <div class="modal-foot" style="justify-content:flex-end;gap:0.5rem">
-      <button class="cf-btn cf-cancel" id="cf-cancel">취소</button>
-      <button class="cf-btn cf-ok" id="cf-ok">진행</button>
+      <button class="cf-btn cf-cancel" id="cf-cancel">{T:common.cancel}</button>
+      <button class="cf-btn cf-ok" id="cf-ok">{T:common.proceed}</button>
     </div>
   </div>
 </div>
 <div class="modal-backdrop" id="set-modal" hidden>
-  <div class="modal" role="dialog" aria-modal="true" aria-label="hub 설정" style="width:min(720px,94vw)">
+  <div class="modal" role="dialog" aria-modal="true" aria-label="{T:settings.title}" style="width:min(720px,94vw)">
     <div class="modal-head">
-      <span class="modal-title">⚙️ hub 설정</span>
-      <button class="modal-close" id="set-close" title="닫기 (ESC)" aria-label="닫기">✕</button>
+      <span class="modal-title">{T:settings.title}</span>
+      <button class="modal-close" id="set-close" title="{T:settings.close}" aria-label="{T:settings.close}">✕</button>
     </div>
     <div class="modal-body">
       <div class="set-tabs" id="set-tabs">
-        <button class="set-tab active" data-tab="basic">기본</button>
-        <button class="set-tab" data-tab="session">세션관리</button>
-        <button class="set-tab" data-tab="advanced">고급</button>
+        <button class="set-tab active" data-tab="basic">{T:settings.tab.basic}</button>
+        <button class="set-tab" data-tab="session">{T:settings.tab.session}</button>
+        <button class="set-tab" data-tab="advanced">{T:settings.tab.advanced}</button>
       </div>
       <div class="set-pane active" data-pane="basic" id="set-pane-basic"></div>
       <div class="set-pane" data-pane="session" id="set-pane-session"></div>
       <div class="set-pane" data-pane="advanced" id="set-pane-advanced">
-        <div class="set-warn">⚠️ <code>bind_host: 0.0.0.0</code> + <code>advertise_host</code> 생략 = hub 접근 불가. 0.0.0.0 개방 시 advertise_host 를 구체 IP·도메인으로 명시 (Issue153). <code>bind_host</code> 변경은 서버 restart 필요.</div>
+        <div class="set-warn">{T:settings.advancedWarn}</div>
       </div>
     </div>
     <div class="modal-foot" style="gap:0.5rem">
-      <button class="pl-edit-btn" id="set-open-file" title="hub_setting.yml 을 VSCode 로 열기" style="background:#555;border-color:#444">📄 설정 파일 열기</button>
+      <button class="pl-edit-btn" id="set-open-file" title="{T:settings.openFileTitle}" style="background:#555;border-color:#444">{T:settings.openFile}</button>
       <span style="flex:1 1 auto"></span>
-      <button class="cf-btn cf-cancel" id="set-cancel">취소</button>
-      <button class="set-ok-btn" id="set-save">💾 저장</button>
+      <button class="cf-btn cf-cancel" id="set-cancel">{T:settings.cancel}</button>
+      <button class="set-ok-btn" id="set-save">{T:settings.save}</button>
     </div>
   </div>
 </div>
 <div id="set-tip" hidden></div>
 <script>
+// Issue169 Stage8: 클라이언트 i18n — 서버가 주입한 사전(window.__i18n)·언어(window.__lang).
+//   t(key, vars): 사전 조회 후 {var} 보간. 누락 키 → key 자체(가시화). vars 값은 그대로 삽입(호출부에서 escape).
+window.__lang = "{I18N_LANG}";
+window.__i18n = {I18N_JSON};
+function t(key, vars) {
+  let s = (window.__i18n && window.__i18n[key]) || key;
+  if (vars) for (const k in vars) s = s.split('{' + k + '}').join(vars[k]);
+  return s;
+}
 const grid = document.getElementById('grid');
 const updated = document.getElementById('updated');
 const hubStats = document.getElementById('hub-stats');
@@ -5754,7 +5822,7 @@ async function reload() {
     const liveCount = (data.live_sessions || []).length;
     const htmCount = (data.htm_docs || []).length;
     if (hubStats) hubStats.textContent = `${(data.projects||[]).length} project · ${dashCount} dashboard · ${liveCount} live session · ${htmCount} hub doc`;
-    updated.textContent = '갱신: ' + new Date().toLocaleTimeString();
+    updated.textContent = t('statusbar.updated', {time: new Date().toLocaleTimeString()});
   } catch (e) {
     errorBar.textContent = '❌ ' + e.message;
     errorBar.style.display = 'block';
@@ -5785,20 +5853,20 @@ function renderLiveSessions(list, limit) {
     // Issue66: 큐 dashboard(supervisor_pid 존재)는 graceful remove, 일반은 stop
     const killBtn = s.pid
       ? (s.supervisor_pid
-          ? `<button class="card-close" onclick="removeQueueDash('${escapeHtml(s.cwd)}','${escapeHtml(s.token)}',${s.supervisor_pid},'${escapeHtml(s.sid)}',this)" title="큐 dashboard graceful 제거 (supervisor PID ${s.supervisor_pid})" aria-label="remove">✕</button>`
-          : `<button class="card-close" onclick="stopRunner('${escapeHtml(s.cwd)}','${escapeHtml(s.token)}',${s.pid},this)" title="dashboard runner 종료 (PID ${s.pid})" aria-label="kill">✕</button>`)
+          ? `<button class="card-close" onclick="removeQueueDash('${escapeHtml(s.cwd)}','${escapeHtml(s.token)}',${s.supervisor_pid},'${escapeHtml(s.sid)}',this)" title="${escapeHtml(t('liveSessions.removeQueueTitle', {pid: s.supervisor_pid}))}" aria-label="remove">✕</button>`
+          : `<button class="card-close" onclick="stopRunner('${escapeHtml(s.cwd)}','${escapeHtml(s.token)}',${s.pid},this)" title="${escapeHtml(t('liveSessions.killRunnerTitle', {pid: s.pid}))}" aria-label="kill">✕</button>`)
       // Issue132: pid 없는 live(claude) 세션 — dismiss 버튼(프로세스 kill 아님, 카드만 제거)
-      : `<button class="card-close" onclick="dismissSession('${escapeHtml(s.cwd)}','${escapeHtml(s.token)}','${escapeHtml(s.sid)}',this)" title="이 세션 카드를 hub 목록에서 숨김 (claude 프로세스는 종료하지 않음)" aria-label="dismiss">✕</button>`;
+      : `<button class="card-close" onclick="dismissSession('${escapeHtml(s.cwd)}','${escapeHtml(s.token)}','${escapeHtml(s.sid)}',this)" title="${escapeHtml(t('liveSessions.dismissTitle'))}" aria-label="dismiss">✕</button>`;
     // Issue66 Phase 7: 큐 dashboard 에 waiting_approval 항목이 있으면 승인 버튼
     const approveBtn = (s.supervisor_pid && s.waiting_approval_item)
-      ? `<button class="approve-btn" onclick="approveQueueItem('${escapeHtml(s.cwd)}','${escapeHtml(s.token)}','${escapeHtml(s.sid)}','${escapeHtml(s.waiting_approval_item)}',this)" title="승인 대기 항목 '${escapeHtml(s.waiting_approval_item)}' 진행 승인">▶ ${escapeHtml(s.waiting_approval_item)}</button>`
+      ? `<button class="approve-btn" onclick="approveQueueItem('${escapeHtml(s.cwd)}','${escapeHtml(s.token)}','${escapeHtml(s.sid)}','${escapeHtml(s.waiting_approval_item)}',this)" title="${escapeHtml(t('liveSessions.approveTitle', {item: s.waiting_approval_item}))}">▶ ${escapeHtml(s.waiting_approval_item)}</button>`
       : '';
     // Issue129: 명령(프롬프트) 전 세션은 title 없음 → "-" 표기 (기존 content_type/'response' fallback 폐기)
     const topic = s.title || '-';
     // Issue131: 행 클릭 → 해당 Claude Code 세션 탭 포커스 (data-sid·data-cwd). title 툴팁으로 전체 표시(ellipsis 보완).
     // Issue104: extraCls 로 초과 행에 live-hidden 부여 (접힘 상태 기본 숨김).
     const cls = 'live-item' + (extraCls ? ' ' + extraCls : '');
-    return `<li class="${cls}" data-sid="${escapeHtml(s.sid)}" data-cwd="${escapeHtml(s.cwd)}" title="${escapeHtml(topic)} — 클릭: VSCode 세션 탭 열기"><span class="live-topic">${escapeHtml(topic)}</span><span class="live-acts">${approveBtn}${killBtn}</span></li>`;
+    return `<li class="${cls}" data-sid="${escapeHtml(s.sid)}" data-cwd="${escapeHtml(s.cwd)}" title="${escapeHtml(t('liveSessions.topicTitle', {topic: topic}))}"><span class="live-topic">${escapeHtml(topic)}</span><span class="live-acts">${approveBtn}${killBtn}</span></li>`;
   };
   const cards = [...groups.values()].map(g => {
     // Issue129/Issue104: limit 초과 시 첫 (lim-1)개는 표시, 초과분은 live-hidden 으로 렌더(잘라내지 않음)
@@ -5809,7 +5877,7 @@ function renderLiveSessions(list, limit) {
       const hidden = g.items.slice(lim - 1).map(s => rowHtml(s, 'live-hidden')).join('');
       const more = g.items.length - (lim - 1);
       const expanded = expandedCards.has(g.cwd);
-      const label = expanded ? '접기 ▴' : ('외 ' + more + '개 더 ▾');
+      const label = expanded ? t('liveSessions.collapse') : t('liveSessions.moreCount', {n: more});
       const moreRow = `<li class="live-item live-more" data-action="toggle-more" data-more="${more}"><span class="live-topic">${label}</span></li>`;
       rows = visible + hidden + moreRow;
     } else {
@@ -5818,7 +5886,7 @@ function renderLiveSessions(list, limit) {
     // Issue104: expandedCards 에 cwd 가 있으면 expanded 클래스로 초과 행 노출 (5초 reload 재렌더 시 상태 유지).
     const expCls = expandedCards.has(g.cwd) ? ' expanded' : '';
     // Issue101: 카드 클릭 → VSCode 열기(cdfv). 리스트 항목 버튼은 위임 핸들러가 closest('button,a') 로 제외.
-    return `<div class="card live${expCls}" data-cwd="${escapeHtml(g.cwd)}" title="클릭 → VSCode 로 열기">
+    return `<div class="card live${expCls}" data-cwd="${escapeHtml(g.cwd)}" title="{T:common.openVscodeTitle}">
       <div class="card-head" style="background:${escapeHtml(g.color)}">
         <span class="name">${escapeHtml(g.emoji || '📁')} ${escapeHtml(g.name)} <span class="live-badge">${g.items.length}</span></span>
       </div>
@@ -5832,16 +5900,23 @@ function renderLiveSessions(list, limit) {
 function _htmCardHtml(d) {
   // Issue69: z_htm 기본 경로는 생략, 파일명만 열기 버튼 옆에 표시
   const fname = (d.path || '').split('/').pop();
+  // Issue169: '열기' 텍스트 → 열기 이모지(↗)만. title 로 의미 보강.
   const openLink = d.view_url
-    ? `<a href="${escapeHtml(d.view_url)}" target="_blank">열기 ↗</a>`
-    : `<span class="no-dash" title="htm 파일 없음 (missing)">📂 ${escapeHtml(fname)}</span>`;
+    ? `<a class="doc-open" href="${escapeHtml(d.view_url)}" target="_blank" title="{T:htmDocs.openDocShort}">↗</a>`
+    : `<span class="no-dash" title="{T:htmDocs.missing}">📂 ${escapeHtml(fname)}</span>`;
+  // Issue169: 🆚 세션 — 이 문서를 만든 세션 탭으로 VSCode 포커스 (/open-session).
+  //   sid 는 서버가 HTML 본문에서 추출. 없으면 버튼 미표시.
+  const sessLink = d.sid
+    ? `<a class="doc-sess" href="#" title="{T:htmDocs.focusSessionTitle}"`
+      + ` onclick="event.preventDefault();event.stopPropagation();openSession('${escapeHtml(d.cwd)}','${escapeHtml(d.sid)}')">🆚</a>`
+    : '';
   // B모드(ask 폼)만 API 응답 성공/실패 아이콘 표시. 비-B모드는 아이콘 없음.
   const qaIcon = d.is_ask
     ? (d.answered
-        ? `<span class="qa-icon ok" title="B모드 Q&amp;A 응답 수신 성공">✓</span>`
+        ? `<span class="qa-icon ok" title="{T:msg.qaOk}">✓</span>`
         : d.qa_failed
-          ? `<span class="qa-icon err" title="B모드 Q&amp;A 응답 미수신 (회수 만료)">✗</span>`
-          : `<span class="qa-icon pending" title="B모드 Q&amp;A 응답 대기 중">⋯</span>`)
+          ? `<span class="qa-icon err" title="{T:msg.qaErr}">✗</span>`
+          : `<span class="qa-icon pending" title="{T:msg.qaPending}">⋯</span>`)
     : '';
   // Issue68: 본문 문서제목에서 중복 프로젝트명 접두사 제거 (헤드에 이미 표시)
   let cleanTitle = d.title || '';
@@ -5855,19 +5930,19 @@ function _htmCardHtml(d) {
   return `<div class="${cardCls}" style="cursor:pointer" data-htmpath="${escapeHtml(d.path)}">
     <div class="card-head" style="background:${escapeHtml(d.color)}">
       <span class="name">${escapeHtml(d.emoji || '📁')} ${escapeHtml(d.name)}</span>
-      <span class="head-right">${d.mtime ? `<span class="card-date">${escapeHtml(d.mtime)}</span>` : ''}${qaIcon}<button class="card-close" onclick="closeCard('htm','${escapeHtml(d.path)}',this)" title="hub 목록에서만 제거 — 실제 파일은 보존" aria-label="닫기">✕</button></span>
+      <span class="head-right">${d.mtime ? `<span class="card-date">${escapeHtml(d.mtime)}</span>` : ''}${qaIcon}<button class="card-close" onclick="closeCard('htm','${escapeHtml(d.path)}',this)" title="{T:htmDocs.removeFromListTitle}" aria-label="{T:common.close}">✕</button></span>
     </div>
     <div class="card-body">
       <div class="dash-title">${escapeHtml(cleanTitle)}</div>
       ${d.summary ? `<div class="card-summary">${escapeHtml(d.summary)}</div>` : ''}
-      <div class="actions">${openLink}<span class="doc-fname" title="${escapeHtml(d.path_display)}">${escapeHtml(fname)}</span></div>
+      <div class="actions">${openLink}${sessLink}<span class="doc-fname" title="${escapeHtml(d.path_display)}">${escapeHtml(fname)}</span></div>
     </div>
   </div>`;
 }
 
 function _htmFilterOptions() {
   const names = [...new Set(allHtmDocs.map(d => d.name).filter(Boolean))].sort();
-  htmPrjFilter.innerHTML = '<option value="">+ 프로젝트 필터</option>' +
+  htmPrjFilter.innerHTML = '<option value="">{T:htmDocs.filterAdd}</option>' +
     names.filter(n => !htmSelectedProjects.has(n))
          .map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('');
 }
@@ -5876,7 +5951,7 @@ function _htmRenderChips() {
   const chips = document.getElementById('htm-filter-chips');
   if (!chips) return;
   chips.innerHTML = [...htmSelectedProjects].map(n =>
-    `<span class="htm-chip">${escapeHtml(n)}<button class="htm-chip-rm" data-prjname="${escapeHtml(n)}" onclick="htmRemoveChip(this.dataset.prjname)" title="필터 제거" aria-label="필터 제거">✕</button></span>`
+    `<span class="htm-chip">${escapeHtml(n)}<button class="htm-chip-rm" data-prjname="${escapeHtml(n)}" onclick="htmRemoveChip(this.dataset.prjname)" title="{T:htmDocs.filterRemove}" aria-label="{T:htmDocs.filterRemove}">✕</button></span>`
   ).join('');
 }
 
@@ -5996,7 +6071,7 @@ feedKeep.addEventListener('click', async () => {
 // confirmModal 사용 — 네이티브 confirm() 은 Firefox '추가 대화상자 차단' 시 무조건
 // false 를 반환해 버튼이 조용히 죽는다 (Issue79 대칭 수정).
 feedClear.addEventListener('click', async () => {
-  if (!await confirmModal('활동 피드의 모든 항목을 비웁니다. 진행할까요?')) return;
+  if (!await confirmModal(t('feed.clearConfirm'))) return;
   feedClear.disabled = true;
   try {
     const r = await fetch('/feed-clear', {method: 'POST'});
@@ -6055,13 +6130,13 @@ function impDismiss(text) {
   });
   const el = document.getElementById('hub-important');
   if (el && !el.querySelector('.imp-chip-wrap'))
-    el.innerHTML = '<span class="imp-none">✅ 주의 필요 항목 없음</span>';
+    el.innerHTML = '<span class="imp-none">{T:msg.noImportant}</span>';
 }
 // Issue87 후속: chip 본문 click → 활동 피드 해당 항목으로 스크롤 + 펼침
 function impFocusFeed(feedId) {
   if (!feedId) return;
   const item = document.querySelector(`.feed-item[data-id="${CSS.escape(feedId)}"]`);
-  if (!item) { toast('해당 활동 항목을 찾을 수 없음', 'err'); return; }
+  if (!item) { toast(t('msg.itemNotFound'), 'err'); return; }
   openFeedItems.add(feedId);
   item.classList.add('open');
   item.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -6074,7 +6149,7 @@ function renderImportant(list) {
   const el = document.getElementById('hub-important');
   const visible = (list || []).filter(ev => !_impIsSnoozed(ev.text || ''));
   if (!visible.length) {
-    el.innerHTML = '<span class="imp-none">✅ 주의 필요 항목 없음</span>';
+    el.innerHTML = '<span class="imp-none">{T:msg.noImportant}</span>';
     return;
   }
   el.innerHTML = visible.map(ev => {
@@ -6086,11 +6161,11 @@ function renderImportant(list) {
       chip = `<a class="imp-chip imp-${lvl}" href="${escapeHtml(ev.link)}" target="_blank" title="${escapeHtml(ev.text || '')}">${inner} ↗</a>`;
     } else if (ev.feed_id) {
       const fid = escapeHtml(String(ev.feed_id));
-      chip = `<span class="imp-chip imp-${lvl}" title="자세한 내역 보기" onclick="impFocusFeed('${fid}')">${inner}</span>`;
+      chip = `<span class="imp-chip imp-${lvl}" title="{T:msg.viewDetail}" onclick="impFocusFeed('${fid}')">${inner}</span>`;
     } else {
       chip = `<span class="imp-chip imp-${lvl}" title="${escapeHtml(ev.text || '')}">${inner}</span>`;
     }
-    return `<span class="imp-chip-wrap" data-imptext="${textAttr}">${chip}<button class="imp-dismiss" onclick="impDismiss(this.closest('[data-imptext]').dataset.imptext)" title="30분 숨기기" aria-label="숨기기">✕</button></span>`;
+    return `<span class="imp-chip-wrap" data-imptext="${textAttr}">${chip}<button class="imp-dismiss" onclick="impDismiss(this.closest('[data-imptext]').dataset.imptext)" title="{T:msg.hide30min}" aria-label="{T:common.hideLabel}">✕</button></span>`;
   }).join('');
 }
 
@@ -6100,7 +6175,7 @@ const FEED_SHOW_NAME = {FEED_SHOW_PROJECT_NAME};
 function renderFeed(list) {
   feedCount.textContent = list.length;
   if (!list.length) {
-    feedList.innerHTML = '<div class="feed-empty">아직 활동 없음</div>';
+    feedList.innerHTML = '<div class="feed-empty">{T:feed.empty}</div>';
     return;
   }
   feedList.innerHTML = list.map(it => {
@@ -6109,18 +6184,18 @@ function renderFeed(list) {
     const summaryText = it.htm_title || it.summary || it.event;
     // Issue65: detail 에 제목 포함 — 한 줄 클램프로 잘린 전체 제목 복구 경로
     const detail = ['event: ' + (it.event || ''), 'cwd: ' + (it.cwd || ''),
-                    '제목: ' + (summaryText || ''),
-                    (it.detail || '(detail 없음)')].map(escapeHtml).join('\\n');
+                    t('feed.titlePrefix') + (summaryText || ''),
+                    (it.detail || t('feed.noDetail'))].map(escapeHtml).join('\\n');
     // Issue42_2: htm view_url 있으면 열기 아이콘
     const openIcon = it.htm_view_url
-      ? `<a class="feed-open" href="${escapeHtml(it.htm_view_url)}" target="_blank" title="hub 문서 열기">↗</a>`
+      ? `<a class="feed-open" href="${escapeHtml(it.htm_view_url)}" target="_blank" title="{T:htmDocs.openDoc}">↗</a>`
       : '';
     // Issue67: 항목 배경에 프로젝트색 좌→우 그래디언트 (좌측만 옅게, 우측은 카드 배경 수렴)
     const feedStyle = `border-left-color:${escapeHtml(it.color)};background:linear-gradient(to right, color-mix(in srgb, ${escapeHtml(it.color)} 22%, var(--bg)), var(--bg))`;
     return `<div class="feed-item${isOpen ? ' open' : ''}" data-id="${escapeHtml(it.id)}" style="${feedStyle}">
       <div class="feed-item-head">
-        ${(FEED_SHOW_EMOJI && it.emoji) ? `<span class="feed-proj-emoji" data-cwd="${escapeHtml(it.cwd)}" title="클릭 → VSCode 로 열기">${escapeHtml(it.emoji)}</span>` : ''}
-        ${FEED_SHOW_NAME ? `<a class="feed-title" data-cwd="${escapeHtml(it.cwd)}" title="클릭 → VSCode 로 열기">${escapeHtml(it.name)}</a>` : ''}
+        ${(FEED_SHOW_EMOJI && it.emoji) ? `<span class="feed-proj-emoji" data-cwd="${escapeHtml(it.cwd)}" title="{T:common.openVscodeTitle}">${escapeHtml(it.emoji)}</span>` : ''}
+        ${FEED_SHOW_NAME ? `<a class="feed-title" data-cwd="${escapeHtml(it.cwd)}" title="{T:common.openVscodeTitle}">${escapeHtml(it.name)}</a>` : ''}
         <span class="feed-summary" title="${escapeHtml(summaryText)}">${escapeHtml(summaryText)}</span>
         ${openIcon}
         <span class="feed-age">${relTime(it.ts)}</span>
@@ -6149,7 +6224,7 @@ feedList.addEventListener('click', (e) => {
 });
 
 async function openProject(cwd) {
-  if (!cwd) { toast('cwd 없음', 'err'); return; }
+  if (!cwd) { toast(t('msg.noCwd'), 'err'); return; }
   try {
     const r = await fetch('/open-project', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -6157,7 +6232,7 @@ async function openProject(cwd) {
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
-    toast('✅ VSCode 열기: ' + cwd, 'ok');
+    toast(t('msg.vscodeOpened', {cwd: cwd}), 'ok');
   } catch (e) {
     toast('❌ ' + e.message, 'err');
   }
@@ -6166,7 +6241,7 @@ async function openProject(cwd) {
 // Issue131: 활성 세션 행 클릭 → 해당 Claude Code 세션 탭으로 포커스
 //   (vscode://anthropic.claude-code/open?session=<sid>). 워크스페이스(cwd)가 열려 있어야 포커스됨.
 async function openSession(cwd, sid) {
-  if (!cwd || !sid) { toast('cwd/sid 없음', 'err'); return; }
+  if (!cwd || !sid) { toast(t('msg.noCwdSid'), 'err'); return; }
   try {
     const r = await fetch('/open-session', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -6174,7 +6249,7 @@ async function openSession(cwd, sid) {
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
-    toast('✅ VSCode 세션 탭 열기', 'ok');
+    toast(t('msg.sessionTabOpened'), 'ok');
   } catch (e) {
     toast('❌ ' + e.message, 'err');
   }
@@ -6241,7 +6316,7 @@ function renderProjects(projects) {
   for (const it of filtered) {
     const p = it.proj, d = it.dash;
     if (!d) {
-      cards.push(`<div class="card"><div class="card-head" style="background:${escapeHtml(p.color)}"><span class="name">${escapeHtml(p.emoji || '📁')} ${escapeHtml(p.name)}</span></div><div class="card-body"><div class="no-dash">활성 dashboard 없음</div></div></div>`);
+      cards.push(`<div class="card"><div class="card-head" style="background:${escapeHtml(p.color)}"><span class="name">${escapeHtml(p.emoji || '📁')} ${escapeHtml(p.name)}</span></div><div class="card-body"><div class="no-dash">{T:dashboard.empty}</div></div></div>`);
       continue;
     }
     const pct = (typeof d.progress === 'number') ? Math.max(0, Math.min(100, d.progress)) : null;
@@ -6254,8 +6329,8 @@ function renderProjects(projects) {
     // Issue32/Issue39: 가상 프로젝트 (system/___pm-tmp) 는 token 없음 → stop/open 비활성
     const stopBtn = (d.pid && p.token && !isVirtual && d.runner_alive && !isTerminal) ? `<button class="stop" onclick="stopRunner('${escapeHtml(p.cwd)}','${escapeHtml(p.token)}',${d.pid},this)">⏹ stop pid=${d.pid}</button>` : '';
     const openLink = (d.view_url && p.token && !isVirtual)
-      ? `<a href="${escapeHtml(d.view_url)}" target="_blank">열기 ↗</a>`
-      : `<span class="no-dash" title="외부 dash — view 불가 (token 미발급)">📂 ${escapeHtml(d.path_display || d.path)}</span>`;
+      ? `<a href="${escapeHtml(d.view_url)}" target="_blank">{T:common.open}</a>`
+      : `<span class="no-dash" title="{T:dashboard.externalNoView}">📂 ${escapeHtml(d.path_display || d.path)}</span>`;
     const key = dashKey(p, d);
     newSnap[key] = {progress: pct, mtime: d.mtime};
     const prev = lastSnap[key];
@@ -6270,7 +6345,7 @@ function renderProjects(projects) {
     cards.push(`<div class="card${changed ? ' diff-recent' : ''}${isVirtual ? ' virtual' : ''}">
       <div class="card-head" style="background:${escapeHtml(p.color)}">
         <span class="name">${escapeHtml(p.emoji || '📁')} ${escapeHtml(p.name)}</span>
-        <span class="head-right">${d.status ? `<span class="badge">${escapeHtml(d.status)}</span>` : ''}<button class="card-close" onclick="closeCard('dash','${escapeHtml(d.path)}',this)" title="hub 목록에서만 제거 — 실제 파일은 보존" aria-label="닫기">✕</button></span>
+        <span class="head-right">${d.status ? `<span class="badge">${escapeHtml(d.status)}</span>` : ''}<button class="card-close" onclick="closeCard('dash','${escapeHtml(d.path)}',this)" title="{T:htmDocs.removeFromListTitle}" aria-label="{T:common.close}">✕</button></span>
       </div>
       <div class="card-body">
         <div class="dash-title">${escapeHtml(d.title || d.path.split('/').pop())}</div>
@@ -6282,7 +6357,7 @@ function renderProjects(projects) {
       </div>
     </div>`);
   }
-  grid.innerHTML = cards.join('') || '<div class="empty">filter 결과 0건</div>';
+  grid.innerHTML = cards.join('') || '<div class="empty">{T:dashboard.filterEmpty}</div>';
   lastSnap = newSnap;
 }
 
@@ -6292,7 +6367,7 @@ sortSel.addEventListener('change', reload);
 // Issue137: 빈(프롬프트 전) 좀비 claude 세션 일괄 종료 + 새로고침.
 //   서버가 titled/dashboard 는 제외하고 빈 live 세션의 live_pid 만 SIGTERM.
 async function killEmptyLive(btn) {
-  if (!confirm('빈(프롬프트 입력 전) 좀비 claude 세션을 모두 종료합니다.\\n작업 중(제목 있는) 세션·dashboard 는 보존됩니다.\\n계속할까요?')) return;
+  if (!confirm(t('liveSessions.zombieConfirm'))) return;
   if (btn) btn.disabled = true;
   try {
     const r = await fetch('/kill-empty-live', {method: 'POST', headers: {'Content-Type': 'application/json'}});
@@ -6354,7 +6429,7 @@ async function removeQueueDash(cwd, token, supervisorPid, sid, btn) {
     });
     const j = await r.json();
     if (r.ok) {
-      const statusMsg = j.status === 'already_dead' ? `이미 종료됨 (pid ${supervisorPid})` : `제거 중 (pid ${supervisorPid})`;
+      const statusMsg = j.status === 'already_dead' ? t('liveSessions.alreadyDead', {pid: supervisorPid}) : t('liveSessions.removing', {pid: supervisorPid});
       toast(`✅ ${statusMsg}`, 'ok');
       setTimeout(reload, 800);
     } else {
@@ -6372,7 +6447,7 @@ async function removeQueueDash(cwd, token, supervisorPid, sid, btn) {
 // Issue132: live(claude) 세션 카드 수동 dismiss — 프로세스 kill 아님, 카드(sessions entry)만 제거.
 //   VSCode 가 세션 종료 후에도 claude 프로세스를 살려둬 빈 카드가 잔존할 때 수동 정리용.
 async function dismissSession(cwd, token, sid, btn) {
-  if (!confirm('이 세션 카드를 hub 목록에서 숨깁니다. (claude 프로세스는 종료하지 않음)\\n계속할까요?')) return;
+  if (!confirm(t('liveSessions.dismissConfirm'))) return;
   const orig = btn.innerHTML;
   btn.disabled = true;
   try {
@@ -6384,7 +6459,7 @@ async function dismissSession(cwd, token, sid, btn) {
     });
     const j = await r.json();
     if (r.ok) {
-      toast(j.pruned ? '✅ 세션 카드 숨김' : 'ℹ️ 이미 제거됨', 'ok');
+      toast(j.pruned ? t('msg.cardHidden') : t('msg.alreadyRemoved'), 'ok');
       setTimeout(reload, 400);
     } else {
       toast(`❌ ${j.error || 'fail'}`, 'err');
@@ -6400,7 +6475,7 @@ async function dismissSession(cwd, token, sid, btn) {
 
 // Issue66 Phase 7: 큐 dashboard 승인 게이트 — waiting_approval 항목 진행 승인
 async function approveQueueItem(cwd, token, sid, item, btn) {
-  if (!confirm(`승인 대기 항목 '${item}' 의 진행을 승인합니다. 계속할까요?`)) return;
+  if (!confirm(t('liveSessions.approveConfirm', {item: item}))) return;
   const orig = btn.innerHTML;
   btn.disabled = true;
   try {
@@ -6412,7 +6487,7 @@ async function approveQueueItem(cwd, token, sid, item, btn) {
     });
     const j = await r.json();
     if (r.ok) {
-      toast(`✅ '${item}' 승인됨`, 'ok');
+      toast(t('msg.approved', {item: item}), 'ok');
       setTimeout(reload, 800);
     } else {
       toast(`❌ ${j.error || 'fail'}`, 'err');
@@ -6473,16 +6548,16 @@ function confirmModal(msg) {
 // Issue41: clear 는 registry 항목만 제거 — 실제 파일은 보존
 const clearBtn = document.getElementById('btn-clear-done');
 clearBtn.addEventListener('click', async () => {
-  if (!await confirmModal('status가 done/stopped/stale 인 dashboard 를 hub 목록에서 제거합니다.\\n실제 .dash.*/.html 파일은 삭제되지 않습니다. 진행할까요?')) return;
+  if (!await confirmModal(t('dashboard.clearConfirm'))) return;
   clearBtn.disabled = true;
   const origLabel = clearBtn.textContent;
-  clearBtn.textContent = '정리 중...';
+  clearBtn.textContent = t('common.cleaning');
   try {
     const r = await fetch('/clear-done', {method: 'POST'});
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
     if (j.removed_count === 0) {
-      toast('done/stopped/stale 상태 dashboard 없음', 'ok');
+      toast(t('dashboard.noClearTarget'), 'ok');
     } else {
       toast(`✅ ${j.removed_count}개 목록에서 제거 (파일 보존)`, 'ok');
     }
@@ -6504,7 +6579,7 @@ const rescanBtn = document.getElementById('btn-rescan');
 rescanBtn.addEventListener('click', async () => {
   rescanBtn.disabled = true;
   const origLabel = rescanBtn.textContent;
-  rescanBtn.textContent = '스캔 중...';
+  rescanBtn.textContent = t('statusbar.scanning');
   try {
     const r = await fetch('/hub-rescan', {method: 'POST'});
     const j = await r.json();
@@ -6512,7 +6587,7 @@ rescanBtn.addEventListener('click', async () => {
     const a = j.added || {};
     const total = (a.htm || 0) + (a.dash || 0);
     if (total === 0) {
-      toast('새로 수거할 산출물 없음 (registry 최신)', 'ok');
+      toast(t('statusbar.noRescan'), 'ok');
     } else {
       toast(`✅ registry 수거 — hub ${a.htm || 0} / dash ${a.dash || 0}`, 'ok');
     }
@@ -6531,13 +6606,13 @@ async function clearHtmDocs(keep, btn) {
                    document.getElementById('btn-htm-clear')];
   const labels = allBtns.map(b => b.textContent);
   allBtns.forEach(b => b.disabled = true);
-  btn.textContent = '정리 중...';
+  btn.textContent = t('common.cleaning');
   try {
     const r = await fetch('/clear-htm-docs?keep=' + keep, {method: 'POST'});
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
     if (j.removed_count === 0) {
-      toast('제거할 hub 문서 없음', 'ok');
+      toast(t('htmDocs.noClearTarget'), 'ok');
     } else {
       toast(`✅ hub 문서 ${j.removed_count}개 목록에서 제거 (${j.total}개 중, 파일 보존)`, 'ok');
     }
@@ -6567,12 +6642,12 @@ document.getElementById('htm-grid').addEventListener('click', e => {
 });
 document.getElementById('btn-htm-keep').addEventListener('click', async (e) => {
   const btn = e.currentTarget;
-  if (!await confirmModal('mtime 최신 12개를 제외한 hub 문서를 hub 목록에서 제거합니다.\\n실제 .html 파일은 삭제되지 않습니다. 진행할까요?')) return;
+  if (!await confirmModal(t('htmDocs.keepConfirm'))) return;
   clearHtmDocs(12, btn);
 });
 document.getElementById('btn-htm-clear').addEventListener('click', async (e) => {
   const btn = e.currentTarget;
-  if (!await confirmModal('모든 hub 문서를 hub 목록에서 제거합니다.\\n실제 .html 파일은 삭제되지 않습니다. 진행할까요?')) return;
+  if (!await confirmModal(t('htmDocs.clearConfirm'))) return;
   clearHtmDocs(0, btn);
 });
 
@@ -6586,7 +6661,7 @@ async function closeCard(type, path, btn) {
       + '&path=' + encodeURIComponent(path), {method: 'POST'});
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
-    toast(j.removed ? '✅ hub 목록에서 제거 (파일 보존)' : '이미 제거된 항목', 'ok');
+    toast(j.removed ? t('htmDocs.removed') : t('htmDocs.alreadyRemoved'), 'ok');
     setTimeout(reload, 200);
   } catch (e) {
     toast('❌ ' + e.message, 'err');
@@ -6600,12 +6675,12 @@ const plModal = document.getElementById('pl-modal');
 const plBody = document.getElementById('pl-body');
 
 function renderProjectList(list) {
-  if (!list.length) { plBody.innerHTML = '<div class="empty">프로젝트 없음</div>'; return; }
+  if (!list.length) { plBody.innerHTML = '<div class="empty">{T:projectList.empty}</div>'; return; }
   const rows = list.map(p => {
     const off = !!p.htm_off;
-    const reason = off ? (p.htm_reason || 'hub off') : 'hub on (자동 렌더 활성)';
-    return `<tr data-path="${escapeHtml(p.path)}"${off ? ' class="htm-off"' : ''} data-htm-reason="${escapeHtml(reason)}" title="행 클릭 → VSCode 로 ${escapeHtml(p.name)} 열기">
-    <td class="pl-toggle"><button type="button" class="htm-tgl ${off ? 'off' : 'on'}" data-path="${escapeHtml(p.path)}" role="switch" aria-checked="${off ? 'false' : 'true'}" aria-label="hub ${off ? 'off' : 'on'} — ${escapeHtml(p.name)}" title="${escapeHtml(reason)} — 클릭으로 토글"><span class="htm-tgl-knob"></span></button></td>
+    const reason = off ? (p.htm_reason || 'hub off') : t('projectList.reasonOn');
+    return `<tr data-path="${escapeHtml(p.path)}"${off ? ' class="htm-off"' : ''} data-htm-reason="${escapeHtml(reason)}" title="${escapeHtml(t('projectList.rowTitle', {name: p.name}))}">
+    <td class="pl-toggle"><button type="button" class="htm-tgl ${off ? 'off' : 'on'}" data-path="${escapeHtml(p.path)}" role="switch" aria-checked="${off ? 'false' : 'true'}" aria-label="${escapeHtml(t('projectList.toggleAria', {state: off ? 'off' : 'on', name: p.name}))}" title="${escapeHtml(t('projectList.toggleTitle', {reason: reason}))}"><span class="htm-tgl-knob"></span></button></td>
     <td class="pl-id">${escapeHtml(p.id)}</td>
     <td>${escapeHtml(p.emoji || '')} ${escapeHtml(p.name)}</td>
     <td>${escapeHtml(p.domain)}</td>
@@ -6619,16 +6694,16 @@ function renderProjectList(list) {
   const masterCls = offCnt === 0 ? 'on' : (offCnt === list.length ? 'off' : 'mixed');
   // mixed/off → 클릭 시 전체 on, on → 전체 off
   const masterTarget = masterCls === 'on' ? 'off' : 'on';
-  const masterTitle = masterCls === 'mixed' ? `혼합 (off ${offCnt}/${list.length}) — 클릭으로 전체 ${masterTarget}`
-    : (masterCls === 'on' ? '전체 on — 클릭으로 전체 off' : '전체 off — 클릭으로 전체 on');
+  const masterTitle = masterCls === 'mixed' ? t('projectList.masterMixed', {off: offCnt, total: list.length, target: masterTarget})
+    : (masterCls === 'on' ? t('projectList.masterAllOn') : t('projectList.masterAllOff'));
   plBody.innerHTML = `<table class="pl-table"><thead><tr>
-    <th class="pl-toggle" title="hub 자동 렌더 on/off"><button type="button" id="htm-tgl-all" class="htm-tgl ${masterCls}" data-target="${masterTarget}" role="switch" aria-checked="${masterCls === 'on' ? 'true' : 'false'}" aria-label="전체 hub 토글" title="${escapeHtml(masterTitle)}"><span class="htm-tgl-knob"></span></button><div class="pl-toggle-lbl">hub</div></th><th>번호</th><th>프로젝트명</th><th>Domain</th><th>경로</th><th>설명</th><th>색</th>
+    <th class="pl-toggle" title="{T:projectList.toggleColTitle}"><button type="button" id="htm-tgl-all" class="htm-tgl ${masterCls}" data-target="${masterTarget}" role="switch" aria-checked="${masterCls === 'on' ? 'true' : 'false'}" aria-label="{T:projectList.masterAria}" title="${escapeHtml(masterTitle)}"><span class="htm-tgl-knob"></span></button><div class="pl-toggle-lbl">hub</div></th><th>{T:projectList.col.id}</th><th>{T:projectList.col.name}</th><th>Domain</th><th>{T:projectList.col.path}</th><th>{T:projectList.col.desc}</th><th>{T:projectList.col.color}</th>
   </tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 async function openProjectList() {
   plModal.hidden = false;
-  plBody.innerHTML = '<div class="empty">로딩 중...</div>';
+  plBody.innerHTML = '<div class="empty">{T:common.loading}</div>';
   try {
     const r = await fetch('/projects-list?_=' + Date.now(), {cache: 'no-store'});
     if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -6664,9 +6739,9 @@ plBody.addEventListener('click', async (e) => {
       // 응답으로 모든 행 토글 + 헤더 마스터 재계산. 가장 간단·정확: 재조회 후 재렌더
       const lr = await fetch('/projects-list?_=' + Date.now(), {cache: 'no-store'});
       renderProjectList((await lr.json()).projects || []);
-      plFootStatus.textContent = (target === 'off' ? '🚫 ' : '✅ ') + '전체 hub ' + target + ' (' + j.count + '개)';
+      plFootStatus.textContent = t('projectList.masterResult', {icon: (target === 'off' ? '🚫' : '✅'), target: target, count: j.count});
     } catch (err) {
-      plFootStatus.textContent = '❌ 전체 토글 실패: ' + err.message;
+      plFootStatus.textContent = t('projectList.toggleAllFail', {err: err.message});
       allTgl.disabled = false;
     }
     return;
@@ -6680,16 +6755,16 @@ plBody.addEventListener('click', async (e) => {
         body: JSON.stringify({path: tgl.dataset.path})});
       const j = await r.json();
       if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
-      const off = !!j.htm_off, reason = off ? (j.htm_reason || 'hub off') : 'hub on (자동 렌더 활성)';
+      const off = !!j.htm_off, reason = off ? (j.htm_reason || 'hub off') : t('projectList.reasonOn');
       tgl.classList.toggle('on', !off); tgl.classList.toggle('off', off);
       tgl.setAttribute('aria-checked', off ? 'false' : 'true');
-      tgl.title = reason + ' — 클릭으로 토글';
+      tgl.title = t('projectList.toggleTitle', {reason: reason});
       const tr = tgl.closest('tr');
       tr.classList.toggle('htm-off', off);
       tr.dataset.htmReason = reason;
       plFootStatus.textContent = (off ? '🚫 ' : '✅ ') + reason + ' (state=' + j.state + ')';
     } catch (err) {
-      plFootStatus.textContent = '❌ 토글 실패: ' + err.message;
+      plFootStatus.textContent = t('projectList.toggleFail', {err: err.message});
     } finally { tgl.disabled = false; }
     return;
   }
@@ -6699,7 +6774,7 @@ plBody.addEventListener('click', async (e) => {
     plBody.querySelectorAll('tr.pl-sel').forEach(r => r.classList.remove('pl-sel'));
     tr.classList.add('pl-sel');
     plSelectedPath = tr.dataset.path;
-    plFootStatus.textContent = '✅ 선택: ' + plSelectedPath + ' — 더블클릭/버튼으로 VSCode 열기';
+    plFootStatus.textContent = t('projectList.selected', {path: plSelectedPath});
   }
 });
 
@@ -6718,7 +6793,7 @@ document.getElementById('live-grid').addEventListener('click', (e) => {
       const expanded = card.classList.toggle('expanded');
       if (expanded) expandedCards.add(cwd); else expandedCards.delete(cwd);
       const topic = moreRow.querySelector('.live-topic');
-      if (topic) topic.textContent = expanded ? '접기 ▴' : ('외 ' + (moreRow.dataset.more || '') + '개 더 ▾');
+      if (topic) topic.textContent = expanded ? t('liveSessions.collapse') : t('liveSessions.moreCount', {n: (moreRow.dataset.more || '')});
     }
     return;
   }
@@ -6751,7 +6826,7 @@ plBody.addEventListener('focusout', () => { plFootStatus.textContent = plFootDef
 
 // 'VSCode로 열기' — 선택된 프로젝트를 VSCode 로 열기 (더블클릭과 동일)
 document.getElementById('pl-edit').addEventListener('click', () => {
-  if (!plSelectedPath) { toast('먼저 프로젝트 행을 클릭해 선택하세요', 'err'); return; }
+  if (!plSelectedPath) { toast(t('projectList.selectFirst'), 'err'); return; }
   openProject(plSelectedPath);
 });
 
@@ -6763,12 +6838,12 @@ function setEsc(html) {
   return String(html).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 const SET_BADGE_TIP = {
-  auto: '🟢 자동 — 저장 즉시 적용. hub 서버가 파일 변경을 감지해 자동 재로드합니다. 추가 조작 불필요.',
-  hook: '🔵 다음턴 — 다음 렌더부터 적용. Claude 가 다음 응답을 그릴 때 새 값으로 동작합니다.',
-  restart: '🟠 restart — 서버 재시작 필요. /dashboard-server restart 를 해야 반영됩니다 (bind_host 등 기동 시 1회만 읽는 값).',
+  auto: t('settings.apply.auto'),
+  hook: t('settings.apply.hook'),
+  restart: t('settings.apply.restart'),
 };
 function setBadge(apply) {
-  const m = {auto: ['b-auto','🟢 자동'], hook: ['b-hook','🔵 다음턴'], restart: ['b-restart','🟠 restart']}[apply] || ['',''];
+  const m = {auto: ['b-auto', t('settings.applyBadge.auto')], hook: ['b-hook', t('settings.applyBadge.hook')], restart: ['b-restart', t('settings.applyBadge.restart')]}[apply] || ['',''];
   const tip = SET_BADGE_TIP[apply] || '';
   return `<span class="set-badge ${m[0]}" data-tip="${setEsc(tip)}">${m[1]}</span>`;
 }
@@ -6783,7 +6858,7 @@ function setRenderField(s, val) {
     const isCustom = s.allow_custom && val && !opts.includes(val);
     let html = `<select id="${id}" data-key="${s.key}" data-type="select">`;
     for (const o of opts) html += `<option value="${setEsc(o)}" ${o===val?'selected':''}>${setEsc(o)}</option>`;
-    if (s.allow_custom) html += `<option value="__custom__" ${isCustom?'selected':''}>사용자 지정(.app)</option>`;
+    if (s.allow_custom) html += `<option value="__custom__" ${isCustom?'selected':''}>${t('settings.customApp')}</option>`;
     html += '</select>';
     if (s.allow_custom) html += ` <input type="text" id="${id}-c" data-key="${s.key}" data-type="custom" value="${isCustom?setEsc(val):''}" placeholder="/Applications/X.app" style="${isCustom?'':'display:none'};width:13em">`;
     return html;
@@ -6791,7 +6866,7 @@ function setRenderField(s, val) {
   if (s.widget === 'number') {
     return `<input type="number" id="${id}" data-key="${s.key}" data-type="number" min="${s.min||0}" value="${setEsc(val)}">`;
   }
-  return `<input type="text" id="${id}" data-key="${s.key}" data-type="text" value="${setEsc(val)}" placeholder="${s.optional?'(생략 가능)':''}">`;
+  return `<input type="text" id="${id}" data-key="${s.key}" data-type="text" value="${setEsc(val)}" placeholder="${s.optional?t('settings.optional'):''}">`;
 }
 function setRenderForm() {
   for (const tab of ['basic','session','advanced']) {
@@ -6802,8 +6877,9 @@ function setRenderForm() {
     if (warn) pane.appendChild(warn);
     for (const s of setSchema.filter(x => x.tab === tab)) {
       const row = document.createElement('div');
-      row.className = 'set-row';
-      row.innerHTML = `<label class="set-key" for="setf-${s.key}" title="${setEsc(s.comment||'')}">${setEsc(s.key)}</label>`
+      row.className = 'set-row' + (s.deprecated ? ' set-deprecated' : '');
+      if (s.deprecated) row.style.opacity = '0.55';
+      row.innerHTML = `<label class="set-key" for="setf-${s.key}" title="${setEsc(s.comment||'')}">${setEsc(s.key)}${s.deprecated?' <span style="font-size:0.75em;color:#c60">(deprecated)</span>':''}</label>`
         + `<span class="set-input">${setRenderField(s, setInitial[s.key])}</span>`
         + `<span class="set-desc" title="${setEsc(s.comment||'')}">${setEsc(s.comment||'')}</span>`
         + setBadge(s.apply);
@@ -6844,24 +6920,24 @@ async function openSettings() {
     setSchema = j.schema; setInitial = j.values; setMtime = j.mtime;
     setRenderForm();
     setModal.hidden = false;
-  } catch (e) { toast('❌ 설정 로드 실패: ' + e.message, 'err'); }
+  } catch (e) { toast(t('settings.loadFail', {err: e.message}), 'err'); }
 }
 function closeSettings() { setModal.hidden = true; }
 async function saveSettings() {
   const cur = setReadForm();
   const diff = {};
   for (const k in cur) if (JSON.stringify(cur[k]) !== JSON.stringify(setInitial[k])) diff[k] = cur[k];
-  if (Object.keys(diff).length === 0) { toast('변경 없음', 'ok'); closeSettings(); return; }
+  if (Object.keys(diff).length === 0) { toast(t('settings.noChange'), 'ok'); closeSettings(); return; }
   try {
     const r = await fetch('/api/settings', {method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({values: diff, mtime: setMtime})});
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
-    toast('✅ 저장됨', 'ok');
+    toast(t('settings.saved'), 'ok');
     if (j.restart_required && j.restart_required.length)
-      toast('♻️ 재시작 필요: ' + j.restart_required.join(', ') + ' — /dashboard-server restart', 'err');
+      toast(t('settings.restartNeeded', {keys: j.restart_required.join(', ')}), 'err');
     closeSettings();
-  } catch (e) { toast('❌ 저장 실패: ' + e.message, 'err'); }
+  } catch (e) { toast(t('settings.saveFail', {err: e.message}), 'err'); }
 }
 // Issue168: 배지 hover → 즉시 풍선 도움말 (배지 위쪽, modal-body overflow 비절단)
 const setTip = document.getElementById('set-tip');
@@ -6897,7 +6973,7 @@ document.getElementById('set-open-file').addEventListener('click', async () => {
     const r = await fetch('/open-settings-yml', {method: 'POST'});
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
-    toast('✅ VSCode 에서 hub_setting.yml 열기', 'ok');
+    toast(t('settings.fileOpened'), 'ok');
     closeSettings();
   } catch (e) { toast('❌ ' + e.message, 'err'); }
 });
@@ -6948,7 +7024,7 @@ function applySecCollapse() {
     const on = !!st[btn.dataset.sec];
     sec.classList.toggle('sec-collapsed', on);
     btn.textContent = on ? '▸' : '▾';
-    btn.title = on ? '섹션 펼치기' : '섹션 접기';
+    btn.title = on ? t('common.expandSection') : t('common.collapseSection');
   });
 }
 document.querySelectorAll('.sec-toggle').forEach(btn => {
