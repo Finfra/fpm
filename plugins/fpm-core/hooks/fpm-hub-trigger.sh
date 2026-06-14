@@ -618,10 +618,10 @@ canonical_header = (
     "  <h1>{제목}</h1>\n"
     "  <nav class=\"header-actions\">\n"
     "    <a class=\"proj-badge\" href=\"#\" title=\"클릭 → VSCode 로 __PNAME__ 열기\"\n"
-    "       onclick=\"event.preventDefault();fetch('http://127.0.0.1:9876/open-project',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'__CWD__'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('VSCode 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — VSCode 열기 실패');});\">📁 __PNAME__</a>\n"
+    "       onclick=\"event.preventDefault();fetch('http://__HOST__:__PORT__/open-project',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'__CWD__'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('VSCode 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — VSCode 열기 실패');});\">📁 __PNAME__</a>\n"
     "    <a class=\"sess-link\" href=\"#\" title=\"클릭 → 이 문서를 만든 세션 탭으로 포커스\"\n"
-    "       onclick=\"event.preventDefault();fetch('http://127.0.0.1:9876/open-session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'__CWD__',sid:'__SID__'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('세션 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — 세션 열기 실패');});\">🆚 세션</a>\n"
-    "    <a class=\"hub-link\" href=\"http://127.0.0.1:9876/hub\" target=\"_blank\" title=\"통합 모니터링 Hub\">🎯📊</a>\n"
+    "       onclick=\"event.preventDefault();fetch('http://__HOST__:__PORT__/open-session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'__CWD__',sid:'__SID__'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('세션 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — 세션 열기 실패');});\">🆚 세션</a>\n"
+    "    <a class=\"hub-link\" href=\"http://__HOST__:__PORT__/hub\" target=\"_blank\" title=\"통합 모니터링 Hub\">🎯📊</a>\n"
     "    <button type=\"button\" onclick=\"window.close()\">닫기 ✕</button>\n"
     "  </nav>\n"
     "</header>\n"
@@ -641,7 +641,7 @@ canonical_header = (
     "   불변식 (재발 차단): 배지=`<a class=\"proj-badge\" onclick=...POST /open-project...>` (정적 span 금지·Issue103), 세션=`<a class=\"sess-link\" onclick=...POST /open-session {cwd,sid}...>` (Issue137) → "
     "순서 `📁 배지`→`🆚 세션`→`🎯📊 Hub`→`닫기 ✕` → 넷 모두 `<header>` 안 `.header-actions` 동일 행 (헤더 밖 div 금지·Issue88) → "
     "flex+space-between+wrap 로 우측 overflow 방지. 조상(`html`/`body`/컨테이너)에 `overflow:hidden|clip` 금지 (sticky 무효화).\n"
-).replace("__PNAME__", project_name).replace("__PCOLOR__", project_color).replace("__CWD__", cwd).replace("__SID__", sid_full)
+).replace("__PNAME__", project_name).replace("__PCOLOR__", project_color).replace("__CWD__", cwd).replace("__SID__", sid_full).replace("__HOST__", render_host).replace("__PORT__", render_port)
 
 mode_banner = (
     "## 세션 모드: **hub form 자동 회수 (Issue45 단일 경로)**\n"
@@ -765,10 +765,10 @@ canonical_header = (
     "  <h1>{제목}</h1>\n"
     "  <nav class=\"header-actions\">\n"
     "    <a class=\"proj-badge\" href=\"#\" title=\"클릭 → VSCode 로 __PNAME__ 열기\"\n"
-    "       onclick=\"event.preventDefault();fetch('http://127.0.0.1:9876/open-project',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'__CWD__'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('VSCode 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — VSCode 열기 실패');});\">📁 __PNAME__</a>\n"
+    "       onclick=\"event.preventDefault();fetch('http://__HOST__:__PORT__/open-project',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'__CWD__'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('VSCode 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — VSCode 열기 실패');});\">📁 __PNAME__</a>\n"
     "    <a class=\"sess-link\" href=\"#\" title=\"클릭 → 이 문서를 만든 세션 탭으로 포커스\"\n"
-    "       onclick=\"event.preventDefault();fetch('http://127.0.0.1:9876/open-session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'__CWD__',sid:'__SID__'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('세션 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — 세션 열기 실패');});\">🆚 세션</a>\n"
-    "    <a class=\"hub-link\" href=\"http://127.0.0.1:9876/hub\" target=\"_blank\" title=\"통합 모니터링 Hub\">🎯📊</a>\n"
+    "       onclick=\"event.preventDefault();fetch('http://__HOST__:__PORT__/open-session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'__CWD__',sid:'__SID__'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('세션 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — 세션 열기 실패');});\">🆚 세션</a>\n"
+    "    <a class=\"hub-link\" href=\"http://__HOST__:__PORT__/hub\" target=\"_blank\" title=\"통합 모니터링 Hub\">🎯📊</a>\n"
     "    <button type=\"button\" onclick=\"window.close()\">닫기 ✕</button>\n"
     "  </nav>\n"
     "</header>\n"
@@ -788,7 +788,7 @@ canonical_header = (
     "   불변식 (재발 차단): 배지=`<a class=\"proj-badge\" onclick=...POST /open-project...>` (정적 span 금지·Issue103), 세션=`<a class=\"sess-link\" onclick=...POST /open-session {cwd,sid}...>` (Issue137) → "
     "순서 `📁 배지`→`🆚 세션`→`🎯📊 Hub`→`닫기 ✕` → 넷 모두 `<header>` 안 `.header-actions` 동일 행 (헤더 밖 div 금지·Issue88) → "
     "flex+space-between+wrap 로 우측 overflow 방지. 조상(`html`/`body`/컨테이너)에 `overflow:hidden|clip` 금지 (sticky 무효화).\n"
-).replace("__PNAME__", project_name).replace("__PCOLOR__", project_color).replace("__CWD__", cwd).replace("__SID__", sid_full)
+).replace("__PNAME__", project_name).replace("__PCOLOR__", project_color).replace("__CWD__", cwd).replace("__SID__", sid_full).replace("__HOST__", render_host).replace("__PORT__", render_port)
 
 context = (
     "## 세션 모드: hub 기본 on (프로젝트 폴더 — Issue83)\n\n"
