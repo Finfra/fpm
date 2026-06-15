@@ -1,6 +1,6 @@
 ---
 name: fpm-sync
-description: ___pm(prj1) ↔ fpm(prj7, ~/_git/__all/fpm) 동기화 에이전트. 기본은 ___pm→fpm 단방향 복사·커밋. "fpm 동기화/반영/업데이트" 요청 시 forward, "fpm 역방향/되돌리기/fpm→pm 반영" 요청 시 사용자 동의 후 reverse 적용.
+description: ___pm(prj1) ↔ fpm(prj7, ~/_git/__all/fpm) 동기화 에이전트. 기본은 ___pm→fpm 단방향 복사·커밋. "fpm 동기화/반영/업데이트" 요청 시 forward, "fpm 역방향/되돌리기/fpm→pm 반영/upstream 흡수" 요청 시 사용자 동의 후 reverse 적용(fpm 버전이 앞설 때만 흡수, --force 로 우회).
 tools: Read, Bash, Grep, Glob
 ---
 
@@ -38,25 +38,33 @@ tools: Read, Bash, Grep, Glob
 git -C ~/_git/__all/fpm push   # origin 설정된 경우
 ```
 
-## 역방향 동기화 (fpm → ___pm, 동의 필수)
+## 역방향 동기화 / upstream 흡수 (fpm → ___pm, 동의 필수)
 
-fpm 쪽에서 발생한 변경(외부 기여·공개판 직접 수정)을 원본 ___pm 으로 되돌릴 때 사용. **반드시 dry-run → 사용자 동의 → apply** 순서. 자동화·hook 없음(수동 전용).
+fpm(prj7)·fg1·기타 서버·GitHub bare 에서 검증된 변경을 ___pm 으로 흡수할 때 사용. 검증 결과가 fpm 버전을 먼저 올린 뒤 ___pm 에 반영되는 흐름(목적: ___pm 업데이트 시 fpm 충돌 최소화). 또는 fpm 직접 수정분을 되돌릴 때. **반드시 dry-run → 사용자 동의 → apply** 순서. 자동화·hook 없음(수동 전용).
+
+### 버전 게이트 (Issue174)
+* 기본은 **fpm VERSION > ___pm VERSION 일 때만** 흡수(version-ahead gate). 미앞섬(동일/___pm 더 높음)이면 `fpm 미앞섬 — 흡수 불필요` no-op 종료.
+* 순수 되돌리기(버전 무관)는 `--force` 로 게이트 우회. `--force` 사용 시 사용자에게 "버전 게이트 우회" 사실을 명시 고지.
+* 적용 시 전체 트리 rsync 가 VERSION+매니페스트도 fpm 값으로 끌어올림(버전 정렬).
 
 ### 1. dry-run (변경 미리보기, 적용 안 함)
 ```bash
-~/_git/___pm/scripts/fpm-sync.sh reverse
+~/_git/___pm/scripts/fpm-sync.sh reverse           # 버전 게이트 적용
+~/_git/___pm/scripts/fpm-sync.sh reverse --force   # 게이트 우회(되돌리기)
 ```
-출력된 변경 목록(fpm → ___pm 로 적용될 파일)을 사용자에게 **그대로 제시**. (구 `reverse-dryrun` alias 도 동작)
+출력된 변경 목록(fpm → ___pm 로 적용될 파일)을 사용자에게 **그대로 제시**. fpm 미앞섬으로 no-op 종료 시 그 사유를 보고. (구 `reverse-dryrun` alias 도 동작)
 
 ### 2. 사용자 동의 확인 (필수 게이트)
-`AskUserQuestion` 으로 "위 N개 변경을 ___pm working tree 에 적용할까요?" 질문. **명시 동의 없으면 중단.** 변경 0건이면 동의 절차 생략하고 "되돌릴 변경 없음" 보고.
+`AskUserQuestion` 으로 "위 N개 변경을 ___pm working tree 에 흡수할까요?" 질문. **명시 동의 없으면 중단.** 변경 0건이면 동의 절차 생략하고 "흡수할 변경 없음" 보고.
 
 ### 3. apply (동의 후에만)
 ```bash
-~/_git/___pm/scripts/fpm-sync.sh reverse --apply
+~/_git/___pm/scripts/fpm-sync.sh reverse --apply            # 버전 게이트 통과 시
+~/_git/___pm/scripts/fpm-sync.sh reverse --apply --force    # 게이트 우회 적용
 ```
 * `--delete` 없음 → ___pm 고유 파일은 보존(삭제 안 함).
 * ___pm **working tree 만** 변경, 커밋 안 함. 개인정보 경로 혼입 시 스크립트가 중단.
+* VERSION 이 fpm 값으로 정렬되면 그 사실을 보고(`VERSION: A → B`).
 
 ### 4. 보고
 적용 후 `git -C ~/_git/___pm status` 를 보여주고 "검토 후 직접 커밋하세요" 안내. **에이전트가 ___pm 을 커밋·push 하지 않음.**
