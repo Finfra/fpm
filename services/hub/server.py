@@ -24,6 +24,7 @@ import shlex
 import re
 import tempfile
 import socket
+import ipaddress
 import threading
 from collections import deque
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -48,6 +49,7 @@ PORT = int(os.environ.get("HTM_SERVER_PORT", "9876"))
 # (옵트인 개방) startup 에서 Servers.md(check=O) 호스트를 resolve 하여 채운다.
 LOOPBACK_IPS = frozenset(("127.0.0.1", "::1"))
 ALLOWED_IPS = set()  # startup 에서 populate (개방 모드일 때만). 평소엔 빈 set.
+ALLOWED_NETS = []    # Issue175: CIDR 서브넷 allowlist (ip_network 리스트). 평소엔 빈 리스트.
 
 STATE_DIR = "/tmp/___pm/claude-htm-server"
 INBOX_ROOT = "/tmp/___pm/claude-htm-inbox"
@@ -461,15 +463,29 @@ def _parse_servers_md(path: str) -> list:
     return rows
 
 
-def _load_server_allowlist() -> set:
-    """Servers.md 의 check=O 호스트를 IP 로 resolve 하여 allowlist set 반환.
-    resolve 실패 호스트는 skip+log. 공개 호스트(사설망 외)는 경고 log 로 가시화.
+def _load_server_allowlist() -> tuple:
+    """Servers.md 의 check=O 호스트를 allowlist 로 적재 → (exact_ips set, networks list) 반환.
+    Host 값에 `/` 가 있으면 CIDR(ip_network)로 해석(Issue175), 아니면 IP 로 resolve.
+    resolve/파싱 실패 호스트는 skip+log. 공개 호스트(사설망 외)는 경고 log 로 가시화.
     HOST 가 루프백이 아닐 때(옵트인 개방)만 startup 에서 호출된다."""
     allowed = set()
+    nets = []
     for row in _parse_servers_md(SERVERS_MD):
         if row["check"].upper() != "O":
             continue
         host = row["host"]
+        # Issue175: CIDR 표기(`host/prefix`) → 서브넷 단위 허용.
+        if "/" in host:
+            try:
+                net = ipaddress.ip_network(host, strict=False)
+            except ValueError as e:
+                log(f"[allowlist] CIDR 파싱 실패 skip — {row['name']}({host}): {e}")
+                continue
+            nets.append(net)
+            public = not net.is_private
+            warn = "  ⚠️ 공개 서브넷 — 노출 위험" if public else ""
+            log(f"[allowlist] 허용(CIDR) — {row['name']} → {net}{warn}")
+            continue
         try:
             ip = socket.gethostbyname(host)
         except (socket.gaierror, OSError) as e:
@@ -479,12 +495,21 @@ def _load_server_allowlist() -> set:
         public = not any(ip.startswith(p) for p in _PRIVATE_PREFIXES)
         warn = "  ⚠️ 공개 IP — 노출 위험" if public else ""
         log(f"[allowlist] 허용 — {row['name']}({host}) → {ip}{warn}")
-    return allowed
+    return allowed, nets
 
 
 def _ip_allowed(client_ip: str) -> bool:
-    """source IP 가 접근 허용 대상인지. 루프백은 무조건 허용, 그 외는 ALLOWED_IPS."""
-    return client_ip in LOOPBACK_IPS or client_ip in ALLOWED_IPS
+    """source IP 가 접근 허용 대상인지. 루프백은 무조건 허용, 그 외는
+    ALLOWED_IPS(정확 일치) 또는 ALLOWED_NETS(CIDR 서브넷 멤버십, Issue175)."""
+    if client_ip in LOOPBACK_IPS or client_ip in ALLOWED_IPS:
+        return True
+    if ALLOWED_NETS:
+        try:
+            addr = ipaddress.ip_address(client_ip)
+        except ValueError:
+            return False
+        return any(addr in net for net in ALLOWED_NETS)
+    return False
 
 
 def _load_projects_colors() -> dict:
@@ -7403,12 +7428,15 @@ def main():
     # 개방 모드(HOST 가 루프백 아님)에서만 Servers.md allowlist 적재.
     # 기본 127.0.0.1 이면 빈 set 유지 → 루프백만 통과(기존 동작 그대로).
     if HOST not in LOOPBACK_IPS:
-        ALLOWED_IPS.update(_load_server_allowlist())
+        _ips, _nets = _load_server_allowlist()
+        ALLOWED_IPS.update(_ips)
+        ALLOWED_NETS.extend(_nets)
         log(f"[allowlist] 개방 모드 — bind={HOST}, 허용 IP {len(ALLOWED_IPS)}개: "
-            f"{sorted(ALLOWED_IPS)} (+루프백)")
+            f"{sorted(ALLOWED_IPS)}, CIDR {len(ALLOWED_NETS)}개: "
+            f"{[str(n) for n in ALLOWED_NETS]} (+루프백)")
         sys.stderr.write(
             f"[hub] ⚠️ 외부 개방 모드 — bind={HOST}:{PORT}, "
-            f"allowlist {len(ALLOWED_IPS)} hosts (+loopback)\n")
+            f"allowlist {len(ALLOWED_IPS)} hosts + {len(ALLOWED_NETS)} CIDR (+loopback)\n")
 
     # Issue59: bind 를 PID_FILE 기록보다 먼저 수행 — bind 실패 시 PID_FILE 미생성·미삭제.
     #          (실패 경로의 cleanup 이 살아있는 다른 서버의 pid 파일을 지우던 버그 차단)
