@@ -1,4 +1,4 @@
-# hub_setting_org.yml — hub 설정 설치 템플릿 (Issue165)
+# hub_setting_org.yml — hub 설정 설치 템플릿
 #
 # install.sh 가 hub_setting.yml 부재 시 본 파일을 복사하여 생성한다(멱등, 기존 보존).
 # 실제 운영 파일은 data/hub_setting.yml — 본 템플릿이 아니라 그쪽을 자신의 환경으로 편집할 것.
@@ -10,19 +10,22 @@
 feed_limit: 300            # 피드 보관·표시 최대 항목 수 (deque maxlen)
 feed_default_visible: true # 피드 사이드바 최초 표시 여부 (런타임 토글은 localStorage)
 feed_poll_interval: 5      # 피드 폴링 주기(초, 참고값 — /dashboards 폴링 편승)
-feed_show_project_emoji: true  # 피드 항목 프로젝트 이모지 표시 (Issue47)
-feed_show_project_name: false  # 피드 항목 프로젝트명 표시 (Issue47)
-card_limit: 200            # htm 카드 최대 표시 수, mtime 최신순 (0=무제한, Issue52)
-search_limit: 200          # 디스크 재스캔 디렉토리당 파일 상한 (0=무제한, Issue55)
-live_session_limit: 6      # 세션 카드(프로젝트 그룹)당 최대 행, 초과 시 "외 N개 더" (0=무제한, Issue129)
-live_session_order: project # 활성세션 정렬 — updated(최근갱신순) / created(세션 시작순 고정) / project(Projects.md 번호순) (Issue159)
-live_session_show_empty: false # 명령(프롬프트) 전 빈 live 세션 표시 — false=전체 숨김 / true=프로젝트당 최신 1개 (Issue166)
+feed_show_project_emoji: true  # 피드 항목 프로젝트 이모지 표시
+feed_show_project_name: false  # 피드 항목 프로젝트명 표시
+card_limit: 200            # htm 카드 최대 표시 수, mtime 최신순 (0=무제한)
+search_limit: 200          # 디스크 재스캔 디렉토리당 파일 상한 (0=무제한)
+live_session_limit: 6      # 세션 카드(프로젝트 그룹)당 최대 행, 초과 시 "외 N개 더" (0=무제한)
+live_session_order: project # 활성세션 정렬 — updated(최근갱신순) / created(세션 시작순 고정) / project(Projects.md 번호순)
+live_session_show_empty: false # 명령(프롬프트) 전 빈 live 세션 표시 — false=전체 숨김 / true=프로젝트당 최신 1개
 
-browser_focus: false       # 렌더 시 브라우저 포커스 탈취 (false=백그라운드 open -g, Issue128)
-default_browser: chrome    # 렌더 브라우저 — firefox/chrome/edge/safari 또는 .app 절대경로 (Issue130). chrome 권장(탭 재사용 가능)
-browser_tab_reuse: true    # hub 탭 재사용 — true=기존 :9876 탭 1개에 덮어쓰기(누적 제거, chrome/safari/edge만) / false=매번 새 탭(firefox 등) (Issue162)
+browser_focus: false       # [deprecated → browser_open] 렌더 시 브라우저 포커스 탈취. hook 이 browser_open 미설정 시에만 fallback 으로 참조
+browser_open: background   # 렌더 브라우저 자동 open 동작 — off=자동 open 안 함(채팅 URL만) / background=open -g(포커스 미탈취) / foreground=포커스 탈취. browser_focus 흡수
+browser_tab_reuse: true    # hub 탭 재사용 — true=기존 :9876 탭 1개에 덮어쓰기(누적 제거, chrome/safari/edge만) / false=매번 새 탭(firefox 등)
+default_browser: chrome    # 렌더 브라우저 — firefox/chrome/edge/safari 또는 .app 절대경로. chrome 권장(탭 재사용 가능)
 
-bind_host: 127.0.0.1       # hub 서버 listen 인터페이스 (0.0.0.0=원격 개방+allowlist, restart 필요, Issue141)
-# advertise_host: 192.168.1.5  # hub|both URL host. 생략 시 bind_host fallback. ⚠️0.0.0.0+생략 금지 (Issue153). 예시 IP — 자신의 LAN IP 로 교체
+bind_host: 127.0.0.1       # hub 서버 listen 인터페이스 (0.0.0.0=원격 개방+allowlist, restart 필요)
+# advertise_host: 192.168.1.5  # hub|both URL host. 생략 시 bind_host fallback. ⚠️0.0.0.0+생략 금지. 예시 IP — 자신의 LAN IP 로 교체
 
-render_target: hub         # ..show 표시 경로 — local-open(file://) / hub(서버 경유 URL) / both (Issue153, hook 미구현🔧)
+render_target: both          # ..show 표시 경로 — local-open(file://) / hub("open 실행 금지. URL 만 채팅에 emit") / "open 실행 + URL 도 emit"
+
+language: ko               # hub UI 언어 — en(영어, 기본) / ko(한국어). 설계: _doc_arch/localization.md 
