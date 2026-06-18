@@ -205,52 +205,55 @@ cdfv() {
 #   매칭 소스 = $FPM_BASE/Projects.md 테이블의 프로젝트명·한국어명칭·경로 (대소문자 무시)
 #   매치 0개 → 메시지(stderr)+return 1 / 1개 → id 출력 / 다수 → choose from list 선택 후 id 출력
 #   호출측(cdfn/cdfvn/…)은 반환 id 를 기존 cdf/cdfv 등에 넘겨 동작 — index→경로 해석은 그쪽이 담당
-_cdfn_resolve() {
-    setopt local_options extended_glob   # <-> 숫자 glob·## 트림 — KM 등 비인터랙티브 zsh 대비
-    local q="$1"
-    [[ -z "$q" ]] && { echo "Usage: cdf*n <text>  (프로젝트명/한글명/경로 부분일치)" >&2; return 1; }
-    local proj_md="${FPM_BASE}/Projects.md"
-    [[ -f "$proj_md" ]] || { echo "Error: $proj_md not found" >&2; return 1; }
+# zsh 전용 구현(setopt·<->·${(@s)}·${(L)}·중첩 ${${}})은 별도 파일로 분리해 source.
+# bash 가 본 파일을 source 할 때 `<->` 등 zsh 글롭이 parse error 를 내지 않도록 격리
+# (fpm.sh:24 의 eval 격리와 동일 취지). bash 는 동등 fallback 을 아래에서 정의.
+if [ -n "${ZSH_VERSION:-}" ]; then
+    [ -f "${FPM_BASE}/sh/fpm_function_zsh.sh" ] && . "${FPM_BASE}/sh/fpm_function_zsh.sh"
+else
+    # bash fallback: Projects.md 표를 '|' 로 split, 숫자 id 행만 매칭 (zsh 구현과 동작 동일).
+    _cdfn_resolve() {
+        local q="$1"
+        [ -z "$q" ] && { echo "Usage: cdf*n <text>  (프로젝트명/한글명/경로 부분일치)" >&2; return 1; }
+        local proj_md="${FPM_BASE}/Projects.md"
+        [ -f "$proj_md" ] || { echo "Error: $proj_md not found" >&2; return 1; }
+        local ql; ql=$(printf '%s' "$q" | tr '[:upper:]' '[:lower:]')
+        local -a hits=()
+        local line id eng kor pth hay
+        local -a cols
+        while IFS= read -r line; do
+            [[ "$line" == \|* ]] || continue            # 표 행만
+            IFS='|' read -r -a cols <<< "$line"          # '|' 로 split (bash 0-index)
+            # cols: [0]="" [1]=id [2]=프로젝트명 [3]=한국어명 [4]=Dmn [5]=경로 ...
+            id=$(printf '%s' "${cols[1]}" | tr -d '[:space:]')
+            [[ "$id" =~ ^[0-9]+$ ]] || continue          # 숫자 id 행만
+            eng=$(printf '%s' "${cols[2]}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+            kor=$(printf '%s' "${cols[3]}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+            pth=$(printf '%s' "${cols[5]//\`/}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+            hay=$(printf '%s %s %s' "$eng" "$kor" "$pth" | tr '[:upper:]' '[:lower:]')
+            [[ "$hay" == *"$ql"* ]] && hits+=("${id}"$'\t'"${id}  ${eng}  (${kor})  ${pth}")
+        done < "$proj_md"
 
-    # 순수 zsh 파싱 (외부 awk/tr 의존 제거 — 일부 인터랙티브 zsh 설정에서 함수 내 awk 가
-    # 단일 명령으로 오파싱되는 문제 회피). Projects.md 표를 '|' 로 split, 숫자 id 행만 매칭.
-    local ql="${q:l}"          # zsh 소문자 변환
-    local -a hits=()           # 원소: "<id>\t<표시문자열>"
-    local line id eng kor pth hay
-    local -a cols
-    while IFS= read -r line; do
-        [[ "$line" == \|* ]] || continue            # 표 행만
-        cols=("${(@s:|:)line}")                      # '|' 로 split
-        # cols: [1]="" [2]=id [3]=프로젝트명 [4]=한국어명 [5]=Dmn [6]=경로 ...
-        id="${${cols[2]##[[:space:]]##}%%[[:space:]]##}"
-        [[ "$id" == <-> ]] || continue               # 숫자 id 행만
-        eng="${${cols[3]##[[:space:]]##}%%[[:space:]]##}"
-        kor="${${cols[4]##[[:space:]]##}%%[[:space:]]##}"
-        pth="${${cols[6]//\`/}##[[:space:]]##}"; pth="${pth%%[[:space:]]##}"
-        hay="${(L)eng} ${(L)kor} ${(L)pth}"
-        [[ "$hay" == *"$ql"* ]] && hits+=("${id}"$'\t'"${id}  ${eng}  (${kor})  ${pth}")
-    done < "$proj_md"
-
-    local n=${#hits[@]}
-    if (( n == 0 )); then
-        echo "❌ no match: $q" >&2; return 1
-    elif (( n == 1 )); then
-        printf '%s' "${hits[1]%%$'\t'*}"; return 0
-    else
-        # 다수 매치 → 네이티브 선택창 (표시문자열만 노출, 선택분의 앞 id 반환)
-        local menu_file="/tmp/.cdfn_menu_$$" picked
-        printf '%s\n' "${hits[@]#*$'\t'}" > "$menu_file"
-        picked=$(osascript \
-            -e 'set t to do shell script "cat '"$menu_file"'"' \
-            -e 'set L to paragraphs of t' \
-            -e 'set c to choose from list L with prompt "여러 개 매치 — 프로젝트 선택" without multiple selections allowed' \
-            -e 'if c is false then return ""' \
-            -e 'return item 1 of c' 2>/dev/null)
-        command rm -f "$menu_file"
-        [[ -z "$picked" ]] && { echo "취소됨" >&2; return 1; }
-        printf '%s' "${picked%% *}"; return 0
-    fi
-}
+        local n=${#hits[@]}
+        if [ "$n" -eq 0 ]; then
+            echo "❌ no match: $q" >&2; return 1
+        elif [ "$n" -eq 1 ]; then
+            printf '%s' "${hits[0]%%$'\t'*}"; return 0   # bash 0-index
+        else
+            local menu_file="/tmp/.cdfn_menu_$$" picked
+            printf '%s\n' "${hits[@]#*$'\t'}" > "$menu_file"
+            picked=$(osascript \
+                -e 'set t to do shell script "cat '"$menu_file"'"' \
+                -e 'set L to paragraphs of t' \
+                -e 'set c to choose from list L with prompt "여러 개 매치 — 프로젝트 선택" without multiple selections allowed' \
+                -e 'if c is false then return ""' \
+                -e 'return item 1 of c' 2>/dev/null)
+            command rm -f "$menu_file"
+            [ -z "$picked" ] && { echo "취소됨" >&2; return 1; }
+            printf '%s' "${picked%% *}"; return 0
+        fi
+    }
+fi
 
 # cdfn  : 숫자 시작이면 cdf  인덱스 모드(범위·다중), 아니면 이름 부분일치 → cd
 # cdfvn : 숫자 시작이면 cdfv 인덱스 모드(범위·다중), 아니면 이름 부분일치 → VS Code
