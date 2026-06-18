@@ -2540,6 +2540,13 @@ class Handler(BaseHTTPRequestHandler):
             if not p:
                 continue
             token = p.get("token", "")
+            # Issue177: 세션 출처 — capabilities.entrypoint(SessionStart 훅 전송)로
+            #   VSCode 확장(claude-vscode)과 터미널 CLI(cli 등)를 구분.
+            #   claude-vscode → "vscode"(카드 클릭 시 VSCode 탭 포커스),
+            #   그 외/미상 → "terminal"(클릭 시 VSCode 재오픈 안 함).
+            _entry_caps = entry.get("capabilities") or {}
+            _ep = str(_entry_caps.get("entrypoint", "")).strip()
+            origin = "vscode" if _ep == "claude-vscode" else "terminal"
             results.append({
                 "cwd": p.get("cwd", ""),
                 "cwd_hash": h,
@@ -2549,6 +2556,7 @@ class Handler(BaseHTTPRequestHandler):
                 "emoji": _project_emoji(p.get("cwd", "")),
                 "mode": entry.get("mode"),
                 "content_type": entry.get("content_type"),
+                "origin": origin,         # Issue177: "vscode" | "terminal" (카드 배지·클릭 분기)
                 "title": dash_title,      # Issue80: dashboard topic (없으면 None → JS fallback)
                 "updated_age": round(age, 1),
                 "subscribers": subs,
@@ -5586,6 +5594,10 @@ main { padding: 1.5rem; max-width: 1600px; margin: 0 auto; display: flex; gap: 1
 /* Issue131: 세션 행 클릭 → VSCode 세션 탭 포커스. 클릭 가능 시각화 */
 .live-item[data-sid] { cursor: pointer; border-radius: 5px; margin: 0 -0.25rem; padding-left: 0.25rem; padding-right: 0.25rem; transition: background .1s; }
 .live-item[data-sid]:hover { background: rgba(127,127,127,.12); }
+/* Issue177: 세션 출처 배지 (🆚 VSCode / ⌨️ 터미널) — topic 앞 작은 아이콘 */
+.live-origin { flex-shrink: 0; font-size: 0.82em; line-height: 1; opacity: 0.85; cursor: help; }
+.live-item[data-origin="terminal"] { cursor: default; }
+.live-item[data-origin="terminal"]:hover { background: rgba(127,127,127,.06); }
 .live-acts { display: flex; align-items: center; gap: 0.3rem; flex-shrink: 0; }
 .live-acts .approve-btn { background: #e8a020; color: #fff; border: 1px solid #c8861a; font-weight: 600; font-size: 0.76em; padding: 0.12rem 0.45rem; border-radius: 4px; cursor: pointer; }
 .live-acts .approve-btn:hover { background: #c8861a; }
@@ -5888,10 +5900,16 @@ function renderLiveSessions(list, limit) {
       : '';
     // Issue129: 명령(프롬프트) 전 세션은 title 없음 → "-" 표기 (기존 content_type/'response' fallback 폐기)
     const topic = s.title || '-';
+    // Issue177: 세션 출처 배지 — VSCode(🆚) vs 터미널(⌨️). origin 은 서버가 capabilities.entrypoint 로 판정.
+    //   터미널 세션은 클릭해도 VSCode 재오픈 안 함(아래 위임 핸들러 분기). data-origin 으로 핸들러에 전달.
+    const origin = s.origin === 'vscode' ? 'vscode' : 'terminal';
+    const originBadge = origin === 'vscode'
+      ? `<span class="live-origin vs" title="VSCode 세션 — 클릭 시 탭 포커스">🆚</span>`
+      : `<span class="live-origin term" title="터미널 세션(CLI) — 포커스 불가, 클릭 무동작">⌨️</span>`;
     // Issue131: 행 클릭 → 해당 Claude Code 세션 탭 포커스 (data-sid·data-cwd). title 툴팁으로 전체 표시(ellipsis 보완).
     // Issue104: extraCls 로 초과 행에 live-hidden 부여 (접힘 상태 기본 숨김).
     const cls = 'live-item' + (extraCls ? ' ' + extraCls : '');
-    return `<li class="${cls}" data-sid="${escapeHtml(s.sid)}" data-cwd="${escapeHtml(s.cwd)}" title="${escapeHtml(t('liveSessions.topicTitle', {topic: topic}))}"><span class="live-topic">${escapeHtml(topic)}</span><span class="live-acts">${approveBtn}${killBtn}</span></li>`;
+    return `<li class="${cls}" data-sid="${escapeHtml(s.sid)}" data-cwd="${escapeHtml(s.cwd)}" data-origin="${origin}" title="${escapeHtml(t('liveSessions.topicTitle', {topic: topic}))}">${originBadge}<span class="live-topic">${escapeHtml(topic)}</span><span class="live-acts">${approveBtn}${killBtn}</span></li>`;
   };
   const cards = [...groups.values()].map(g => {
     // Issue129/Issue104: limit 초과 시 첫 (lim-1)개는 표시, 초과분은 live-hidden 으로 렌더(잘라내지 않음)
@@ -6824,6 +6842,12 @@ document.getElementById('live-grid').addEventListener('click', (e) => {
   }
   const row = e.target.closest('.live-item[data-sid]');
   if (row && row.dataset.sid) {
+    // Issue177: 터미널(CLI) 세션은 VSCode 로 포커스 불가 → openSession(vscode URI) 호출 안 함.
+    //   기존엔 출처 무관하게 openSession 을 호출해 iTerm 세션도 VSCode 가 잘못 열렸음.
+    if (row.dataset.origin === 'terminal') {
+      toast('⌨️ 터미널 세션 — VSCode 로 포커스 불가', 'err');
+      return;
+    }
     openSession(row.dataset.cwd, row.dataset.sid);
     return;
   }

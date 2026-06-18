@@ -53,17 +53,24 @@ TMUX_WIN=$(tmux display-message -p '#{window_index}' 2>/dev/null)
 CWD_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$CWD")
 REG_URL="http://127.0.0.1:${SERVER_PORT}/session/register?cwd=${CWD_ENC}"
 
+# Issue177: 세션 출처 신호 — Claude Code 가 세팅하는 CLAUDE_CODE_ENTRYPOINT
+#   (VSCode 확장=claude-vscode, 터미널 CLI=cli). 훅 subprocess env 로 전파됨.
+#   서버가 capabilities.entrypoint 로 hub 카드 출처 배지(🆚/⌨️)를 분기.
+ENTRY="${CLAUDE_CODE_ENTRYPOINT:-}"
+
 BODY=$(python3 -c "
 import json, sys
-sid, src, win, pid = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+sid, src, win, pid, entry = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
 caps = {'tmux_window': win, 'source': src, 'kind': 'live'}
+if entry:
+    caps['entrypoint'] = entry   # Issue177: 출처 배지용 (claude-vscode|cli|...)
 body = {'sid': sid, 'content_type': 'live', 'capabilities': caps}
 try:
     body['pid'] = int(pid)   # Issue122: 서버 계약 pid(int) 필수
 except (ValueError, TypeError):
     pass
 print(json.dumps(body))
-" "$SID" "$SRC" "$TMUX_WIN" "$PID")
+" "$SID" "$SRC" "$TMUX_WIN" "$PID" "$ENTRY")
 
 curl -s --max-time 2 \
   -X POST "$REG_URL" \
