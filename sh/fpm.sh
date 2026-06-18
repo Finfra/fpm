@@ -14,7 +14,7 @@
 #
 # 구성:
 #   fpm.sh              : 본 부트스트랩 (FPM_BASE 확정 + 캐시 + 하위 source)
-#   fpm_function.sh     : cdf/cdff/cdfc/cdfv/cdft + sshf + 헬퍼
+#   fpm_function.sh     : cdf/cdff/cdfc/cdfv/cdft + cdfn/cdfvn(이름검색) + sshf + 헬퍼
 #   fpm_aliases.sh      : alias (iterm-bg 등)
 # 이전: ~/.fpm.sh(단일) → sh/fpm.sh(이동) → sh/fpm.sh+function+aliases(분리, FPM_BASE 도입 2026-06-09)
 
