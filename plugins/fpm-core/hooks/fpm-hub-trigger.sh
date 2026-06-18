@@ -701,6 +701,20 @@ PYEOF
   exit 0
 fi
 
+# Issue159: `..text`/`/text` — 단발(이번 turn 한정) hub 렌더 suppress. `..show`(단발 render-on)의 대칭.
+#   state/flag 파일 무변경(영속 토글과 구분) → 다음 turn 자동 모드 자동 복귀. 자동 모드 분기 평가 전에 위치.
+if printf '%s' "$prompt" | grep -qiE '(^|[[:space:]])(\.\.text|/text)([[:space:]]|$)'; then
+  cat <<'JSON'
+{
+  "hookSpecificOutput": {
+    "hookEventName": "UserPromptSubmit",
+    "additionalContext": "본 turn hub 렌더 skip — 평문 채팅 응답. 작업은 정상 수행, HTML 미작성·브라우저 미open. state/flag 파일 무변경 → 다음 turn 자동 복귀."
+  }
+}
+JSON
+  exit 0
+fi
+
 # Issue83: render 마커(`..show`/`..hub`) 없음 — 프로젝트 폴더는 hub 기본 on (per-cwd 상태 파일로 override)
 # Issue105: 시스템 OFF 플래그가 최우선 — 존재 시 모든 프로젝트 자동 모드 차단
 #   판정 우선순위: SYSTEM_OFF_FLAG > STATE_FILE > IS_PROJECT
