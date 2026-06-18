@@ -84,17 +84,24 @@ health=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 "$HEALTH_URL" 2>/de
 CWD_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$CWD")
 REG_URL="http://127.0.0.1:${SERVER_PORT}/session/register?cwd=${CWD_ENC}"
 
+# Issue179: 매 프롬프트 재등록도 출처 신호(entrypoint)를 함께 전송.
+#   SessionStart(register.sh)가 보낸 entrypoint caps 를 이 훅의 caps 가 서버 merge
+#   (caps or 기존)에서 매 턴 덮어써 origin 이 항상 terminal 로 회귀하던 버그(Issue177 회귀) 차단.
+ENTRY="${CLAUDE_CODE_ENTRYPOINT:-}"
+
 BODY=$(python3 -c "
 import json, sys
-sid, label, pid = sys.argv[1], sys.argv[2], sys.argv[3]
+sid, label, pid, entry = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 caps = {'source': 'prompt', 'kind': 'live'}
+if entry:
+    caps['entrypoint'] = entry   # Issue179: 출처 배지용 (claude-vscode|cli|...)
 body = {'sid': sid, 'content_type': 'live', 'label': label, 'capabilities': caps}
 try:
     body['pid'] = int(pid)   # Issue122: 서버 계약 pid(int) — live 카드 dedup·liveness
 except (ValueError, TypeError):
     pass
 print(json.dumps(body))
-" "$SID" "$LABEL" "$PID")
+" "$SID" "$LABEL" "$PID" "$ENTRY")
 
 curl -s --max-time 2 \
   -X POST "$REG_URL" \
