@@ -66,12 +66,44 @@ if [[ -z "$match" ]]; then
   match=$(printf '%s' "$url" | sed -E 's#^([a-z]+://[^/]+).*#\1#')
 fi
 
-# Firefox / reuse=false → open 폴백 (focus 에 따라 -g)
+# Issue: 진짜 백그라운드 열기 (깜빡임 0). Chromium(Chrome/Edge)은 open -g 를 무시하고
+#   self-activate 하므로(→ Issue173 trap 복원 = "전면화 후 복구" 깜빡임), open 대신
+#   AppleScript make new tab(activate 미호출)로 탭만 생성 → 전면화 자체를 회피.
+#   미실행 시엔 launch 가 activate 를 동반하므로 open -g 폴백(어차피 한 번은 떠야 함).
+#   창 0개면 make new tab 대상 부재 → open -g 로 새 창(이 경우만 1회 전면화 감수).
+_bg_open() {
+  case "$app" in
+    "Google Chrome"|"Microsoft Edge")
+      if ! pgrep -xq "$app" || [[ "$(osascript -e "tell application \"$app\" to count windows" 2>/dev/null || echo 0)" == "0" ]]; then
+        open -g -a "$app" "$url"
+        return
+      fi
+      osascript - "$url" "$app" <<'OSA' >/dev/null 2>&1 || open -g -a "$app" "$url"
+on run argv
+  set theURL to item 1 of argv
+  set appName to item 2 of argv
+  -- 동적 앱명(Chrome/Edge)은 Chrome 사전으로 컴파일 후 런타임 전달 (Chromium 공통 사전)
+  using terms from application "Google Chrome"
+    tell application appName
+      tell front window to make new tab with properties {URL:theURL}
+      -- activate 미호출 → 전면화 안 됨 → 포커스 미탈취 (Firefox 의 open -g 동등)
+    end tell
+  end using terms from
+end run
+OSA
+      ;;
+    *)
+      open -g -a "$app" "$url"  # Firefox 등은 open -g 존중
+      ;;
+  esac
+}
+
+# Firefox / reuse=false → open 폴백 (focus 에 따라 분기)
 _fallback_open() {
   if [[ "$focus" == "true" ]]; then
     open -a "$app" "$url"
   else
-    open -g -a "$app" "$url"
+    _bg_open
   fi
 }
 
