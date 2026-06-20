@@ -1,38 +1,40 @@
 ---
 name: COMMERCIAL
-description: fpm 상용(기업) 라이선스 안내
+description: fpm commercial (enterprise) license guide
 date: 2026-06-06
 ---
 
-# 라이선스 요약
+> 🌐 **English** | [한국어](COMMERCIAL_ko.md)
 
-fpm 은 **듀얼 라이선스**로 배포됩니다.
+# License Summary
 
-| 사용 주체                                  | 라이선스                                | 비용        |
-| :----------------------------------------- | :-------------------------------------- | :---------- |
-| 개인 · 취미 · 학습 · 비영리/교육/공공 기관 | [PolyForm Noncommercial 1.0.0](LICENSE) | 무료        |
-| 기업 · 상업적 목적 (사내 업무 포함)        | 상용 라이선스                           | 유료 (문의) |
+fpm is distributed under a **dual license**.
 
-# 무료 사용 (Noncommercial)
+| User                                                          | License                                 | Cost              |
+| :----------------------------------------------------------- | :-------------------------------------- | :---------------- |
+| Individuals · hobby · study · nonprofit/education/public bodies | [PolyForm Noncommercial 1.0.0](LICENSE) | Free              |
+| Companies · commercial use (incl. internal business use)     | Commercial license                      | Paid (contact us) |
 
-다음은 별도 계약 없이 무료로 사용 가능합니다.
+# Free Use (Noncommercial)
 
-* 개인의 학습·실험·취미 프로젝트
-* 비영리단체, 교육기관, 공공 연구·안전·보건·환경·정부 기관의 사용
-* 영리 적용 의도가 없는 사적 사용
+The following may be used for free without a separate agreement.
 
-# 유료 사용 (Commercial)
+* Individual study, experiment, and hobby projects
+* Use by nonprofits, educational institutions, and public research, safety, health, environmental, or government organizations
+* Private use with no intended commercial application
 
-다음은 **상용 라이선스**가 필요합니다.
+# Paid Use (Commercial)
 
-* 영리 기업의 사내 업무 활용
-* 제품·서비스에 통합하여 수익을 창출하는 경우
-* 컨설팅·외주 등 상업적 결과물 생산에 사용하는 경우
+The following require a **commercial license**.
 
-## 문의
+* Internal business use within a for-profit company
+* Integration into a product or service that generates revenue
+* Use in producing commercial deliverables such as consulting or outsourcing work
 
-* 이메일: user@gmail.com
-* 프로필: https://finfra.kr/nowage
-* 라이선스 범위·가격은 사용 규모(좌석 수·용도)에 따라 협의
+## Contact
 
-> 본 문서는 라이선스 정책 안내이며, 법적 효력은 [LICENSE](LICENSE) 전문 및 별도 체결되는 상용 계약서를 따릅니다.
+* Email: finfra@gmail.com
+* Profile: https://finfra.kr/nowage
+* License scope and pricing are negotiated based on usage scale (number of seats / purpose)
+
+> This document is a license policy guide; legal effect is governed by the full [LICENSE](LICENSE) text and any separately executed commercial agreement.

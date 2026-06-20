@@ -1,19 +1,21 @@
 ---
 name: INSTALL
-description: fpm 설치 가이드 — cdf/sshf 셸 함수, hub 서버, Keyboard Maestro, 폐쇄망 설치
+description: fpm install guide — cdf/sshf shell functions, hub server, Keyboard Maestro, air-gapped install
 date: 2026-06-21
 ---
 
-# 요구 사항
+> 🌐 **English** | [한국어](INSTALL_ko.md)
 
-* macOS (cdf/sshf 의 iTerm2 분할·Finder·클립보드 기능). Linux 는 단일 `cd`/`ssh` 만 동작
+# Requirements
+
+* macOS (for the iTerm2 split / Finder / clipboard features of cdf/sshf). On Linux only plain `cd`/`ssh` works
 * zsh
-* (선택) iTerm2 — 다중 패널 분할
-* (선택) VS Code + `code` CLI — `cdfv`
-* (선택) Python 3 — hub 서버
-* (선택) Keyboard Maestro (유료) — 매크로 연동
+* (optional) iTerm2 — multi-pane split
+* (optional) VS Code + `code` CLI — `cdfv`
+* (optional) Python 3 — hub server
+* (optional) Keyboard Maestro (paid) — macro integration
 
-# 빠른 설치
+# Quick Install
 
 ```bash
 git clone https://github.com/<you>/fpm.git ~/_git/fpm
@@ -22,55 +24,55 @@ bash sh/install.sh
 source ~/.zshrc
 ```
 
-`sh/install.sh` 가 수행하는 일:
+What `sh/install.sh` does:
 
-1. `~/.zshrc` 에 `FPM_BASE` export + `sh/fpm.sh` 부트스트랩 source 라인 추가 (마커 가드 — 멱등)
-2. `~/.info/__pmBasePath.txt` 생성 → `<repo>/projects`
-3. `projects/` 스캐폴드 생성 (`0`=home, `1`=repo)
-4. `Servers.md`/`Projects.md` 부재 시 `*_org.md` 예제 복사
-5. hub 서버·KM 안내 출력
-6. `fpm-core` 플러그인(SCAR — hub/dashboard 등) 을 `f-claude-plugins` 마켓 경유로 설치 (기본 ON, `--no-scar` 로 생략)
+1. Adds an `FPM_BASE` export + a `sh/fpm.sh` bootstrap source line to `~/.zshrc` (marker-guarded — idempotent)
+2. Creates `~/.info/__pmBasePath.txt` → `<repo>/projects`
+3. Creates the `projects/` scaffold (`0`=home, `1`=repo)
+4. Copies the `*_org.md` examples if `Servers.md`/`Projects.md` are missing
+5. Prints hub server / KM guidance
+6. Installs the `fpm-core` plugin (SCAR — hub/dashboard, etc.) via the `f-claude-plugins` marketplace (ON by default; skip with `--no-scar`)
 
-# 폐쇄망(air-gapped) 설치
+# Air-gapped Install
 
-인터넷이 차단된 환경에서는 `sh/install.sh` 가 기본으로 사용하는 GitHub 마켓(`f-claude-plugins`)에 접근할 수 없습니다. 이 경우 인터넷이 가능한 머신에서 마켓 저장소를 미리 받아 폐쇄망 머신으로 옮긴 뒤, `--local` 파라메터로 로컬 사본을 마켓 소스로 지정합니다.
+In environments without internet access, `sh/install.sh` cannot reach the GitHub marketplace (`f-claude-plugins`) it uses by default. In that case, download the marketplace repository ahead of time on an internet-connected machine, move it to the air-gapped machine, and point the installer at the local copy as the marketplace source with the `--local` parameter.
 
 ```bash
-# 1) 인터넷 가능 머신에서 마켓 저장소 clone
+# 1) On an internet-connected machine, clone the marketplace repository
 git clone https://github.com/finfra/f-claude-plugins ~/_git/__all/f-claude-plugins
 
-# 2) f-claude-plugins 디렉토리를 폐쇄망 머신으로 복사 (USB·내부망 등)
+# 2) Copy the f-claude-plugins directory to the air-gapped machine (USB, internal network, etc.)
 
-# 3) 폐쇄망 머신에서 로컬 사본을 마켓 소스로 지정해 설치
+# 3) On the air-gapped machine, install with the local copy as the marketplace source
 bash sh/install.sh --local /path/to/f-claude-plugins
 ```
 
-* 경로를 생략하면(`bash sh/install.sh --local`) 관례 위치(`~/_git/__all/f-claude-plugins`, `<repo>/../f-claude-plugins`, `./f-claude-plugins`)를 자동 탐색합니다.
-* 지정 경로에 `marketplace.json`(또는 `.claude-plugin/marketplace.json`)이 없으면 설치를 중단하고 안내를 출력합니다.
-* `--local` 은 환경변수 `FPM_MKT_REF` 보다 우선합니다. SCAR 가 불필요하면 `--no-scar` 로 셸 부트스트랩만 설치할 수 있습니다.
+* If you omit the path (`bash sh/install.sh --local`), it auto-discovers conventional locations (`~/_git/__all/f-claude-plugins`, `<repo>/../f-claude-plugins`, `./f-claude-plugins`).
+* If the given path has no `marketplace.json` (or `.claude-plugin/marketplace.json`), the install aborts and prints guidance.
+* `--local` takes precedence over the `FPM_MKT_REF` environment variable. If SCAR is not needed, you can install only the shell bootstrap with `--no-scar`.
 
-# 설치 후 설정
+# Post-install Setup
 
-## 1. 프로젝트 매핑 (cdf)
+## 1. Project Mapping (cdf)
 
-`Projects.md` 의 `setting Script` 블록을 자신의 경로로 편집 후 실행하거나, `projects/<번호>` 파일에 경로를 한 줄씩 기록:
+Edit the `setting Script` block in `Projects.md` with your own paths and run it, or write a path per line into the `projects/<number>` files:
 
 ```bash
 echo "~/_git/myproj-web" > ~/_git/fpm/projects/11
 ```
 
 ```bash
-cdf            # 전체 목록
-cdf 11         # projects/11 경로로 cd
-cdf 11 12 13   # 첫 번째 cd, 나머지 iTerm2 분할
+cdf            # full list
+cdf 11         # cd to the projects/11 path
+cdf 11 12 13   # cd to the first, split the rest into iTerm2
 cdff 11        # Finder
-cdfc 11        # 클립보드 복사
+cdfc 11        # copy to clipboard
 cdfv 11 12     # VS Code
 ```
 
-## 2. 서버 매핑 (sshf)
+## 2. Server Mapping (sshf)
 
-`Servers.md` 의 표를 편집하고, `~/.ssh/config` 의 `# favorite` 섹션에 Host alias 정의:
+Edit the table in `Servers.md`, and define Host aliases in the `# favorite` section of `~/.ssh/config`:
 
 ```sshconfig
 # favorite
@@ -81,15 +83,15 @@ Host sg
 ```
 
 ```bash
-sshf           # 서버 목록
-sshf 3         # id=3 서버 접속
-sshf gpu1      # Name 으로 접속
-sshf 1 2 3     # 다중 → iTerm2 분할
+sshf           # server list
+sshf 3         # connect to the server with id=3
+sshf gpu1      # connect by Name
+sshf 1 2 3     # multiple → iTerm2 split
 ```
 
-## 3. hub 서버 (선택)
+## 3. hub Server (optional)
 
-HTML 렌더 + 멀티 프로젝트 대시보드:
+HTML rendering + multi-project dashboard:
 
 ```bash
 cd ~/_git/fpm/services/hub
@@ -97,26 +99,26 @@ python3 server.py
 # → http://127.0.0.1:9876/hub
 ```
 
-## 4. Keyboard Maestro (선택)
+## 4. Keyboard Maestro (optional)
 
-`keyboard-maestro/README.md` 참조 — `.kmmacros` import + Accessibility 권한.
+See `keyboard-maestro/README.md` — `.kmmacros` import + Accessibility permission.
 
-# 제거 / 클린 재설치
+# Uninstall / Clean Reinstall
 
-`sh/uninstall.sh` 가 설치 흔적을 백업한 뒤 제거합니다 (멱등):
+`sh/uninstall.sh` backs up the install traces and then removes them (idempotent):
 
 ```bash
 bash sh/uninstall.sh
 ```
 
-제거 대상:
+What gets removed:
 
-1. `~/.zshrc` / `~/.bashrc` 의 fpm 블록 (`# >>> fpm functions >>>` ~ `# <<<`)
+1. The fpm block in `~/.zshrc` / `~/.bashrc` (`# >>> fpm functions >>>` ~ `# <<<`)
 2. `~/.info/__pmBasePath.txt`
 
-백업 위치: `<repo>/_doc_work/z_done/fpm-uninstall-<날짜시각>/` (환경변수 `FPM_BACKUP_DIR` 로 변경 가능). `projects/`·`Projects.md`·`Servers.md` 등 사용자 데이터는 **보존**되며, 필요 시 백업 확인 후 직접 삭제하세요.
+Backup location: `<repo>/_doc_work/z_done/fpm-uninstall-<datetime>/` (changeable via the `FPM_BACKUP_DIR` environment variable). User data such as `projects/`, `Projects.md`, and `Servers.md` is **preserved**; delete it manually after reviewing the backup if needed.
 
-클린 재설치(백업·제거 후 재설치) 는 한 번에:
+Clean reinstall (backup, remove, then reinstall) in one shot:
 
 ```bash
 bash sh/install.sh --clean
