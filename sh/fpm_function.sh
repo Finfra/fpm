@@ -43,6 +43,13 @@ _pm_manager() {
     local base_dir
     if [[ -n "${FPM_BASE:-}" && -d "${FPM_BASE}/projects" ]]; then
         base_dir="${FPM_BASE}/projects"
+        # lazy sync — Projects.md(SSOT) 가 인덱스보다 최신이면 projects/ 자동 재생성.
+        # "동기화 해줘" 수동 명령을 잊어도 cdf 사용 시점에 항상 최신 보장.
+        # stamp 부재(첫 실행) → -nt 가 참 → 1회 동기화 후 stamp 생성.
+        local _ssot="${FPM_BASE}/Projects.md" _stamp="${base_dir}/.sync-stamp"
+        if [[ -f "$_ssot" && "$_ssot" -nt "$_stamp" && -x "${FPM_BASE}/sh/fpm-projects-sync" ]]; then
+            "${FPM_BASE}/sh/fpm-projects-sync" --index-only >/dev/null 2>&1 && touch "$_stamp"
+        fi
     else
         local config_path="$HOME/.info/__pmBasePath.txt"
         [[ -f "$config_path" ]] || { echo "Error: FPM_BASE unset and $config_path not found"; return 1; }

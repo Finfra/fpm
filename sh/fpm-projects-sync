@@ -157,6 +157,8 @@ def run_iterm():
 
 
 def main():
+    index_only = '--index-only' in sys.argv[1:]
+
     with open(PROJECTS_MD, encoding='utf-8') as f:
         content = f.read()
 
@@ -166,6 +168,12 @@ def main():
         sys.exit(1)
 
     gen_projects(rows)
+    if index_only:
+        # pre-commit hook 용 — 이 repo 추적 산출물(projects/)만 재생성.
+        # .vscode(타 repo)·iterm(로컬·gitignore)은 커밋과 무관하므로 skip.
+        print(f'✅ fpm-projects-sync --index-only 완료 — {len(rows)}개 프로젝트 (projects/ 만)')
+        return
+
     update_vscode(rows)
     run_iterm()
     print(f'✅ fpm-projects-sync 완료 — {len(rows)}개 프로젝트')
