@@ -18,20 +18,29 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-INFO_DIR="$HOME/.info"
-BASEPATH_FILE="$INFO_DIR/__pmBasePath.txt"
-FUNC_FILE="$REPO_DIR/sh/fpm.sh"
-MARKER="# >>> fpm functions >>>"
-MARKER_END="# <<< fpm functions <<<"
-
-# fpm-core SCAR 설치 타깃 (prj20 집약 마켓 f-claude-plugins) — env 로 override 가능
-FPM_MKT_REF="${FPM_MKT_REF:-https://github.com/finfra/f-claude-plugins}"  # github url 또는 로컬경로
-FPM_MKT_NAME="f-claude-plugins"   # marketplace.json name
-FPM_PLUGIN="fpm-core@${FPM_MKT_NAME}"
 
 info()  { printf '\033[36m[fpm]\033[0m %s\n' "$1"; }
 warn()  { printf '\033[33m[fpm]\033[0m %s\n' "$1"; }
 err()   { printf '\033[31m[fpm]\033[0m %s\n' "$1" >&2; }
+
+# ── 아티팩트 SSOT 로드 (install/check 공통) ───────────────────
+MANIFEST="$REPO_DIR/data/install_manifest.sh"
+if [[ ! -f "$MANIFEST" ]]; then
+    err "🚨 매니페스트 없음: $MANIFEST — 설치 중단 (저장소 손상?)"; exit 1
+fi
+# shellcheck source=data/install_manifest.sh
+source "$MANIFEST"
+
+# 매니페스트 값 → 로컬 파생 (기준점 적용)
+BASEPATH_FILE="$HOME/$FPM_BASEPATH_REL_HOME"
+INFO_DIR="$(dirname "$BASEPATH_FILE")"
+FUNC_FILE="$REPO_DIR/$FPM_BOOTSTRAP_REL_REPO"
+MARKER="$FPM_MARKER"
+MARKER_END="$FPM_MARKER_END"
+
+# fpm-core SCAR 설치 타깃 — env FPM_MKT_REF 로 override (기본은 매니페스트)
+FPM_MKT_REF="${FPM_MKT_REF:-$FPM_MKT_REF_DEFAULT}"  # github url 또는 로컬경로
+FPM_PLUGIN="${FPM_PLUGIN_NAME}@${FPM_MKT_NAME}"
 
 # ── SCAR(fpm-core 플러그인) 설치 — 멱등 ───────────────────────
 # marketplace add(중복 시 update) → plugin install(이미 설치 시 skip).
@@ -179,9 +188,10 @@ place_org() {
         info "$org → $real 배치 (자신의 정보로 교체하세요)"
     fi
 }
-place_org "Servers.md"  "Servers_org.md"
-place_org "Projects.md" "Projects_org.md"
-place_org "data/hub_setting.yml" "data/hub_setting_org.yml"
+# 매니페스트 FPM_ORG_FILES (real:org) 순회 — check.sh 와 동일 SSOT
+for pair in "${FPM_ORG_FILES[@]}"; do
+    place_org "${pair%%:*}" "${pair##*:}"
+done
 
 # ── 5. 안내 ──────────────────────────────────────────────────
 cat <<EOF
