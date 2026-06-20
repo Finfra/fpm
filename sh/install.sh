@@ -14,6 +14,8 @@
 # 사용: bash sh/install.sh              (또는 ./sh/install.sh) — 셸 + SCAR 설치 (기본)
 #       bash sh/install.sh --clean     클린 재설치 — sh/uninstall.sh 로 기존 흔적 백업·제거 후 설치
 #       bash sh/install.sh --no-scar   SCAR 설치 생략 (셸 부트스트랩만)
+#       bash sh/install.sh --local [경로]  폐쇄망(air-gapped): GitHub 대신 미리 받아둔
+#                                          f-claude-plugins 로컬 사본을 마켓 소스로 사용 (Issue186)
 #       bash sh/install.sh --with-scar [하위호환 no-op] SCAR 기본 ON 이므로 불필요
 set -euo pipefail
 
@@ -41,7 +43,8 @@ FUNC_FILE="$REPO_DIR/$FPM_BOOTSTRAP_REL_REPO"
 MARKER="$FPM_MARKER"
 MARKER_END="$FPM_MARKER_END"
 
-# fpm-core SCAR 설치 타깃 — env FPM_MKT_REF 로 override (기본은 매니페스트)
+# fpm-core SCAR 설치 타깃 — env FPM_MKT_REF 또는 --local <경로> 로 override (기본은 매니페스트)
+# 우선순위: --local CLI > env FPM_MKT_REF > 매니페스트 기본(GitHub). --local 해석은 인자 파싱 이후.
 FPM_MKT_REF="${FPM_MKT_REF:-$FPM_MKT_REF_DEFAULT}"  # github url 또는 로컬경로
 FPM_PLUGIN="${FPM_PLUGIN_NAME}@${FPM_MKT_NAME}"
 
@@ -97,25 +100,78 @@ CLEAN=0
 WITH_SCAR=1          # 기본 ON (Issue181 후속 — SCAR 가 fpm 주목적). --no-scar 로 끔
 SCAR_FAILED=0
 SCAR_SKIPPED=0
-for arg in "$@"; do
-    case "$arg" in
+LOCAL_MKT=""         # --local <경로> 지정 시 채워짐. "AUTO" = 인자 없이 --local (관례 후보 탐색)
+# 값 동반 플래그(--local) 지원 위해 while+shift 사용 (기존 for-arg 로는 다음 인자 소비 불가).
+while [[ $# -gt 0 ]]; do
+    case "$1" in
         --clean) CLEAN=1 ;;
         --no-scar) WITH_SCAR=0 ;;
         --with-scar) : ;;   # 하위호환 no-op (SCAR 기본 ON 이므로 불필요)
+        --local=*) LOCAL_MKT="${1#--local=}" ;;
+        --local)
+            # 다음 인자가 플래그(-)가 아니면 경로로 소비, 아니면 AUTO(관례 후보 탐색)
+            if [[ $# -ge 2 && "${2:0:1}" != "-" ]]; then
+                LOCAL_MKT="$2"; shift
+            else
+                LOCAL_MKT="AUTO"
+            fi ;;
         -h|--help)
-            echo "usage: sh/install.sh [--clean] [--no-scar]"
-            echo "  --clean     : sh/uninstall.sh 로 기존 fpm 흔적 백업·제거 후 설치 (클린 재설치)"
-            echo "  --no-scar   : fpm-core 플러그인(SCAR) 설치 생략 — 셸 부트스트랩만"
-            echo "  --with-scar : [하위호환 no-op] SCAR 는 기본 설치됨"
+            echo "usage: sh/install.sh [--clean] [--no-scar] [--local [경로]]"
+            echo "  --clean       : sh/uninstall.sh 로 기존 fpm 흔적 백업·제거 후 설치 (클린 재설치)"
+            echo "  --no-scar     : fpm-core 플러그인(SCAR) 설치 생략 — 셸 부트스트랩만"
+            echo "  --local [경로] : 폐쇄망(air-gapped) — GitHub 대신 미리 받아둔 f-claude-plugins"
+            echo "                  로컬 사본을 마켓 소스로 사용. 경로 생략 시 관례 위치 자동 탐색."
+            echo "  --with-scar   : [하위호환 no-op] SCAR 는 기본 설치됨"
             echo ""
             echo "  기본 동작: 셸 + fpm-core 플러그인(hub/dashboard 등 SCAR)을"
             echo "             prj20 마켓($FPM_MKT_NAME) 경유로 설치 (멱등)."
             echo "             claude CLI 부재 시 SCAR 만 건너뜀(셸 설치는 정상, exit 0)."
             echo "             env FPM_MKT_REF 로 마켓 소스(github url/로컬경로) override"
             exit 0 ;;
-        *) warn "알 수 없는 인자: $arg (무시)" ;;
+        *) warn "알 수 없는 인자: $1 (무시)" ;;
     esac
+    shift
 done
+
+# ── 0-1. --local 해석 (폐쇄망 마켓 소스) ──────────────────────
+# 지정 경로(또는 관례 후보) 에서 marketplace.json 존재를 확인한 뒤 FPM_MKT_REF 로 채택.
+# env FPM_MKT_REF 보다 CLI --local 이 우선.
+if [[ -n "$LOCAL_MKT" ]]; then
+    if [[ "$LOCAL_MKT" == "AUTO" ]]; then
+        # 관례 후보 순회 — 첫 marketplace.json 보유 디렉토리 채택
+        declare -a LOCAL_CANDIDATES=(
+            "$REPO_DIR/../f-claude-plugins"
+            "$HOME/_git/__all/f-claude-plugins"
+            "$HOME/_git/f-claude-plugins"
+            "./f-claude-plugins"
+        )
+        FOUND=""
+        for cand in "${LOCAL_CANDIDATES[@]}"; do
+            if [[ -f "$cand/.claude-plugin/marketplace.json" || -f "$cand/marketplace.json" ]]; then
+                FOUND="$cand"; break
+            fi
+        done
+        if [[ -z "$FOUND" ]]; then
+            err "🚨 --local: 관례 위치에서 f-claude-plugins 로컬 사본을 못 찾음."
+            err "   폐쇄망 설치 전 먼저 받아두세요:"
+            err "     git clone $FPM_MKT_REF_DEFAULT  (인터넷 가능 머신에서)"
+            err "   후보 경로: ${LOCAL_CANDIDATES[*]}"
+            err "   또는 경로 명시: bash sh/install.sh --local /path/to/f-claude-plugins"
+            exit 1
+        fi
+        LOCAL_MKT="$FOUND"
+    fi
+    # 경로 정규화 + marketplace.json 검증 (fail-loud)
+    LOCAL_MKT="$(cd "$LOCAL_MKT" 2>/dev/null && pwd || true)"
+    if [[ -z "$LOCAL_MKT" ]]; then
+        err "🚨 --local: 지정 경로가 디렉토리가 아님 — 폐쇄망 설치 중단"; exit 1
+    fi
+    if [[ ! -f "$LOCAL_MKT/.claude-plugin/marketplace.json" && ! -f "$LOCAL_MKT/marketplace.json" ]]; then
+        err "🚨 --local: '$LOCAL_MKT' 에 marketplace.json 없음 (f-claude-plugins 사본 아님?) — 설치 중단"; exit 1
+    fi
+    FPM_MKT_REF="$LOCAL_MKT"
+    info "폐쇄망 마켓 소스 채택(--local): $FPM_MKT_REF"
+fi
 
 # --clean: 설치 전 백업+제거 (sh/uninstall.sh 위임)
 if [[ "$CLEAN" -eq 1 ]]; then

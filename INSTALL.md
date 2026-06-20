@@ -1,7 +1,7 @@
 ---
 name: INSTALL
-description: fpm 설치 가이드 — cdf/sshf 셸 함수, hub 서버, Keyboard Maestro
-date: 2026-06-06
+description: fpm 설치 가이드 — cdf/sshf 셸 함수, hub 서버, Keyboard Maestro, 폐쇄망 설치
+date: 2026-06-21
 ---
 
 # 요구 사항
@@ -29,6 +29,25 @@ source ~/.zshrc
 3. `projects/` 스캐폴드 생성 (`0`=home, `1`=repo)
 4. `Servers.md`/`Projects.md` 부재 시 `*_org.md` 예제 복사
 5. hub 서버·KM 안내 출력
+6. `fpm-core` 플러그인(SCAR — hub/dashboard 등) 을 `f-claude-plugins` 마켓 경유로 설치 (기본 ON, `--no-scar` 로 생략)
+
+# 폐쇄망(air-gapped) 설치
+
+인터넷이 차단된 환경에서는 `sh/install.sh` 가 기본으로 사용하는 GitHub 마켓(`f-claude-plugins`)에 접근할 수 없습니다. 이 경우 인터넷이 가능한 머신에서 마켓 저장소를 미리 받아 폐쇄망 머신으로 옮긴 뒤, `--local` 파라메터로 로컬 사본을 마켓 소스로 지정합니다.
+
+```bash
+# 1) 인터넷 가능 머신에서 마켓 저장소 clone
+git clone https://github.com/finfra/f-claude-plugins ~/_git/__all/f-claude-plugins
+
+# 2) f-claude-plugins 디렉토리를 폐쇄망 머신으로 복사 (USB·내부망 등)
+
+# 3) 폐쇄망 머신에서 로컬 사본을 마켓 소스로 지정해 설치
+bash sh/install.sh --local /path/to/f-claude-plugins
+```
+
+* 경로를 생략하면(`bash sh/install.sh --local`) 관례 위치(`~/_git/__all/f-claude-plugins`, `<repo>/../f-claude-plugins`, `./f-claude-plugins`)를 자동 탐색합니다.
+* 지정 경로에 `marketplace.json`(또는 `.claude-plugin/marketplace.json`)이 없으면 설치를 중단하고 안내를 출력합니다.
+* `--local` 은 환경변수 `FPM_MKT_REF` 보다 우선합니다. SCAR 가 불필요하면 `--no-scar` 로 셸 부트스트랩만 설치할 수 있습니다.
 
 # 설치 후 설정
 
