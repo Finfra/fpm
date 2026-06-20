@@ -17,7 +17,10 @@
 #       bash sh/install.sh --with-scar [하위호환 no-op] SCAR 기본 ON 이므로 불필요
 set -euo pipefail
 
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # 스크립트는 sh/ 하위 → repo 루트는 한 단계 위
+# 스크립트는 sh/ 하위 → repo 루트는 한 단계 위.
+# ${BASH_SOURCE[0]:-$0}: bash 실행 시 BASH_SOURCE, zsh/sh source 시 미설정이라 $0 fallback
+# (set -u 하에서 미설정 참조 시 'parameter not set' crash 방지). 본 스크립트는 `bash` 실행 전용.
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 
 info()  { printf '\033[36m[fpm]\033[0m %s\n' "$1"; }
 warn()  { printf '\033[33m[fpm]\033[0m %s\n' "$1"; }
