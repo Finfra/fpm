@@ -19,21 +19,6 @@ date: 2026-03-27
 
 # 🚧 진행중
 
-## Issue185: install.sh·check.sh·uninstall.sh → sh/ 이동 + 참조 동기화 + fpm README 갱신 (등록: 2026-06-21)
-* 목적: 설치 페이로드를 `sh/`(CLAUDE.md "단일 SSOT 설치 페이로드") 한 곳으로 모음. 루트 정리. 공개 명령은 `bash sh/install.sh` 로 변경.
-* 상세:
-    - **이동**: `install.sh`·`check.sh`·`uninstall.sh` → `sh/` (git mv, 추적 보존)
-    - **REPO_DIR 보정 (치명)**: 3 스크립트 `REPO_DIR=dirname(script)` → sh/ 이동 시 `<repo>/sh` 가 되어 `$REPO_DIR/{data,projects,plugins,services}` 전부 깨짐. `dirname/..` 한 단계 상위로 보정 필수
-    - **install.sh `--clean`**: `$REPO_DIR/uninstall.sh` → `$REPO_DIR/sh/uninstall.sh`
-    - **참조 갱신 (rename-reference-rules 5단계)**: `INSTALL.md`(git clone 블록 + `bash install.sh`/`uninstall.sh`/`--clean` ~6곳)·`noteForHuman.md`(47–53행, "루트 3파일" 문구) — forward 자동 미러
-    - **fpm README.md (prj7) 수동 갱신**: sync 제외(publishable-policy line 46)라 ___pm forward 로 전파 안 됨 → fpm 레포에서 직접 `bash install.sh` → `bash sh/install.sh` 편집
-    - **fpm 미러 전파**: fpm-sync forward(rsync `--delete`)가 루트 옛 사본 제거 + sh/ 신규 생성 자동 처리 (별도 수동 이동 불요)
-    - **단일 커밋**: 이동 + 참조 갱신 묶음(중간 broken 방지). fpm README 는 미러 동기화 시 별도 처리
-* 구현 명세:
-    - 검증: 이동 후 `bash sh/check.sh` 정상 PASS + `bash sh/install.sh` REPO_DIR 가 repo 루트 가리키는지 확인
-    - 사후 grep: `grep -rn 'bash install.sh\|REPO_DIR' ` 잔존 옛 경로 0건
-* 사전작업: SCAR 인벤토리 매니페스트화(미커밋) — 동일 파일군 수정분이 git mv 로 보존됨
-
 # 📕 중요
 
 # 📙 일반
@@ -55,6 +40,15 @@ date: 2026-03-27
 # 📗 선택
 
 # ✅ 완료
+## Issue185: install.sh·check.sh·uninstall.sh → sh/ 이동 + SCAR 인벤토리 매니페스트화 (등록: 2026-06-21, 해결: 2026-06-21, commit: 63f9dc5) ✅
+* 목적: 설치 페이로드를 `sh/`(CLAUDE.md "단일 SSOT 설치 페이로드") 한 곳으로 집약. 공개 명령 `bash sh/install.sh` 로 변경.
+* 결과:
+    - **이동**: `git mv` 로 3 스크립트 → `sh/` (추적 보존). REPO_DIR 자기탐지 `/..` 보정 — sh/ 하위에서 repo 루트 정확히 가리킴(`bash sh/check.sh` PASS 14 로 검증). `--clean` 의 uninstall 호출·usage·안내 문구 모두 `sh/` 경로화.
+    - **SCAR 인벤토리(사전작업 흡수)**: `install_manifest.sh` 에 `FPM_SCAR_COMMANDS`(11)/`SKILLS`(3)/`AGENTS`(1)+`FPM_PLUGIN_SRC_REL_REPO` 선언(신규 SSOT — plugin.json 미열거). `check.sh #10` 선언↔소스 양방향 drift diff(양성·음성 테스트 통과). `uninstall.sh` fpm-core plugin 제거+`--no-scar`(marketplace 공유 보존).
+    - **참조 동기화**: `INSTALL.md`·`noteForHuman.md` sh/ 경로화(forward 자동 미러). `fpm README.md`(prj7, sync 제외) 수동 편집 완료.
+* 잔여: **fpm 미러 전파** — fpm-sync forward(rsync `--delete`)가 fpm 레포 루트 옛 사본 제거+sh/ 신규 생성 + fpm README 커밋. `fpm-sync` deploy 단계에서 일괄 처리.
+* 후속: **Issue186(폐쇄망 설치) unblock** — `depends: Issue185` 해소, 착수 가능.
+
 ## Issue181: fpm-core SCAR 를 prj20 마켓플레이스 게시 + install.sh 마켓 경유 설치 (A안) — fg1 E2E (등록: 2026-06-20, 해결: 2026-06-21, commit: c5bc00e, cfe5ae8) ✅
 * 목적: `install.sh`·등록 플러그인 어느 쪽도 `~/.claude` SCAR 를 설치 안 하는 gap 을 A안(플러그인 정식 게시)으로 해소. fpm-core 를 prj20(f-claude-plugins) 마켓에 게시, `fpm-sync` 가 게시 자동화, `install.sh` 가 마켓 경유 설치. fg1 원격 E2E 로 검증.
 * plan: `_doc_work/plan/fpm-marketplace-install_plan.md`

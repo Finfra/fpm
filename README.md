@@ -22,6 +22,24 @@ date: 2026-06-06
 * **hub** — 매 작업 응답을 HTML 문서로 렌더하여 브라우저에 표시. 멀티 프로젝트 대시보드(활성 세션 보드·문서 아카이브·실시간 활동 피드)·양방향 Q&A 폼 제공 (`services/hub/`)
 * **SCAR** — 프로젝트 관리용 Claude Code 커맨드/스킬/에이전트/룰 ([SCAR 개념 정의 →](https://finfra.kr/jg/2026/04/20/scar_define/))
 
+## 요구 사항
+
+설정은 YAML 이 아닌 평문 텍스트(`projects/<번호>`)·마크다운(`Projects.md`/`Servers.md`) 기반이라 별도 설정 파서가 필요 없다. 다만 구동에는 아래 런타임 도구가 기능별로 필요하다.
+
+| 도구                            | 필요도            | 용도                                                          |
+| :------------------------------ | :---------------- | :------------------------------------------------------------ |
+| **zsh**                         | 필수              | cdf/sshf 셸 함수군                                            |
+| **macOS**                       | 권장              | iTerm2 분할·Finder·클립보드 (Linux 는 단일 `cd`/`ssh` 만)     |
+| **Claude Code CLI** (`claude`)  | SCAR 사용 시 필수 | fpm-core 플러그인(Skills/Commands/Agents/Rules) 설치·실행     |
+| **Node.js** (npm)               | SCAR 사용 시 필수 | Claude Code CLI 설치·일부 MCP 서버(npx) 구동 기반             |
+| **Python 3**                    | hub·MCP 사용 시 필수 | hub 대시보드 서버(port 9876)·MCP 서버 (`services/hub/`·`mcp/`) |
+| **tmux**                        | dashboard·cdft 사용 시 필수 | tmux pm 세션 관리·dashboard 에이전트 runner            |
+| iTerm2                          | 선택              | cdf 다중 패널 분할                                            |
+| VS Code + `code` CLI            | 선택              | cdfv / cdfvn                                                  |
+| Keyboard Maestro (유료)         | 선택              | 매크로 연동                                                   |
+
+> 셸 함수(cdf/sshf)만 쓰면 **zsh 외 의존성 없음**. SCAR·hub·dashboard 는 각각 위 도구가 있어야 동작한다. `sh/install.sh` 는 `claude` CLI 부재 시 SCAR 설치만 건너뛰고 셸 설치는 정상 완료한다.
+
 ## 설치
 
 ```bash
