@@ -1432,6 +1432,21 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Location", "/hub")
             self.end_headers()
             return
+        # Issue182: fPm 프로젝트 아이콘 서빙 (favicon + 헤더 브랜딩 공용)
+        if parsed.path == "/fpm-icon.png":
+            icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fpm-icon.png")
+            try:
+                with open(icon_path, "rb") as f:
+                    data = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "public, max-age=86400")
+                self.end_headers()
+                self.wfile.write(data)
+            except OSError:
+                self._send_json(404, {"error": "icon not found"})
+            return
         if parsed.path == "/healthz":
             with projects_lock:
                 pc = len(projects)
@@ -3461,7 +3476,7 @@ class Handler(BaseHTTPRequestHandler):
 <html lang="ko">
 <head>
 <meta charset="utf-8">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎯</text></svg>">
+<link rel="icon" href="/fpm-icon.png">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Issue{html.escape(issue_id)} — prj {html.escape(prj)}</title>
 <style>
@@ -4706,7 +4721,7 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
 <html lang="ko">
 <head>
 <meta charset="utf-8">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎯</text></svg>">
+<link rel="icon" href="/fpm-icon.png">
 <title>{esc(title)}</title>
 <style>
   body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 1100px; margin: 1rem auto; padding: 0 1rem; color: #222; }}
@@ -5355,7 +5370,7 @@ HUB_HTML = """<!doctype html>
 <html lang="ko">
 <head>
 <meta charset="utf-8">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎯</text></svg>">
+<link rel="icon" href="/fpm-icon.png">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>fPm Hub</title>
 <style>
@@ -5366,6 +5381,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "N
   background: var(--bg); color: var(--fg); margin: 0; padding: 0; line-height: 1.5; }
 header { background: linear-gradient(90deg, hsl(220,60%,45%), hsl(280,60%,45%)); color: white; padding: 1rem 1.5rem;
   display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
+header .hub-logo { height: 3em; flex: 0 0 auto; }
+header .header-text { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; }
 header h1 { margin: 0; font-size: 1.3rem; }
 header h1 #hub-headline { font-weight: 400; opacity: 0.92; font-size: 0.92em; }
 header .sub { font-size: 0.85em; opacity: 0.9; margin-top: 0.3rem; }
@@ -5677,8 +5694,9 @@ section.sec-collapsed .htm-bar-right { display: none; }
 </head>
 <body>
 <header>
+  <img class="hub-logo" src="/fpm-icon.png" alt="fPm">
   <div class="header-text">
-    <h1>🎯📊 fPm Hub<span id="hub-headline"></span></h1>
+    <h1>fPm Hub<span id="hub-headline"></span></h1>
     <div class="sub" id="hub-important">{T:common.loading}</div>
   </div>
   <div class="header-actions">
@@ -7100,7 +7118,7 @@ SESSION_SHELL_HTML = """<!doctype html>
 <html lang="ko">
 <head>
 <meta charset="utf-8">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎯</text></svg>">
+<link rel="icon" href="/fpm-icon.png">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{TITLE}</title>
 <style>
