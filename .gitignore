@@ -10,7 +10,6 @@ _doc_arch/
 _doc_work/
 _graphify/
 Prompts.md
-Issue.md
 noteForHuman.md
 
 # 개인정보 — 운영 필수(공개판은 *_org.md 예제 + install.sh 배치)
