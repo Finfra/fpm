@@ -1,6 +1,6 @@
 ---
 name: fpm-pm-del
-description: 프로젝트 안전 제거 (backup: 백업 이동, done: 완료 이동, keep: 레지스트리만 정리). pm 스킬 기반.
+description: "프로젝트 안전 제거 (backup: 백업 이동, done: 완료 이동, keep: 레지스트리만 정리). pm 스킬 기반."
 date: 2026-04-11
 ---
 
