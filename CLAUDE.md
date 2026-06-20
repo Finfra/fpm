@@ -25,7 +25,7 @@ date: 2026-03-26
     - `fpm_aliases_iterm-bg.sh` - **자동 생성** (gitignore). `update-iterm-bg` 산출물, `fpm_aliases.sh` 가 로드
     - `fpm-projects-sync` - **통합 드라이버**: `Projects.md` → `projects/` 인덱스 + 각 `.vscode` 배경색(peacock)·이모지 + iterm-bg alias 일괄 반영 (수동 단일 명령, `$FPM_BASE` 기반)
     - `update-iterm-bg` - `Projects.md` color → `$FPM_BASE/sh/fpm_aliases_iterm-bg.sh` alias 재생성 (드라이버 [3/3]. 이전엔 `~/.zsh_aliases_iterm-bg.sh` 로 생성만 되고 미로드 → 설치 폴더 내부로 이동 후 `fpm_aliases.sh` 가 source)
-* `README.md` - 프로젝트 번호-경로 매핑 문서
+* `README.md` - **fpm 공개 미러 전용** 제품 소개 문서. ___pm 본체에는 두지 않음(충돌 방지) — `publishable-policy.yml` `exclude[]` 로 fpm 사본을 forward `--delete` 로부터 보호하고 reverse 흡수도 차단. README 편집은 fpm(prj7)에서 수행.
 
 # 프로젝트 도메인 매핑
 
@@ -98,7 +98,7 @@ fApp(macOS 앱 11~16) 일괄 관리용 커맨드:
 
 # 프로젝트 추가/변경
 
-`projects/` 폴더에 번호 파일을 생성하고 경로를 한 줄로 기록. `README.md`도 함께 업데이트할 것.
+`projects/` 폴더에 번호 파일을 생성하고 경로를 한 줄로 기록. `Projects.md`(SSOT)도 함께 업데이트할 것.
 
 ## gitignore 정책
 
