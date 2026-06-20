@@ -16,7 +16,8 @@ date: 2026-06-06
 
 ## 핵심 기능
 
-* **cdf** — 프로젝트 번호로 즉시 `cd`, 복수 지정 시 iTerm2 분할
+* **cdf** — 프로젝트 번호로 즉시 `cd`, 복수 지정 시 iTerm2 분할. 범위(`11-16`)·명령 전달(`--- cmd`)·heredoc 지원
+* **cdfn / cdfvn** — 번호 대신 **이름 부분일치**로 이동(`cdfn snippet`). 다수 매치 시 선택창
 * **sshf** — `Servers.md` 의 id/name/alias 로 SSH 접속, 복수 지정 시 분할
 * **hub** — 매 작업 응답을 HTML 문서로 렌더하여 브라우저에 표시. 멀티 프로젝트 대시보드(활성 세션 보드·문서 아카이브·실시간 활동 피드)·양방향 Q&A 폼 제공 (`services/hub/`)
 * **SCAR** — 프로젝트 관리용 Claude Code 커맨드/스킬/에이전트/룰 ([SCAR 개념 정의 →](https://finfra.kr/jg/2026/04/20/scar_define/))
@@ -36,6 +37,19 @@ source ~/.zshrc
 
 ```bash
 cdf            # 전체 프로젝트 목록
+cdf 11         # 11번 프로젝트로 이동
+cdf 11 12 13   # 다중 → iTerm2 분할
+cdf 11-16      # 범위 확장(11 12 13 14 15 16) → 분할
+cdf 11 data    # 11번 하위 data/ 서브폴더로 이동
+cdf 11 --- ls  # 이동 후 명령 실행(구분자는 대시 3개 ---)
+cdf 11 12 <<EOF   # heredoc 으로 멀티라인 명령
+git status
+EOF
+
+cdfn snippet   # 이름 부분일치로 이동(번호 모름 때). 한글명·경로도 매칭
+cdfn 커먼      # 한글명 매칭 — 다수 매치 시 선택창
+cdfvn snippet  # 이름 부분일치 → VS Code 로 열기
+
 cdfc 2         # 경로를 클립보드에 복사
 cdfv 0 1 2     # VS Code 로 열기 (복수)
 
