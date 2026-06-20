@@ -311,7 +311,7 @@ if a_pair:
     except Exception:
         pass
     _t = _htmlmod.escape(a_title)
-    _p = _htmlmod.escape('file://' + a_pair)
+    _p = _htmlmod.escape(f'http://127.0.0.1:{server_port}/htm-doc?path=' + a_pair)  # Issue: http origin 폼에서 file:// iframe 차단 회귀 → hub 서버 경유
     _snippet = (
         '<details class="show-pair" open style="margin:1rem 1.5rem;border:1px solid #c9b8e0;border-radius:10px;overflow:hidden;">\n'
         '  <summary style="cursor:pointer;padding:0.6rem 1rem;background:hsl(273,30%,92%);color:#4a2d6b;font-weight:600;">'
