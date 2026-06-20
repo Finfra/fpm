@@ -27,7 +27,7 @@ date: 2026-06-06
 ```bash
 git clone https://github.com/finfra/fpm.git ~/_git/fpm
 cd ~/_git/fpm
-bash install.sh
+bash sh/install.sh
 source ~/.zshrc
 ```
 
