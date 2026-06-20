@@ -51,7 +51,7 @@
   "htmDocs.keepTitle": "mtime 최신 12개만 hub 목록에 남기고 나머지를 registry 에서 제거 — 실제 .html 파일은 보존",
   "htmDocs.clear": "🗑 hub 목록 전체 제거",
   "htmDocs.clearTitle": "모든 hub 문서를 hub 목록(registry)에서 제거 — 실제 .html 파일은 보존",
-  "feed.title": "🔔 활동 피드",
+  "feed.title": "활동 피드",
   "feed.collapseAllTitle": "펼친 항목 모두 줄이기",
   "feed.keep": "🧹 20개만",
   "feed.keepTitle": "최신 20개만 남기고 나머지 제거",

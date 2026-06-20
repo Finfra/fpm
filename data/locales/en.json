@@ -51,7 +51,7 @@
   "htmDocs.keepTitle": "Keep only the 12 most recent (by mtime) in the hub list and remove the rest from registry — actual .html files preserved",
   "htmDocs.clear": "🗑 Clear hub list",
   "htmDocs.clearTitle": "Remove all hub docs from the hub list (registry) — actual .html files preserved",
-  "feed.title": "🔔 Activity feed",
+  "feed.title": "Activity feed",
   "feed.collapseAllTitle": "Collapse all expanded items",
   "feed.keep": "🧹 Keep 20",
   "feed.keepTitle": "Keep latest 20 and remove the rest",
