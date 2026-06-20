@@ -14,10 +14,21 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-INFO_DIR="$HOME/.info"
-BASEPATH_FILE="$INFO_DIR/__pmBasePath.txt"
-MARKER="# >>> fpm functions >>>"
-MARKER_END="# <<< fpm functions <<<"
+
+# ── 아티팩트 SSOT 로드 (install/check 공통) ───────────────────
+MANIFEST="$REPO_DIR/data/install_manifest.sh"
+if [[ -f "$MANIFEST" ]]; then
+    # shellcheck source=data/install_manifest.sh
+    source "$MANIFEST"
+    BASEPATH_FILE="$HOME/$FPM_BASEPATH_REL_HOME"
+    MARKER="$FPM_MARKER"
+    MARKER_END="$FPM_MARKER_END"
+else
+    # 매니페스트 부재(구버전 잔존 제거 등) — 안전 fallback 상수
+    BASEPATH_FILE="$HOME/.info/__pmBasePath.txt"
+    MARKER="# >>> fpm functions >>>"
+    MARKER_END="# <<< fpm functions <<<"
+fi
 TS="$(date +%Y%m%d_%H%M%S)"
 BACKUP_DIR="${FPM_BACKUP_DIR:-$REPO_DIR/_doc_work/z_done}/fpm-uninstall-$TS"
 
