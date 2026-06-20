@@ -3203,7 +3203,13 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         #   cwd+token 인증은 함수 상단에서 이미 통과 → window kill 권한 충분.
         if action == "kill_pane":
             window_name = (body.get("window_name") or "").strip()
-            if not window_name or not re.match(r'^[a-zA-Z0-9_.:-]+$', window_name):
+            # Issue183: 한글/유니코드 window명도 허용. 기존 ASCII-only 화이트리스트
+            #   (`^[a-zA-Z0-9_.:-]+$`)는 `_테스트` 등 한글 window 를 tmux 도달 전 400 으로
+            #   거부했다. subprocess 는 list 인자(shell=False)라 셸 인젝션은 없으나, tmux
+            #   `-t pm:<name>` 타깃 파싱 보호용으로 제어문자·공백·셸 메타문자만 블랙리스트로
+            #   거부하고 그 외(한글 포함)는 통과시킨다.
+            if (not window_name or len(window_name) > 200
+                    or re.search(r'''[\x00-\x1f\x7f\s;$`'"()&|<>\\]''', window_name)):
                 self._send_json(400, {"error": "invalid window_name"})
                 return
             try:
@@ -4933,6 +4939,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "N
   background: var(--bg); color: var(--fg); margin: 0; padding: 0; line-height: 1.5; }
 header { background: linear-gradient(90deg, hsl(220,60%,45%), hsl(280,60%,45%)); color: white; padding: 1rem 1.5rem;
   display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
+header .hub-logo { height: 3em; flex: 0 0 auto; }
+header .header-text { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; }
 header h1 { margin: 0; font-size: 1.3rem; }
 header h1 #hub-headline { font-weight: 400; opacity: 0.92; font-size: 0.92em; }
 header .sub { font-size: 0.85em; opacity: 0.9; margin-top: 0.3rem; }
@@ -5190,8 +5198,9 @@ section.sec-collapsed .htm-bar-right { display: none; }
 </head>
 <body>
 <header>
+  <img class="hub-logo" src="/fpm-icon.png" alt="fPm">
   <div class="header-text">
-    <h1><img src="/fpm-icon.png" alt="fPm" style="height:2.6em;vertical-align:-0.85em;margin-right:0.4em;"> fPm Hub<span id="hub-headline"></span></h1>
+    <h1>fPm Hub<span id="hub-headline"></span></h1>
     <div class="sub" id="hub-important">로딩 중...</div>
   </div>
   <div class="header-actions">

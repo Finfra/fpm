@@ -3570,7 +3570,13 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         #   cwd+token 인증은 함수 상단에서 이미 통과 → window kill 권한 충분.
         if action == "kill_pane":
             window_name = (body.get("window_name") or "").strip()
-            if not window_name or not re.match(r'^[a-zA-Z0-9_.:-]+$', window_name):
+            # Issue183: 한글/유니코드 window명도 허용. 기존 ASCII-only 화이트리스트
+            #   (`^[a-zA-Z0-9_.:-]+$`)는 `_테스트` 등 한글 window 를 tmux 도달 전 400 으로
+            #   거부했다. subprocess 는 list 인자(shell=False)라 셸 인젝션은 없으나, tmux
+            #   `-t pm:<name>` 타깃 파싱 보호용으로 제어문자·공백·셸 메타문자만 블랙리스트로
+            #   거부하고 그 외(한글 포함)는 통과시킨다.
+            if (not window_name or len(window_name) > 200
+                    or re.search(r'''[\x00-\x1f\x7f\s;$`'"()&|<>\\]''', window_name)):
                 self._send_json(400, {"error": "invalid window_name"})
                 return
             try:
