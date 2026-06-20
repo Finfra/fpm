@@ -6,11 +6,16 @@ date: 2026-06-06
 
 # 요구 사항
 
-* macOS (cdf/sshf 의 iTerm2 분할·Finder·클립보드 기능). Linux 는 단일 `cd`/`ssh` 만 동작
-* zsh
+설정은 YAML 이 아닌 평문 텍스트·마크다운 기반이라 설정 파서는 불필요. 구동에 필요한 런타임 도구는 아래와 같다.
+
+* **zsh** (필수) — cdf/sshf 셸 함수군
+* **macOS** (권장) — cdf/sshf 의 iTerm2 분할·Finder·클립보드. Linux 는 단일 `cd`/`ssh` 만 동작
+* **Claude Code CLI** (`claude`) — SCAR(fpm-core 플러그인) 사용 시 필수. 부재 시 install 이 SCAR 만 건너뜀
+* **Node.js** (npm) — Claude Code CLI 설치·일부 MCP 서버(npx) 구동 기반. SCAR 사용 시 필수
+* **Python 3** — hub 대시보드 서버·MCP 서버. hub/MCP 사용 시 필수
+* **tmux** — tmux pm 세션 관리·dashboard 에이전트 runner. dashboard·`cdft` 사용 시 필수
 * (선택) iTerm2 — 다중 패널 분할
 * (선택) VS Code + `code` CLI — `cdfv`
-* (선택) Python 3 — hub 서버
 * (선택) Keyboard Maestro (유료) — 매크로 연동
 
 # 빠른 설치
