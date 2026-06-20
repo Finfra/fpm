@@ -18,11 +18,11 @@ date: 2026-06-06
 ```bash
 git clone https://github.com/<you>/fpm.git ~/_git/fpm
 cd ~/_git/fpm
-bash install.sh
+bash sh/install.sh
 source ~/.zshrc
 ```
 
-`install.sh` 가 수행하는 일:
+`sh/install.sh` 가 수행하는 일:
 
 1. `~/.zshrc` 에 `FPM_BASE` export + `sh/fpm.sh` 부트스트랩 source 라인 추가 (마커 가드 — 멱등)
 2. `~/.info/__pmBasePath.txt` 생성 → `<repo>/projects`
@@ -84,10 +84,10 @@ python3 server.py
 
 # 제거 / 클린 재설치
 
-`uninstall.sh` 가 설치 흔적을 백업한 뒤 제거합니다 (멱등):
+`sh/uninstall.sh` 가 설치 흔적을 백업한 뒤 제거합니다 (멱등):
 
 ```bash
-bash uninstall.sh
+bash sh/uninstall.sh
 ```
 
 제거 대상:
@@ -100,5 +100,5 @@ bash uninstall.sh
 클린 재설치(백업·제거 후 재설치) 는 한 번에:
 
 ```bash
-bash install.sh --clean
+bash sh/install.sh --clean
 ```

@@ -4,16 +4,20 @@
 # 동작:
 #   1. 셸 rc(zshrc/bashrc) 의 fpm 블록(마커 사이) 추출 백업 → 제거
 #   2. ~/.info/__pmBasePath.txt 백업 → 제거
-#   3. 백업 위치: ${FPM_BACKUP_DIR:-<repo>/_doc_work/z_done}/fpm-uninstall-<ts>/
+#   3. [SCAR] fpm-core 플러그인 uninstall (claude CLI 존재 + --no-scar 아닐 때)
+#   4. 백업 위치: ${FPM_BACKUP_DIR:-<repo>/_doc_work/z_done}/fpm-uninstall-<ts>/
 #
 # 보존(삭제 안 함): projects/ · Projects.md · Servers.md (사용자 데이터)
 #   → 사용자 데이터까지 지우려면 백업 확인 후 직접 rm
+# 보존(제거 안 함): marketplace FPM_MKT_NAME — fQRGen·fBanner 등 타 플러그인 공유 마켓.
+#   marketplace remove 는 그 마켓의 모든 플러그인을 cascade uninstall → 제거 금지.
 #
-# 사용: bash uninstall.sh   (또는 ./uninstall.sh)
-#   클린 재설치는 install.sh --clean (= uninstall 후 install)
+# 사용: bash sh/uninstall.sh              셸 + SCAR 제거 (기본)
+#       bash sh/uninstall.sh --no-scar    SCAR 플러그인 제거 생략 (셸만)
+#   클린 재설치는 sh/install.sh --clean (= uninstall 후 install)
 set -euo pipefail
 
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # 스크립트는 sh/ 하위 → repo 루트는 한 단계 위
 
 # ── 아티팩트 SSOT 로드 (install/check 공통) ───────────────────
 MANIFEST="$REPO_DIR/data/install_manifest.sh"
@@ -34,6 +38,19 @@ BACKUP_DIR="${FPM_BACKUP_DIR:-$REPO_DIR/_doc_work/z_done}/fpm-uninstall-$TS"
 
 info()  { printf '\033[36m[fpm]\033[0m %s\n' "$1"; }
 warn()  { printf '\033[33m[fpm]\033[0m %s\n' "$1"; }
+
+# ── 인자 ──────────────────────────────────────────────────────
+NO_SCAR=0
+for arg in "$@"; do
+    case "$arg" in
+        --no-scar) NO_SCAR=1 ;;
+        -h|--help)
+            echo "usage: sh/uninstall.sh [--no-scar]"
+            echo "  --no-scar : fpm-core 플러그인 제거 생략 — 셸 아티팩트만"
+            exit 0 ;;
+        *) warn "알 수 없는 인자: $arg (무시)" ;;
+    esac
+done
 
 REMOVED=0
 
@@ -67,6 +84,27 @@ if [[ -f "$BASEPATH_FILE" ]]; then
     REMOVED=1
 fi
 
+# ── [SCAR] fpm-core 플러그인 제거 (멱등) ──────────────────────
+#   marketplace(FPM_MKT_NAME)는 공유 자산 — 제거 안 함(타 플러그인 cascade 보호).
+#   plugin uninstall 만 수행. 백업 불필요(sh/install.sh 재실행으로 복원).
+if [[ "$NO_SCAR" -eq 0 ]]; then
+    if ! command -v claude >/dev/null 2>&1; then
+        info "claude CLI 미발견 → SCAR 플러그인 제거 건너뜀 (셸-only)"
+    elif claude plugin list 2>/dev/null | grep -qF "$FPM_PLUGIN_NAME"; then
+        if claude plugin uninstall "$FPM_PLUGIN_NAME" >/dev/null 2>&1 \
+           || claude plugin uninstall "${FPM_PLUGIN_NAME}@${FPM_MKT_NAME}" >/dev/null 2>&1; then
+            info "fpm-core 플러그인 제거 완료 (marketplace '$FPM_MKT_NAME' 은 공유 — 보존)"
+            REMOVED=1
+        else
+            warn "fpm-core 플러그인 제거 실패 — 수동: claude plugin uninstall $FPM_PLUGIN_NAME"
+        fi
+    else
+        info "fpm-core 플러그인 미설치 — skip"
+    fi
+else
+    info "SCAR 플러그인 제거 생략 (--no-scar)"
+fi
+
 # ── 결과 안내 ──
 if [[ "$REMOVED" -eq 1 ]]; then
     cat <<EOF
@@ -76,11 +114,12 @@ if [[ "$REMOVED" -eq 1 ]]; then
 
 백업:  $BACKUP_DIR
 보존:  projects/ · Projects.md · Servers.md (사용자 데이터 — 필요 시 직접 rm)
+보존:  marketplace $FPM_MKT_NAME (공유 마켓 — 타 플러그인 보호)
 
 다음 단계:
   1) 셸 재시작 (또는 새 셸) 으로 fpm 함수 해제 반영
-  2) 재설치       : bash install.sh
-     클린 재설치  : bash install.sh --clean
+  2) 재설치       : bash sh/install.sh
+     클린 재설치  : bash sh/install.sh --clean
 ────────────────────────────────────────────
 EOF
 else
