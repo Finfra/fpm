@@ -7,9 +7,11 @@
 #   3. projects/ 스캐폴드 (없으면 생성)
 #   4. 운영 필수 파일 배치: Servers.md / Projects.md / data/hub_setting.yml 부재 시 *_org 예제 복사
 #   5. hub 서버 안내 출력
+#   6. [선택] --with-scar : fpm-core Claude Code 플러그인(SCAR) 을 prj20 마켓 경유 설치 (Issue181)
 #
-# 사용: bash install.sh            (또는 ./install.sh)
-#       bash install.sh --clean   클린 재설치 — uninstall.sh 로 기존 흔적 백업·제거 후 설치
+# 사용: bash install.sh              (또는 ./install.sh)
+#       bash install.sh --clean     클린 재설치 — uninstall.sh 로 기존 흔적 백업·제거 후 설치
+#       bash install.sh --with-scar fpm-core 플러그인(hub/dashboard 등 SCAR)까지 설치 (claude CLI 필요)
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,17 +21,74 @@ FUNC_FILE="$REPO_DIR/sh/fpm.sh"
 MARKER="# >>> fpm functions >>>"
 MARKER_END="# <<< fpm functions <<<"
 
+# fpm-core SCAR 설치 타깃 (prj20 집약 마켓 f-claude-plugins) — env 로 override 가능
+FPM_MKT_REF="${FPM_MKT_REF:-https://github.com/finfra/f-claude-plugins}"  # github url 또는 로컬경로
+FPM_MKT_NAME="f-claude-plugins"   # marketplace.json name
+FPM_PLUGIN="fpm-core@${FPM_MKT_NAME}"
+
 info()  { printf '\033[36m[fpm]\033[0m %s\n' "$1"; }
 warn()  { printf '\033[33m[fpm]\033[0m %s\n' "$1"; }
+err()   { printf '\033[31m[fpm]\033[0m %s\n' "$1" >&2; }
+
+# ── SCAR(fpm-core 플러그인) 설치 — 멱등 ───────────────────────
+# marketplace add(중복 시 update) → plugin install(이미 설치 시 skip).
+# claude CLI 부재 시 fail-loud + 수동 안내 후 비치명 반환(셸 설치는 이미 완료).
+install_scar() {
+    if ! command -v claude >/dev/null 2>&1; then
+        err "──────────────────────────────────────────────"
+        err "🚨 --with-scar 지정됐으나 'claude' CLI 를 찾을 수 없음."
+        err "   fpm-core 플러그인(SCAR) 설치를 건너뜀. (셸 설치는 정상 완료)"
+        err ""
+        err "   Claude Code 설치 후 아래를 수동 실행하세요:"
+        err "     claude plugin marketplace add $FPM_MKT_REF --scope user"
+        err "     claude plugin install $FPM_PLUGIN --scope user"
+        err "──────────────────────────────────────────────"
+        SCAR_FAILED=1
+        return 0
+    fi
+
+    # 1) marketplace 등록 (멱등: 이미 있으면 update)
+    if claude plugin marketplace list 2>/dev/null | grep -qF "$FPM_MKT_NAME"; then
+        info "marketplace '$FPM_MKT_NAME' 이미 등록 — update"
+        claude plugin marketplace update "$FPM_MKT_NAME" >/dev/null 2>&1 \
+            || warn "marketplace update 실패 (기존 등록 유지) — 계속 진행"
+    else
+        info "marketplace 등록: $FPM_MKT_REF"
+        if ! claude plugin marketplace add "$FPM_MKT_REF" --scope user; then
+            err "🚨 marketplace add 실패: $FPM_MKT_REF — SCAR 설치 중단"
+            SCAR_FAILED=1
+            return 0
+        fi
+    fi
+
+    # 2) 플러그인 설치 (멱등: 이미 설치 시 skip)
+    if claude plugin list 2>/dev/null | grep -qF "fpm-core"; then
+        info "플러그인 'fpm-core' 이미 설치 — skip"
+    else
+        info "플러그인 설치: $FPM_PLUGIN"
+        if ! claude plugin install "$FPM_PLUGIN" --scope user; then
+            err "🚨 plugin install 실패: $FPM_PLUGIN — 수동 확인 필요"
+            SCAR_FAILED=1
+            return 0
+        fi
+    fi
+    info "fpm-core SCAR 설치 완료 (claude 재시작 후 적용)"
+}
 
 # ── 0. 인자 파싱 ──────────────────────────────────────────────
 CLEAN=0
+WITH_SCAR=0
+SCAR_FAILED=0
 for arg in "$@"; do
     case "$arg" in
         --clean) CLEAN=1 ;;
+        --with-scar) WITH_SCAR=1 ;;
         -h|--help)
-            echo "usage: install.sh [--clean]"
-            echo "  --clean : uninstall.sh 로 기존 fpm 흔적 백업·제거 후 설치 (클린 재설치)"
+            echo "usage: install.sh [--clean] [--with-scar]"
+            echo "  --clean     : uninstall.sh 로 기존 fpm 흔적 백업·제거 후 설치 (클린 재설치)"
+            echo "  --with-scar : fpm-core Claude Code 플러그인(hub/dashboard 등 SCAR)을"
+            echo "                prj20 마켓($FPM_MKT_NAME) 경유로 설치 (claude CLI 필요, 멱등)"
+            echo "                env FPM_MKT_REF 로 마켓 소스(github url/로컬경로) override"
             exit 0 ;;
         *) warn "알 수 없는 인자: $arg (무시)" ;;
     esac
@@ -130,9 +189,23 @@ cat <<EOF
   cd "$REPO_DIR/services/hub" && python3 server.py
   → http://127.0.0.1:9876/hub
 
+[선택] fpm-core 플러그인(SCAR — hub/dashboard 등):
+  bash install.sh --with-scar     (claude CLI 필요, 멱등)
+
 [선택] Keyboard Maestro 매크로:  keyboard-maestro/README.md
 
 제거:  bash uninstall.sh        (셸 흔적 백업 후 제거)
 클린 재설치:  bash install.sh --clean
 ────────────────────────────────────────────
 EOF
+
+# ── 6. [선택] SCAR(fpm-core 플러그인) 설치 ────────────────────
+if [[ "$WITH_SCAR" -eq 1 ]]; then
+    echo ""
+    info "--with-scar: fpm-core 플러그인 설치 시작"
+    install_scar
+    if [[ "$SCAR_FAILED" -eq 1 ]]; then
+        warn "SCAR 설치 미완료 — 위 안내 참고 (셸 설치는 정상 완료)"
+        exit 2
+    fi
+fi
