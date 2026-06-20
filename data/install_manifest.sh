@@ -35,8 +35,40 @@ FPM_ORG_FILES=(
 )
 
 # ── [SCAR] fpm-core 플러그인 (prj20 집약 마켓 경유) ──
-#   install: marketplace add(중복 update) → plugin install(중복 skip)
-#   check  : marketplace 등록 + plugin 설치 확인
+#   install  : marketplace add(중복 update) → plugin install(중복 skip)
+#   check    : marketplace 등록 + plugin 설치 확인
+#   uninstall: plugin uninstall (marketplace 는 공유 — 제거 금지)
 FPM_MKT_NAME="f-claude-plugins"
 FPM_MKT_REF_DEFAULT="https://github.com/finfra/f-claude-plugins"  # env FPM_MKT_REF 로 override
 FPM_PLUGIN_NAME="fpm-core"
+
+# ── [SCAR] fpm-core 번들 SCAR 인벤토리 (선언적 SSOT — drift 가드) ──
+#   plugin.json 은 개별 SCAR 를 열거하지 않음(Claude Code 가 디렉토리 자동 탐색)므로,
+#   "fpm-core 가 무엇을 ship 하는가" 의 단일 진실 원본은 본 배열뿐이다.
+#   check.sh 가 아래 선언 ↔ 실제 파일(plugins/fpm-core/{commands,skills,agents}/)을
+#   양방향 diff: 선언했는데 파일 없음 / 파일 있는데 선언 누락 둘 다 FAIL.
+#   SCAR 추가·삭제·rename 시 본 배열을 함께 갱신해야 drift 가 안 생긴다.
+#   파일 규약: commands/<name>.md · skills/<name>/SKILL.md · agents/<name>.md
+FPM_PLUGIN_SRC_REL_REPO="plugins/fpm-core"   # repo 기준 플러그인 소스 디렉토리
+
+FPM_SCAR_COMMANDS=(
+    fpm-cdf
+    fpm-dashboard
+    fpm-dashboard-server
+    fpm-hub
+    fpm-new-project
+    fpm-pm-del
+    fpm-pm-do
+    fpm-pm-new
+    fpm-pm-query
+    fpm-pm-update
+    fpm-show
+)
+FPM_SCAR_SKILLS=(
+    fpm-cdf
+    fpm-pm
+    fpm-pm-do
+)
+FPM_SCAR_AGENTS=(
+    fpm-dashboard
+)

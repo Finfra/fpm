@@ -11,13 +11,13 @@
 #      claude CLI 부재 시 경고만 하고 건너뜀(graceful skip — 셸 설치는 정상 완료, exit 0).
 #      --no-scar 로 옵트아웃 가능.
 #
-# 사용: bash install.sh              (또는 ./install.sh) — 셸 + SCAR 설치 (기본)
-#       bash install.sh --clean     클린 재설치 — uninstall.sh 로 기존 흔적 백업·제거 후 설치
-#       bash install.sh --no-scar   SCAR 설치 생략 (셸 부트스트랩만)
-#       bash install.sh --with-scar [하위호환 no-op] SCAR 기본 ON 이므로 불필요
+# 사용: bash sh/install.sh              (또는 ./sh/install.sh) — 셸 + SCAR 설치 (기본)
+#       bash sh/install.sh --clean     클린 재설치 — sh/uninstall.sh 로 기존 흔적 백업·제거 후 설치
+#       bash sh/install.sh --no-scar   SCAR 설치 생략 (셸 부트스트랩만)
+#       bash sh/install.sh --with-scar [하위호환 no-op] SCAR 기본 ON 이므로 불필요
 set -euo pipefail
 
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # 스크립트는 sh/ 하위 → repo 루트는 한 단계 위
 
 info()  { printf '\033[36m[fpm]\033[0m %s\n' "$1"; }
 warn()  { printf '\033[33m[fpm]\033[0m %s\n' "$1"; }
@@ -100,8 +100,8 @@ for arg in "$@"; do
         --no-scar) WITH_SCAR=0 ;;
         --with-scar) : ;;   # 하위호환 no-op (SCAR 기본 ON 이므로 불필요)
         -h|--help)
-            echo "usage: install.sh [--clean] [--no-scar]"
-            echo "  --clean     : uninstall.sh 로 기존 fpm 흔적 백업·제거 후 설치 (클린 재설치)"
+            echo "usage: sh/install.sh [--clean] [--no-scar]"
+            echo "  --clean     : sh/uninstall.sh 로 기존 fpm 흔적 백업·제거 후 설치 (클린 재설치)"
             echo "  --no-scar   : fpm-core 플러그인(SCAR) 설치 생략 — 셸 부트스트랩만"
             echo "  --with-scar : [하위호환 no-op] SCAR 는 기본 설치됨"
             echo ""
@@ -114,15 +114,15 @@ for arg in "$@"; do
     esac
 done
 
-# --clean: 설치 전 백업+제거 (uninstall.sh 위임)
+# --clean: 설치 전 백업+제거 (sh/uninstall.sh 위임)
 if [[ "$CLEAN" -eq 1 ]]; then
-    if [[ -f "$REPO_DIR/uninstall.sh" ]]; then
-        info "--clean: uninstall.sh 로 기존 흔적 백업 후 제거"
-        bash "$REPO_DIR/uninstall.sh"
+    if [[ -f "$REPO_DIR/sh/uninstall.sh" ]]; then
+        info "--clean: sh/uninstall.sh 로 기존 흔적 백업 후 제거"
+        bash "$REPO_DIR/sh/uninstall.sh"
         echo ""
         info "클린 제거 완료 — 신규 설치 진행"
     else
-        warn "--clean 지정됐으나 uninstall.sh 없음 — 백업 없이 설치 진행 (멱등 재설치)"
+        warn "--clean 지정됐으나 sh/uninstall.sh 없음 — 백업 없이 설치 진행 (멱등 재설치)"
     fi
 fi
 
@@ -211,12 +211,12 @@ cat <<EOF
   → http://127.0.0.1:9876/hub
 
 fpm-core 플러그인(SCAR — hub/dashboard 등): 기본 설치됨
-  (생략하려면 bash install.sh --no-scar)
+  (생략하려면 bash sh/install.sh --no-scar)
 
 [선택] Keyboard Maestro 매크로:  keyboard-maestro/README.md
 
-제거:  bash uninstall.sh        (셸 흔적 백업 후 제거)
-클린 재설치:  bash install.sh --clean
+제거:  bash sh/uninstall.sh        (셸 흔적 백업 후 제거)
+클린 재설치:  bash sh/install.sh --clean
 ────────────────────────────────────────────
 EOF
 

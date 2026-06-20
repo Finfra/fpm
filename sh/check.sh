@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # check.sh — fpm 설치 점검 (읽기 전용, 멱등)
 #
-# install.sh 가 배치한 흔적을 검사하여 설치 상태를 진단함. 아무것도 변경하지 않음.
+# sh/install.sh 가 배치한 흔적을 검사하여 설치 상태를 진단함. 아무것도 변경하지 않음.
 # install.sh / uninstall.sh 와 동일하게 data/install_manifest.sh(SSOT) 를 source 하므로,
 # 마커·경로·운영파일 목록·SCAR 타깃이 설치 측과 항상 일치(drift 없음).
 #
@@ -15,15 +15,16 @@
 #   [SCAR] 7. claude CLI 존재
 #          8. marketplace 등록 (FPM_MKT_NAME)
 #          9. 플러그인 설치 (FPM_PLUGIN_NAME)
+#         10. SCAR 인벤토리 drift — 선언(FPM_SCAR_*) ↔ 소스 파일 양방향 대조
 #
-# 사용: bash check.sh            전체 점검 (셸 + SCAR)
-#       bash check.sh --no-scar  SCAR 점검 생략 (셸만)
-#       bash check.sh --quiet    PASS 항목 숨김, FAIL/WARN 만 출력
+# 사용: bash sh/check.sh            전체 점검 (셸 + SCAR)
+#       bash sh/check.sh --no-scar  SCAR 점검 생략 (셸만)
+#       bash sh/check.sh --quiet    PASS 항목 숨김, FAIL/WARN 만 출력
 #
 # 종료코드: 0=전부 PASS(WARN 허용) / 1=하나 이상 FAIL
 set -uo pipefail
 
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # 스크립트는 sh/ 하위 → repo 루트는 한 단계 위
 
 # ── 아티팩트 SSOT 로드 (install/check 공통) ───────────────────
 MANIFEST="$REPO_DIR/data/install_manifest.sh"
@@ -48,7 +49,7 @@ for arg in "$@"; do
         --no-scar) CHECK_SCAR=0 ;;
         --quiet|-q) QUIET=1 ;;
         -h|--help)
-            echo "usage: check.sh [--no-scar] [--quiet]"
+            echo "usage: sh/check.sh [--no-scar] [--quiet]"
             echo "  --no-scar : SCAR(fpm-core 플러그인) 점검 생략 — 셸만"
             echo "  --quiet   : PASS 항목 숨김, FAIL/WARN 만 출력"
             exit 0 ;;
@@ -68,7 +69,7 @@ sec "── 셸 설치 ──"
 if [[ -f "$FUNC_FILE" ]]; then
     ok "부트스트랩 존재: $FPM_BOOTSTRAP_REL_REPO"
 else
-    fail "부트스트랩 없음: $FUNC_FILE (install.sh 재실행 필요)"
+    fail "부트스트랩 없음: $FUNC_FILE (sh/install.sh 재실행 필요)"
 fi
 
 # ── 2. rc 블록 + FPM_BASE export ──────────────────────────────
@@ -86,7 +87,7 @@ for RC in "$HOME/.zshrc" "$HOME/.bashrc"; do
         fi
     fi
 done
-[[ "$RC_FOUND" -eq 0 ]] && fail "rc(zshrc/bashrc) 에 fpm 마커 블록 없음 — install.sh 재실행"
+[[ "$RC_FOUND" -eq 0 ]] && fail "rc(zshrc/bashrc) 에 fpm 마커 블록 없음 — sh/install.sh 재실행"
 
 # ── 3. __pmBasePath.txt ───────────────────────────────────────
 if [[ -f "$BASEPATH_FILE" ]]; then
@@ -122,7 +123,7 @@ for pair in "${FPM_ORG_FILES[@]}"; do
     if [[ -f "$REPO_DIR/$real" ]]; then
         ok "운영 파일 존재: $real"
     else
-        warn "운영 파일 없음: $real (install.sh 가 ${pair##*:} 예제로 배치)"
+        warn "운영 파일 없음: $real (sh/install.sh 가 ${pair##*:} 예제로 배치)"
     fi
 done
 
@@ -146,7 +147,7 @@ if [[ "$CHECK_SCAR" -eq 1 ]]; then
         if claude plugin marketplace list 2>/dev/null | grep -qF "$FPM_MKT_NAME"; then
             ok "marketplace 등록: $FPM_MKT_NAME"
         else
-            fail "marketplace 미등록: $FPM_MKT_NAME (install.sh 재실행)"
+            fail "marketplace 미등록: $FPM_MKT_NAME (sh/install.sh 재실행)"
         fi
         # 9) plugin
         if claude plugin list 2>/dev/null | grep -qF "$FPM_PLUGIN_NAME"; then
@@ -154,6 +155,50 @@ if [[ "$CHECK_SCAR" -eq 1 ]]; then
         else
             fail "플러그인 미설치: $FPM_PLUGIN_NAME (claude plugin install)"
         fi
+    fi
+
+    # ── 10. SCAR 인벤토리 drift (선언 ↔ 실제 파일 양방향) ──────────
+    #   claude CLI 무관 — repo 의 플러그인 소스를 매니페스트 선언과 대조하는 무결성 점검.
+    #   plugins/fpm-core/ 부재(셸-only 배포)면 skip.
+    sec "── SCAR 인벤토리 drift (선언 ↔ 소스 파일) ──"
+    PLUGIN_SRC="$REPO_DIR/$FPM_PLUGIN_SRC_REL_REPO"
+    if [[ ! -d "$PLUGIN_SRC" ]]; then
+        warn "플러그인 소스 없음: $FPM_PLUGIN_SRC_REL_REPO (셸-only 배포 — drift 점검 생략)"
+    else
+        # 선언 → 파일 (declared but missing) + 파일 → 선언 (present but undeclared)
+        # 3 카테고리: commands/<n>.md · skills/<n>/SKILL.md · agents/<n>.md
+        drift_check() {
+            local label="$1" subdir="$2" pathfmt="$3"; shift 3
+            local declared=("$@") name f actual_missing="" undeclared="" base
+            # forward: 선언했는데 파일 없음
+            for name in "${declared[@]}"; do
+                f="$PLUGIN_SRC/$subdir/${pathfmt/\{n\}/$name}"
+                [[ -e "$f" ]] || actual_missing="$actual_missing $name"
+            done
+            # reverse: 파일 있는데 선언 누락
+            if [[ "$subdir" == "skills" ]]; then
+                for d in "$PLUGIN_SRC/skills"/*/; do
+                    [[ -d "$d" ]] || continue
+                    base="$(basename "$d")"
+                    printf ' %s ' "${declared[*]}" | grep -qF " $base " || undeclared="$undeclared $base"
+                done
+            else
+                for f in "$PLUGIN_SRC/$subdir"/*.md; do
+                    [[ -e "$f" ]] || continue
+                    base="$(basename "$f" .md)"
+                    printf ' %s ' "${declared[*]}" | grep -qF " $base " || undeclared="$undeclared $base"
+                done
+            fi
+            if [[ -z "$actual_missing" && -z "$undeclared" ]]; then
+                ok "$label: 선언 ${#declared[@]}개 ↔ 소스 일치"
+            else
+                [[ -n "$actual_missing" ]] && fail "$label: 선언했으나 소스 파일 없음 →$actual_missing (파일 삭제/rename? 매니페스트 갱신)"
+                [[ -n "$undeclared" ]] && fail "$label: 소스에 있으나 매니페스트 미선언 →$undeclared (FPM_SCAR_${label} 에 추가)"
+            fi
+        }
+        drift_check "COMMANDS" "commands" "{n}.md"        "${FPM_SCAR_COMMANDS[@]}"
+        drift_check "SKILLS"   "skills"   "{n}/SKILL.md"  "${FPM_SCAR_SKILLS[@]}"
+        drift_check "AGENTS"   "agents"   "{n}.md"        "${FPM_SCAR_AGENTS[@]}"
     fi
 else
     sec "── SCAR 점검 생략 (--no-scar) ──"
@@ -163,7 +208,7 @@ fi
 printf '\n────────────────────────────────────────────\n'
 printf '결과: \033[32mPASS %d\033[0m / \033[33mWARN %d\033[0m / \033[31mFAIL %d\033[0m\n' "$PASS_N" "$WARN_N" "$FAIL_N"
 if [[ "$FAIL_N" -gt 0 ]]; then
-    printf '\033[31m❌ 설치 불완전 — 위 FAIL 항목 확인 후 install.sh 재실행\033[0m\n'
+    printf '\033[31m❌ 설치 불완전 — 위 FAIL 항목 확인 후 sh/install.sh 재실행\033[0m\n'
     printf '────────────────────────────────────────────\n'
     exit 1
 else

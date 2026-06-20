@@ -5,7 +5,7 @@ date: 2026-03-27
 ---
 
 # Issue Management
-* Issue HWM: 184
+* Issue HWM: 186
 * 오래된 Issue: `_doc_work/Issue_OLD.md` (General)
 * Save Point:
     - 3e69d0f (2026-04-24) Feat: graphify 토큰 절감 SCAR 프로젝트 구현 (Issue11·12 등록)
@@ -19,9 +19,38 @@ date: 2026-03-27
 
 # 🚧 진행중
 
+## Issue185: install.sh·check.sh·uninstall.sh → sh/ 이동 + 참조 동기화 + fpm README 갱신 (등록: 2026-06-21)
+* 목적: 설치 페이로드를 `sh/`(CLAUDE.md "단일 SSOT 설치 페이로드") 한 곳으로 모음. 루트 정리. 공개 명령은 `bash sh/install.sh` 로 변경.
+* 상세:
+    - **이동**: `install.sh`·`check.sh`·`uninstall.sh` → `sh/` (git mv, 추적 보존)
+    - **REPO_DIR 보정 (치명)**: 3 스크립트 `REPO_DIR=dirname(script)` → sh/ 이동 시 `<repo>/sh` 가 되어 `$REPO_DIR/{data,projects,plugins,services}` 전부 깨짐. `dirname/..` 한 단계 상위로 보정 필수
+    - **install.sh `--clean`**: `$REPO_DIR/uninstall.sh` → `$REPO_DIR/sh/uninstall.sh`
+    - **참조 갱신 (rename-reference-rules 5단계)**: `INSTALL.md`(git clone 블록 + `bash install.sh`/`uninstall.sh`/`--clean` ~6곳)·`noteForHuman.md`(47–53행, "루트 3파일" 문구) — forward 자동 미러
+    - **fpm README.md (prj7) 수동 갱신**: sync 제외(publishable-policy line 46)라 ___pm forward 로 전파 안 됨 → fpm 레포에서 직접 `bash install.sh` → `bash sh/install.sh` 편집
+    - **fpm 미러 전파**: fpm-sync forward(rsync `--delete`)가 루트 옛 사본 제거 + sh/ 신규 생성 자동 처리 (별도 수동 이동 불요)
+    - **단일 커밋**: 이동 + 참조 갱신 묶음(중간 broken 방지). fpm README 는 미러 동기화 시 별도 처리
+* 구현 명세:
+    - 검증: 이동 후 `bash sh/check.sh` 정상 PASS + `bash sh/install.sh` REPO_DIR 가 repo 루트 가리키는지 확인
+    - 사후 grep: `grep -rn 'bash install.sh\|REPO_DIR' ` 잔존 옛 경로 0건
+* 사전작업: SCAR 인벤토리 매니페스트화(미커밋) — 동일 파일군 수정분이 git mv 로 보존됨
+
 # 📕 중요
 
 # 📙 일반
+
+## Issue186: 폐쇄망(air-gapped) 설치 — 다운로드된 f-claude-plugins 로컬 설치 파라메터 (등록: 2026-06-21)
+* 목적: 인터넷 차단 환경에서 `sh/install.sh` SCAR 설치 시 GitHub 마켓(`claude plugin marketplace add <github-url>`) 접근 불가 → 미리 받아둔 f-claude-plugins(prj20) 로컬 사본을 마켓 소스로 쓰는 명시 파라메터 제공. 폐쇄망 설치 가능화.
+* depends: Issue185
+* 상세:
+    - **현황**: `sh/install.sh:41-42` 이미 `FPM_MKT_REF` env 로 마켓 소스(github url **또는 로컬경로**) override 지원. `marketplace add <로컬경로>` 자체는 동작. 단 env-only 라 폐쇄망 설치 절차가 비가시·비표준.
+    - **추가**: `--local <path>` (또는 `--offline <path>`) CLI 파라메터 신설 → 내부적으로 `FPM_MKT_REF=<path>` 설정. path 미지정 시 관례 기본값(ex `~/_git/__all/f-claude-plugins` 또는 `./f-claude-plugins`) 탐색.
+    - **검증 가드**: 지정 path 에 `marketplace.json` 존재 확인 후 진행. 부재 시 fail-loud(폐쇄망 사전 다운로드 안내).
+    - **help/usage**: `usage:` 라인 + `-h` 출력에 `--local` 추가. INSTALL.md 폐쇄망 설치 섹션 1개 추가.
+    - **fpm 미러**: install.sh 는 forward 동기화 대상 → ___pm 편집 후 fpm-sync forward 로 전파. (README 는 prj7 수동 — Issue185 와 동일 제약)
+* 구현 명세:
+    - 파싱: `--local) shift; FPM_MKT_REF="$1" ;;` arg-loop 에 추가 (값 동반 플래그 — 기존 무인자 플래그와 파싱 방식 다름 주의).
+    - 검증: `bash sh/install.sh --local /path/to/f-claude-plugins` → marketplace add 가 GitHub 미접근으로 로컬 사본 사용하는지 확인. 폐쇄망 모사 = 네트워크 차단 후 실행.
+    - 복잡도: 단순~중간 판정 — install.sh 단일 파일 + INSTALL.md. 착수는 Issue185(install.sh sh/ 이동) 완료 후 (경로·REPO_DIR 보정 충돌 회피).
 
 # 📗 선택
 
