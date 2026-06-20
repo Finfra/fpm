@@ -5663,7 +5663,7 @@ section.sec-collapsed .htm-bar-right { display: none; }
 .feed-head { display: flex; justify-content: space-between; align-items: center;
   padding: 0.6rem 0.8rem; border-bottom: 1px solid var(--border);
   position: sticky; top: 0; background: var(--card); z-index: 1; }
-.feed-title-label { font-weight: 600; font-size: 0.95em; }
+.feed-title-label { font-weight: 600; font-size: 0.95em; white-space: nowrap; }
 .feed-actions { display: flex; gap: 0.3rem; align-items: center; }
 #feed-toggle, #feed-collapse-all, #feed-keep, #feed-clear { background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
   cursor: pointer; padding: 0.2rem 0.55rem; font-size: 0.8em; color: var(--fg); white-space: nowrap; }
