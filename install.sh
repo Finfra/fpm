@@ -7,11 +7,14 @@
 #   3. projects/ 스캐폴드 (없으면 생성)
 #   4. 운영 필수 파일 배치: Servers.md / Projects.md / data/hub_setting.yml 부재 시 *_org 예제 복사
 #   5. hub 서버 안내 출력
-#   6. [선택] --with-scar : fpm-core Claude Code 플러그인(SCAR) 을 prj20 마켓 경유 설치 (Issue181)
+#   6. [기본 ON] fpm-core Claude Code 플러그인(SCAR) 을 prj20 마켓 경유 설치 (Issue181)
+#      claude CLI 부재 시 경고만 하고 건너뜀(graceful skip — 셸 설치는 정상 완료, exit 0).
+#      --no-scar 로 옵트아웃 가능.
 #
-# 사용: bash install.sh              (또는 ./install.sh)
+# 사용: bash install.sh              (또는 ./install.sh) — 셸 + SCAR 설치 (기본)
 #       bash install.sh --clean     클린 재설치 — uninstall.sh 로 기존 흔적 백업·제거 후 설치
-#       bash install.sh --with-scar fpm-core 플러그인(hub/dashboard 등 SCAR)까지 설치 (claude CLI 필요)
+#       bash install.sh --no-scar   SCAR 설치 생략 (셸 부트스트랩만)
+#       bash install.sh --with-scar [하위호환 no-op] SCAR 기본 ON 이므로 불필요
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -34,16 +37,18 @@ err()   { printf '\033[31m[fpm]\033[0m %s\n' "$1" >&2; }
 # marketplace add(중복 시 update) → plugin install(이미 설치 시 skip).
 # claude CLI 부재 시 fail-loud + 수동 안내 후 비치명 반환(셸 설치는 이미 완료).
 install_scar() {
+    # claude CLI 부재 = 셸-only 유저 정상 시나리오 → benign skip(SCAR_SKIPPED), exit 0 유지.
+    # 네트워크·권한 등 실제 설치 실패만 SCAR_FAILED(exit 2)로 구분.
     if ! command -v claude >/dev/null 2>&1; then
-        err "──────────────────────────────────────────────"
-        err "🚨 --with-scar 지정됐으나 'claude' CLI 를 찾을 수 없음."
-        err "   fpm-core 플러그인(SCAR) 설치를 건너뜀. (셸 설치는 정상 완료)"
-        err ""
-        err "   Claude Code 설치 후 아래를 수동 실행하세요:"
-        err "     claude plugin marketplace add $FPM_MKT_REF --scope user"
-        err "     claude plugin install $FPM_PLUGIN --scope user"
-        err "──────────────────────────────────────────────"
-        SCAR_FAILED=1
+        warn "──────────────────────────────────────────────"
+        warn "ℹ️  'claude' CLI 미발견 → fpm-core 플러그인(SCAR) 설치 건너뜀."
+        warn "   (셸 설치는 정상 완료. SCAR 가 필요하면 Claude Code 설치 후 재실행)"
+        warn ""
+        warn "   수동 설치:"
+        warn "     claude plugin marketplace add $FPM_MKT_REF --scope user"
+        warn "     claude plugin install $FPM_PLUGIN --scope user"
+        warn "──────────────────────────────────────────────"
+        SCAR_SKIPPED=1
         return 0
     fi
 
@@ -77,18 +82,24 @@ install_scar() {
 
 # ── 0. 인자 파싱 ──────────────────────────────────────────────
 CLEAN=0
-WITH_SCAR=0
+WITH_SCAR=1          # 기본 ON (Issue181 후속 — SCAR 가 fpm 주목적). --no-scar 로 끔
 SCAR_FAILED=0
+SCAR_SKIPPED=0
 for arg in "$@"; do
     case "$arg" in
         --clean) CLEAN=1 ;;
-        --with-scar) WITH_SCAR=1 ;;
+        --no-scar) WITH_SCAR=0 ;;
+        --with-scar) : ;;   # 하위호환 no-op (SCAR 기본 ON 이므로 불필요)
         -h|--help)
-            echo "usage: install.sh [--clean] [--with-scar]"
+            echo "usage: install.sh [--clean] [--no-scar]"
             echo "  --clean     : uninstall.sh 로 기존 fpm 흔적 백업·제거 후 설치 (클린 재설치)"
-            echo "  --with-scar : fpm-core Claude Code 플러그인(hub/dashboard 등 SCAR)을"
-            echo "                prj20 마켓($FPM_MKT_NAME) 경유로 설치 (claude CLI 필요, 멱등)"
-            echo "                env FPM_MKT_REF 로 마켓 소스(github url/로컬경로) override"
+            echo "  --no-scar   : fpm-core 플러그인(SCAR) 설치 생략 — 셸 부트스트랩만"
+            echo "  --with-scar : [하위호환 no-op] SCAR 는 기본 설치됨"
+            echo ""
+            echo "  기본 동작: 셸 + fpm-core 플러그인(hub/dashboard 등 SCAR)을"
+            echo "             prj20 마켓($FPM_MKT_NAME) 경유로 설치 (멱등)."
+            echo "             claude CLI 부재 시 SCAR 만 건너뜀(셸 설치는 정상, exit 0)."
+            echo "             env FPM_MKT_REF 로 마켓 소스(github url/로컬경로) override"
             exit 0 ;;
         *) warn "알 수 없는 인자: $arg (무시)" ;;
     esac
@@ -189,8 +200,8 @@ cat <<EOF
   cd "$REPO_DIR/services/hub" && python3 server.py
   → http://127.0.0.1:9876/hub
 
-[선택] fpm-core 플러그인(SCAR — hub/dashboard 등):
-  bash install.sh --with-scar     (claude CLI 필요, 멱등)
+fpm-core 플러그인(SCAR — hub/dashboard 등): 기본 설치됨
+  (생략하려면 bash install.sh --no-scar)
 
 [선택] Keyboard Maestro 매크로:  keyboard-maestro/README.md
 
@@ -199,13 +210,17 @@ cat <<EOF
 ────────────────────────────────────────────
 EOF
 
-# ── 6. [선택] SCAR(fpm-core 플러그인) 설치 ────────────────────
+# ── 6. SCAR(fpm-core 플러그인) 설치 (기본 ON, --no-scar 로 생략) ──
 if [[ "$WITH_SCAR" -eq 1 ]]; then
     echo ""
-    info "--with-scar: fpm-core 플러그인 설치 시작"
+    info "fpm-core 플러그인(SCAR) 설치 시작 (생략하려면 --no-scar)"
     install_scar
     if [[ "$SCAR_FAILED" -eq 1 ]]; then
-        warn "SCAR 설치 미완료 — 위 안내 참고 (셸 설치는 정상 완료)"
+        # 실제 설치 실패(네트워크·권한 등) — fail-loud
+        warn "SCAR 설치 실패 — 위 안내 참고 (셸 설치는 정상 완료)"
         exit 2
+    elif [[ "$SCAR_SKIPPED" -eq 1 ]]; then
+        # claude CLI 부재 — benign skip, exit 0 유지
+        info "SCAR 는 건너뛰었으나 셸 설치는 정상 완료"
     fi
 fi
