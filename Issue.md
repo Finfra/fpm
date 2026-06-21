@@ -21,7 +21,12 @@ date: 2026-03-27
 
 # 📕 중요
 
-## Issue187: fpm 공개(public release) 사전 정비 — 개인정보·기술유출 가드 + copyright/문서 영·한 분리 (등록: 2026-06-21)
+# 📙 일반
+
+# 📗 선택
+
+# ✅ 완료
+## Issue187: fpm 공개(public release) 사전 정비 — 개인정보·기술유출 가드 + copyright/문서 영·한 분리 (등록: 2026-06-21, 해결: 2026-06-21, commit: 8794169, dda74d7) ✅
 * 목적: ___pm → 공개 미러 fpm 의 정식 오픈소스 공개 전, (1) 잔존 개인정보 제거 (2) 비공개 기술자료(특히 공개 전환된 Issue.md) 유출 차단 (3) copyright 영/한 분리 (4) 모든 공개 문서의 영·한 2개 버전화 + 상호 링크. 글로벌 영어권 + 국내 독자 동시 대응 + 법적·프라이버시 리스크 제거.
 * 상세:
     - **항목1 — 개인정보 제거 (audit + 강화)**:
@@ -54,13 +59,13 @@ date: 2026-03-27
 * 사용자 결정 (2026-06-21, 폼 회수):
     - **Issue.md 공개 = 전체 그대로 공개** — redaction 없이 통째 공개. `publishable-policy.yml` exclude[] 에서 `Issue.md` 제거. sanitize+secret-scan 게이트 통과분만 미러(여전히 적용).
     - **내부 운영문서 영·한 = 함** — CLAUDE.md·Harness.md·noteForHuman.md 도 `X.md`(영)+`X_ko.md`(한) 페어 분리(범위 편입).
-    - **이슈 종결 = 열어둠** — 위 두 작업 반영·검증까지 진행중 유지.
+    - **이슈 종결 = 완료** — 아래 두 작업 반영·검증·미러 전파 완료(2026-06-21).
+* 종결 결과 (2026-06-21, commit 8794169·dda74d7):
+    - **Issue.md 공개 전환 완료**: `publishable-policy.yml` exclude[] 에서 `Issue.md` 제거 → 전체 공개. sanitize+secret-scan 게이트는 유지(통과분만 미러).
+    - **내부 운영문서 영·한 완료**: CLAUDE.md·Harness.md·noteForHuman.md 각 `X.md`(영문 기본)+`X_ko.md`(한글) 페어 + 상단 상호링크 뱃지(`🌐 English | 한국어`).
+    - **README_ko.md exclude 보정**(dda74d7): prj7 미러 전용 한글판을 forward `--delete` 로부터 보호(README.md 동일 제약).
+    - 워킹트리 clean · origin/main 푸시 완료. 4개 본항목 + 사용자 결정 2건 전부 반영.
 
-# 📙 일반
-
-# 📗 선택
-
-# ✅ 완료
 ## Issue188: hub 렌더 포커스 복원 불완전 — 프로세스명↔앱명 불일치 시 Chrome 포커스 잔류 (등록: 2026-06-21, 해결: 2026-06-21, commit: f0c8be7) ✅
 * 목적: Issue173 `_restore_focus` 가 앱명 기반 `tell application "<name>" to activate` 라 프로세스명↔앱명 불일치(VSCode 프로세스 "Code") 시 복원 실패 → Chrome 포커스 잔류. 사용자가 겪은 실제 focus-steal 잔존 원인.
 * depends: Issue173
