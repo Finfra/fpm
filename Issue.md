@@ -40,7 +40,7 @@ date: 2026-03-27
 # 📗 선택
 
 # ✅ 완료
-## Issue191: fpm-hub-trigger.sh subagent_type stale 식별자 정리 (등록: 2026-06-21, 해결: 2026-06-21, commit: TBD) ✅
+## Issue191: fpm-hub-trigger.sh subagent_type stale 식별자 정리 (등록: 2026-06-21, 해결: 2026-06-21, commit: cf5c958) ✅
 * 목적: 글로벌 Issue161(board rename 글로벌 전파) 의 후속 과제 — 렌더 문서 `~/.claude/_doc_work/z_htm/hub_htm_20260621_163550_a_issue161-board-rename.htm` 에 scope·WIP 근거로 기록된 hooks 잔존 참조. dispatch 프롬프트의 agent 타입 식별자가 `fpm-board` rename(Issue189) 과 불일치.
 * depends: Issue189
 * 상세:
