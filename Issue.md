@@ -19,18 +19,6 @@ date: 2026-03-27
 
 # 🚧 진행중
 
-## Issue188: hub 렌더 포커스 복원 불완전 — 프로세스명↔앱명 불일치 시 Chrome 포커스 잔류 (등록: 2026-06-21)
-* 목적: Issue173(focus 탈취 수정)의 `_restore_focus` 가 `tell application "$_prev_front" to activate` 로 **앱명 기반** 복원하는데, 캡처는 `name of first process whose frontmost is true`(프로세스명)다. VSCode("Code") 등 프로세스명↔앱명이 다른 앱이 frontmost 였을 때 `tell application "Code" to activate` 가 실패 → 포커스가 Chrome 에 잔류. 사용자가 겪은 실제 focus-steal 의 잔존 원인.
-* depends: Issue173
-* 상세:
-    - 파일: `plugins/fpm-core/hooks/fpm-browser-open.sh` (49~52행 `_restore_focus`)
-    - 근거: 세션 수동 테스트 — `tell application process beforeApp to set frontmost to true`(프로세스 기반)는 VSCode("Code") 포커스 복원 성공. `tell application "Code" to activate`(앱명 기반)는 mismatch 시 실패.
-    - 출처: 사용자 hub Chrome 렌더 시 포커스 탈취 반복 보고. AppleScript 수동 비교로 원인 격리.
-* 구현 명세:
-    - `_restore_focus` 를 System Events 프로세스 기반 복원으로 교체: `tell application "System Events" to tell process "$_prev_front" to set frontmost to true` (캡처 방식과 동일 도메인 → mismatch 제거).
-    - 복잡도: **단순** (1파일 1함수, 방법 자명). plan/task 없음.
-    - 검증: focus=false 호출 시 frontmost 앱(VSCode/iTerm) 유지 확인.
-
 # 📕 중요
 
 ## Issue187: fpm 공개(public release) 사전 정비 — 개인정보·기술유출 가드 + copyright/문서 영·한 분리 (등록: 2026-06-21)
@@ -73,6 +61,14 @@ date: 2026-03-27
 # 📗 선택
 
 # ✅ 완료
+## Issue188: hub 렌더 포커스 복원 불완전 — 프로세스명↔앱명 불일치 시 Chrome 포커스 잔류 (등록: 2026-06-21, 해결: 2026-06-21, commit: f0c8be7) ✅
+* 목적: Issue173 `_restore_focus` 가 앱명 기반 `tell application "<name>" to activate` 라 프로세스명↔앱명 불일치(VSCode 프로세스 "Code") 시 복원 실패 → Chrome 포커스 잔류. 사용자가 겪은 실제 focus-steal 잔존 원인.
+* depends: Issue173
+* 진행 결과 (2026-06-21, commit f0c8be7):
+    - `plugins/fpm-core/hooks/fpm-browser-open.sh` `_restore_focus` 를 System Events 프로세스 도메인으로 통일 — `tell application "System Events" to tell process "$_prev_front" to set frontmost to true`. 캡처(name of first process)와 동일 도메인 → mismatch 제거.
+    - 검증: VSCode("Code") frontmost 상태서 `-f false -r false` 호출 → BEFORE=Code, AFTER=Code 포커스 유지 확인.
+    - 복잡도 단순 — plan/task/report 없음.
+
 ## Issue186: 폐쇄망(air-gapped) 설치 — 다운로드된 f-claude-plugins 로컬 설치 파라메터 (등록: 2026-06-21, 해결: 2026-06-21, commit: 1cc7ad8) ✅
 * 목적: 인터넷 차단 환경에서 `sh/install.sh` SCAR 설치 시 GitHub 마켓(`claude plugin marketplace add <github-url>`) 접근 불가 → 미리 받아둔 f-claude-plugins(prj20) 로컬 사본을 마켓 소스로 쓰는 명시 파라메터 제공. 폐쇄망 설치 가능화.
 * depends: Issue185
