@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# fpm-dashboard-queue-runner.sh — dashboard 큐 모드 시각화 runner (Issue84, tmux 재설계 Tier 2)
+# fpm-board-queue-runner.sh — dashboard 큐 모드 시각화 runner (Issue84, tmux 재설계 Tier 2)
 #
 # ⚠️ 글로벌 SCAR 변경 가드 (Issue46): 본 runner 는 모든 프로젝트가 공유. cwd ≠ ~/.claude
 #   면 즉시 수정 금지 → ~/.claude/Issue.md 이슈 등록 후 처리. 설계 SSOT:
-#   ~/.claude/_doc_arch/dashboard.md, ~/_git/___pm/_doc_arch/hub_dashboard_tmux_design.md
+#   ~/.claude/_doc_arch/dashboard.md, ~/_git/___pm/_doc_arch/hub_board_tmux_design.md
 #   절차: ~/.claude/rules/global-scar-change-rules.md
 #
 # tmux window 의 runner pane 에서 실행됨. queue.yaml(supervisor 가 갱신하는 SSOT)을 읽어
 # graph·progress·badge·text·log 위젯으로 시각화 → .dash.yaml write (파일 기반, HTTP 없음).
-# 순수 모니터링 모드 runner(fpm-dashboard-runner.sh)와 별개.
+# 순수 모니터링 모드 runner(fpm-board-runner.sh)와 별개.
 #
 # 환경변수 (필수):
 #   QUEUE_FILE       queue.yaml 절대경로 (supervisor 와 공유 SSOT, 읽기 전용)
@@ -24,7 +24,7 @@
 #   2) loop: queue.yaml read → 위젯 구성 → .dash.yaml write (파일 기반)
 #   3) queue.state ∈ {done,halted,removing} → status 마킹 후 자가 종료
 #
-# 설계: ~/_git/___pm/_doc_arch/hub_dashboard_tmux_design.md
+# 설계: ~/_git/___pm/_doc_arch/hub_board_tmux_design.md
 
 set -uo pipefail
 

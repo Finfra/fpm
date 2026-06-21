@@ -4,9 +4,9 @@
 # 운영 상수(갱신 주기·견고성 임계·sentinel 경로)를 외부화하여 프로젝트 단위 튜닝을 가능하게 함.
 #
 # 소비처 — 각 스크립트가 기동 시 `_bp <key> <default>` 로 읽음 (stdlib grep 파싱, yq 불요):
-#   agents/fpm-dashboard-supervisor.sh   (큐 supervisor)
-#   agents/fpm-dashboard-runner.sh       (순수 모니터링 runner)
-#   agents/fpm-dashboard-queue-runner.sh (큐 시각화 runner)
+#   agents/fpm-board-supervisor.sh   (큐 supervisor)
+#   agents/fpm-board-runner.sh       (순수 모니터링 runner)
+#   agents/fpm-board-queue-runner.sh (큐 시각화 runner)
 #
 # 우선순위: env VAR > board_policy.yml > 스크립트 기본값
 #   (env 주입 shim 이 항상 최우선 — 본 파일은 "기본값의 프로젝트 오버라이드" 역할)

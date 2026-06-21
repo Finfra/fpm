@@ -4,9 +4,9 @@
 #   면 즉시 수정 금지 → ~/.claude/Issue.md 이슈 등록 후 처리. 설계 SSOT:
 #   ~/.claude/_doc_arch/dashboard.md. 절차: ~/.claude/rules/global-scar-change-rules.md
 #
-# 런타임 SSOT — fpm-dashboard-supervisor.sh 가 매 iteration 읽고 item status 를 갱신·flush.
+# 런타임 SSOT — fpm-board-supervisor.sh 가 매 iteration 읽고 item status 를 갱신·flush.
 # 실제 큐는 OUT_DIR/<topic>.queue.yaml 로 생성됨 (본 파일은 스키마 레퍼런스 + 테스트 픽스처).
-# 스키마 정본: ~/_git/___pm/_doc_arch/hub_dashboard_detail.md "D3".
+# 스키마 정본: ~/_git/___pm/_doc_arch/hub_board_detail.md "D3".
 
 title: sample-queue          # dashboard topic 식별자
 state: running               # running | waiting_input | removing | done | halted

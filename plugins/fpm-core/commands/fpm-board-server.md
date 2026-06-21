@@ -1,5 +1,5 @@
 ---
-name: fpm-dashboard-server
+name: fpm-board-server
 description: dashboard agent(Mode C) 전용 ___pm 서버 lifecycle wrapper (start/stop/status/restart). SSOT는 ~/_git/___pm/_doc_arch/hub_htm.md
 date: 2026-05-19
 ---
@@ -8,7 +8,7 @@ date: 2026-05-19
 
 # 트리거
 
-`/dashboard-server <subcmd>` — `<subcmd>`: `start`, `stop`, `status`, `restart`
+`/board-server <subcmd>` — `<subcmd>`: `start`, `stop`, `status`, `restart`
 
 # 동작 모델
 
@@ -30,7 +30,7 @@ date: 2026-05-19
 | `/view`                   | GET    | cwd+token+path | HTML serve (.html, cwd 하위) — CORS 해결              |
 | `/register-pid`           | POST   | cwd+token      | runner PID 등록 (stop 제어 대상)                      |
 | `/control`                | POST   | cwd+token      | runner stop (`SIGTERM` → 2초 → `SIGKILL`)             |
-| `/dashboards`             | GET    | -              | 전 cwd dash 메타 + `/view` deep link (localhost trust) |
+| `/boards`             | GET    | -              | 전 cwd dash 메타 + `/view` deep link (localhost trust) |
 | `/hub`                    | GET    | -              | Multi-project Dashboard Hub HTML (5초 polling)         |
 
 종전 `/answer`, `/session/update?content_type=form` 등 Mode B 클라이언트 endpoint 는 ___pm 측에서 deprecated. 본 wrapper 는 dashboard 영역만 다룬다.
@@ -51,7 +51,7 @@ curl -s http://127.0.0.1:9876/healthz
 
 성공 시: healthz JSON 출력 + PID 안내. 실패 시: `/tmp/___pm/claude-htm-server/server.log` 참조.
 
-port override: `HTM_SERVER_PORT=NNNN /dashboard-server start`
+port override: `HTM_SERVER_PORT=NNNN /board-server start`
 
 ## stop
 
@@ -59,9 +59,9 @@ port override: `HTM_SERVER_PORT=NNNN /dashboard-server start`
 PID=$(cat /tmp/___pm/claude-htm-server/pid 2>/dev/null)
 if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
   kill "$PID"
-  echo "dashboard-server stopped (pid=$PID)"
+  echo "board-server stopped (pid=$PID)"
 else
-  echo "dashboard-server not running"
+  echo "board-server not running"
 fi
 ```
 
@@ -85,7 +85,7 @@ tail -20 /tmp/___pm/claude-htm-server/server.log 2>/dev/null
 
 # 비고
 
-* 서버 파일 시스템 경로 (`/tmp/___pm/claude-htm-server/`, Issue64 — `/tmp` 평면 흩어짐 방지. `server.py` 의 `htm-server` 이름) 는 ___pm 측 호환성을 위해 유지. 슬래시 커맨드 명칭만 `/dashboard-server` 로 변경 (Issue37 → Issue45 에서 hub 도 동일 서버 사용으로 통합)
+* 서버 파일 시스템 경로 (`/tmp/___pm/claude-htm-server/`, Issue64 — `/tmp` 평면 흩어짐 방지. `server.py` 의 `htm-server` 이름) 는 ___pm 측 호환성을 위해 유지. 슬래시 커맨드 명칭만 `/board-server` 로 변경 (Issue37 → Issue45 에서 hub 도 동일 서버 사용으로 통합)
 * hub 스킬 Q&A 회수 (Issue45) — `..show` 트리거(구 `..hub`) + AskUserQuestion 호출 시 `fpm-ask-intercept.sh` 가 본 서버 healthz·register·answer 사용. 서버 down 시 fail-loud
 
 # 참조
@@ -95,6 +95,6 @@ tail -20 /tmp/___pm/claude-htm-server/server.log 2>/dev/null
 * 클라이언트 hook:
     - `~/.claude/hooks/fpm-board-notify.sh` (Mode C dashboard data 변경 notify)
     - `~/.claude/hooks/fpm-ask-intercept.sh` (Issue45 hub Q&A form 자동 회수)
-* dashboard agent: `~/.claude/agents/fpm-dashboard.md`
-* dashboard wrapper: `~/.claude/commands/fpm-dashboard.md`
+* dashboard agent: `~/.claude/agents/fpm-board.md`
+* dashboard wrapper: `~/.claude/commands/fpm-board.md`
 * hub 스킬 분리 이슈: `~/.claude/Issue.md` Issue37

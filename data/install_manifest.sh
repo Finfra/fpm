@@ -53,8 +53,8 @@ FPM_PLUGIN_SRC_REL_REPO="plugins/fpm-core"   # repo 기준 플러그인 소스 �
 
 FPM_SCAR_COMMANDS=(
     fpm-cdf
-    fpm-dashboard
-    fpm-dashboard-server
+    fpm-board
+    fpm-board-server
     fpm-hub
     fpm-new-project
     fpm-pm-del
@@ -70,5 +70,5 @@ FPM_SCAR_SKILLS=(
     fpm-pm-do
 )
 FPM_SCAR_AGENTS=(
-    fpm-dashboard
+    fpm-board
 )

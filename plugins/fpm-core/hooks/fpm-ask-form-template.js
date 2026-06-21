@@ -87,7 +87,7 @@ async function submitAnswers() {
     return r.ok;
   } catch (e) {
     renderStatus(document.getElementById('status'), payload,
-      '❌ 전송 실패: ' + e.message + ' — `/dashboard-server status` 확인 후 재전송', false);
+      '❌ 전송 실패: ' + e.message + ' — `/board-server status` 확인 후 재전송', false);
     return false;
   }
 }

@@ -5,7 +5,7 @@ date: 2026-03-27
 ---
 
 # Issue Management
-* Issue HWM: 188
+* Issue HWM: 189
 * 오래된 Issue: `_doc_work/Issue_OLD.md` (General)
 * Save Point:
     - 3e69d0f (2026-04-24) Feat: graphify 토큰 절감 SCAR 프로젝트 구현 (Issue11·12 등록)
@@ -18,6 +18,20 @@ date: 2026-03-27
 # 🌱 이슈후보
 
 # 🚧 진행중
+
+## Issue189: dashboard 식별자 → board 통일 rename (등록: 2026-06-21) 🚧
+* 목적: c모드 트리거 `..board` 와 내부 식별자 `fpm-dashboard`/`/dashboards`/`spa_dashboard` 의 단어 불일치 해소. `..show`→`fpm-show`, `..hub`→`fpm-hub` 와 동일하게 트리거=커맨드명 정합. 사용자 결정(폼 회수)=전부 board 통일.
+* plan: `_doc_work/plan/dashboard-to-board-rename_plan.md`
+* task: `_doc_work/tasks/dashboard-to-board-rename_task.md`
+* arch: `_doc_arch/hub_board_tmux_design.md`
+* 상세:
+    - rename(식별자 한정): `fpm-dashboard*`→`fpm-board*`(agent 6·command 2), `spa_dashboard.py`→`spa_board.py`, `/dashboards`→`/boards`, `/dashboard-server`→`/board-server`, `_doc_arch/hub_dashboard*.md`→`hub_board*.md`+`dashboard-scenario-kit.md`→`board-scenario-kit.md`, `install_manifest.sh`
+    - 유지: 트리거 `..board`·`_doc_work/board/`·`..dashboard` deprecated alias·UI 명사 "Dashboard"·과거 동결 산출물·캐시·git branch
+    - 토큰 분포: `dashboard-server` 19파일, `fpm-dashboard` 13, `/dashboards` 6, `spa_dashboard` 3
+* 구현 명세:
+    - rename-reference 5단계(사전 grep→git mv→참조 갱신→사후 검증 0건→단일 commit)
+    - SSOT=`plugins/fpm-core`. `~/.claude` 설치본은 재설치 반영. `~/.claude/_doc_arch/dashboard.md`→`board.md` 는 글로벌 가드 대상(사용자 명시 진행 승인)
+    - 검증: `grep fpm-dashboard|/dashboards|spa_dashboard|dashboard-server` (plugins/services/manifest) = 0건, `spa_board.py` ast.parse PASS, hub 재기동 후 `/boards` 정상
 
 # 📕 중요
 

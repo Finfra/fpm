@@ -339,10 +339,10 @@ auto_kill = os.environ.get('AUTO_KILL', 'false') == 'true'
 
 if not health_ok:
     context = (
-        "## ⚠️ `..board` 트리거 — dashboard-server 미실행\n\n"
+        "## ⚠️ `..board` 트리거 — board-server 미실행\n\n"
         f"Mode C(dashboard) agent 는 ___pm 서버 (port {server_port}, htm-server daemon) 필수. healthz 실패.\n\n"
         "### 즉시 조치\n"
-        "1. 사용자에게 `/dashboard-server start` 안내 (Issue37 이후 명칭)\n"
+        "1. 사용자에게 `/board-server start` 안내 (Issue37 이후 명칭)\n"
         "2. 시작 후 다시 `..board <topic>` 입력 (별칭: `..hub dash` / `..dashboard`)\n\n"
         "본 turn 응답: agent 호출 금지. 채팅으로 서버 미실행 안내만."
     )
@@ -360,7 +360,7 @@ else:
         "   Agent(\n"
         "     description='dashboard 시작',\n"
         "     subagent_type='dashboard',\n"
-        "     prompt='topic=<TOPIC>; cwd=" + cwd + "; htm-server 활성. tmux pane 에서 runner 시작 + dashboard push. ~/.claude/agents/fpm-dashboard.md 절차 따를 것.'\n"
+        "     prompt='topic=<TOPIC>; cwd=" + cwd + "; htm-server 활성. tmux pane 에서 runner 시작 + dashboard push. ~/.claude/agents/fpm-board.md 절차 따를 것.'\n"
         "   )\n"
         "   ```\n"
         "3. agent 반환 결과를 채팅에 그대로 전달 (요약 + stable URL + pane 명령 + 핵심 데이터)\n\n"
@@ -450,7 +450,7 @@ context = (
     "3. 텍스트 bullet 리스트로 선택지를 dump 하지 말 것 — 결정 요청은 반드시 `AskUserQuestion` 호출로 분리.\n\n"
     f"### 서버 전제\n"
     f"- ___pm htm-server (port {server_port}) 상시 운영 전제. 서버 down 시 intercept hook 이 fail-loud "
-    "(`/dashboard-server start` 후 재시도 또는 `..hub stop` 안내).\n\n"
+    "(`/board-server start` 후 재시도 또는 `..hub stop` 안내).\n\n"
     "### 채팅 fallback 의무 (Issue60)\n"
     "- 폼 열림 안내 + 질문 텍스트 + 옵션 라벨/desc + 저장 경로 포함 (Firefox 부재 가정, 채팅만으로 답 가능).\n\n"
     "### 모드 관계\n"
@@ -680,7 +680,7 @@ context = (
     "- hub 모드(`..show`) 활성 중 `AskUserQuestion` 도구는 PreToolUse hook (`fpm-ask-intercept.sh`) 이 자동 deny\n"
     "- deny reason 에 form HTML 생성·Firefox open·fetch POST·inbox polling 절차 포함 — 그 지시를 그대로 따를 것\n"
     "- 회수: 사용자 폼 \"전송\" → fetch POST → server inbox → Claude bash polling → JSON Read·rm → answers 추출 → 흐름 재개\n"
-    "- 서버 down 시: intercept hook 이 fail-loud reason 주입 (`/dashboard-server start` 후 재시도 또는 `..hub stop` 안내). paste-back fallback 없음\n"
+    "- 서버 down 시: intercept hook 이 fail-loud reason 주입 (`/board-server start` 후 재시도 또는 `..hub stop` 안내). paste-back fallback 없음\n"
     "- 해제: 사용자가 `..hub stop` 입력 시 플래그 해제 + AskUserQuestion 정상 복귀\n\n"
     "### 실시간 모니터링이 필요할 때 (Mode C)\n"
     "- 장시간 background 모니터링·SSE push 가 필요하면 `..hub dash <topic>` 로 dashboard agent 호출\n"
