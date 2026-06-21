@@ -41,14 +41,17 @@ url="${1:?url required (last positional arg)}"
 # Issue173: focus 복원 가드 — Chrome/Chromium 은 open -g·AppleScript URL set 시 focus=false 여도
 #   self-activate 함 (Firefox 는 open -g 존중). focus != true 면 open 직전 frontmost GUI 앱을 기억했다가
 #   스크립트 종료 시(trap EXIT) 재활성 → 어느 경로(fallback open / osascript reuse / notfound)든 포커스 미탈취.
-#   firefox 등 이미 백그라운드 유지하는 앱엔 무해(no-op). System Events 권한 부재·앱명 불일치 시 || true 로 무해 통과.
+#   firefox 등 이미 백그라운드 유지하는 앱엔 무해(no-op). System Events 권한 부재·프로세스 부재 시 || true 로 무해 통과.
+# Issue188: 캡처(name of first process)·복원 모두 System Events 프로세스 도메인으로 통일.
+#   기존 `tell application "<name>" to activate` 는 앱명 기반이라 프로세스명↔앱명 불일치(ex: VSCode 프로세스 "Code")
+#   시 복원 실패 → Chrome 포커스 잔류. process "<name>" set frontmost 는 캡처와 동일 도메인이라 mismatch 없음.
 _prev_front=""
 if [[ "$focus" != "true" ]]; then
   _prev_front=$(osascript -e 'tell application "System Events" to name of first process whose frontmost is true' 2>/dev/null || true)
 fi
 _restore_focus() {
   [[ -n "$_prev_front" ]] || return 0
-  osascript -e "tell application \"$_prev_front\" to activate" 2>/dev/null || true
+  osascript -e "tell application \"System Events\" to tell process \"$_prev_front\" to set frontmost to true" 2>/dev/null || true
 }
 trap _restore_focus EXIT
 
