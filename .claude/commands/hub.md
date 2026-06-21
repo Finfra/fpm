@@ -12,7 +12,7 @@ date: 2026-05-19
 
 ___pm 소유 단일 daemon (`~/_git/___pm/services/hub/server.py`). port 9876. 모든 프로젝트가 공유. ___pm 프로젝트가 lifecycle 책임.
 
-본 커맨드는 글로벌 `/dashboard-server` 와 동일 서버를 대상으로 함. ___pm 프로젝트 컨텍스트에서 짧은 별칭으로 제공.
+본 커맨드는 글로벌 `/board-server` 와 동일 서버를 대상으로 함. ___pm 프로젝트 컨텍스트에서 짧은 별칭으로 제공.
 
 설계 SSOT: `_doc_arch/hub_htm.md`
 
@@ -140,11 +140,11 @@ curl -s http://127.0.0.1:9876/healthz
 
 # 비고
 
-* 글로벌 `/dashboard-server` 와 동일 서버 lifecycle 제어. 차이: 본 커맨드는 `clear` 추가 + ___pm 컨텍스트 짧은 별칭
+* 글로벌 `/board-server` 와 동일 서버 lifecycle 제어. 차이: 본 커맨드는 `clear` 추가 + ___pm 컨텍스트 짧은 별칭
 * 서버 down 시 dashboard agent (Mode C) + htm 스킬 Q&A 회수 (Issue45) 양쪽 모두 fail-loud
 
 # 참조
 
 * 설계 SSOT: `_doc_arch/hub_htm.md`
-* 글로벌 wrapper: `~/.claude/commands/dashboard-server.md`
+* 글로벌 wrapper: `~/.claude/commands/board-server.md`
 * 서버 본체: `services/hub/server.py`

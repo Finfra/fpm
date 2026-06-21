@@ -9,7 +9,7 @@
 
 feed_limit: 300            # 피드 보관·표시 최대 항목 수 (deque maxlen)
 feed_default_visible: true # 피드 사이드바 최초 표시 여부 (런타임 토글은 localStorage)
-feed_poll_interval: 5      # 피드 폴링 주기(초, 참고값 — /dashboards 폴링 편승)
+feed_poll_interval: 5      # 피드 폴링 주기(초, 참고값 — /boards 폴링 편승)
 feed_show_project_emoji: true  # 피드 항목 프로젝트 이모지 표시
 feed_show_project_name: false  # 피드 항목 프로젝트명 표시
 card_limit: 200            # htm 카드 최대 표시 수, mtime 최신순 (0=무제한)

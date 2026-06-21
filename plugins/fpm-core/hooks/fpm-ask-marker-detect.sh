@@ -320,7 +320,7 @@ reason = (
     "## htm-form:auto 마커 감지됨 — server 미가용\n\n"
     f"healthz={'$health'} / register 실패. form 자동 회수 단일 경로 (Issue45) 라 fallback 없음.\n\n"
     "### 조치 (사용자 선택)\n"
-    "1. `/dashboard-server start` 실행 후 응답 재작성 → 마커 재처리\n"
+    "1. `/board-server start` 실행 후 응답 재작성 → 마커 재처리\n"
     "2. `..hub stop` 입력 → hub 모드 해제, 일반 채팅으로 회답 받기"
 )
 print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=False))

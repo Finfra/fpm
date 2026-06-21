@@ -35,7 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from validators import validate_dashboard, DASH_WIDGET_TYPES  # noqa: E402
 from spa_form import FORM_JS  # noqa: E402
 from spa_widgets import WIDGET_JS  # noqa: E402
-from spa_dashboard import DASHBOARD_JS  # noqa: E402
+from spa_board import DASHBOARD_JS  # noqa: E402
 import i18n  # noqa: E402  # Issue169: hub UI 다국어 catalog + t(key, lang)
 
 # Issue141: 기본 127.0.0.1(루프백 전용=외부 차단). 옵트인 개방 우선순위:
@@ -1422,7 +1422,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         # Issue141: 전역 source-IP 게이트. 기본(127.0.0.1 bind)에선 루프백만 도달 →
         # 항상 통과. 개방 모드(HTM_SERVER_HOST)에선 비-allowlist IP 를 여기서 차단
-        # → 토큰 노출 GET(/dashboards, /hub)·SSE 까지 일괄 보호.
+        # → 토큰 노출 GET(/boards, /hub)·SSE 까지 일괄 보호.
         if not _ip_allowed(self.client_address[0] if self.client_address else ""):
             self._send_json(403, {"error": "ip not allowed"})
             return
@@ -1473,7 +1473,7 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/htm-doc":
             self._handle_htm_doc(parsed)
             return
-        if parsed.path == "/dashboards":
+        if parsed.path == "/boards":
             self._handle_dashboards(parsed)
             return
         if parsed.path == "/api/file-stat":
@@ -2244,7 +2244,7 @@ class Handler(BaseHTTPRequestHandler):
             for d in dashes:
                 # Issue58: status=running 이지만 runner pid 가 죽었으면 stale 강등.
                 # _read_dash_file 은 mtime 불변 시 캐시를 반환하므로 죽은 status 가 박제됨
-                # → 캐시 외부(매 /dashboards 요청)에서 _pid_alive 검증. pid None 이면
+                # → 캐시 외부(매 /boards 요청)에서 _pid_alive 검증. pid None 이면
                 # 검증 불가 → running 유지. _read_dash_file 이 dict 복사본을 주므로
                 # d 를 mutate 해도 doc_cache 는 오염되지 않음.
                 # Issue83: 렌더·정리 단일 판정원 _effective_dash_status 사용.
@@ -5867,7 +5867,7 @@ function sparkSvg(series) {
 
 async function reload() {
   try {
-    const r = await fetch('/dashboards?_=' + Date.now(), {cache: 'no-store'});
+    const r = await fetch('/boards?_=' + Date.now(), {cache: 'no-store'});
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
     errorBar.style.display = 'none';

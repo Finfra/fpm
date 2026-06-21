@@ -103,7 +103,7 @@ date: 2026-04-18
   - `..ask` (b모드, Issue126 신설) — 양방향 Q&A 폼 → server inbox 자동 회수
   - `..board` (c모드, Issue126) — Live Dashboard (SSE + polling fallback). 구 `..hub dash`/`..dashboard` 별칭 하위호환 유지
   - `..hub stop` / `..hub off` — 모드 해제
-  - `/dashboard-server start|stop|status|restart` — b/c모드 백엔드 lifecycle 제어
+  - `/board-server start|stop|status|restart` — b/c모드 백엔드 lifecycle 제어
   - 3-mode (트리거 ↔ content_type, Issue126):
     * a모드 `..show` (`response`, 구 `..hub`) — HTML 렌더 (Issue45 이후 file:// 직접 표시)
     * b모드 `..ask` (`form`) — fetch POST + server inbox + Claude polling 자동 회수
@@ -195,7 +195,7 @@ PM 도구 프로젝트 쌍. `___pm`(prj1) = 개발 원본 SSOT, `fpm`(prj7, `~/_
 
 * marketplace: `.claude-plugin/marketplace.json` → plugin `fpm-core`
 * fpm-core 번들:
-    - commands: pm-new/del/do/query/update · cdf · hub · dashboard · dashboard-server
+    - commands: pm-new/del/do/query/update · cdf · hub · dashboard · board-server
     - skills: pm · cdf
     - agents: dashboard (+ runner·queue·supervisor 스크립트)
     - hooks: hub-trigger · ask-intercept · ask-form-template · board-notify · hub-doc-register · hub-session-* · ask-*

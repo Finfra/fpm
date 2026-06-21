@@ -108,7 +108,7 @@ def hub_status():
     try:
         return _hub_get("/healthz")
     except Exception as e:
-        return {"error": f"hub 미응답: {e}", "hint": "/dashboard-server start"}
+        return {"error": f"hub 미응답: {e}", "hint": "/board-server start"}
 
 
 def hub_open_project(cwd):

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# fpm-dashboard-supervisor.sh — dashboard 큐 모드 DAG 구동 daemon (Issue84)
+# fpm-board-supervisor.sh — dashboard 큐 모드 DAG 구동 daemon (Issue84)
 #
 # ⚠️ 글로벌 SCAR 변경 가드 (Issue46): 본 daemon 은 모든 프로젝트가 공유. cwd ≠ ~/.claude
 #   면 즉시 수정 금지 → ~/.claude/Issue.md 이슈 등록 후 처리. 설계 SSOT:
@@ -33,7 +33,7 @@
 #   - SIGUSR2      → graceful 제거 프로토콜 (Phase 0 #1: send-keys 중단 지시 → withdraw-report → window kill)
 #   - 큐 전부 terminal → state=done 후 exit
 #
-# 설계: ~/_git/___pm/_doc_arch/hub_dashboard_tmux_design.md (tmux 파일 기반)
+# 설계: ~/_git/___pm/_doc_arch/hub_board_tmux_design.md (tmux 파일 기반)
 # 클라이언트: ~/.claude/_doc_arch/dashboard.md
 
 set -uo pipefail
@@ -585,7 +585,7 @@ trap graceful_remove USR2
 trap graceful_stop HUP   # Issue120: SIGHUP→cleanup 연결 (runner 와 동일, tmux kill-window 시 종료)
 
 # 회귀 픽스처 훅 (Issue98 방지대책) — SUPERVISOR_SELFTEST=1 로 source 하면 함수 정의까지만
-#   로드하고 main loop 진입 전에 반환한다. fpm-dashboard-supervisor.test.sh 가 worker_busy·
+#   로드하고 main loop 진입 전에 반환한다. fpm-board-supervisor.test.sh 가 worker_busy·
 #   worker_ready·detect_sentinel 을 idle/busy 코퍼스로 회귀 검증하는 데 쓴다.
 if [ "${SUPERVISOR_SELFTEST:-0}" = "1" ]; then
   return 0 2>/dev/null || exit 0
