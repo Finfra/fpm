@@ -5,7 +5,7 @@ date: 2026-03-27
 ---
 
 # Issue Management
-* Issue HWM: 192
+* Issue HWM: 193
 * 오래된 Issue: `_doc_work/Issue_OLD.md` (General)
 * Save Point:
     - 3e69d0f (2026-04-24) Feat: graphify 토큰 절감 SCAR 프로젝트 구현 (Issue11·12 등록)
@@ -22,6 +22,17 @@ date: 2026-03-27
 # 📕 중요
 
 # 📙 일반
+
+## Issue193: `/boards` 카드 progress 스칼라 미집계 — 문자열 value 타입 불일치 (등록: 2026-06-21)
+* 목적: Issue189 board rename 재테스트(board-retest)서 발견. `/boards` 카드 레벨 `progress` 스칼라가 `null`. rename 회귀 아님(엔드포인트·식별자만 변경, 집계 로직 무관).
+* 상세 (근본 원인 확인 완료):
+    - server.py 의 progress 위젯 추출이 `isinstance(w.get("value"), (int, float))` 숫자 타입만 인정 (line 2110-2111, 2147-2150, 2182-2183).
+    - runner/monitor 가 progress 위젯 value 를 **문자열 `'100'`** 으로 기록 → 숫자 체크 실패 → `entry["progress"]` = None 잔류.
+    - 위젯 자체 value 표시('100')는 정상 → 카드 UI 영향 없음. 카드 메타 progress 집계만 비어, 정렬·집계 용도에서 누락 가능.
+* 구현 명세 (택1):
+    - 옵션1(소비자): server.py progress 추출에 문자열-숫자 coercion 추가 — `float()` try 후 반영
+    - 옵션2(생산자): runner/monitor 가 numeric value 기록
+    - SSOT=`plugins/fpm-core/services/hub/server.py` + `services/hub/server.py`(본체). triage=단순(타입 coercion 1~2곳). 옵션1 권장(소비자 방어적 — 기존 문자열 dash 파일 호환).
 
 ## Issue192: c모드 `/boards` 신규 카드 자동 등록 갭 (등록: 2026-06-21)
 * 목적: Issue189 board rename 후 c모드(Live Dashboard) 실 에이전트 테스트(board-rename-test)에서 발견. rename 회귀는 아니나 c모드 자동화 완결성 갭 — runner 가 생성한 신규 `.dash.yaml` 카드가 `/boards` 에 자동 노출 안 됨(dash-registry 미등록). 사용자가 hub UI `rescan` 을 눌러야 보임.
