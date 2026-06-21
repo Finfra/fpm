@@ -5,7 +5,7 @@ date: 2026-03-27
 ---
 
 # Issue Management
-* Issue HWM: 187
+* Issue HWM: 188
 * 오래된 Issue: `_doc_work/Issue_OLD.md` (General)
 * Save Point:
     - 3e69d0f (2026-04-24) Feat: graphify 토큰 절감 SCAR 프로젝트 구현 (Issue11·12 등록)
@@ -18,6 +18,18 @@ date: 2026-03-27
 # 🌱 이슈후보
 
 # 🚧 진행중
+
+## Issue188: hub 렌더 포커스 복원 불완전 — 프로세스명↔앱명 불일치 시 Chrome 포커스 잔류 (등록: 2026-06-21)
+* 목적: Issue173(focus 탈취 수정)의 `_restore_focus` 가 `tell application "$_prev_front" to activate` 로 **앱명 기반** 복원하는데, 캡처는 `name of first process whose frontmost is true`(프로세스명)다. VSCode("Code") 등 프로세스명↔앱명이 다른 앱이 frontmost 였을 때 `tell application "Code" to activate` 가 실패 → 포커스가 Chrome 에 잔류. 사용자가 겪은 실제 focus-steal 의 잔존 원인.
+* depends: Issue173
+* 상세:
+    - 파일: `plugins/fpm-core/hooks/fpm-browser-open.sh` (49~52행 `_restore_focus`)
+    - 근거: 세션 수동 테스트 — `tell application process beforeApp to set frontmost to true`(프로세스 기반)는 VSCode("Code") 포커스 복원 성공. `tell application "Code" to activate`(앱명 기반)는 mismatch 시 실패.
+    - 출처: 사용자 hub Chrome 렌더 시 포커스 탈취 반복 보고. AppleScript 수동 비교로 원인 격리.
+* 구현 명세:
+    - `_restore_focus` 를 System Events 프로세스 기반 복원으로 교체: `tell application "System Events" to tell process "$_prev_front" to set frontmost to true` (캡처 방식과 동일 도메인 → mismatch 제거).
+    - 복잡도: **단순** (1파일 1함수, 방법 자명). plan/task 없음.
+    - 검증: focus=false 호출 시 frontmost 앱(VSCode/iTerm) 유지 확인.
 
 # 📕 중요
 
