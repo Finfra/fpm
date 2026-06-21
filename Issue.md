@@ -5,7 +5,7 @@ date: 2026-03-27
 ---
 
 # Issue Management
-* Issue HWM: 190
+* Issue HWM: 191
 * 오래된 Issue: `_doc_work/Issue_OLD.md` (General)
 * Save Point:
     - 3e69d0f (2026-04-24) Feat: graphify 토큰 절감 SCAR 프로젝트 구현 (Issue11·12 등록)
@@ -40,6 +40,14 @@ date: 2026-03-27
 # 📗 선택
 
 # ✅ 완료
+## Issue191: fpm-hub-trigger.sh subagent_type stale 식별자 정리 (등록: 2026-06-21, 해결: 2026-06-21, commit: TBD) ✅
+* 목적: 글로벌 Issue161(board rename 글로벌 전파) 의 후속 과제 — 렌더 문서 `~/.claude/_doc_work/z_htm/hub_htm_20260621_163550_a_issue161-board-rename.htm` 에 scope·WIP 근거로 기록된 hooks 잔존 참조. dispatch 프롬프트의 agent 타입 식별자가 `fpm-board` rename(Issue189) 과 불일치.
+* depends: Issue189
+* 상세:
+    - `plugins/fpm-core/hooks/fpm-hub-trigger.sh:362` `subagent_type='dashboard'` → `'fpm-board'` (등록 agent 명 정합)
+    - 보존: line 405 `~/.claude/skills/dashboard/ 폐기됨`(역사적 폐기 공지), 13건 `..dashboard` deprecated alias·UI 명사 "dashboard"
+* Walkthrough: ___pm SSOT(`plugins/fpm-core`) 1줄 수정. 글로벌 `~/.claude/hooks/*` 잔존(ask-form-template.js·ask-marker-detect.sh·ask-intercept.sh·hub-trigger.sh)은 글로벌 Issue161 재설치 전파로 흡수 — SSOT 가 board 정합이므로 reinstall 시 자동 갱신.
+
 ## Issue189: dashboard 식별자 → board 통일 rename (등록: 2026-06-21, 해결: 2026-06-21, commit: 1455b66) ✅
 * 목적: c모드 트리거 `..board` 와 내부 식별자 `fpm-dashboard`/`/dashboards`/`spa_dashboard` 의 단어 불일치 해소. `..show`→`fpm-show`, `..hub`→`fpm-hub` 와 동일하게 트리거=커맨드명 정합. 사용자 결정(폼 회수)=전부 board 통일.
 * plan: `_doc_work/plan/dashboard-to-board-rename_plan.md`
