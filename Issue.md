@@ -19,20 +19,6 @@ date: 2026-03-27
 
 # 🚧 진행중
 
-## Issue189: dashboard 식별자 → board 통일 rename (등록: 2026-06-21) 🚧
-* 목적: c모드 트리거 `..board` 와 내부 식별자 `fpm-dashboard`/`/dashboards`/`spa_dashboard` 의 단어 불일치 해소. `..show`→`fpm-show`, `..hub`→`fpm-hub` 와 동일하게 트리거=커맨드명 정합. 사용자 결정(폼 회수)=전부 board 통일.
-* plan: `_doc_work/plan/dashboard-to-board-rename_plan.md`
-* task: `_doc_work/tasks/dashboard-to-board-rename_task.md`
-* arch: `_doc_arch/hub_board_tmux_design.md`
-* 상세:
-    - rename(식별자 한정): `fpm-dashboard*`→`fpm-board*`(agent 6·command 2), `spa_dashboard.py`→`spa_board.py`, `/dashboards`→`/boards`, `/dashboard-server`→`/board-server`, `_doc_arch/hub_dashboard*.md`→`hub_board*.md`+`dashboard-scenario-kit.md`→`board-scenario-kit.md`, `install_manifest.sh`
-    - 유지: 트리거 `..board`·`_doc_work/board/`·`..dashboard` deprecated alias·UI 명사 "Dashboard"·과거 동결 산출물·캐시·git branch
-    - 토큰 분포: `dashboard-server` 19파일, `fpm-dashboard` 13, `/dashboards` 6, `spa_dashboard` 3
-* 구현 명세:
-    - rename-reference 5단계(사전 grep→git mv→참조 갱신→사후 검증 0건→단일 commit)
-    - SSOT=`plugins/fpm-core`. `~/.claude` 설치본은 재설치 반영. `~/.claude/_doc_arch/dashboard.md`→`board.md` 는 글로벌 가드 대상(사용자 명시 진행 승인)
-    - 검증: `grep fpm-dashboard|/dashboards|spa_dashboard|dashboard-server` (plugins/services/manifest) = 0건, `spa_board.py` ast.parse PASS, hub 재기동 후 `/boards` 정상
-
 # 📕 중요
 
 # 📙 일반
@@ -40,6 +26,17 @@ date: 2026-03-27
 # 📗 선택
 
 # ✅ 완료
+## Issue189: dashboard 식별자 → board 통일 rename (등록: 2026-06-21, 해결: 2026-06-21, commit: 1455b66) ✅
+* 목적: c모드 트리거 `..board` 와 내부 식별자 `fpm-dashboard`/`/dashboards`/`spa_dashboard` 의 단어 불일치 해소. `..show`→`fpm-show`, `..hub`→`fpm-hub` 와 동일하게 트리거=커맨드명 정합. 사용자 결정(폼 회수)=전부 board 통일.
+* plan: `_doc_work/plan/dashboard-to-board-rename_plan.md`
+* task: `_doc_work/tasks/dashboard-to-board-rename_task.md`
+* arch: `_doc_arch/hub_board_tmux_design.md`
+* 상세:
+    - rename(식별자 한정): `fpm-dashboard*`→`fpm-board*`(agent 6·command 2), `spa_dashboard.py`→`spa_board.py`, `/dashboards`→`/boards`, `/dashboard-server`→`/board-server`, `_doc_arch/hub_dashboard*.md`→`hub_board*.md`+`dashboard-scenario-kit.md`→`board-scenario-kit.md`, `install_manifest.sh`
+    - 유지: 트리거 `..board`·`_doc_work/board/`·`..dashboard` deprecated alias·UI 명사 "Dashboard"·과거 동결 산출물·캐시·git branch
+* Walkthrough: rename-reference 5단계로 git mv 14파일 + 토큰 sed 29파일 → 라이브 소스 식별자 0건(잔존은 Issue.md 이력·img png·UI 명사뿐), `spa_board.py` py_compile PASS, frontmatter `name: fpm-board` 정합. 단일 commit 1455b66.
+* 후속(out-of-prj1): 글로벌 `~/.claude` 전파 = 글로벌 `~/.claude/Issue.md` **Issue161** 로 위임(글로벌 SCAR 가드, 사용자 폼 선택). fpm 미러 동기화는 미선택(다음 deploy 시).
+
 ## Issue187: fpm 공개(public release) 사전 정비 — 개인정보·기술유출 가드 + copyright/문서 영·한 분리 (등록: 2026-06-21, 해결: 2026-06-21, commit: 8794169, dda74d7) ✅
 * 목적: ___pm → 공개 미러 fpm 의 정식 오픈소스 공개 전, (1) 잔존 개인정보 제거 (2) 비공개 기술자료(특히 공개 전환된 Issue.md) 유출 차단 (3) copyright 영/한 분리 (4) 모든 공개 문서의 영·한 2개 버전화 + 상호 링크. 글로벌 영어권 + 국내 독자 동시 대응 + 법적·프라이버시 리스크 제거.
 * 상세:
