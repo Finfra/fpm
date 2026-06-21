@@ -359,7 +359,7 @@ else:
         "   ```\n"
         "   Agent(\n"
         "     description='dashboard 시작',\n"
-        "     subagent_type='dashboard',\n"
+        "     subagent_type='fpm-board',\n"
         "     prompt='topic=<TOPIC>; cwd=" + cwd + "; htm-server 활성. tmux pane 에서 runner 시작 + dashboard push. ~/.claude/agents/fpm-board.md 절차 따를 것.'\n"
         "   )\n"
         "   ```\n"
