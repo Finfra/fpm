@@ -5,7 +5,7 @@ date: 2026-03-27
 ---
 
 # Issue Management
-* Issue HWM: 189
+* Issue HWM: 190
 * 오래된 Issue: `_doc_work/Issue_OLD.md` (General)
 * Save Point:
     - 3e69d0f (2026-04-24) Feat: graphify 토큰 절감 SCAR 프로젝트 구현 (Issue11·12 등록)
@@ -22,6 +22,20 @@ date: 2026-03-27
 # 📕 중요
 
 # 📙 일반
+
+## Issue190: hub 서버 lifecycle 커맨드 `/hub` 단일화 (등록: 2026-06-21)
+* 목적: `/hub`(prj1 로컬)·`/board-server`(글로벌, 구 dashboard-server)가 동일 단일 데몬(port 9876 `server.py`)을 만지는 중복 wrapper. 데몬은 hub 서버(a/b/c 3모드+Q&A 공통)이고 board 는 한 클라이언트뿐 → 사용자 결정(폼 회수)=`/hub` 로 통일.
+* depends: Issue189 (board rename 선행 완료, commit 1455b66)
+* 상세:
+    - `/board-server` 폐기(deprecated alias) → `/hub` 흡수
+    - `/hub` 글로벌 승격(현 prj1-local `.claude/commands/hub.md` → 전 프로젝트 사용 가능)
+    - 서브커맨드 합집합: start/stop/restart/**status**/clear/reset (status 는 board-server 에만 있던 것 흡수)
+* 구현 명세 (선행 해결 필요 — 이름 충돌):
+    - ⚠️ "hub" 단어 3중 사용 충돌 정리 선행: `/hub`(lifecycle) vs `..hub`(우산 토글 on/off/start/stop, Issue105) vs `/fpm-hub`·`..hub`(a모드 render deprecated alias, Issue133). `/hub start` 와 `..hub start`(per-folder 토글)가 의미 충돌 — lifecycle 의 start/stop 과 토글의 start/stop 이 동음이의.
+    - 글로벌 승격 시 플러그인 네임스페이스 `fpm-` 충돌: `fpm-hub`(render)가 이미 점유 → lifecycle 글로벌명 후보 `fpm-hub-server` 또는 토글과 구분되는 별도 동사 필요.
+    - 글로벌 SCAR 가드: `plugins/fpm-core/commands/` 변경은 글로벌 영향 → 재설치 전파 + 글로벌 Issue 연계
+    - 권장: plan 작성하여 충돌 해소안(네이밍 매트릭스) 확정 후 구현. rename-reference 5단계.
+* 비고: 단순 rename 아님(설계 결정 — 후속 영향). triage=복잡 → plan 필수.
 
 # 📗 선택
 
