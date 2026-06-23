@@ -5,7 +5,7 @@ date: 2026-03-27
 ---
 
 # Issue Management
-* Issue HWM: 193
+* Issue HWM: 195
 * 오래된 Issue: `_doc_work/Issue_OLD.md` (General)
 * Save Point:
     - 3e69d0f (2026-04-24) Feat: graphify 토큰 절감 SCAR 프로젝트 구현 (Issue11·12 등록)
@@ -18,6 +18,22 @@ date: 2026-03-27
 # 🌱 이슈후보
 
 # 🚧 진행중
+
+## Issue194: hub 내부 탭 렌더 모드 — OS 브라우저 탭 대신 hub 쉘 iframe 탭 (등록: 2026-06-23)
+* 목적: 현재 hub 렌더(`..show`/`..ask`/`..board`)는 매 렌더마다 OS 브라우저 새 탭/창을 연다. Chrome 계열에서 새 탭 open 이 창을 foreground 활성화 → 보던 타 앱 창을 가림. OS 탭 대신 hub 쉘이 렌더 문서를 내부 iframe 탭으로 호스팅하는 신규 모드 도입.
+* plan: `_doc_work/plan/hub-internal-tabs_plan.md`
+* task: `_doc_work/tasks/hub-internal-tabs_task.md`
+* arch: `_doc_arch/hub_internal_tabs.md`
+* 상세 (요구 4종):
+    - R1 옵션: 신규 키 `render_tab_mode: browser-tab(기본·무변경) | hub-internal`. opt-in → 회귀 0
+    - R2 탭 닫기 단축키 지정: `tab_close_shortcut`(기본 `alt+w` — Ctrl/Cmd+W 브라우저 선점 회피)
+    - R3 단축키는 show/ask/board 에서만: 활성 탭 content_type ∈ {response,form,dashboard} 일 때만 바인딩·힌트 노출
+    - R4 외부 다중 접속 추적, 호스트당 1창: 서버가 source-IP(호스트)당 hub 리스 + SSE heartbeat TTL. 2번째 창 takeover 안내, 명시 `[인계]` 로만 양도
+* 구현 명세:
+    - 구조: iframe 격리(`/htm-doc` 핸들러 무변경) + 신규 SSE `tab-open` push + `GET /hub-shell` 라우트
+    - `render_tab_mode` 서버 yml 직독 → hook 변경 없이 서버·설정만으로 MVP 성립
+    - triage=복잡(서버+설정+쉘+리스 다컴포넌트). SSOT=`services/hub/server.py`
+    - ⚠️ 글로벌 hook(`fpm-hub-trigger.sh`·`fpm-hub-doc-register.sh`) OS open 분기는 글로벌 SCAR → `~/.claude/Issue.md` 별도 이슈 (본 이슈 범위 외)
 
 # 📕 중요
 
@@ -62,6 +78,18 @@ date: 2026-03-27
 # 📗 선택
 
 # ✅ 완료
+## Issue195: hub bind_host 리스트화(멀티 bind) + inline allow_list + allow_server_list 게이트 분리 (등록: 2026-06-23, 해결: 2026-06-23, commit: 48e4365, 1257b61) ✅
+* 목적: hub 서버의 source-IP 접근 제어를 `bind_host` 에서 분리하고 세분화. (1) `bind_host` 가 listen 인터페이스 결정에만 쓰이도록 `allow_server_list` 토글 분리, (2) `bind_host` 를 리스트로 받아 0.0.0.0 와일드카드 없이 특정 주소들에만 멀티소켓 bind, (3) Servers.md 외에 yml inline `allow_list` 로 IP/CIDR 직접 추가 허용.
+* 상세:
+    - `allow_server_list: true`(기본)=비루프백 bind 시 Servers.md(check=O)+self allowlist 적재 / `false`=self+루프백만 허용(외부 전부 차단). bind_host 와 독립 토글
+    - `bind_host` 스칼라 또는 `[127.0.0.1, 192.168.0.17]` 리스트 — 리스트면 각 주소 개별 `ThreadingHTTPServer`(멀티소켓), 단일 문자열 하위호환
+    - `allow_list: [IP, CIDR]` — yml inline allowlist, Servers.md 와 **additive 병합**. IP/CIDR 만(호스트명 미지원, DNS 비의존). 비-IP 항목 무시+로그
+* 구현 명세:
+    - `services/hub/server.py`(commit 48e4365): `BIND_HOSTS` 전역, `_parse_yml_list()` 헬퍼, 로더 리스트 파싱(bind_host 대괄호 + allow_list), defaults `allow_list: []`, main() 멀티 bind serve(첫 소켓 메인 스레드, 나머지 데몬 스레드) + `_open_mode = any(비루프백)` 일반화 + allow_list 병합 적재(개방 모드, allow_server_list 토글과 독립)
+    - `data/hub_setting.yml`(commit 1257b61): bind_host 리스트 표기, allow_server_list, allow_list 예시 주석
+    - `allow_list` 는 yml 전용(설정 UI text 위젯이 `/`·`,` 거부 → schema 미등록, HUB_SETTING_DEFAULTS 에만 추가)
+* Walkthrough: 폼 미응답으로 신규 기능 보안 기본값(additive 병합 + IP/CIDR 만) 채택. 검증 — 파싱 단위테스트·멀티소켓(127.0.0.1+192.168.0.17 동시 bind 양쪽 200)·test_settings_loader 10 pass·test_settings_writer 17 pass·라이브 재시작 회귀 없음. server.py 는 동시 작업 세션의 48e4365(allow_server_list false 의미 재작업 + Issue194 번들)에 함께 커밋됨. ⚠️ 미사용 `ALLOW_ALL` 전역 dead flag 잔존(무해).
+
 ## Issue191: fpm-hub-trigger.sh subagent_type stale 식별자 정리 (등록: 2026-06-21, 해결: 2026-06-21, commit: cf5c958) ✅
 * 목적: 글로벌 Issue161(board rename 글로벌 전파) 의 후속 과제 — 렌더 문서 `~/.claude/_doc_work/z_htm/hub_htm_20260621_163550_a_issue161-board-rename.htm` 에 scope·WIP 근거로 기록된 hooks 잔존 참조. dispatch 프롬프트의 agent 타입 식별자가 `fpm-board` rename(Issue189) 과 불일치.
 * depends: Issue189
