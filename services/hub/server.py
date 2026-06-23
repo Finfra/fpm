@@ -151,8 +151,13 @@ HUB_SHELL_HTML = r"""<!DOCTYPE html>
   var cid = sessionStorage.getItem("hubShellCid");
   if(!cid){ cid = "c" + Math.random().toString(36).slice(2) + Date.now().toString(36); sessionStorage.setItem("hubShellCid", cid); }
 
-  var tabs = [{id:"home", view_url:"/hub", title:"🗂 Hub", sid:"", content_type:"home"}];
-  var activeId = "home";
+  // Issue199: 탭 상태 sessionStorage 영속 — 페이지 reload·서버 재시작에도 열린 탭 보존.
+  var TABKEY = "hubShellState";
+  var _saved = (function(){ try{ return JSON.parse(sessionStorage.getItem(TABKEY)||"null"); }catch(_){ return null; } })();
+  var tabs = (_saved && _saved.tabs && _saved.tabs.length) ? _saved.tabs
+             : [{id:"home", view_url:"/hub", title:"🗂 Hub", sid:"", content_type:"home"}];
+  var activeId = (_saved && _saved.activeId && tabs.some(function(t){return t.id===_saved.activeId;})) ? _saved.activeId : "home";
+  function saveTabs(){ try{ sessionStorage.setItem(TABKEY, JSON.stringify({tabs:tabs, activeId:activeId})); }catch(_){} }
   var bar = document.getElementById("tabbar");
   var view = document.getElementById("view");
   var hint = null;
@@ -174,11 +179,15 @@ HUB_SHELL_HTML = r"""<!DOCTYPE html>
     });
     hint = document.createElement("span"); hint.id = "hint"; bar.appendChild(hint);
     updateHint();
+    saveTabs();
   }
   function active(){ return tabs.filter(function(t){return t.id===activeId;})[0]; }
   function updateHint(){
     var a = active();
-    hint.textContent = (a && RENDER_CT[a.content_type]) ? ("탭 닫기: " + SHORTCUT) : "";
+    var parts = [];
+    if(a && RENDER_CT[a.content_type]) parts.push("탭 닫기: " + SHORTCUT);
+    if(tabs.length > 1) parts.push("탭 전환: alt+Tab");
+    hint.textContent = parts.join("  ·  ");
   }
   function activate(id){
     var t = tabs.filter(function(x){return x.id===id;})[0]; if(!t) return;
@@ -191,29 +200,65 @@ HUB_SHELL_HTML = r"""<!DOCTYPE html>
     if(activeId === id){ activate(tabs[Math.max(0,idx-1)].id); } else { render(); }
   }
   function addTab(d){
-    var key = d.sid || d.view_url;
-    // 같은 sid 재렌더 → 기존 탭 갱신(설계 기본: 세션당 1탭 재사용)
-    var ex = d.sid ? tabs.filter(function(t){return t.sid===d.sid;})[0] : null;
-    if(ex){ ex.view_url = d.view_url; ex.title = d.title || ex.title; ex.content_type = d.content_type;
-      if(activeId===ex.id){ view.src = d.view_url + "#r" + Date.now(); } render(); return; }
+    if(!d || !d.view_url) return;
+    // dedup: 같은 sid(세션당 1탭 재사용), sid 없으면 같은 view_url. 폴링 재발견 중복 방지.
+    var ex = d.sid ? tabs.filter(function(t){return t.sid===d.sid;})[0]
+                   : tabs.filter(function(t){return t.view_url===d.view_url;})[0];
+    if(ex){
+      var changed = ex.view_url !== d.view_url;
+      ex.view_url = d.view_url; ex.title = d.title || ex.title; ex.content_type = d.content_type;
+      if(changed && activeId===ex.id){ view.src = d.view_url + "#r" + Date.now(); }  // 실제 변경 시에만 reload(폴 루프 reload 방지)
+      render(); return;
+    }
     var id = "t" + Math.random().toString(36).slice(2);
     tabs.push({id:id, view_url:d.view_url, title:d.title, sid:d.sid, content_type:d.content_type});
     activate(id);
   }
 
   // 탭 닫기 단축키 (R2/R3) — 렌더 탭(content_type response/form/dashboard) 활성 시에만
+  // macOS: Option+letter 는 e.key 가 특수문자(∑ 등)로 바뀜 → 물리 키 e.code 로 비교(레이아웃·Option 무관)
+  function codeOf(key){
+    if(key.length===1 && key>="a" && key<="z") return "Key" + key.toUpperCase();
+    if(key.length===1 && key>="0" && key<="9") return "Digit" + key;
+    if(key==="tab") return "Tab";
+    return "";
+  }
   function matchShortcut(e){
     var parts = String(SHORTCUT).toLowerCase().split("+");
     var key = parts[parts.length-1];
     var need = {ctrl: parts.indexOf("ctrl")>=0, alt: parts.indexOf("alt")>=0,
                 shift: parts.indexOf("shift")>=0, meta: parts.indexOf("meta")>=0 || parts.indexOf("cmd")>=0};
-    return e.ctrlKey===need.ctrl && e.altKey===need.alt && e.shiftKey===need.shift
-        && e.metaKey===need.meta && e.key.toLowerCase()===key;
+    if(!(e.ctrlKey===need.ctrl && e.altKey===need.alt && e.shiftKey===need.shift && e.metaKey===need.meta)) return false;
+    var code = codeOf(key);
+    return code ? e.code===code : e.key.toLowerCase()===key;
   }
-  window.addEventListener("keydown", function(e){
-    if(!matchShortcut(e)) return;
-    var a = active();
-    if(a && RENDER_CT[a.content_type]){ e.preventDefault(); closeTab(a.id); }
+  // alt+Tab(다음) / alt+shift+Tab(이전) — 모든 탭 순환(content_type 무관).
+  // macOS: option+Tab 은 OS 미점유 → 정상 동작. ⚠️ Windows: Alt+Tab 은 OS 앱 전환기가
+  // 전역 선점 → keydown 이 페이지에 도달 못 함 → 무동작(에러 아님). mac 전용 수용(결정 2026-06-23).
+  function cycleTab(dir){
+    if(tabs.length < 2) return;
+    var i = tabs.findIndex(function(t){return t.id===activeId;}); if(i<0) i=0;
+    activate(tabs[(i + dir + tabs.length) % tabs.length].id);
+  }
+  function onKeydown(e){
+    // 탭 순환 (e.code==="Tab" — Option 무관 물리 키)
+    if(e.altKey && !e.ctrlKey && !e.metaKey && e.code==="Tab"){
+      e.preventDefault(); cycleTab(e.shiftKey ? -1 : 1); return;
+    }
+    // 탭 닫기
+    if(matchShortcut(e)){
+      var a = active();
+      if(a && RENDER_CT[a.content_type]){ e.preventDefault(); closeTab(a.id); }
+    }
+  }
+  window.addEventListener("keydown", onKeydown);
+  // iframe(same-origin) 내부에 포커스가 있을 때도 단축키 수신 — 매 네비게이션(load)마다 재바인딩.
+  // 부모 window 리스너만으로는 iframe focus 시 키 이벤트를 못 받음(R2/R3 미작동 원인).
+  view.addEventListener("load", function(){
+    try {
+      var d = view.contentDocument;
+      if(d){ d.removeEventListener("keydown", onKeydown); d.addEventListener("keydown", onKeydown); }
+    } catch(_){ /* cross-origin 문서: 접근 불가 → 무시 */ }
   });
 
   // 단일 창 리스 오버레이
@@ -258,8 +303,30 @@ HUB_SHELL_HTML = r"""<!DOCTYPE html>
     }
   });
 
-  render();
+  // Issue199: 폴링 fallback — SSE 끊김(서버 재시작) 구간에 누락된 신규 렌더 문서를
+  //   레지스트리(/boards)에서 수거. 탭 목록 SOT 를 SSE 단독 → 레지스트리로 보강.
+  //   첫 폴은 baseline(현재 최신 mtime_ts)만 잡고 기존 문서 폭주 방지 → 이후 baseline 초과분만 추가.
+  var pollBaseline = 0, pollInit = false;
+  function ctOf(u){ u = u || ""; return /_b_/.test(u) ? "form" : (/_c_/.test(u) ? "dashboard" : "response"); }
+  function pollDocs(){
+    fetch("/boards?_=" + Date.now(), {cache:"no-store"}).then(function(r){return r.json();}).then(function(j){
+      var docs = (j && j.htm_docs) || [];
+      if(!pollInit){
+        docs.forEach(function(d){ if(d.mtime_ts > pollBaseline) pollBaseline = d.mtime_ts; });
+        pollInit = true; return;
+      }
+      docs.filter(function(d){ return d.view_url && !d.missing && d.mtime_ts > pollBaseline; })
+          .sort(function(a,b){ return a.mtime_ts - b.mtime_ts; })
+          .forEach(function(d){
+            pollBaseline = Math.max(pollBaseline, d.mtime_ts);
+            addTab({view_url:d.view_url, title:d.title, sid:d.sid || "", content_type:ctOf(d.path || d.view_url)});
+          });
+    }).catch(function(){});
+  }
+
+  activate(activeId);            // 복원된 활성 탭 iframe 로드(+render)
   connect();
+  pollDocs(); setInterval(pollDocs, 30000);
 })();
 </script>
 </body>
