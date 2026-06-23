@@ -5,7 +5,7 @@ date: 2026-03-27
 ---
 
 # Issue Management
-* Issue HWM: 198
+* Issue HWM: 199
 * 오래된 Issue: `_doc_work/Issue_OLD.md` (General)
 * Save Point:
     - 3e69d0f (2026-04-24) Feat: graphify 토큰 절감 SCAR 프로젝트 구현 (Issue11·12 등록)
@@ -18,6 +18,22 @@ date: 2026-03-27
 # 🌱 이슈후보
 
 # 🚧 진행중
+
+## Issue199: hub 내부 탭 SOT 안정화 — SSE 단독 의존 → 레지스트리 보강 (등록: 2026-06-23)
+* 목적: Issue194 hub 내부 탭에서 탭 목록을 휘발성 SSE(`tab-open`)에만 의존 → 서버 재시작 시 전 탭이 동시에 재연결 시도 → Chrome 크래시 유발(restart storm). 탭의 진실 원천을 레지스트리로 옮겨 재시작·SSE 끊김에 견고화.
+* depends: Issue194
+* plan: `_doc_work/plan/hub-internal-tabs_plan.md`
+* task: `_doc_work/tasks/hub-internal-tabs_task.md` (Phase 7)
+* arch: `_doc_arch/hub_internal_tabs.md`
+* 상세 (구현 완료, 검증됨):
+    - Delta1: 탭 상태 sessionStorage(`hubShellState`) 영속 — reload·서버 재시작에도 열린 탭·활성 탭 보존
+    - Delta2: `/boards` htm_docs 폴링 fallback(30s) — SSE 끊김 구간 누락 신규 렌더 수거. 첫 폴=baseline(기존 200건 폭주 차단), 이후 mtime_ts 초과분만 add
+    - Delta3: 단일 iframe lazy mount(활성 탭만 로드) — 기존 구조로 이미 충족
+    - addTab dedup view_url 보강 + 폴 루프 reload 방지
+    - 부수: auto-restart hook trailing debounce(2s) — restart storm 자체 완화 (`.claude/hooks/hub-py-restart.sh`)
+* 구현 명세:
+    - SSOT=`services/hub/server.py` HUB_SHELL_HTML. triage=중간. 검증: compile OK·재시작·주입 확인·/boards mtime_ts 보유
+    - 🚧 잔여: 기동 시 allowlist DNS resolve 비동기화(재시작 다운시간 ~5s 단축) — 별도 검토
 
 ## Issue194: hub 내부 탭 렌더 모드 — OS 브라우저 탭 대신 hub 쉘 iframe 탭 (등록: 2026-06-23)
 * 목적: 현재 hub 렌더(`..show`/`..ask`/`..board`)는 매 렌더마다 OS 브라우저 새 탭/창을 연다. Chrome 계열에서 새 탭 open 이 창을 foreground 활성화 → 보던 타 앱 창을 가림. OS 탭 대신 hub 쉘이 렌더 문서를 내부 iframe 탭으로 호스팅하는 신규 모드 도입.
@@ -39,17 +55,6 @@ date: 2026-03-27
 
 # 📙 일반
 
-## Issue192: c모드 `/boards` 신규 카드 자동 등록 갭 (등록: 2026-06-21)
-* 목적: Issue189 board rename 후 c모드(Live Dashboard) 실 에이전트 테스트(board-rename-test)에서 발견. rename 회귀는 아니나 c모드 자동화 완결성 갭 — runner 가 생성한 신규 `.dash.yaml` 카드가 `/boards` 에 자동 노출 안 됨(dash-registry 미등록). 사용자가 hub UI `rescan` 을 눌러야 보임.
-* 상세:
-    - 원인: `/boards` dashboard 섹션은 dash-registry 등록 항목만 노출(Issue44). 레지스트리는 `/register-doc`(생산자) 또는 `/hub-rescan`(수동)으로만 채워짐.
-    - `plugins/fpm-core/hooks/fpm-board-notify.sh`(PostToolUse)는 `/register`+`/notify`(SSE)만 호출, `/register-doc` 미호출. runner 는 순수 파일 기반(서버 호출 0).
-    - 검증: 최초 `/boards` 카드 부재 → `POST /hub-rescan` `{added:{dash:11}}` 후 노출 확인. SSE 실시간 push 는 이미 열린 뷰어에만 적용, 신규 카드 발견은 별개.
-* 구현 명세 (택1):
-    - 옵션1: `fpm-board-notify.sh` 에 `.dash.yaml` 매칭 시 `/register-doc` 호출 추가(producer 등록)
-    - 옵션2: `fpm-board.md` 절차 — tmux window 시작 직후 dashboard 가 `/register-doc` 1회 호출 명시
-    - SSOT=`plugins/fpm-core`(___pm 편집 가능, 글로벌은 reinstall 전파). triage=중간(설계 선택 필요) → 구현 전 plan 권장.
-
 ## Issue190: hub 서버 lifecycle 커맨드 `/hub` 단일화 (등록: 2026-06-21)
 * 목적: `/hub`(prj1 로컬)·`/board-server`(글로벌, 구 dashboard-server)가 동일 단일 데몬(port 9876 `server.py`)을 만지는 중복 wrapper. 데몬은 hub 서버(a/b/c 3모드+Q&A 공통)이고 board 는 한 클라이언트뿐 → 사용자 결정(폼 회수)=`/hub` 로 통일.
 * depends: Issue189 (board rename 선행 완료, commit 1455b66)
@@ -67,6 +72,13 @@ date: 2026-03-27
 # 📗 선택
 
 # ✅ 완료
+## Issue192: c모드 `/boards` 신규 카드 자동 등록 갭 (등록: 2026-06-21, 해결: 2026-06-23, commit: 516023e) ✅
+* 목적: c모드 runner 가 생성한 신규 `.dash.yaml` 카드가 dash-registry 미등록 → `/boards` 자동 노출 안 됨(사용자가 수동 `rescan` 필요)이던 자동화 갭 해소.
+* 해결: 옵션2 채택 — 생산자(`fpm-board` agent)가 tmux window 시작 직후 `/register-doc`(type=dash) 1회 호출(healthz 게이트 + fail-soft). 순수 모니터링 `## 5` + 큐 모드 `Q4` 양쪽 적용. runner(순수 파일 기반·서버 호출 0) 설계는 불변 유지.
+* 옵션1 기각: `fpm-board-notify.sh`(PostToolUse Edit|Write)는 runner 의 shell 파일쓰기에 미발화 → 비결정적. agent 등록은 파일쓰기 방식 무관 결정적(Issue41 생산자 등록 원칙).
+* 검증: 등록 path(`CWD/_doc_work/z_htm` 또는 `/tmp/___pm`)는 serve-root 내 → register-doc in_scope 통과. 서버 down 시 healthz≠200 → silent skip(본기능 비차단). 재등록 dedup.
+* 전파: SSOT=`plugins/fpm-core` 편집 완료. 글로벌 `~/.claude/agents/fpm-board.md` 반영은 plugin reinstall 필요(글로벌 SCAR 직접 편집 안 함).
+* plan: `_doc_work/plan/board-card-autoregister_plan.md`. triage=중간.
 ## Issue193: `/boards` 카드 progress 스칼라 미집계 — 문자열 value 타입 불일치 (등록: 2026-06-21, 해결: 2026-06-23, commit: 391a913) ✅
 * 목적: Issue189 board rename 재테스트서 발견. `/boards` 카드 레벨 `progress` 스칼라가 `null`. 카드 메타 집계·정렬에서 progress 누락.
 * 해결: `_coerce_num` 헬퍼(float/int try, bool 제외) 추가 후 progress 추출 3개 지점에 적용 — `_fill_dash_entry_from_dict`(json/dict 경로)·`_parse_dash_yaml` widget flush·top-level scalar. runner 가 문자열 `'100'` 으로 기록한 value 도 숫자로 coercion(소비자 방어적, 기존 dash 파일 호환). 옵션1 채택.
