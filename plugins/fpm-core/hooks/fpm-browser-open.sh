@@ -61,6 +61,7 @@ case "$app_raw" in
   chrome|Chrome)      app="Google Chrome" ;;
   edge|Edge)          app="Microsoft Edge" ;;
   safari|Safari)      app="Safari" ;;
+  none|None|NONE|off) exit 0 ;;   # 브라우저 미존재 환경(서버) — open 생략, 무해 종료
   *)                  app="$app_raw" ;;
 esac
 

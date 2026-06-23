@@ -346,21 +346,27 @@ case "$_db" in
   chrome|Chrome)      _app="Google Chrome" ;;
   edge|Edge)          _app="Microsoft Edge" ;;
   safari|Safari)      _app="Safari" ;;
+  none|None|NONE|off) _app="" ;;   # 브라우저 미존재 환경(서버) — open 생략
   *)                  _app="$_db" ;;
 esac
-# browser_focus: false(기본)=백그라운드 open(-g, 포커스 미탈취), true=foreground
-if grep -qE '^[[:space:]]*browser_focus:[[:space:]]*true' "$HUB_SETTING_FILE" 2>/dev/null; then
-  _focus="true"; HTM_OPEN_CMD="open -a \"$_app\""
+if [ -z "$_app" ]; then
+  # default_browser: none — 브라우저 미설치 서버. open 명령 미생성 → hub URL 로 폼 접속.
+  _focus="false"; HTM_OPEN_CMD=""
 else
-  _focus="false"; HTM_OPEN_CMD="open -g -a \"$_app\""
-fi
-# Issue162: browser_tab_reuse=true & 재사용 가능 브라우저(chrome/edge/safari) → 탭 재사용 helper 로 치환.
-#   match=:9876 origin → /hub 대시보드 + htm-doc?path=… 모든 hub URL 단일 탭. file:// 등 미매칭은 새 탭(폴백 동등).
-_reuse=$(grep -E '^[[:space:]]*browser_tab_reuse:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//')
-_helper="$HOME/_git/___pm/plugins/fpm-core/hooks/fpm-browser-open.sh"
-case "$_app" in "Google Chrome"|"Microsoft Edge"|"Safari") _reusable=1 ;; *) _reusable=0 ;; esac
-if [ "$_reuse" = "true" ] && [ "$_reusable" = "1" ] && [ -f "$_helper" ]; then
-  HTM_OPEN_CMD="bash \"$_helper\" -a \"$_app\" -f \"$_focus\" -r true -m http://127.0.0.1:9876"
+  # browser_focus: false(기본)=백그라운드 open(-g, 포커스 미탈취), true=foreground
+  if grep -qE '^[[:space:]]*browser_focus:[[:space:]]*true' "$HUB_SETTING_FILE" 2>/dev/null; then
+    _focus="true"; HTM_OPEN_CMD="open -a \"$_app\""
+  else
+    _focus="false"; HTM_OPEN_CMD="open -g -a \"$_app\""
+  fi
+  # Issue162: browser_tab_reuse=true & 재사용 가능 브라우저(chrome/edge/safari) → 탭 재사용 helper 로 치환.
+  #   match=:9876 origin → /hub 대시보드 + htm-doc?path=… 모든 hub URL 단일 탭. file:// 등 미매칭은 새 탭(폴백 동등).
+  _reuse=$(grep -E '^[[:space:]]*browser_tab_reuse:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//')
+  _helper="$HOME/_git/___pm/plugins/fpm-core/hooks/fpm-browser-open.sh"
+  case "$_app" in "Google Chrome"|"Microsoft Edge"|"Safari") _reusable=1 ;; *) _reusable=0 ;; esac
+  if [ "$_reuse" = "true" ] && [ "$_reusable" = "1" ] && [ -f "$_helper" ]; then
+    HTM_OPEN_CMD="bash \"$_helper\" -a \"$_app\" -f \"$_focus\" -r true -m http://127.0.0.1:9876"
+  fi
 fi
 
 QUESTIONS_JSON="$MARKER_DATA" \
@@ -388,6 +394,13 @@ cwd_hash = os.environ.get('CWD_HASH', '')
 inbox_dir = os.environ.get('INBOX_DIR', '')
 cwd = os.environ.get('PROJECT_CWD', '')
 open_cmd = os.environ.get('HTM_OPEN_CMD', 'open -g -a Firefox')
+# default_browser: none → open_cmd 빈값. open 생략하고 hub URL 로 폼 접속 안내.
+if open_cmd:
+    open_heading = "**2. 저장 + Firefox open**:"
+    open_line = f"   {open_cmd} \"file://<절대경로>\"\n"
+else:
+    open_heading = "**2. 저장 (default_browser: none — open 생략)**:"
+    open_line = "   # 브라우저 미존재(서버). open 금지. Write 시 register-doc 자동 → http://127.0.0.1:{}/htm-doc?path=<절대경로> 로 폼 접속\n".format(server_port)
 cwd_q = urllib.parse.quote(cwd) if cwd else ''
 # Issue157: 헤더 버튼(open-project/open-session)용 프로젝트 루트 — cwd 가 _doc_work/z_htm 하위면 보정
 project_root = cwd.split('/_doc_work/')[0] if cwd and '/_doc_work/' in cwd else cwd
@@ -473,10 +486,10 @@ reason = (
     "   - `<div id=\"status\">` 전송 결과 표시\n"
     "   - JavaScript (SSOT: `hooks/fpm-ask-form-template.js`, Issue68 — `{ANSWER_URL}` 치환 완료본. 아래 블록을 그대로 `<script>` 에 삽입. Mode D 는 submit-close-btn 없음 → 템플릿이 null-safe 처리):\n"
     "```js\n" + form_js + "```\n\n"
-    "**2. 저장 + Firefox open**:\n"
+    f"{open_heading}\n"
     "   ```bash\n"
     f"  # path: {ask_path} ({path_note})\n"
-    f"   {open_cmd} \"file://<절대경로>\"\n"
+    f"{open_line}"
     "   ```\n\n"
     "**3. 채팅 안내** (caveman 압축, 다음 모두 포함):\n"
     "   1. 한 줄 헤드라인: '마커 감지. 자동 폼 열림. \"전송\" 클릭 → 회수 대기.'\n"

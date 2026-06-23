@@ -494,21 +494,27 @@ case "$_db" in
   chrome|Chrome)      _app="Google Chrome" ;;
   edge|Edge)          _app="Microsoft Edge" ;;
   safari|Safari)      _app="Safari" ;;
+  none|None|NONE|off) _app="" ;;   # 브라우저 미존재 환경(서버) — open 생략
   *)                  _app="$_db" ;;
 esac
-# browser_focus: false(기본)=백그라운드 open(-g, 포커스 미탈취), true=foreground(포커스 가져감)
-if grep -qE '^[[:space:]]*browser_focus:[[:space:]]*true' "$HUB_SETTING_FILE" 2>/dev/null; then
-  _focus="true"; HTM_OPEN_CMD="open -a \"$_app\""
+if [ -z "$_app" ]; then
+  # default_browser: none — 브라우저 미설치 서버. open 명령 미생성(빈 HTM_OPEN_CMD) → 채팅 URL·file path 만 emit.
+  _focus="false"; HTM_OPEN_CMD=""
 else
-  _focus="false"; HTM_OPEN_CMD="open -g -a \"$_app\""
-fi
-# Issue162: browser_tab_reuse=true & 재사용 가능 브라우저(chrome/edge/safari) → 탭 재사용 helper 로 치환.
-#   match=:9876 origin → /hub 대시보드 + htm-doc?path=… 모든 hub URL 단일 탭. file:// 등 미매칭은 새 탭(폴백 동등).
-_reuse=$(grep -E '^[[:space:]]*browser_tab_reuse:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//')
-_helper="$HOME/_git/___pm/plugins/fpm-core/hooks/fpm-browser-open.sh"
-case "$_app" in "Google Chrome"|"Microsoft Edge"|"Safari") _reusable=1 ;; *) _reusable=0 ;; esac
-if [ "$_reuse" = "true" ] && [ "$_reusable" = "1" ] && [ -f "$_helper" ]; then
-  HTM_OPEN_CMD="bash \"$_helper\" -a \"$_app\" -f \"$_focus\" -r true -m http://127.0.0.1:9876"
+  # browser_focus: false(기본)=백그라운드 open(-g, 포커스 미탈취), true=foreground(포커스 가져감)
+  if grep -qE '^[[:space:]]*browser_focus:[[:space:]]*true' "$HUB_SETTING_FILE" 2>/dev/null; then
+    _focus="true"; HTM_OPEN_CMD="open -a \"$_app\""
+  else
+    _focus="false"; HTM_OPEN_CMD="open -g -a \"$_app\""
+  fi
+  # Issue162: browser_tab_reuse=true & 재사용 가능 브라우저(chrome/edge/safari) → 탭 재사용 helper 로 치환.
+  #   match=:9876 origin → /hub 대시보드 + htm-doc?path=… 모든 hub URL 단일 탭. file:// 등 미매칭은 새 탭(폴백 동등).
+  _reuse=$(grep -E '^[[:space:]]*browser_tab_reuse:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//')
+  _helper="$HOME/_git/___pm/plugins/fpm-core/hooks/fpm-browser-open.sh"
+  case "$_app" in "Google Chrome"|"Microsoft Edge"|"Safari") _reusable=1 ;; *) _reusable=0 ;; esac
+  if [ "$_reuse" = "true" ] && [ "$_reusable" = "1" ] && [ -f "$_helper" ]; then
+    HTM_OPEN_CMD="bash \"$_helper\" -a \"$_app\" -f \"$_focus\" -r true -m http://127.0.0.1:9876"
+  fi
 fi
 
 # Issue141: render_target — ..show/자동 hub 렌더의 출력 경로 분기 (file:// open vs hub 서버 URL).
@@ -576,7 +582,14 @@ render_target = os.environ.get('RENDER_TARGET', 'local-open')
 render_host = os.environ.get('RENDER_HOST', '127.0.0.1')
 render_port = os.environ.get('RENDER_PORT', '9876')
 hub_url = "http://%s:%s/htm-doc?path=<절대경로>" % (render_host, render_port)
-if render_target == 'hub':
+if not open_cmd:
+    # default_browser: none — 브라우저 미존재(서버). open 실행 불가 → render_target 무관 URL·path 만 emit.
+    render_step = (
+        "7. **브라우저 없음 (default_browser: none)** — `open` 실행 **금지**. 채팅 응답에 file path 와 hub URL 만 명시:\n"
+        f"   - `file://<절대경로>` (로컬 file path)\n"
+        f"   - `{hub_url}` (Write 시 `register-doc` 자동 → 원격 접속용)\n"
+    )
+elif render_target == 'hub':
     render_step = (
         "7. **hub 서버 경유 표시 (render_target: hub)** — `file://` open **생략**. 대신 채팅 응답에 아래 URL 명시:\n"
         f"   - `{hub_url}`\n"
@@ -756,7 +769,12 @@ render_target = os.environ.get('RENDER_TARGET', 'local-open')
 render_host = os.environ.get('RENDER_HOST', '127.0.0.1')
 render_port = os.environ.get('RENDER_PORT', '9876')
 hub_url = "http://%s:%s/htm-doc?path=<절대경로>" % (render_host, render_port)
-if render_target == 'hub':
+if not open_cmd:
+    # default_browser: none — 브라우저 미존재(서버). open 실행 불가 → URL·path 만 emit.
+    render_step = (
+        f"6. **브라우저 없음 (default_browser: none)** — `open` 실행 금지. 채팅에 `file://<절대경로>` + hub URL `{hub_url}` 만 명시 (Write 시 register-doc 자동)\n"
+    )
+elif render_target == 'hub':
     render_step = (
         f"6. **hub 서버 경유 (render_target: hub)** — `file://` open 생략. 채팅에 URL 명시: `{hub_url}` "
         "(Write 시 `fpm-hub-doc-register` hook 이 자동 `register-doc` → 즉시 유효. 원격·타기기 GUI 단절 회피). ⚠️ `open` 실행 금지\n"
