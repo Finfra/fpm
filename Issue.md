@@ -39,17 +39,6 @@ date: 2026-03-27
 
 # 📙 일반
 
-## Issue193: `/boards` 카드 progress 스칼라 미집계 — 문자열 value 타입 불일치 (등록: 2026-06-21)
-* 목적: Issue189 board rename 재테스트(board-retest)서 발견. `/boards` 카드 레벨 `progress` 스칼라가 `null`. rename 회귀 아님(엔드포인트·식별자만 변경, 집계 로직 무관).
-* 상세 (근본 원인 확인 완료):
-    - server.py 의 progress 위젯 추출이 `isinstance(w.get("value"), (int, float))` 숫자 타입만 인정 (line 2110-2111, 2147-2150, 2182-2183).
-    - runner/monitor 가 progress 위젯 value 를 **문자열 `'100'`** 으로 기록 → 숫자 체크 실패 → `entry["progress"]` = None 잔류.
-    - 위젯 자체 value 표시('100')는 정상 → 카드 UI 영향 없음. 카드 메타 progress 집계만 비어, 정렬·집계 용도에서 누락 가능.
-* 구현 명세 (택1):
-    - 옵션1(소비자): server.py progress 추출에 문자열-숫자 coercion 추가 — `float()` try 후 반영
-    - 옵션2(생산자): runner/monitor 가 numeric value 기록
-    - SSOT=`plugins/fpm-core/services/hub/server.py` + `services/hub/server.py`(본체). triage=단순(타입 coercion 1~2곳). 옵션1 권장(소비자 방어적 — 기존 문자열 dash 파일 호환).
-
 ## Issue192: c모드 `/boards` 신규 카드 자동 등록 갭 (등록: 2026-06-21)
 * 목적: Issue189 board rename 후 c모드(Live Dashboard) 실 에이전트 테스트(board-rename-test)에서 발견. rename 회귀는 아니나 c모드 자동화 완결성 갭 — runner 가 생성한 신규 `.dash.yaml` 카드가 `/boards` 에 자동 노출 안 됨(dash-registry 미등록). 사용자가 hub UI `rescan` 을 눌러야 보임.
 * 상세:
@@ -78,6 +67,11 @@ date: 2026-03-27
 # 📗 선택
 
 # ✅ 완료
+## Issue193: `/boards` 카드 progress 스칼라 미집계 — 문자열 value 타입 불일치 (등록: 2026-06-21, 해결: 2026-06-23, commit: 391a913) ✅
+* 목적: Issue189 board rename 재테스트서 발견. `/boards` 카드 레벨 `progress` 스칼라가 `null`. 카드 메타 집계·정렬에서 progress 누락.
+* 해결: `_coerce_num` 헬퍼(float/int try, bool 제외) 추가 후 progress 추출 3개 지점에 적용 — `_fill_dash_entry_from_dict`(json/dict 경로)·`_parse_dash_yaml` widget flush·top-level scalar. runner 가 문자열 `'100'` 으로 기록한 value 도 숫자로 coercion(소비자 방어적, 기존 dash 파일 호환). 옵션1 채택.
+* 검증: 단위 테스트 — `_coerce_num('100')`=100, `True`=None, `'x'`=None; yaml widget `value: '100'` 파싱 시 progress=100 (수정 전 None). body + `plugins/fpm-core` 양쪽 동기, syntax OK.
+* SSOT: `services/hub/server.py` + `plugins/fpm-core/services/hub/server.py`. triage=단순.
 ## Issue198: browser_focus deprecated 줄 제거 + org 템플릿 현행화 (등록: 2026-06-23, 해결: 2026-06-23, commit: 08c0df4) ✅
 * 목적: Issue170 에서 `browser_open` 이 `browser_focus` 를 흡수(3옵션 통합)한 뒤 `hub_setting.yml` 에 deprecated 주석으로 남아있던 `browser_focus` 줄을 완전 제거하고, 설치 템플릿 `hub_setting_org.yml` 을 현행 스키마·안전 기본값으로 현행화.
 * 상세:
