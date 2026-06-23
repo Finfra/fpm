@@ -5,7 +5,7 @@ date: 2026-03-27
 ---
 
 # Issue Management
-* Issue HWM: 200
+* Issue HWM: 201
 * 오래된 Issue: `_doc_work/Issue_OLD.md` (General)
 * Save Point:
     - 3e69d0f (2026-04-24) Feat: graphify 토큰 절감 SCAR 프로젝트 구현 (Issue11·12 등록)
@@ -48,6 +48,14 @@ date: 2026-03-27
 * 비고: 성능 최적화. 기능 영향 없음 — 우선순위 낮음
 
 # ✅ 완료
+
+## Issue201: hub-internal 렌더 — 표준 htm-doc URL 도 hub 쉘 내부 탭으로 착지 (등록: 2026-06-23) → (해결: 2026-06-23, commit: 48d887c) ✅
+* 목적: render_tab_mode 기본이 browser-tab 이라 `..show` 산출물이 OS 새 탭(`/htm-doc?path=`)으로 뜸. 사용자는 `/hub-shell` 내부 iframe 탭 표시(hub-internal) 원함. ① 기본값을 hub-internal 로 전환 ② 표준 htm-doc URL 을 직접 열어도 OS 탭이 아닌 쉘 내부 탭으로 착지.
+* depends: Issue199 (commit 53a6137)
+* 상세:
+    - `data/hub_setting.yml`·`server.py` 기본 `render_tab_mode: browser-tab` → `hub-internal`
+    - `_handle_htm_doc`: hub-internal + `Sec-Fetch-Dest: document`(최상위 네비) 시 302 → `/hub-shell`. iframe src 요청(Sec-Fetch-Dest: iframe/empty)·메타데이터 미지원 브라우저는 raw serve 유지(redirect loop·iframe 깨짐 방지)
+* 구현 명세: SSOT=`services/hub/server.py`. triage=중간. 검증: compile OK·재시작·curl Sec-Fetch-Dest document=302 /hub-shell·iframe=200·헤더無=200
 
 ## Issue199: hub 내부 탭 SOT 안정화 — SSE 단독 의존 → 레지스트리 보강 (등록: 2026-06-23) → (해결: 2026-06-23, commit: 53a6137) ✅
 * 목적: Issue194 hub 내부 탭에서 탭 목록을 휘발성 SSE(`tab-open`)에만 의존 → 서버 재시작 시 전 탭이 동시에 재연결 시도 → Chrome 크래시 유발(restart storm). 탭의 진실 원천을 레지스트리로 옮겨 재시작·SSE 끊김에 견고화.
