@@ -5,7 +5,7 @@ date: 2026-03-27
 ---
 
 # Issue Management
-* Issue HWM: 199
+* Issue HWM: 200
 * 오래된 Issue: `_doc_work/Issue_OLD.md` (General)
 * Save Point:
     - 3e69d0f (2026-04-24) Feat: graphify 토큰 절감 SCAR 프로젝트 구현 (Issue11·12 등록)
@@ -19,12 +19,43 @@ date: 2026-03-27
 
 # 🚧 진행중
 
-## Issue199: hub 내부 탭 SOT 안정화 — SSE 단독 의존 → 레지스트리 보강 (등록: 2026-06-23)
+# 📕 중요
+
+# 📙 일반
+
+## Issue190: hub 서버 lifecycle 커맨드 `/hub` 단일화 (등록: 2026-06-21)
+* 목적: `/hub`(prj1 로컬)·`/board-server`(글로벌, 구 dashboard-server)가 동일 단일 데몬(port 9876 `server.py`)을 만지는 중복 wrapper. 데몬은 hub 서버(a/b/c 3모드+Q&A 공통)이고 board 는 한 클라이언트뿐 → 사용자 결정(폼 회수)=`/hub` 로 통일.
+* depends: Issue189 (board rename 선행 완료, commit 1455b66), Issue199 (hub 탭 SOT 안정화 선행 완료, commit 53a6137)
+* 상세:
+    - `/board-server` 폐기(deprecated alias) → `/hub` 흡수
+    - `/hub` 글로벌 승격(현 prj1-local `.claude/commands/hub.md` → 전 프로젝트 사용 가능)
+    - 서브커맨드 합집합: start/stop/restart/**status**/clear/reset (status 는 board-server 에만 있던 것 흡수)
+* 구현 명세 (선행 해결 필요 — 이름 충돌):
+    - ⚠️ "hub" 단어 3중 사용 충돌 정리 선행: `/hub`(lifecycle) vs `..hub`(우산 토글 on/off/start/stop, Issue105) vs `/fpm-hub`·`..hub`(a모드 render deprecated alias, Issue133). `/hub start` 와 `..hub start`(per-folder 토글)가 의미 충돌 — lifecycle 의 start/stop 과 토글의 start/stop 이 동음이의.
+    - 글로벌 승격 시 플러그인 네임스페이스 `fpm-` 충돌: `fpm-hub`(render)가 이미 점유 → lifecycle 글로벌명 후보 `fpm-hub-server` 또는 토글과 구분되는 별도 동사 필요.
+    - 글로벌 SCAR 가드: `plugins/fpm-core/commands/` 변경은 글로벌 영향 → 재설치 전파 + 글로벌 Issue 연계
+    - 권장: plan 작성하여 충돌 해소안(네이밍 매트릭스) 확정 후 구현. rename-reference 5단계.
+* 비고: 단순 rename 아님(설계 결정 — 후속 영향). triage=복잡 → plan 필수.
+
+# 📗 선택
+
+## Issue200: hub 기동 시 allowlist DNS resolve 비동기화 (등록: 2026-06-23)
+* 목적: Issue199 잔여 분리. hub 서버 기동 시 allowlist DNS resolve 가 동기 블로킹 → 재시작 다운타임 ~5s. 비동기화로 단축.
+* depends: Issue199 (완료, commit 53a6137)
+* 상세:
+    - 기동 경로의 DNS resolve 를 백그라운드/지연 평가로 전환 → 첫 바인드까지 대기 제거
+    - triage=단순 추정(검토 후 확정). 회귀: allowlist 판정 정확성 유지 확인
+* 비고: 성능 최적화. 기능 영향 없음 — 우선순위 낮음
+
+# ✅ 완료
+
+## Issue199: hub 내부 탭 SOT 안정화 — SSE 단독 의존 → 레지스트리 보강 (등록: 2026-06-23) → (해결: 2026-06-23, commit: 53a6137) ✅
 * 목적: Issue194 hub 내부 탭에서 탭 목록을 휘발성 SSE(`tab-open`)에만 의존 → 서버 재시작 시 전 탭이 동시에 재연결 시도 → Chrome 크래시 유발(restart storm). 탭의 진실 원천을 레지스트리로 옮겨 재시작·SSE 끊김에 견고화.
 * depends: Issue194
 * plan: `_doc_work/plan/hub-internal-tabs_plan.md`
 * task: `_doc_work/tasks/hub-internal-tabs_task.md` (Phase 7)
 * arch: `_doc_arch/hub_internal_tabs.md`
+* report: `_doc_work/report/hub-internal-tabs_issue199_report.md`
 * 상세 (구현 완료, 검증됨):
     - Delta1: 탭 상태 sessionStorage(`hubShellState`) 영속 — reload·서버 재시작에도 열린 탭·활성 탭 보존
     - Delta2: `/boards` htm_docs 폴링 fallback(30s) — SSE 끊김 구간 누락 신규 렌더 수거. 첫 폴=baseline(기존 200건 폭주 차단), 이후 mtime_ts 초과분만 add
@@ -32,10 +63,10 @@ date: 2026-03-27
     - addTab dedup view_url 보강 + 폴 루프 reload 방지
     - 부수: auto-restart hook trailing debounce(2s) — restart storm 자체 완화 (`.claude/hooks/hub-py-restart.sh`)
 * 구현 명세:
-    - SSOT=`services/hub/server.py` HUB_SHELL_HTML. triage=중간. 검증: compile OK·재시작·주입 확인·/boards mtime_ts 보유
-    - 🚧 잔여: 기동 시 allowlist DNS resolve 비동기화(재시작 다운시간 ~5s 단축) — 별도 검토
+    - SSOT=`services/hub/server.py` HUB_SHELL_HTML. 검증: compile OK·재시작·주입 확인·/boards mtime_ts 보유
+    - 잔여(DNS resolve 비동기화) → Issue200 분리
 
-## Issue194: hub 내부 탭 렌더 모드 — OS 브라우저 탭 대신 hub 쉘 iframe 탭 (등록: 2026-06-23)
+## Issue194: hub 내부 탭 렌더 모드 — OS 브라우저 탭 대신 hub 쉘 iframe 탭 (등록: 2026-06-23) → (해결: 2026-06-23, commit: 48e4365) ✅
 * 목적: 현재 hub 렌더(`..show`/`..ask`/`..board`)는 매 렌더마다 OS 브라우저 새 탭/창을 연다. Chrome 계열에서 새 탭 open 이 창을 foreground 활성화 → 보던 타 앱 창을 가림. OS 탭 대신 hub 쉘이 렌더 문서를 내부 iframe 탭으로 호스팅하는 신규 모드 도입.
 * plan: `_doc_work/plan/hub-internal-tabs_plan.md`
 * task: `_doc_work/tasks/hub-internal-tabs_task.md`
@@ -51,27 +82,6 @@ date: 2026-03-27
     - triage=복잡(서버+설정+쉘+리스 다컴포넌트). SSOT=`services/hub/server.py`
     - ⚠️ 글로벌 hook(`fpm-hub-trigger.sh`·`fpm-hub-doc-register.sh`) OS open 분기는 글로벌 SCAR → `~/.claude/Issue.md` 별도 이슈 (본 이슈 범위 외)
 
-# 📕 중요
-
-# 📙 일반
-
-## Issue190: hub 서버 lifecycle 커맨드 `/hub` 단일화 (등록: 2026-06-21)
-* 목적: `/hub`(prj1 로컬)·`/board-server`(글로벌, 구 dashboard-server)가 동일 단일 데몬(port 9876 `server.py`)을 만지는 중복 wrapper. 데몬은 hub 서버(a/b/c 3모드+Q&A 공통)이고 board 는 한 클라이언트뿐 → 사용자 결정(폼 회수)=`/hub` 로 통일.
-* depends: Issue189 (board rename 선행 완료, commit 1455b66)
-* 상세:
-    - `/board-server` 폐기(deprecated alias) → `/hub` 흡수
-    - `/hub` 글로벌 승격(현 prj1-local `.claude/commands/hub.md` → 전 프로젝트 사용 가능)
-    - 서브커맨드 합집합: start/stop/restart/**status**/clear/reset (status 는 board-server 에만 있던 것 흡수)
-* 구현 명세 (선행 해결 필요 — 이름 충돌):
-    - ⚠️ "hub" 단어 3중 사용 충돌 정리 선행: `/hub`(lifecycle) vs `..hub`(우산 토글 on/off/start/stop, Issue105) vs `/fpm-hub`·`..hub`(a모드 render deprecated alias, Issue133). `/hub start` 와 `..hub start`(per-folder 토글)가 의미 충돌 — lifecycle 의 start/stop 과 토글의 start/stop 이 동음이의.
-    - 글로벌 승격 시 플러그인 네임스페이스 `fpm-` 충돌: `fpm-hub`(render)가 이미 점유 → lifecycle 글로벌명 후보 `fpm-hub-server` 또는 토글과 구분되는 별도 동사 필요.
-    - 글로벌 SCAR 가드: `plugins/fpm-core/commands/` 변경은 글로벌 영향 → 재설치 전파 + 글로벌 Issue 연계
-    - 권장: plan 작성하여 충돌 해소안(네이밍 매트릭스) 확정 후 구현. rename-reference 5단계.
-* 비고: 단순 rename 아님(설계 결정 — 후속 영향). triage=복잡 → plan 필수.
-
-# 📗 선택
-
-# ✅ 완료
 ## Issue192: c모드 `/boards` 신규 카드 자동 등록 갭 (등록: 2026-06-21, 해결: 2026-06-23, commit: 516023e) ✅
 * 목적: c모드 runner 가 생성한 신규 `.dash.yaml` 카드가 dash-registry 미등록 → `/boards` 자동 노출 안 됨(사용자가 수동 `rescan` 필요)이던 자동화 갭 해소.
 * 해결: 옵션2 채택 — 생산자(`fpm-board` agent)가 tmux window 시작 직후 `/register-doc`(type=dash) 1회 호출(healthz 게이트 + fail-soft). 순수 모니터링 `## 5` + 큐 모드 `Q4` 양쪽 적용. runner(순수 파일 기반·서버 호출 0) 설계는 불변 유지.
