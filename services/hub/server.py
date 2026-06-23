@@ -8014,55 +8014,67 @@ def main():
             pass
         return {ip for ip in _ips if ip and ip not in LOOPBACK_IPS}
 
-    # 비루프백 bind + allow_server_list=false → bind_host(self) 만 허용.
-    # Servers.md 미적재. 외부 source IP 는 _ip_allowed 게이트에서 전부 403.
-    if _open_mode and not _allow_server_list:
-        _self_ips = _resolve_self_ips()
-        ALLOWED_IPS.update(_self_ips)
-        log(f"[allowlist] bind_host 전용 — bind={BIND_HOSTS}, allow_server_list=false → "
-            f"self 허용 {sorted(_self_ips)} (+루프백), 외부 source IP 전부 차단")
-        sys.stderr.write(
-            f"[hub] bind_host 전용 모드 — bind={BIND_HOSTS}:{PORT}, "
-            f"allow_server_list=false → self+루프백만 허용\n")
+    # Issue200: allowlist 적재(DNS resolve 포함)를 bind 와 분리하여 백그라운드 데몬
+    # 스레드로 지연 실행. 개방 모드의 Servers.md gethostbyname / self gethostbyname_ex 는
+    # 호스트당 DNS 타임아웃(~5s) 까지 동기 블로킹 가능 → 그동안 bind 가 지연되어 재시작
+    # 다운타임을 유발했다. bind 는 BIND_HOSTS(스칼라 IP/호스트, DNS 불요)만 쓰므로 allowlist
+    # 적재를 미뤄도 bind 시각에 영향 없음. 적재 완료 전 window 동안 외부 source IP 는 일시
+    # 403 당할 수 있으나(self-correcting), 루프백은 _ip_allowed 에서 항상 허용 → 로컬 무영향.
+    def _populate_allowlist():
+        # 비루프백 bind + allow_server_list=false → bind_host(self) 만 허용.
+        # Servers.md 미적재. 외부 source IP 는 _ip_allowed 게이트에서 전부 403.
+        if _open_mode and not _allow_server_list:
+            _self_ips = _resolve_self_ips()
+            ALLOWED_IPS.update(_self_ips)
+            log(f"[allowlist] bind_host 전용 — bind={BIND_HOSTS}, allow_server_list=false → "
+                f"self 허용 {sorted(_self_ips)} (+루프백), 외부 source IP 전부 차단")
+            sys.stderr.write(
+                f"[hub] bind_host 전용 모드 — bind={BIND_HOSTS}:{PORT}, "
+                f"allow_server_list=false → self+루프백만 허용\n")
 
-    # 개방 모드(비루프백 bind + allow_server_list=true)에서만 Servers.md allowlist 적재.
-    # 기본 127.0.0.1 이면 빈 set 유지 → 루프백만 통과(기존 동작 그대로).
-    if _open_mode and _allow_server_list:
-        _ips, _nets = _load_server_allowlist()
-        ALLOWED_IPS.update(_ips)
-        ALLOWED_NETS.extend(_nets)
-        # 자기 자신은 항상 허용 — bind IP + 로컬 인터페이스 IP 자동 추가.
-        _self_ips = _resolve_self_ips()
-        ALLOWED_IPS.update(_self_ips)
-        log(f"[allowlist] self 자동 허용 — {sorted(_self_ips)}")
-        log(f"[allowlist] 개방 모드 — bind={BIND_HOSTS}, 허용 IP {len(ALLOWED_IPS)}개: "
-            f"{sorted(ALLOWED_IPS)}, CIDR {len(ALLOWED_NETS)}개: "
-            f"{[str(n) for n in ALLOWED_NETS]} (+루프백)")
-        sys.stderr.write(
-            f"[hub] ⚠️ 외부 개방 모드 — bind={BIND_HOSTS}:{PORT}, "
-            f"allowlist {len(ALLOWED_IPS)} hosts + {len(ALLOWED_NETS)} CIDR (+loopback)\n")
+        # 개방 모드(비루프백 bind + allow_server_list=true)에서만 Servers.md allowlist 적재.
+        # 기본 127.0.0.1 이면 빈 set 유지 → 루프백만 통과(기존 동작 그대로).
+        if _open_mode and _allow_server_list:
+            _ips, _nets = _load_server_allowlist()
+            ALLOWED_IPS.update(_ips)
+            ALLOWED_NETS.extend(_nets)
+            # 자기 자신은 항상 허용 — bind IP + 로컬 인터페이스 IP 자동 추가.
+            _self_ips = _resolve_self_ips()
+            ALLOWED_IPS.update(_self_ips)
+            log(f"[allowlist] self 자동 허용 — {sorted(_self_ips)}")
+            log(f"[allowlist] 개방 모드 — bind={BIND_HOSTS}, 허용 IP {len(ALLOWED_IPS)}개: "
+                f"{sorted(ALLOWED_IPS)}, CIDR {len(ALLOWED_NETS)}개: "
+                f"{[str(n) for n in ALLOWED_NETS]} (+루프백)")
+            sys.stderr.write(
+                f"[hub] ⚠️ 외부 개방 모드 — bind={BIND_HOSTS}:{PORT}, "
+                f"allowlist {len(ALLOWED_IPS)} hosts + {len(ALLOWED_NETS)} CIDR (+loopback)\n")
 
-    # allow_list (hub_setting.yml inline) — Servers.md 와 additive 병합. IP/CIDR 만(호스트명 미지원).
-    # 개방 모드에서만 의미. allow_server_list 토글과 독립 — 사용자가 명시한 추가 grant 이므로 항상 적용.
+        # allow_list (hub_setting.yml inline) — Servers.md 와 additive 병합. IP/CIDR 만(호스트명 미지원).
+        # 개방 모드에서만 의미. allow_server_list 토글과 독립 — 사용자가 명시한 추가 grant 이므로 항상 적용.
+        if _open_mode:
+            _inline = _load_hub_setting().get("allow_list") or []
+            _added_ips, _added_nets = [], []
+            for item in _inline:
+                if "/" in item:
+                    try:
+                        ALLOWED_NETS.append(ipaddress.ip_network(item, strict=False))
+                        _added_nets.append(item)
+                    except ValueError as e:
+                        log(f"[allowlist] inline allow_list CIDR 파싱 실패 skip — {item}: {e}")
+                else:
+                    try:
+                        ipaddress.ip_address(item)  # IP 검증(호스트명 미지원)
+                        ALLOWED_IPS.add(item)
+                        _added_ips.append(item)
+                    except ValueError:
+                        log(f"[allowlist] inline allow_list 항목 무시(IP/CIDR 아님) — {item}")
+            if _added_ips or _added_nets:
+                log(f"[allowlist] inline allow_list 적재 — IP {_added_ips}, CIDR {_added_nets}")
+
+    # 개방 모드에서만 백그라운드 적재 스레드 가동(루프백 전용 기본 모드는 적재 불요 → no-op).
     if _open_mode:
-        _inline = _load_hub_setting().get("allow_list") or []
-        _added_ips, _added_nets = [], []
-        for item in _inline:
-            if "/" in item:
-                try:
-                    ALLOWED_NETS.append(ipaddress.ip_network(item, strict=False))
-                    _added_nets.append(item)
-                except ValueError as e:
-                    log(f"[allowlist] inline allow_list CIDR 파싱 실패 skip — {item}: {e}")
-            else:
-                try:
-                    ipaddress.ip_address(item)  # IP 검증(호스트명 미지원)
-                    ALLOWED_IPS.add(item)
-                    _added_ips.append(item)
-                except ValueError:
-                    log(f"[allowlist] inline allow_list 항목 무시(IP/CIDR 아님) — {item}")
-        if _added_ips or _added_nets:
-            log(f"[allowlist] inline allow_list 적재 — IP {_added_ips}, CIDR {_added_nets}")
+        threading.Thread(target=_populate_allowlist, name="allowlist-populate",
+                         daemon=True).start()
 
     # Issue59: bind 를 PID_FILE 기록보다 먼저 수행 — bind 실패 시 PID_FILE 미생성·미삭제.
     #          (실패 경로의 cleanup 이 살아있는 다른 서버의 pid 파일을 지우던 버그 차단)
