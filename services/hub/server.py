@@ -43,6 +43,7 @@ import i18n  # noqa: E402  # Issue169: hub UI 다국어 catalog + t(key, lang)
 #   env 미설정 시 yml 값을 main() 에서 적용(설정 로더가 정의된 뒤). 예: bind_host: 0.0.0.0
 _HOST_ENV = os.environ.get("HTM_SERVER_HOST")  # 미설정이면 None
 HOST = _HOST_ENV or "127.0.0.1"  # 잠정값 — main() 에서 yml override
+BIND_HOSTS = [HOST]  # 실제 bind 주소 리스트 — main() 에서 yml(스칼라|리스트) override
 PORT = int(os.environ.get("HTM_SERVER_PORT", "9876"))
 
 # Issue141: source-IP allowlist. LOOPBACK 은 무조건 허용. HOST 가 루프백이 아닐 때
@@ -50,6 +51,11 @@ PORT = int(os.environ.get("HTM_SERVER_PORT", "9876"))
 LOOPBACK_IPS = frozenset(("127.0.0.1", "::1"))
 ALLOWED_IPS = set()  # startup 에서 populate (개방 모드일 때만). 평소엔 빈 set.
 ALLOWED_NETS = []    # Issue175: CIDR 서브넷 allowlist (ip_network 리스트). 평소엔 빈 리스트.
+# allow_server_list 분리: bind_host 와 source-IP 게이트 디커플링.
+# bind 가 비루프백이고 allow_server_list=false 면 ALLOWED_IPS=self 만 적재 → bind_host(self)
+# 전용(외부 source IP 전부 차단). true 면 Servers.md(check=O)+self 적재.
+# ALLOW_ALL 은 더 이상 토글되지 않음(항상 False) — _ip_allowed 호환용 잔존.
+ALLOW_ALL = False
 
 STATE_DIR = "/tmp/___pm/claude-htm-server"
 INBOX_ROOT = "/tmp/___pm/claude-htm-inbox"
@@ -81,6 +87,176 @@ sse_lock = threading.Lock()
 # Issue17 Phase 1: 채널 모델 확장 — key = (cwd_hash, sid)
 # sid="" 는 기존 /events?cwd=&token= 호출자 (backward-compat 채널)
 sse_subscribers = {}  # (cwd_hash, sid) -> [wfile, wfile, ...]
+
+# Issue194: hub 내부 탭 모드. hub 쉘(/hub-shell)은 cross-project·host 단위라
+# cwd+token 채널을 못 쓴다 → 예약 hash 의 sse_subscribers 채널을 재사용한다.
+#   key = (HUB_SHELL_HASH, client_id). sse_broadcast(HUB_SHELL_HASH, ...) 로 전 shell push.
+HUB_SHELL_HASH = "__hub_shell__"
+hub_lease_lock = threading.Lock()
+# host(source-IP) 단위 단일 창 리스. {ip: {"client_id":str, "granted_at":float, "last_seen":float}}
+hub_lease = {}
+
+# Issue194: hub 내부 탭 쉘 페이지. __SHORTCUT__(JSON 문자열)·__SINGLE__(true/false) 치환.
+#   home 탭(=/hub 멀티프로젝트 대시보드) 은 content_type "home" → 닫기 단축키 no-op(R3).
+HUB_SHELL_HTML = r"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="/fpm-icon.png">
+<title>fPm Hub — 내부 탭</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  body { display: flex; flex-direction: column; }
+  #tabbar { display: flex; align-items: stretch; gap: 2px; background: hsl(60,30%,88%);
+    padding: 4px 6px 0; overflow-x: auto; flex: 0 0 auto; }
+  .tab { display: flex; align-items: center; gap: 6px; max-width: 240px; padding: 6px 10px;
+    background: rgba(0,0,0,0.06); border: 1px solid rgba(0,0,0,0.12); border-bottom: none;
+    border-radius: 8px 8px 0 0; cursor: pointer; white-space: nowrap; font-size: 0.85rem; color: #1a1a1a; }
+  .tab.active { background: #fff; font-weight: 600; }
+  .tab .ttl { overflow: hidden; text-overflow: ellipsis; }
+  .tab .x { border: none; background: transparent; cursor: pointer; font-size: 0.9rem; padding: 0 2px; color: #555; }
+  .tab .x:hover { color: #c00; }
+  #hint { margin-left: auto; align-self: center; font-size: 0.72rem; color: #555; padding: 0 8px; white-space: nowrap; }
+  #view { flex: 1 1 auto; border: none; width: 100%; }
+  #overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.78); color: #fff; z-index: 999;
+    display: none; flex-direction: column; align-items: center; justify-content: center; gap: 1rem; text-align: center; padding: 2rem; }
+  #overlay.show { display: flex; }
+  #overlay button { font-size: 1rem; padding: 0.6rem 1.4rem; border-radius: 8px; border: none; cursor: pointer;
+    background: hsl(60,72%,70%); color: #1a1a1a; font-weight: 600; }
+  @media (prefers-color-scheme: dark) {
+    #tabbar { background: #26261f; }
+    .tab { background: rgba(255,255,255,0.06); border-color: #444; color: #ddd; }
+    .tab.active { background: #1a1a1a; }
+    #hint { color: #aaa; }
+  }
+</style>
+</head>
+<body>
+<div id="tabbar"></div>
+<iframe id="view" src="/hub"></iframe>
+<div id="overlay">
+  <div id="ovmsg"></div>
+  <button id="ovbtn" type="button">여기서 인계</button>
+</div>
+<script>
+(function(){
+  var SHORTCUT = __SHORTCUT__;          // ex) "alt+w"
+  var SINGLE = __SINGLE__;              // 단일 창 강제 여부
+  var RENDER_CT = {response:1, form:1, dashboard:1};  // R3: 단축키 노출 대상 content_type
+
+  // client_id: sessionStorage 유지(새로고침 생존), 없으면 난수
+  var cid = sessionStorage.getItem("hubShellCid");
+  if(!cid){ cid = "c" + Math.random().toString(36).slice(2) + Date.now().toString(36); sessionStorage.setItem("hubShellCid", cid); }
+
+  var tabs = [{id:"home", view_url:"/hub", title:"🗂 Hub", sid:"", content_type:"home"}];
+  var activeId = "home";
+  var bar = document.getElementById("tabbar");
+  var view = document.getElementById("view");
+  var hint = null;
+
+  function render(){
+    bar.innerHTML = "";
+    tabs.forEach(function(t){
+      var el = document.createElement("div");
+      el.className = "tab" + (t.id===activeId ? " active" : "");
+      el.onclick = function(){ activate(t.id); };
+      var ttl = document.createElement("span"); ttl.className = "ttl"; ttl.textContent = t.title || "(문서)";
+      el.appendChild(ttl);
+      if(t.id !== "home"){
+        var x = document.createElement("button"); x.className = "x"; x.textContent = "✕";
+        x.onclick = function(ev){ ev.stopPropagation(); closeTab(t.id); };
+        el.appendChild(x);
+      }
+      bar.appendChild(el);
+    });
+    hint = document.createElement("span"); hint.id = "hint"; bar.appendChild(hint);
+    updateHint();
+  }
+  function active(){ return tabs.filter(function(t){return t.id===activeId;})[0]; }
+  function updateHint(){
+    var a = active();
+    hint.textContent = (a && RENDER_CT[a.content_type]) ? ("탭 닫기: " + SHORTCUT) : "";
+  }
+  function activate(id){
+    var t = tabs.filter(function(x){return x.id===id;})[0]; if(!t) return;
+    activeId = id; view.src = t.view_url; render();
+  }
+  function closeTab(id){
+    if(id === "home") return;
+    var idx = tabs.findIndex(function(t){return t.id===id;}); if(idx<0) return;
+    tabs.splice(idx,1);
+    if(activeId === id){ activate(tabs[Math.max(0,idx-1)].id); } else { render(); }
+  }
+  function addTab(d){
+    var key = d.sid || d.view_url;
+    // 같은 sid 재렌더 → 기존 탭 갱신(설계 기본: 세션당 1탭 재사용)
+    var ex = d.sid ? tabs.filter(function(t){return t.sid===d.sid;})[0] : null;
+    if(ex){ ex.view_url = d.view_url; ex.title = d.title || ex.title; ex.content_type = d.content_type;
+      if(activeId===ex.id){ view.src = d.view_url + "#r" + Date.now(); } render(); return; }
+    var id = "t" + Math.random().toString(36).slice(2);
+    tabs.push({id:id, view_url:d.view_url, title:d.title, sid:d.sid, content_type:d.content_type});
+    activate(id);
+  }
+
+  // 탭 닫기 단축키 (R2/R3) — 렌더 탭(content_type response/form/dashboard) 활성 시에만
+  function matchShortcut(e){
+    var parts = String(SHORTCUT).toLowerCase().split("+");
+    var key = parts[parts.length-1];
+    var need = {ctrl: parts.indexOf("ctrl")>=0, alt: parts.indexOf("alt")>=0,
+                shift: parts.indexOf("shift")>=0, meta: parts.indexOf("meta")>=0 || parts.indexOf("cmd")>=0};
+    return e.ctrlKey===need.ctrl && e.altKey===need.alt && e.shiftKey===need.shift
+        && e.metaKey===need.meta && e.key.toLowerCase()===key;
+  }
+  window.addEventListener("keydown", function(e){
+    if(!matchShortcut(e)) return;
+    var a = active();
+    if(a && RENDER_CT[a.content_type]){ e.preventDefault(); closeTab(a.id); }
+  });
+
+  // 단일 창 리스 오버레이
+  var overlay = document.getElementById("overlay");
+  var ovmsg = document.getElementById("ovmsg");
+  var ovbtn = document.getElementById("ovbtn");
+  function showOverlay(msg, showBtn){
+    ovmsg.textContent = msg; ovbtn.style.display = showBtn ? "" : "none"; overlay.classList.add("show");
+  }
+  function hideOverlay(){ overlay.classList.remove("show"); }
+  ovbtn.onclick = function(){
+    fetch("/hub-claim", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({cid:cid})})
+      .then(function(r){return r.json();}).then(function(){ hideOverlay(); connect(); })
+      .catch(function(){ ovmsg.textContent = "인계 실패 — hub 서버 미응답"; });
+  };
+
+  // SSE 연결
+  var es = null;
+  function connect(){
+    if(es){ try{es.close();}catch(_){}}
+    es = new EventSource("/hub-events?cid=" + encodeURIComponent(cid));
+    es.addEventListener("granted", function(){ hideOverlay(); });
+    es.addEventListener("denied", function(ev){
+      var d = {}; try{ d = JSON.parse(ev.data||"{}"); }catch(_){}
+      try{es.close();}catch(_){}
+      showOverlay("이 호스트에는 이미 hub 창이 열려 있습니다 (" + (d.age||0) + "초 전 시작).\n기존 창을 닫거나 아래에서 인계하세요.", true);
+    });
+    es.addEventListener("evicted", function(){
+      try{es.close();}catch(_){}
+      showOverlay("다른 창이 이 호스트의 hub 를 인계했습니다. 이 창은 비활성화됩니다.", false);
+    });
+    es.addEventListener("tab-open", function(ev){
+      try{ addTab(JSON.parse(ev.data)); }catch(_){}
+    });
+  }
+
+  render();
+  connect();
+})();
+</script>
+</body>
+</html>
+"""
 
 pids_lock = threading.Lock()
 pids = {}  # cwd_hash -> set[int]  (Issue16: stop 제어 대상으로 등록된 runner PIDs)
@@ -499,8 +675,11 @@ def _load_server_allowlist() -> tuple:
 
 
 def _ip_allowed(client_ip: str) -> bool:
-    """source IP 가 접근 허용 대상인지. 루프백은 무조건 허용, 그 외는
-    ALLOWED_IPS(정확 일치) 또는 ALLOWED_NETS(CIDR 서브넷 멤버십, Issue175)."""
+    """source IP 가 접근 허용 대상인지. ALLOW_ALL(전체 개방 모드)이면 무조건 허용.
+    아니면 루프백은 무조건 허용, 그 외는 ALLOWED_IPS(정확 일치) 또는
+    ALLOWED_NETS(CIDR 서브넷 멤버십, Issue175)."""
+    if ALLOW_ALL:
+        return True
     if client_ip in LOOPBACK_IPS or client_ip in ALLOWED_IPS:
         return True
     if ALLOWED_NETS:
@@ -729,6 +908,14 @@ HUB_SETTING_DEFAULTS = {"feed_limit": 100, "feed_default_visible": True, "feed_p
                         "card_limit": 40, "search_limit": 200, "live_session_limit": 6,
                         # Issue141: bind 주소 (문자열). env HTM_SERVER_HOST 미설정 시 사용.
                         "bind_host": "127.0.0.1",
+                        # allow_server_list: source-IP allowlist 게이트 토글 (bind_host 와 분리).
+                        #   true(기본)=비루프백 bind 시 Servers.md(check=O)+self allowlist 적재.
+                        #   false=bind_host(self)만 허용 → 외부 source IP 전부 차단. 변경 시 restart.
+                        "allow_server_list": True,
+                        # allow_list: hub_setting.yml inline source-IP allowlist (IP/CIDR 리스트).
+                        #   Servers.md 와 additive(병합) — 추가 grant. 호스트명 미지원(IP/CIDR 만, DNS 비의존).
+                        #   yml 표기: allow_list: [192.168.0.5, 192.168.0.0/24]. yml 전용(UI 미편집). 변경 시 restart.
+                        "allow_list": [],
                         # Issue159: 활성세션 정렬 — updated(최근갱신순) / created(세션 시작순 고정)
                         #   / project(Projects.md 번호순, 미등록 cwd 는 끝)
                         "live_session_order": "updated",
@@ -736,9 +923,24 @@ HUB_SETTING_DEFAULTS = {"feed_limit": 100, "feed_default_visible": True, "feed_p
                         #   false(기본)=전체 숨김 / true=프로젝트당 최신 1개 표시(Issue136 dedup)
                         "live_session_show_empty": False,
                         # Issue169: hub UI 언어 — en(영어, 기본) / ko(한국어). 설계: _doc_arch/localization.md
-                        "language": "en"}
+                        "language": "en",
+                        # Issue194: hub 내부 탭 렌더 모드. 설계: _doc_arch/hub_internal_tabs.md
+                        #   render_tab_mode: browser-tab(기본·OS 탭) / hub-internal(/hub-shell iframe 탭)
+                        "render_tab_mode": "browser-tab",
+                        "tab_close_shortcut": "alt+w",
+                        "hub_single_window": True,
+                        "hub_lease_ttl": 30}
 _hub_setting_cache: dict = {}
 _hub_setting_cache_mtime: float = 0.0
+
+
+def _parse_yml_list(val: str) -> list:
+    """경량 인라인 리스트 파서 — `[a, b, c]` 또는 `a, b, c` → ['a','b','c'].
+    각 항목 따옴표·공백 제거, 빈 항목 drop. stdlib-only(외부 yaml 비의존)."""
+    s = val.strip()
+    if s.startswith("[") and s.endswith("]"):
+        s = s[1:-1]
+    return [x.strip().strip('"').strip("'") for x in s.split(",") if x.strip()]
 
 
 def _load_hub_setting() -> dict:
@@ -765,8 +967,14 @@ def _load_hub_setting() -> dict:
                     continue
                 if isinstance(HUB_SETTING_DEFAULTS[key], bool):
                     setting[key] = (val.lower() == "true")
+                elif isinstance(HUB_SETTING_DEFAULTS[key], list):
+                    setting[key] = _parse_yml_list(val)  # allow_list 등 리스트 키
                 elif isinstance(HUB_SETTING_DEFAULTS[key], str):
-                    setting[key] = val  # Issue141: 문자열 키(bind_host 등) 그대로
+                    # bind_host 는 스칼라 또는 `[a, b]` 리스트 허용(멀티 bind).
+                    if key == "bind_host" and val.strip().startswith("["):
+                        setting[key] = _parse_yml_list(val)
+                    else:
+                        setting[key] = val  # Issue141: 문자열 키(bind_host 등) 그대로
                 else:
                     try:
                         setting[key] = int(val)
@@ -802,6 +1010,12 @@ HUB_SETTING_SCHEMA = [
     {"key": "render_target", "tab": "basic", "widget": "select",
      "options": ["local-open", "hub", "both"],
      "apply": "hook", "comment": "..show 표시 경로 — local-open(file://)/hub(서버 URL)/both"},
+    # Issue194: 렌더 표시 방식 — OS 브라우저 탭 vs hub 쉘 내부 iframe 탭
+    {"key": "render_tab_mode", "tab": "basic", "widget": "select",
+     "options": ["browser-tab", "hub-internal"],
+     "apply": "hook", "comment": "렌더 표시 방식 — browser-tab(기본·OS 탭)/hub-internal(/hub-shell 내부 iframe 탭, OS 새 탭 미생성)"},
+    {"key": "tab_close_shortcut", "tab": "basic", "widget": "text",
+     "apply": "auto", "comment": "hub 내부 탭 닫기 단축키 ([ctrl+][alt+][shift+][meta+]<key>). ⚠️ ctrl+w/meta+w 는 브라우저 선점 가능"},
     # Issue169: hub UI 언어 (en/ko). 저장 후 hub 페이지 reload 시 반영. 설계: _doc_arch/localization.md
     {"key": "language", "tab": "basic", "widget": "select",
      "options": ["en", "ko"],
@@ -829,10 +1043,17 @@ HUB_SETTING_SCHEMA = [
     # 탭 3: 고급 — 네트워크
     {"key": "bind_host", "tab": "advanced", "widget": "text",
      "apply": "restart", "comment": "hub 서버 listen 인터페이스 (127.0.0.1/0.0.0.0/IP). 변경 시 restart 필요"},
+    {"key": "allow_server_list", "tab": "advanced", "widget": "toggle",
+     "apply": "restart", "comment": "source-IP allowlist 게이트 (true=Servers.md 화이트리스트+self 허용 / false=bind_host(self)만 허용, 외부 전부 차단). 변경 시 restart"},
     {"key": "advertise_host", "tab": "advanced", "widget": "text", "optional": True,
      "apply": "hook", "comment": "hub|both URL host (생략 시 bind_host fallback). 0.0.0.0+생략 금지"},
     {"key": "feed_poll_interval", "tab": "advanced", "widget": "number", "min": 1,
      "apply": "auto", "comment": "피드 폴링 주기(초, 참고값)"},
+    # Issue194: hub 내부 탭 모드(render_tab_mode=hub-internal) 단일 창 강제
+    {"key": "hub_single_window", "tab": "advanced", "widget": "toggle",
+     "apply": "auto", "comment": "호스트(source-IP)당 hub 쉘 창 1개 강제 — true=2번째 창 takeover 안내/false=다중 허용"},
+    {"key": "hub_lease_ttl", "tab": "advanced", "widget": "number", "min": 5,
+     "apply": "auto", "comment": "hub 쉘 리스 heartbeat 만료(초). SSE keepalive 미수신 초과 시 회수"},
 ]
 HUB_SETTING_SCHEMA_BY_KEY = {s["key"]: s for s in HUB_SETTING_SCHEMA}
 # advertise_host 는 yml 에서 기본 주석 처리(`# advertise_host: ...`)된 optional 키.
@@ -1491,6 +1712,13 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/hub":
             self._handle_hub(parsed)
             return
+        # Issue194: hub 내부 탭 쉘 + 전용 SSE 채널
+        if parsed.path == "/hub-shell":
+            self._handle_hub_shell(parsed)
+            return
+        if parsed.path == "/hub-events":
+            self._handle_hub_events(parsed)
+            return
         if parsed.path == "/projects-list":
             self._send_json(200, {"projects": _projects_list_with_htm()})
             return
@@ -1544,6 +1772,10 @@ class Handler(BaseHTTPRequestHandler):
         # Issue41: hub registry — 생산자 등록 / 수동 디스크 재스캔
         if parsed.path == "/register-doc":
             self._handle_register_doc(parsed)
+            return
+        # Issue194: hub 쉘 단일 창 리스 인계
+        if parsed.path == "/hub-claim":
+            self._handle_hub_claim(parsed)
             return
         if parsed.path == "/hub-rescan":
             self._handle_hub_rescan(parsed)
@@ -3015,7 +3247,143 @@ class Handler(BaseHTTPRequestHandler):
                 cleared.discard(path)
                 save_registry(tomb_path, sorted(cleared))
         log(f"POST /register-doc — type={kind} path={path} (registry={count})")
+        # Issue194: hub-internal 모드면 hub 쉘에 tab-open push (OS 새 탭 대신 내부 iframe 탭).
+        #   render_tab_mode 는 서버가 yml 직독(설계 FIXME 채택 — hook 변경 불요로 MVP 성립).
+        if kind == "htm" and _load_hub_setting().get("render_tab_mode") == "hub-internal":
+            base = os.path.basename(path)
+            # 파일명 mode 토큰(_a_/_b_/_c_)으로 content_type 도출 (R3 단축키 노출 판정용)
+            ctype = "response"
+            if "_b_" in base:
+                ctype = "form"
+            elif "_c_" in base:
+                ctype = "dashboard"
+            import urllib.parse as _u
+            view_url = "/htm-doc?path=" + _u.quote(path)
+            sse_broadcast(HUB_SHELL_HASH, "tab-open", {
+                "view_url": view_url,
+                "title": title or base,
+                "sid": sid,
+                "content_type": ctype,
+            })
         self._send_json(200, {"status": "ok", "type": kind, "path": path, "count": count})
+
+    # ── Issue194: hub 내부 탭 쉘 ─────────────────────────────────────────
+    def _hub_lease_acquire(self, ip, cid, single, ttl):
+        """host(ip) 단일 창 리스 획득 시도. single=False 면 항상 grant.
+        리스 없음·본인 보유·TTL 만료 → grant. 타인 활성 보유 → 거부(False)."""
+        if not single:
+            return True
+        now = time.time()
+        with hub_lease_lock:
+            cur = hub_lease.get(ip)
+            if (cur is None or cur.get("client_id") == cid
+                    or (now - cur.get("last_seen", 0)) > ttl):
+                hub_lease[ip] = {"client_id": cid, "granted_at": now, "last_seen": now}
+                return True
+            return False
+
+    def _handle_hub_events(self, parsed):
+        """Issue194: hub 쉘 전용 SSE. cwd+token 없는 host-trusted 채널(전역 IP 게이트로 보호).
+        lease 판정 → granted/denied → tab-open relay + keepalive heartbeat(last_seen 갱신).
+        타 client 인계(/hub-claim) 시 heartbeat 가 evicted 감지하여 스트림 종료."""
+        ip = self.client_address[0] if self.client_address else ""
+        qs = parse_qs(parsed.query)
+        cid = (qs.get("cid") or [""])[0].strip()
+        if not cid or not re.fullmatch(r"[a-zA-Z0-9_-]+", cid):
+            self._send_json(400, {"error": "missing/invalid cid"})
+            return
+        setting = _load_hub_setting()
+        single = bool(setting.get("hub_single_window", True))
+        ttl = int(setting.get("hub_lease_ttl", 30))
+        granted = self._hub_lease_acquire(ip, cid, single, ttl)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Access-Control-Allow-Origin", "null")
+            self.end_headers()
+            info = {}
+            if not granted:
+                with hub_lease_lock:
+                    cur = dict(hub_lease.get(ip, {}))
+                info = {"holder": cur.get("client_id", ""),
+                        "age": round(time.time() - cur.get("granted_at", time.time()))}
+            ev = "granted" if granted else "denied"
+            self.wfile.write(f"event: {ev}\ndata: {json.dumps(info)}\n\n".encode("utf-8"))
+            self.wfile.flush()
+        except Exception:
+            return
+        if not granted:
+            return  # 거부: shell 이 denied 수신 후 takeover UI 표시 → 스트림 불요
+        key = (HUB_SHELL_HASH, cid)
+        with sse_lock:
+            sse_subscribers.setdefault(key, []).append(self.wfile)
+        log(f"hub-shell SSE connect — ip={ip} cid={cid}")
+        try:
+            while True:
+                time.sleep(15)
+                if single:
+                    with hub_lease_lock:
+                        cur = hub_lease.get(ip)
+                        if not cur or cur.get("client_id") != cid:
+                            break  # 인계됨(evicted) → 스트림 종료
+                        cur["last_seen"] = time.time()
+                self.wfile.write(b": keepalive\n\n")
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            with sse_lock:
+                subs = sse_subscribers.get(key, [])
+                if self.wfile in subs:
+                    subs.remove(self.wfile)
+            with hub_lease_lock:
+                cur = hub_lease.get(ip)
+                if cur and cur.get("client_id") == cid:
+                    del hub_lease[ip]
+            log(f"hub-shell SSE disconnect — ip={ip} cid={cid}")
+
+    def _handle_hub_claim(self, parsed):
+        """Issue194: 단일 창 강제 시 2번째 창의 명시 인계. 기존 보유자 lease 회수 +
+        evicted push(기존 창 안내 전환) → 신규 client 에 grant."""
+        ip = self.client_address[0] if self.client_address else ""
+        if not _ip_allowed(ip):
+            self._send_json(403, {"error": "localhost only"})
+            return
+        body, err = self._read_json_body()
+        if err:
+            self._send_json(400, {"error": err})
+            return
+        cid = (body.get("cid") or "").strip()
+        if not cid or not re.fullmatch(r"[a-zA-Z0-9_-]+", cid):
+            self._send_json(400, {"error": "missing/invalid cid"})
+            return
+        now = time.time()
+        with hub_lease_lock:
+            old = hub_lease.get(ip)
+            old_cid = old.get("client_id") if old else None
+            hub_lease[ip] = {"client_id": cid, "granted_at": now, "last_seen": now}
+        if old_cid and old_cid != cid:
+            sse_broadcast(HUB_SHELL_HASH, "evicted", {}, sid=old_cid)
+        log(f"hub-shell claim — ip={ip} new_cid={cid} old_cid={old_cid}")
+        self._send_json(200, {"status": "claimed"})
+
+    def _handle_hub_shell(self, parsed):
+        """Issue194: hub 내부 탭 쉘 페이지. 탭 바 + iframe viewport. /hub-events SSE 로
+        tab-open 수신 → iframe 탭 생성. tab_close_shortcut 으로 렌더 탭만 닫기(R3)."""
+        setting = _load_hub_setting()
+        shortcut = str(setting.get("tab_close_shortcut", "alt+w"))
+        single = "true" if setting.get("hub_single_window", True) else "false"
+        html = HUB_SHELL_HTML.replace("__SHORTCUT__", json.dumps(shortcut)) \
+                             .replace("__SINGLE__", single)
+        body = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _handle_hub_rescan(self, parsed):
         """Issue41: 수동 부트스트랩. 등록 프로젝트의 z_htm + /tmp/___pm 를 1회 스캔하여
@@ -7469,31 +7837,111 @@ def main():
     load_feed()      # Issue42: hook 활동 피드 복원
 
     # Issue141: env 미설정 시 hub_setting.yml bind_host 적용 (env > yml > 기본).
-    global HOST
-    if _HOST_ENV is None:
-        HOST = (_load_hub_setting().get("bind_host") or "127.0.0.1").strip() or "127.0.0.1"
+    # bind_host 는 스칼라 또는 리스트 — 리스트면 각 주소에 개별 bind(멀티소켓).
+    global HOST, ALLOW_ALL, BIND_HOSTS
+    if _HOST_ENV is not None:
+        BIND_HOSTS = [_HOST_ENV.strip()]
+    else:
+        _bh = _load_hub_setting().get("bind_host")
+        if isinstance(_bh, list):
+            BIND_HOSTS = [h.strip() for h in _bh if h and h.strip()] or ["127.0.0.1"]
+        else:
+            BIND_HOSTS = [(_bh or "127.0.0.1").strip() or "127.0.0.1"]
+    # 순서 보존 dedup
+    _seen = set()
+    BIND_HOSTS = [h for h in BIND_HOSTS if not (h in _seen or _seen.add(h))]
+    HOST = BIND_HOSTS[0]  # primary — self-ip·pid·로그·advertise fallback 기준
+    # 개방 모드 = bind 주소 중 하나라도 비루프백 (멀티 bind 일반화).
+    _open_mode = any(h not in LOOPBACK_IPS for h in BIND_HOSTS)
 
-    # 개방 모드(HOST 가 루프백 아님)에서만 Servers.md allowlist 적재.
+    # allow_server_list 분리: source-IP 게이트는 bind_host 와 독립 토글.
+    # 기본 True = Servers.md(check=O) 화이트리스트 + self 허용.
+    # False = bind_host(self) 만 허용 — 외부 source IP 전부 차단(가장 보수적).
+    _allow_server_list = bool(_load_hub_setting().get("allow_server_list", True))
+
+    def _resolve_self_ips() -> set:
+        """bind IP + 로컬 인터페이스 IP 집합 (루프백 제외). self 항상 허용용.
+        Servers.md 의 자기 호스트가 공개 도메인으로 resolve 되면 LAN self IP 와
+        불일치하여 로컬 브라우저·hook 이 403 당하던 문제도 함께 차단."""
+        _ips = {HOST}
+        try:
+            _ips.update(socket.gethostbyname_ex(socket.gethostname())[2])
+        except (socket.gaierror, OSError):
+            pass
+        try:
+            _probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            _probe.connect(("192.168.255.255", 1))  # 라우팅만, 패킷 미전송
+            _ips.add(_probe.getsockname()[0])
+            _probe.close()
+        except OSError:
+            pass
+        return {ip for ip in _ips if ip and ip not in LOOPBACK_IPS}
+
+    # 비루프백 bind + allow_server_list=false → bind_host(self) 만 허용.
+    # Servers.md 미적재. 외부 source IP 는 _ip_allowed 게이트에서 전부 403.
+    if _open_mode and not _allow_server_list:
+        _self_ips = _resolve_self_ips()
+        ALLOWED_IPS.update(_self_ips)
+        log(f"[allowlist] bind_host 전용 — bind={BIND_HOSTS}, allow_server_list=false → "
+            f"self 허용 {sorted(_self_ips)} (+루프백), 외부 source IP 전부 차단")
+        sys.stderr.write(
+            f"[hub] bind_host 전용 모드 — bind={BIND_HOSTS}:{PORT}, "
+            f"allow_server_list=false → self+루프백만 허용\n")
+
+    # 개방 모드(비루프백 bind + allow_server_list=true)에서만 Servers.md allowlist 적재.
     # 기본 127.0.0.1 이면 빈 set 유지 → 루프백만 통과(기존 동작 그대로).
-    if HOST not in LOOPBACK_IPS:
+    if _open_mode and _allow_server_list:
         _ips, _nets = _load_server_allowlist()
         ALLOWED_IPS.update(_ips)
         ALLOWED_NETS.extend(_nets)
-        log(f"[allowlist] 개방 모드 — bind={HOST}, 허용 IP {len(ALLOWED_IPS)}개: "
+        # 자기 자신은 항상 허용 — bind IP + 로컬 인터페이스 IP 자동 추가.
+        _self_ips = _resolve_self_ips()
+        ALLOWED_IPS.update(_self_ips)
+        log(f"[allowlist] self 자동 허용 — {sorted(_self_ips)}")
+        log(f"[allowlist] 개방 모드 — bind={BIND_HOSTS}, 허용 IP {len(ALLOWED_IPS)}개: "
             f"{sorted(ALLOWED_IPS)}, CIDR {len(ALLOWED_NETS)}개: "
             f"{[str(n) for n in ALLOWED_NETS]} (+루프백)")
         sys.stderr.write(
-            f"[hub] ⚠️ 외부 개방 모드 — bind={HOST}:{PORT}, "
+            f"[hub] ⚠️ 외부 개방 모드 — bind={BIND_HOSTS}:{PORT}, "
             f"allowlist {len(ALLOWED_IPS)} hosts + {len(ALLOWED_NETS)} CIDR (+loopback)\n")
+
+    # allow_list (hub_setting.yml inline) — Servers.md 와 additive 병합. IP/CIDR 만(호스트명 미지원).
+    # 개방 모드에서만 의미. allow_server_list 토글과 독립 — 사용자가 명시한 추가 grant 이므로 항상 적용.
+    if _open_mode:
+        _inline = _load_hub_setting().get("allow_list") or []
+        _added_ips, _added_nets = [], []
+        for item in _inline:
+            if "/" in item:
+                try:
+                    ALLOWED_NETS.append(ipaddress.ip_network(item, strict=False))
+                    _added_nets.append(item)
+                except ValueError as e:
+                    log(f"[allowlist] inline allow_list CIDR 파싱 실패 skip — {item}: {e}")
+            else:
+                try:
+                    ipaddress.ip_address(item)  # IP 검증(호스트명 미지원)
+                    ALLOWED_IPS.add(item)
+                    _added_ips.append(item)
+                except ValueError:
+                    log(f"[allowlist] inline allow_list 항목 무시(IP/CIDR 아님) — {item}")
+        if _added_ips or _added_nets:
+            log(f"[allowlist] inline allow_list 적재 — IP {_added_ips}, CIDR {_added_nets}")
 
     # Issue59: bind 를 PID_FILE 기록보다 먼저 수행 — bind 실패 시 PID_FILE 미생성·미삭제.
     #          (실패 경로의 cleanup 이 살아있는 다른 서버의 pid 파일을 지우던 버그 차단)
-    try:
-        srv = ThreadingHTTPServer((HOST, PORT), Handler)
-    except OSError as e:
-        sys.stderr.write(f"[hub] bind failed on port {PORT}: {e}\n")
+    # 멀티 bind: BIND_HOSTS 의 각 주소에 ThreadingHTTPServer 1개. 첫 성공 전 전부 실패 시 종료.
+    servers = []
+    for _h in BIND_HOSTS:
+        try:
+            _s = ThreadingHTTPServer((_h, PORT), Handler)
+            _s.daemon_threads = True
+            servers.append((_h, _s))
+        except OSError as e:
+            sys.stderr.write(f"[hub] bind failed on {_h}:{PORT}: {e}\n")
+            log(f"[hub] bind failed on {_h}:{PORT}: {e}")
+    if not servers:
+        sys.stderr.write(f"[hub] all binds failed on port {PORT} — exiting\n")
         sys.exit(2)
-    srv.daemon_threads = True
 
     with open(PID_FILE, "w") as f:
         f.write(str(os.getpid()))
@@ -7501,10 +7949,14 @@ def main():
     signal.signal(signal.SIGTERM, cleanup)
     signal.signal(signal.SIGINT, cleanup)
 
-    log(f"started on http://{HOST}:{PORT} (pid={os.getpid()}, projects_restored={len(projects)})")
+    _bound = [h for h, _ in servers]
+    log(f"started on http://{_bound}:{PORT} (pid={os.getpid()}, projects_restored={len(projects)})")
 
+    # 2번째 이후 bind 는 데몬 스레드에서 serve, 첫 번째는 메인 스레드에서 blocking.
+    for _h, _s in servers[1:]:
+        threading.Thread(target=_s.serve_forever, name=f"serve-{_h}", daemon=True).start()
     try:
-        srv.serve_forever()
+        servers[0][1].serve_forever()
     except KeyboardInterrupt:
         cleanup()
 
