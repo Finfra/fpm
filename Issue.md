@@ -5,7 +5,7 @@ date: 2026-03-27
 ---
 
 # Issue Management
-* Issue HWM: 202
+* Issue HWM: 203
 * 오래된 Issue: `_doc_work/Issue_OLD.md` (General)
 * Save Point:
     - 3e69d0f (2026-04-24) Feat: graphify 토큰 절감 SCAR 프로젝트 구현 (Issue11·12 등록)
@@ -18,6 +18,17 @@ date: 2026-03-27
 # 🌱 이슈후보
 
 # 🚧 진행중
+
+## Issue203: hub 탭 세로 적층(2중 탭바) 버그 (등록: 2026-06-24)
+* 목적: `/hub-shell` 내부 탭바가 가로 1행이 아니라 동일 탭이 2행으로 중복 적층되는 버그 해결
+* 상세:
+    - 증상: hub-shell 페이지 상단에 동일 탭 세트(🗂Hub | 현황 | 렌더)가 2행으로 표시 (각 행에 hint 텍스트까지 중복 → 단일 `#tabbar` wrap 이 아니라 쉘 자체가 2중 로드된 증거)
+    - 근원: 탭 `view_url` 이 동일 origin **절대 URL**(`http://host.local:9876/htm-doc?...`)일 때 `embedUrl()` 이 `_shell=1` 마커를 안 붙임 → iframe `/htm-doc` 요청이 top-level 로 오인 → `render_tab_mode: hub-internal` 에서 302 `/hub-shell` 재진입 → 쉘이 자기 iframe 안에 또 로드 → 2중 탭바
+* 구현 명세:
+    - `services/hub/server.py` `HUB_SHELL_HTML`:
+        1. 중첩 가드: IIFE 진입 직후 `window.self !== window.top` 이면 탭바·iframe 미초기화 + 빈 본문 대체 후 return (재귀 차단 안전망)
+        2. `embedUrl()`: 상대경로뿐 아니라 `location.origin` 동일 origin 절대 URL 에도 `_shell=1` 부여 (302 재진입 트리거 제거)
+    - 검증: `py_compile` + curl `/view`·`/htm-doc` embed(`_shell=1`)=200 / top-level=302 유지
 
 # 📕 중요
 
