@@ -1,6 +1,6 @@
 {
   "name": "fpm-core",
-  "version": "0.4.16",
+  "version": "0.4.17",
   "description": "fpm 핵심 SCAR — pm 프로젝트 관리(cdf), hub HTML 렌더 + 양방향 Q&A + Live Dashboard. 글로벌 hub/dashboard 스택(hooks·commands·agent·server)을 번들 설치하여 설치 즉시 동작.",
   "author": {
     "name": "nowage",
