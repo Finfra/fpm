@@ -5,7 +5,7 @@ date: 2026-03-27
 ---
 
 # Issue Management
-* Issue HWM: 201
+* Issue HWM: 202
 * 오래된 Issue: `_doc_work/Issue_OLD.md` (General)
 * Save Point:
     - 3e69d0f (2026-04-24) Feat: graphify 토큰 절감 SCAR 프로젝트 구현 (Issue11·12 등록)
@@ -19,12 +19,10 @@ date: 2026-03-27
 
 # 🚧 진행중
 
-# 📕 중요
-
-# 📙 일반
-
-## Issue190: hub 서버 lifecycle 커맨드 `/hub` 단일화 (등록: 2026-06-21)
+## Issue190: hub 서버 lifecycle 커맨드 `/hub` 단일화 (등록: 2026-06-21, 착수: 2026-06-24)
 * 목적: `/hub`(prj1 로컬)·`/board-server`(글로벌, 구 dashboard-server)가 동일 단일 데몬(port 9876 `server.py`)을 만지는 중복 wrapper. 데몬은 hub 서버(a/b/c 3모드+Q&A 공통)이고 board 는 한 클라이언트뿐 → 사용자 결정(폼 회수)=`/hub` 로 통일.
+* plan: `_doc_work/plan/hub-server-unify_plan.md`
+* 네이밍 확정: 글로벌 canonical=`/fpm-hub-server`, 로컬 별칭=`/hub`, `/fpm-board-server`→deprecated alias
 * depends: Issue189 (board rename 선행 완료, commit 1455b66), Issue199 (hub 탭 SOT 안정화 선행 완료, commit 53a6137)
 * 상세:
     - `/board-server` 폐기(deprecated alias) → `/hub` 흡수
@@ -37,6 +35,10 @@ date: 2026-03-27
     - 권장: plan 작성하여 충돌 해소안(네이밍 매트릭스) 확정 후 구현. rename-reference 5단계.
 * 비고: 단순 rename 아님(설계 결정 — 후속 영향). triage=복잡 → plan 필수.
 
+# 📕 중요
+
+# 📙 일반
+
 # 📗 선택
 
 ## Issue200: hub 기동 시 allowlist DNS resolve 비동기화 (등록: 2026-06-23)
@@ -48,6 +50,15 @@ date: 2026-03-27
 * 비고: 성능 최적화. 기능 영향 없음 — 우선순위 낮음
 
 # ✅ 완료
+
+## Issue202: htm-doc 쉘 착지 결정적화 — `_shell` 마커 우선(Sec-Fetch-Dest 의존 제거) (등록: 2026-06-24) → (해결: 2026-06-24, commit: fa0abea) ✅
+* 목적: Issue201 의 302 게이트가 `Sec-Fetch-Dest: document` 헤더에만 의존 → 헤더 누락 top-level 네비(일부 브라우저·IDE 링크 open)에서 raw 200 standalone 누출(htm-doc URL 직접 열람이 OS 새 탭으로 뜸). 임베드 판정을 결정적 쿼리 마커로 교체.
+* depends: Issue201 (commit 48d887c)
+* 상세:
+    - hub-shell JS: iframe src 에 `embedUrl()` 로 `_shell=1` 마커 부여(`activate` + `addTab` reload 경로)
+    - `_handle_htm_doc`: 임베드 판정 = `_shell=1`(1순위) + `Sec-Fetch-Dest` ∈ {iframe,embed}(보조). 마커 없으면 헤더 무관 302 `/hub-shell` → 직접 열람 항상 쉘 내부 탭 착지
+    - iframe(`_shell=1`)·구브라우저 모두 결정적 처리 — redirect loop·standalone 누출 차단
+* 구현 명세: SSOT=`services/hub/server.py`. triage=중간. 검증: 마커無+헤더無=302 /hub-shell·_shell=1=200·iframe헤더=200·document헤더=302·compile OK
 
 ## Issue201: hub-internal 렌더 — 표준 htm-doc URL 도 hub 쉘 내부 탭으로 착지 (등록: 2026-06-23) → (해결: 2026-06-23, commit: 48d887c) ✅
 * 목적: render_tab_mode 기본이 browser-tab 이라 `..show` 산출물이 OS 새 탭(`/htm-doc?path=`)으로 뜸. 사용자는 `/hub-shell` 내부 iframe 탭 표시(hub-internal) 원함. ① 기본값을 hub-internal 로 전환 ② 표준 htm-doc URL 을 직접 열어도 OS 탭이 아닌 쉘 내부 탭으로 착지.
