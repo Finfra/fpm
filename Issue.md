@@ -39,30 +39,6 @@ date: 2026-03-27
 
 # 📙 일반
 
-## Issue196: hub 설정창 너비 확대 + 행 레이아웃 2행화 (등록: 2026-06-23)
-* 목적: hub Settings 모달이 너무 좁아(~720px) `label · control · description` 3컬럼 중 설명 칸이 굶어 "hub / server / listen / interface…" 단어당 한 줄로 깨져 읽을 수 없음. 너비 확대 + 설명을 컨트롤 아래 전체폭으로 내리는 2행 레이아웃으로 가독성 확보.
-* 상세:
-    - 모달 너비 `min(960px, 92vw)` 로 확대 (현재 ~720px 고정)
-    - 행 구조 변경: `label · control`(1행) + `description`(아래 전체폭, `font-size:.85rem` muted) — 3컬럼 폐기
-    - `restart` 필요 배지는 설명 옆 끼임 → 컨트롤 행 우측 고정
-* 구현 명세:
-    - SSOT=`services/hub/server.py`(설정 모달 렌더 HTML/CSS) + `plugins/fpm-core/services/hub/server.py` 미러
-    - triage=단순(CSS/마크업 레이아웃 변경, 키 의미 무변경). 탭 재배치(Issue197)와 독립 — 본 이슈 먼저 처리 권장(가독성 최우선)
-    - 설계 근거: `_doc_work/z_htm/hub_htm_20260623_215458_a_settings-final.htm`
-
-## Issue197: hub 설정 탭 내용 재배치 (Basic/Sessions/Advanced 그룹 정리) + browser_focus 정합 (등록: 2026-06-23)
-* 목적: 기존 3탭(Basic/Sessions/Advanced)에 설정 키가 임의 배치됨. 의미별 응집도 기준으로 재배치하고, deprecated `browser_focus` 제거(타 세션 작업)와 정합.
-* depends: Issue196
-* 상세 (탭 매핑):
-    - Basic(General): `language`, `default_browser`, `browser_open`, `browser_tab_reuse` — 브라우저 키 3종 이동
-    - Sessions(Display): `feed_*`(5), `card_limit`, `search_limit`, `live_session_*`(3)
-    - Advanced(Render·Tabs+Network): `render_target`, `render_tab_mode`, `tab_close_shortcut`, `hub_single_window`, `hub_lease_ttl`, `bind_host`, `advertise_host`, `allow_server_list`, `allow_list`
-    - `browser_focus` 제외 (deprecated, 타 세션 제거 작업중 — 본 이슈에서 탭 배치 대상 아님)
-* 구현 명세:
-    - SSOT=`services/hub/server.py`(탭별 키 그룹 정의) + 미러
-    - triage=단순(키→탭 매핑 재배치). Advanced 9키로 무거우면 후속 4탭 승격 옵션(Render·Tabs / Network 분리) — 본 이슈는 3탭 유지(안 A)
-    - 설계 근거: `_doc_work/z_htm/hub_htm_20260623_215458_a_settings-final.htm` + `..._214944_a_settings-tabs-v2.htm`
-
 ## Issue193: `/boards` 카드 progress 스칼라 미집계 — 문자열 value 타입 불일치 (등록: 2026-06-21)
 * 목적: Issue189 board rename 재테스트(board-retest)서 발견. `/boards` 카드 레벨 `progress` 스칼라가 `null`. rename 회귀 아님(엔드포인트·식별자만 변경, 집계 로직 무관).
 * 상세 (근본 원인 확인 완료):
@@ -102,6 +78,25 @@ date: 2026-03-27
 # 📗 선택
 
 # ✅ 완료
+## Issue197: hub 설정 탭 내용 재배치 (Basic/Sessions/Advanced 그룹 정리) (등록: 2026-06-23, 해결: 2026-06-23, commit: 3842ee0) ✅
+* 목적: 기존 3탭에 설정 키 임의 배치 → 의미별 응집도 기준 재배치. deprecated `browser_focus` 정합.
+* depends: Issue196
+* 결과:
+    - basic: `default_browser`, `browser_open`, `browser_focus`(dep), `browser_tab_reuse`, `language`
+    - session: `live_session_*`(3), `card_limit`, `search_limit`, 피드 키 5종(`feed_default_visible`·`feed_limit`·`feed_poll_interval`·`feed_show_*`) 일원화
+    - advanced: `render_target`·`render_tab_mode`·`tab_close_shortcut`·`hub_single_window`·`hub_lease_ttl`(렌더·탭) + `bind_host`·`advertise_host`·`allow_server_list`(네트워크)
+    - `browser_focus` 미이동 (deprecated, 타 세션 제거 작업중)
+    - 검증: `GET /api/settings` 라이브 스키마 = 의도한 탭 매핑 일치 확인. SSOT=`services/hub/server.py` + `_doc_arch/hub_settings_ui.md` 갱신
+    - ⚠️ `plugins/fpm-core/services/hub/server.py` 미러는 전체 구버전(스키마 부재) → fpm-sync 배포로 갱신 (수동 패치 안 함)
+
+## Issue196: hub 설정창 너비 확대 + 행 레이아웃 2행화 (등록: 2026-06-23, 해결: 2026-06-23, commit: 3842ee0) ✅
+* 목적: hub Settings 모달이 좁아(~720px) `label·control·description` 3컬럼 중 설명 칸이 굶어 단어당 한 줄로 깨짐. 너비 확대 + 2행 레이아웃으로 가독성 확보.
+* 결과:
+    - 모달 너비 `min(720px,94vw)` → `min(960px,92vw)`
+    - `.set-row` flex-wrap + `.set-desc { flex:1 0 100%; padding-left:14.7em }`(컨트롤 아래 전체폭) + `.set-badge { margin-left:auto }`(1행 우측). DOM 순서 label→input→badge→desc
+    - 검증: 서빙 `/hub` HTML 에 `width:min(960px,92vw)`·`flex: 1 0 100%`·`margin-left: auto` 3종 존재 확인. SSOT=`services/hub/server.py`
+    - 설계 근거: `_doc_work/z_htm/hub_htm_20260623_215458_a_settings-final.htm`
+
 ## Issue195: hub bind_host 리스트화(멀티 bind) + inline allow_list + allow_server_list 게이트 분리 (등록: 2026-06-23, 해결: 2026-06-23, commit: 48e4365, 1257b61) ✅
 * 목적: hub 서버의 source-IP 접근 제어를 `bind_host` 에서 분리하고 세분화. (1) `bind_host` 가 listen 인터페이스 결정에만 쓰이도록 `allow_server_list` 토글 분리, (2) `bind_host` 를 리스트로 받아 0.0.0.0 와일드카드 없이 특정 주소들에만 멀티소켓 bind, (3) Servers.md 외에 yml inline `allow_list` 로 IP/CIDR 직접 추가 허용.
 * 상세:
