@@ -19,7 +19,15 @@ date: 2026-03-27
 
 # 🚧 진행중
 
-## Issue203: hub 탭 세로 적층(2중 탭바) 버그 (등록: 2026-06-24)
+# 📕 중요
+
+# 📙 일반
+
+# 📗 선택
+
+# ✅ 완료
+
+## Issue203: hub 탭 세로 적층(2중 탭바) 버그 (등록: 2026-06-24) → (해결: 2026-06-24, commit: d5bccc8) ✅
 * 목적: `/hub-shell` 내부 탭바가 가로 1행이 아니라 동일 탭이 2행으로 중복 적층되는 버그 해결
 * 상세:
     - 증상: hub-shell 페이지 상단에 동일 탭 세트(🗂Hub | 현황 | 렌더)가 2행으로 표시 (각 행에 hint 텍스트까지 중복 → 단일 `#tabbar` wrap 이 아니라 쉘 자체가 2중 로드된 증거)
@@ -29,14 +37,6 @@ date: 2026-03-27
         1. 중첩 가드: IIFE 진입 직후 `window.self !== window.top` 이면 탭바·iframe 미초기화 + 빈 본문 대체 후 return (재귀 차단 안전망)
         2. `embedUrl()`: 상대경로뿐 아니라 `location.origin` 동일 origin 절대 URL 에도 `_shell=1` 부여 (302 재진입 트리거 제거)
     - 검증: `py_compile` + curl `/view`·`/htm-doc` embed(`_shell=1`)=200 / top-level=302 유지
-
-# 📕 중요
-
-# 📙 일반
-
-# 📗 선택
-
-# ✅ 완료
 
 ## Issue190: hub 서버 lifecycle 커맨드 단일화 (등록: 2026-06-21) → (해결: 2026-06-24, commit: 1790624) ✅
 * 목적: `/hub`(prj1 로컬)·`/fpm-board-server`(글로벌) 가 동일 단일 데몬(port 9876 `server.py`)을 만지는 중복 lifecycle wrapper → `/fpm-hub-server` 단일 글로벌 커맨드로 통합.
