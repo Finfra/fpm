@@ -120,6 +120,9 @@ HUB_SHELL_HTML = r"""<!DOCTYPE html>
   .tab .x { border: none; background: transparent; cursor: pointer; font-size: 0.9rem; padding: 0 2px; color: #555; }
   .tab .x:hover { color: #c00; }
   #hint { margin-left: auto; align-self: center; font-size: 0.72rem; color: #555; padding: 0 8px; white-space: nowrap; }
+  #closeall { align-self: center; margin: 0 4px; border: 1px solid rgba(0,0,0,0.18); background: rgba(0,0,0,0.04);
+    border-radius: 6px; cursor: pointer; font-size: 0.75rem; color: #333; padding: 4px 8px; white-space: nowrap; }
+  #closeall:hover { background: #f7d6d6; color: #c00; border-color: #c00; }
   #view { flex: 1 1 auto; border: none; width: 100%; }
   #overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.78); color: #fff; z-index: 999;
     display: none; flex-direction: column; align-items: center; justify-content: center; gap: 1rem; text-align: center; padding: 2rem; }
@@ -131,6 +134,8 @@ HUB_SHELL_HTML = r"""<!DOCTYPE html>
     .tab { background: rgba(255,255,255,0.06); border-color: #444; color: #ddd; }
     .tab.active { background: #1a1a1a; }
     #hint { color: #aaa; }
+    #closeall { background: rgba(255,255,255,0.06); border-color: #555; color: #ccc; }
+    #closeall:hover { background: #5a1f1f; color: #fbb; border-color: #c00; }
   }
 </style>
 </head>
@@ -143,6 +148,14 @@ HUB_SHELL_HTML = r"""<!DOCTYPE html>
 </div>
 <script>
 (function(){
+  // Issue203: 중첩 쉘 차단. /hub-shell 이 iframe 안에서 로드되면(절대 URL 탭 등으로
+  //   _shell 마커 누락 → /htm-doc 가 top-level 로 오인 → 302 /hub-shell 재진입) 탭바가
+  //   2중으로 렌더되는 "탭 세로 적층" 버그가 생긴다. 자신이 top 프레임이 아니면 쉘로
+  //   동작하지 않고(탭바·iframe 미초기화) 빈 본문으로 대체하여 재귀를 끊는다.
+  if (window.self !== window.top) {
+    document.documentElement.innerHTML = "<head><meta charset='utf-8'></head><body style='margin:0'></body>";
+    return;
+  }
   var SHORTCUT = __SHORTCUT__;          // ex) "alt+w"
   var SINGLE = __SINGLE__;              // 단일 창 강제 여부
   var RENDER_CT = {response:1, form:1, dashboard:1};  // R3: 단축키 노출 대상 content_type
@@ -178,6 +191,12 @@ HUB_SHELL_HTML = r"""<!DOCTYPE html>
       bar.appendChild(el);
     });
     hint = document.createElement("span"); hint.id = "hint"; bar.appendChild(hint);
+    if(tabs.length > 1){
+      var ca = document.createElement("button"); ca.id = "closeall"; ca.type = "button";
+      ca.textContent = "🗑️ 모든 탭 닫기";
+      ca.onclick = function(ev){ ev.stopPropagation(); closeAllTabs(); };
+      bar.appendChild(ca);
+    }
     updateHint();
     saveTabs();
   }
@@ -193,7 +212,12 @@ HUB_SHELL_HTML = r"""<!DOCTYPE html>
   //   서버 _handle_htm_doc 는 _shell 마커 없는 /htm-doc(=최상위 직접 열람)만 /hub-shell 로 302.
   //   Sec-Fetch-Dest 헤더 의존 제거(일부 네비에서 헤더 누락 → standalone 누출 차단).
   function embedUrl(u){
-    if(!u || u.charAt(0) !== "/") return u;  // 외부/특수 URL 은 그대로
+    if(!u) return u;
+    // Issue203: 상대 경로(/...) + 동일 origin 절대 URL 모두 _shell 마커 부여. 절대 URL 에
+    //   마커 누락 시 /htm-doc 가 top-level 로 오인 → 302 /hub-shell 중첩(탭 세로 적층).
+    var isRel = u.charAt(0) === "/";
+    var isSameOrigin = u.indexOf(location.origin + "/") === 0;
+    if(!isRel && !isSameOrigin) return u;  // 외부 URL 은 그대로
     return u + (u.indexOf("?")>=0 ? "&" : "?") + "_shell=1";
   }
   function activate(id){
@@ -205,6 +229,11 @@ HUB_SHELL_HTML = r"""<!DOCTYPE html>
     var idx = tabs.findIndex(function(t){return t.id===id;}); if(idx<0) return;
     tabs.splice(idx,1);
     if(activeId === id){ activate(tabs[Math.max(0,idx-1)].id); } else { render(); }
+  }
+  // home 제외 전체 닫기 → home 활성화
+  function closeAllTabs(){
+    tabs = tabs.filter(function(t){return t.id==="home";});
+    activate("home");
   }
   function addTab(d){
     if(!d || !d.view_url) return;
