@@ -338,6 +338,24 @@ tmux new-window -t pm -n "$WIN_NAME" -c "$CWD"
 tmux send-keys -t "pm:$WIN_NAME" "bash $SHIM_FILE 2>&1 | tee -a $LOG_FILE" Enter
 ```
 
+### dash-registry 자동 등록 (Issue192) — 필수
+
+runner 는 순수 파일 기반(서버 호출 0)이라, 생성한 `.dash.yaml` 카드를 hub `/boards` 에 노출시키려면 **생산자(agent)** 가 `/register-doc` 를 1회 호출해야 한다(Issue41 생산자 등록 원칙). 미호출 시 카드는 사용자가 hub `rescan` 을 눌러야만 노출됨. window 시작 직후 아래 블록 실행 — healthz 게이트 + fail-soft(서버 down 이면 silent skip, dashboard 본기능 비차단).
+
+```bash
+SERVER_PORT="${HTM_SERVER_PORT:-9876}"
+if [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 \
+     "http://127.0.0.1:${SERVER_PORT}/healthz" 2>/dev/null)" = "200" ]; then
+  curl -s --max-time 3 -X POST \
+    "http://127.0.0.1:${SERVER_PORT}/register-doc" \
+    -H 'Content-Type: application/json' \
+    -d "$(python3 -c "import json,sys; print(json.dumps({'type':'dash','path':sys.argv[1],'cwd':sys.argv[2],'title':sys.argv[3]}))" \
+         "$DATA_FILE" "$CWD" "$TOPIC")" >/dev/null 2>&1
+fi
+```
+
+`path` 는 serve-root(`CWD` 하위 `_doc_work/z_htm` 또는 `/tmp/___pm`) 안이라 등록 거부 없음. 재등록 시 dedup(동일 path 갱신).
+
 ### Worker 프로세스 spawn 시 의무
 
 agent prompt 가 background worker (mkdir loop, 파일 모니터, 외부 도구 daemon 등) 를 spawn 하면:
@@ -485,6 +503,7 @@ supervisor·queue-runner 는 글로벌 템플릿. env 변수로 인스턴스 파
 
 1. 30초 대기 후 tmux pane 출력 확인: `tmux capture-pane -t "pm:_<topic>" -p | tail -5` → supervisor/queue-runner 시작 메시지 확인
 2. queue-runner log 확인: `$OUT_DIR/<topic>.queue-runner.log` (stderr redirect 있으면)
+3. **dash-registry 자동 등록 (Issue192)**: queue-runner 가 `<topic>.dash.yaml` 을 생성하면 `## 5` "dash-registry 자동 등록" 블록을 동일 실행(`DATA_FILE=$OUT_DIR/<topic>.dash.yaml`, `CWD`, `TOPIC` 주입) → `/boards` 즉시 노출. fail-soft.
 
 ### Q5. 채팅 응답 (caveman)
 
