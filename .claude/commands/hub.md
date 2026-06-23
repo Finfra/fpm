@@ -6,13 +6,13 @@ date: 2026-05-19
 
 # 트리거
 
-`/hub <subcmd>` — `<subcmd>`: `start`, `stop`, `restart`, `clear`, `reset`
+`/hub <subcmd>` — `<subcmd>`: `start`, `stop`, `restart`, `status`, `clear`, `reset`
 
 # 동작 모델
 
 ___pm 소유 단일 daemon (`~/_git/___pm/services/hub/server.py`). port 9876. 모든 프로젝트가 공유. ___pm 프로젝트가 lifecycle 책임.
 
-본 커맨드는 글로벌 `/board-server` 와 동일 서버를 대상으로 함. ___pm 프로젝트 컨텍스트에서 짧은 별칭으로 제공.
+본 커맨드는 글로벌 `/fpm-hub-server` 와 동일 서버를 대상으로 함 (Issue190 통합). ___pm 프로젝트 컨텍스트에서 짧은 별칭으로 제공.
 
 설계 SSOT: `_doc_arch/hub_htm.md`
 
@@ -38,6 +38,20 @@ fi
 ```
 
 port override: `HTM_SERVER_PORT=NNNN /hub start`
+
+## status
+
+```bash
+echo "--- pid:"
+cat /tmp/___pm/claude-htm-server/pid 2>/dev/null || echo "(no pid file)"
+echo "--- healthz:"
+curl -s http://127.0.0.1:9876/healthz 2>&1
+echo
+echo "--- registered projects:"
+cat /tmp/___pm/claude-htm-server/tokens.json 2>/dev/null | python3 -m json.tool 2>/dev/null || echo "(none)"
+echo "--- recent log:"
+tail -20 /tmp/___pm/claude-htm-server/server.log 2>/dev/null
+```
 
 ## stop
 
@@ -130,7 +144,7 @@ rm -f /tmp/___pm/claude-htm-server/opened-*
 
 # 4. start
 mkdir -p /tmp/___pm/claude-htm-server
-nohup python3 ~/_git/___pm/services/htm-server/server.py \
+nohup python3 ~/_git/___pm/services/hub/server.py \
   >/tmp/___pm/claude-htm-server/stdout.log 2>&1 &
 sleep 1
 curl -s http://127.0.0.1:9876/healthz
@@ -140,11 +154,11 @@ curl -s http://127.0.0.1:9876/healthz
 
 # 비고
 
-* 글로벌 `/board-server` 와 동일 서버 lifecycle 제어. 차이: 본 커맨드는 `clear` 추가 + ___pm 컨텍스트 짧은 별칭
+* 글로벌 `/fpm-hub-server` 와 동일 서버 lifecycle 제어 (Issue190 통합). 본 커맨드는 ___pm 컨텍스트 짧은 별칭
 * 서버 down 시 dashboard agent (Mode C) + htm 스킬 Q&A 회수 (Issue45) 양쪽 모두 fail-loud
 
 # 참조
 
 * 설계 SSOT: `_doc_arch/hub_htm.md`
-* 글로벌 wrapper: `~/.claude/commands/board-server.md`
+* 글로벌 canonical wrapper: `~/.claude/commands/fpm-hub-server.md` (구 `fpm-board-server`, Issue190 폐기)
 * 서버 본체: `services/hub/server.py`

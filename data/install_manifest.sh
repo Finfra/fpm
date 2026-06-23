@@ -56,6 +56,7 @@ FPM_SCAR_COMMANDS=(
     fpm-board
     fpm-board-server
     fpm-hub
+    fpm-hub-server
     fpm-new-project
     fpm-pm-del
     fpm-pm-do

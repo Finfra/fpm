@@ -103,7 +103,7 @@ date: 2026-04-18
   - `..ask` (mode b, added in Issue126) — bidirectional Q&A form → automatic server inbox retrieval
   - `..board` (mode c, Issue126) — Live Dashboard (SSE + polling fallback). Legacy aliases `..hub dash`/`..dashboard` kept for backward compatibility
   - `..hub stop` / `..hub off` — disable the mode
-  - `/board-server start|stop|status|restart` — control the b/c-mode backend lifecycle
+  - `/fpm-hub-server start|stop|restart|status|clear|reset` — control the b/c-mode backend lifecycle
   - 3-mode (trigger ↔ content_type, Issue126):
     * mode a `..show` (`response`, formerly `..hub`) — HTML render (direct file:// display since Issue45)
     * mode b `..ask` (`form`) — fetch POST + server inbox + automatic Claude polling retrieval
@@ -195,7 +195,7 @@ The public distribution that bundle-installs the global `~/.claude` hub/dashboar
 
 * marketplace: `.claude-plugin/marketplace.json` → plugin `fpm-core`
 * fpm-core bundle:
-    - commands: pm-new/del/do/query/update · cdf · hub · dashboard · board-server
+    - commands: pm-new/del/do/query/update · cdf · hub · dashboard · hub-server
     - skills: pm · cdf
     - agents: dashboard (+ runner·queue·supervisor scripts)
     - hooks: hub-trigger · ask-intercept · ask-form-template · board-notify · hub-doc-register · hub-session-* · ask-*

@@ -185,7 +185,7 @@ reason = (
     "Mode A paste-back fallback 은 Issue45(2026-05-19) 에서 제거됨. "
     "form 자동 회수 단일 경로만 지원.\n\n"
     "### 조치 (사용자 선택)\n"
-    "1. **서버 시작 후 재시도**: \`/board-server start\` 실행 → 본 질문 재호출\n"
+    "1. **서버 시작 후 재시도**: \`/fpm-hub-server start\` 실행 → 본 질문 재호출\n"
     "2. **hub 모드 해제**: \`..hub stop\` 입력 → AskUserQuestion 채팅 UI 로 정상 복귀\n\n"
     "### 채팅 응답 의무\n"
     "Claude 는 본 deny 를 받으면 사용자에게 위 두 옵션을 명확히 제시하고 입력 대기. "
