@@ -5,7 +5,7 @@ date: 2026-03-27
 ---
 
 # Issue Management
-* Issue HWM: 203
+* Issue HWM: 204
 * 오래된 Issue: `_doc_work/Issue_OLD.md` (General)
 * Save Point:
     - 3e69d0f (2026-04-24) Feat: graphify 토큰 절감 SCAR 프로젝트 구현 (Issue11·12 등록)
@@ -26,6 +26,17 @@ date: 2026-03-27
 # 📗 선택
 
 # ✅ 완료
+
+## Issue204: hub-shell 모든 탭 닫기 버튼 추가 (등록: 2026-06-24) → (해결: 2026-06-24, commit: e90fc3b) ✅
+* 목적: `/hub-shell` 내부 탭바에서 열린 렌더 탭을 한 번에 정리하는 "🗑️ 모든 탭 닫기" 버튼 제공 (기존엔 탭별 ✕ 또는 단축키만 존재)
+* 상세:
+    - `services/hub/server.py` `HUB_SHELL_HTML` 단일 파일 수정 (triage: 단순)
+    - 코드는 동시 세션이 Issue203 fix 와 함께 commit `e90fc3b` 로 묶어 반영 (server.py +8 closeall 라인)
+* 구현 명세:
+    - CSS: `#closeall` 버튼 스타일 (라이트/다크 hover 포함)
+    - `render()`: `tabs.length > 1` 일 때만 탭바 우측(hint 뒤)에 `🗑️ 모든 탭 닫기` 버튼 append
+    - `closeAllTabs()`: home 제외 전체 탭 제거 → home 활성화
+    - 검증: 서버 재시작 후 `curl /hub-shell` 에 `closeall`·`closeAllTabs`·`모든 탭 닫기` 노출 확인, healthz ok
 
 ## Issue203: hub 탭 세로 적층(2중 탭바) 버그 (등록: 2026-06-24) → (해결: 2026-06-24, commit: d5bccc8) ✅
 * 목적: `/hub-shell` 내부 탭바가 가로 1행이 아니라 동일 탭이 2행으로 중복 적층되는 버그 해결
