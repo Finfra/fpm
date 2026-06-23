@@ -41,15 +41,16 @@ date: 2026-03-27
 
 # 📗 선택
 
-## Issue200: hub 기동 시 allowlist DNS resolve 비동기화 (등록: 2026-06-23)
+# ✅ 완료
+
+## Issue200: hub 기동 시 allowlist DNS resolve 비동기화 (등록: 2026-06-23) → (해결: 2026-06-24, commit: 1790624) ✅
 * 목적: Issue199 잔여 분리. hub 서버 기동 시 allowlist DNS resolve 가 동기 블로킹 → 재시작 다운타임 ~5s. 비동기화로 단축.
 * depends: Issue199 (완료, commit 53a6137)
-* 상세:
-    - 기동 경로의 DNS resolve 를 백그라운드/지연 평가로 전환 → 첫 바인드까지 대기 제거
-    - triage=단순 추정(검토 후 확정). 회귀: allowlist 판정 정확성 유지 확인
-* 비고: 성능 최적화. 기능 영향 없음 — 우선순위 낮음
-
-# ✅ 완료
+* 상세 (구현 완료, 검증됨):
+    - allowlist 적재 3블록(bind_host 전용 / Servers.md 개방 / inline allow_list)을 `_populate_allowlist()` 로 감싸 백그라운드 데몬 스레드로 분리. bind 는 BIND_HOSTS(스칼라 IP/호스트, DNS 불요)만 쓰므로 적재 지연이 bind 시각에 무영향
+    - 루프백은 `_ip_allowed` 에서 항상 허용 → 로컬 무영향. 적재 완료 전 window 동안 외부 source IP 만 일시 403(self-correcting). 루프백 전용 기본 모드는 `_open_mode` False → 스레드 미가동(no-op)
+* 구현 명세: SSOT=`services/hub/server.py`. triage=단순. 검증: compile OK / 재시작 후 healthz 200 until **0.04s**(이전 ~5s — `host.local` resolve 5s 블로킹이 백그라운드로 격리) / server.log allowlist 5 IP 정확 적재(판정 정확성 유지)
+* 비고: 성능 최적화. 기능 영향 없음. plugins/fpm-core mirror 는 fpm-sync 별도
 
 ## Issue202: htm-doc 쉘 착지 결정적화 — `_shell` 마커 우선(Sec-Fetch-Dest 의존 제거) (등록: 2026-06-24) → (해결: 2026-06-24, commit: fa0abea) ✅
 * 목적: Issue201 의 302 게이트가 `Sec-Fetch-Dest: document` 헤더에만 의존 → 헤더 누락 top-level 네비(일부 브라우저·IDE 링크 open)에서 raw 200 standalone 누출(htm-doc URL 직접 열람이 OS 새 탭으로 뜸). 임베드 판정을 결정적 쿼리 마커로 교체.
