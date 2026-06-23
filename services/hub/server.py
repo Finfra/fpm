@@ -250,6 +250,14 @@ HUB_SHELL_HTML = r"""<!DOCTYPE html>
     });
   }
 
+  // Issue194: iframe(/hub 홈 탭 등) 카드 열기(↗) → 내부 탭. 동일 origin postMessage.
+  window.addEventListener("message", function(ev){
+    var d = ev.data;
+    if(d && d.type === "fpm-open-tab" && d.view_url){
+      addTab({view_url:d.view_url, title:d.title, sid:d.sid, content_type:d.content_type});
+    }
+  });
+
   render();
   connect();
 })();
@@ -994,7 +1002,7 @@ def _load_hub_setting() -> dict:
 #   적용(apply): auto(server.py mtime 재로드) / hook(글로벌 hook grep, 다음 렌더 turn) / restart(서버 재시작 필요)
 #   분류 SSOT: _doc_arch/hub_settings_ui.md (본 상수는 그 미러)
 HUB_SETTING_SCHEMA = [
-    # 탭 1: 기본 — 렌더·브라우저
+    # 탭 1: 기본 — 브라우저·언어 (Issue197: render·tab 키는 advanced 로 이동)
     {"key": "default_browser", "tab": "basic", "widget": "select",
      "options": ["firefox", "chrome", "edge", "safari"], "allow_custom": True,
      "apply": "hook", "comment": "렌더 브라우저 (firefox/chrome/edge/safari 또는 .app 절대경로)"},
@@ -1007,22 +1015,11 @@ HUB_SETTING_SCHEMA = [
      "comment": "[deprecated → browser_open] 포커스 탈취. hook 이 browser_open 미설정 시에만 fallback 참조"},
     {"key": "browser_tab_reuse", "tab": "basic", "widget": "toggle",
      "apply": "hook", "comment": "/hub 단일 탭 재사용 (Issue171). 렌더(..show/..ask)는 값 무관 항상 새 탭. 🚧 신 의미 hook 구현 글로벌 Issue153"},
-    {"key": "render_target", "tab": "basic", "widget": "select",
-     "options": ["local-open", "hub", "both"],
-     "apply": "hook", "comment": "..show 표시 경로 — local-open(file://)/hub(서버 URL)/both"},
-    # Issue194: 렌더 표시 방식 — OS 브라우저 탭 vs hub 쉘 내부 iframe 탭
-    {"key": "render_tab_mode", "tab": "basic", "widget": "select",
-     "options": ["browser-tab", "hub-internal"],
-     "apply": "hook", "comment": "렌더 표시 방식 — browser-tab(기본·OS 탭)/hub-internal(/hub-shell 내부 iframe 탭, OS 새 탭 미생성)"},
-    {"key": "tab_close_shortcut", "tab": "basic", "widget": "text",
-     "apply": "auto", "comment": "hub 내부 탭 닫기 단축키 ([ctrl+][alt+][shift+][meta+]<key>). ⚠️ ctrl+w/meta+w 는 브라우저 선점 가능"},
     # Issue169: hub UI 언어 (en/ko). 저장 후 hub 페이지 reload 시 반영. 설계: _doc_arch/localization.md
     {"key": "language", "tab": "basic", "widget": "select",
      "options": ["en", "ko"],
      "apply": "auto", "comment": "hub UI 언어 — en(영어, 기본)/ko(한국어). 저장 후 페이지 reload 반영"},
-    {"key": "feed_default_visible", "tab": "basic", "widget": "toggle",
-     "apply": "auto", "comment": "피드 사이드바 최초 표시 여부"},
-    # 탭 2: 세션관리 — 세션·피드·표시 상한 (전부 server.py 소비 → auto)
+    # 탭 2: 세션관리(표시) — 세션·피드·카드 표시 (전부 server.py 소비 → auto). Issue197: 피드 키 일원화
     {"key": "live_session_limit", "tab": "session", "widget": "number", "min": 0,
      "apply": "auto", "comment": "세션 카드당 최대 행 (0=무제한)"},
     {"key": "live_session_order", "tab": "session", "widget": "select",
@@ -1034,26 +1031,40 @@ HUB_SETTING_SCHEMA = [
      "apply": "auto", "comment": "htm 카드 최대 표시 수 (0=무제한)"},
     {"key": "search_limit", "tab": "session", "widget": "number", "min": 0,
      "apply": "auto", "comment": "디스크 재스캔 디렉토리당 파일 상한 (0=무제한)"},
+    # 피드 키 묶음 (Issue197: feed_default_visible basic→session, feed_poll_interval advanced→session)
+    {"key": "feed_default_visible", "tab": "session", "widget": "toggle",
+     "apply": "auto", "comment": "피드 사이드바 최초 표시 여부"},
     {"key": "feed_limit", "tab": "session", "widget": "number", "min": 1,
      "apply": "auto", "comment": "피드 보관·표시 최대 항목 수"},
+    {"key": "feed_poll_interval", "tab": "session", "widget": "number", "min": 1,
+     "apply": "auto", "comment": "피드 폴링 주기(초, 참고값)"},
     {"key": "feed_show_project_emoji", "tab": "session", "widget": "toggle",
      "apply": "auto", "comment": "피드 항목 프로젝트 이모지 표시"},
     {"key": "feed_show_project_name", "tab": "session", "widget": "toggle",
      "apply": "auto", "comment": "피드 항목 프로젝트명 표시"},
-    # 탭 3: 고급 — 네트워크
-    {"key": "bind_host", "tab": "advanced", "widget": "text",
-     "apply": "restart", "comment": "hub 서버 listen 인터페이스 (127.0.0.1/0.0.0.0/IP). 변경 시 restart 필요"},
-    {"key": "allow_server_list", "tab": "advanced", "widget": "toggle",
-     "apply": "restart", "comment": "source-IP allowlist 게이트 (true=Servers.md 화이트리스트+self 허용 / false=bind_host(self)만 허용, 외부 전부 차단). 변경 시 restart"},
-    {"key": "advertise_host", "tab": "advanced", "widget": "text", "optional": True,
-     "apply": "hook", "comment": "hub|both URL host (생략 시 bind_host fallback). 0.0.0.0+생략 금지"},
-    {"key": "feed_poll_interval", "tab": "advanced", "widget": "number", "min": 1,
-     "apply": "auto", "comment": "피드 폴링 주기(초, 참고값)"},
+    # 탭 3: 고급 — 렌더·탭 + 네트워크 (Issue197: render·tab 키 basic→advanced 이동)
+    # 렌더·탭 동작
+    {"key": "render_target", "tab": "advanced", "widget": "select",
+     "options": ["local-open", "hub", "both"],
+     "apply": "hook", "comment": "..show 표시 경로 — local-open(file://)/hub(서버 URL)/both"},
+    # Issue194: 렌더 표시 방식 — OS 브라우저 탭 vs hub 쉘 내부 iframe 탭
+    {"key": "render_tab_mode", "tab": "advanced", "widget": "select",
+     "options": ["browser-tab", "hub-internal"],
+     "apply": "hook", "comment": "렌더 표시 방식 — browser-tab(기본·OS 탭)/hub-internal(/hub-shell 내부 iframe 탭, OS 새 탭 미생성)"},
+    {"key": "tab_close_shortcut", "tab": "advanced", "widget": "text",
+     "apply": "auto", "comment": "hub 내부 탭 닫기 단축키 ([ctrl+][alt+][shift+][meta+]<key>). ⚠️ ctrl+w/meta+w 는 브라우저 선점 가능"},
     # Issue194: hub 내부 탭 모드(render_tab_mode=hub-internal) 단일 창 강제
     {"key": "hub_single_window", "tab": "advanced", "widget": "toggle",
      "apply": "auto", "comment": "호스트(source-IP)당 hub 쉘 창 1개 강제 — true=2번째 창 takeover 안내/false=다중 허용"},
     {"key": "hub_lease_ttl", "tab": "advanced", "widget": "number", "min": 5,
      "apply": "auto", "comment": "hub 쉘 리스 heartbeat 만료(초). SSE keepalive 미수신 초과 시 회수"},
+    # 네트워크
+    {"key": "bind_host", "tab": "advanced", "widget": "text",
+     "apply": "restart", "comment": "hub 서버 listen 인터페이스 (127.0.0.1/0.0.0.0/IP). 변경 시 restart 필요"},
+    {"key": "advertise_host", "tab": "advanced", "widget": "text", "optional": True,
+     "apply": "hook", "comment": "hub|both URL host (생략 시 bind_host fallback). 0.0.0.0+생략 금지"},
+    {"key": "allow_server_list", "tab": "advanced", "widget": "toggle",
+     "apply": "restart", "comment": "source-IP allowlist 게이트 (true=Servers.md 화이트리스트+self 허용 / false=bind_host(self)만 허용, 외부 전부 차단). 변경 시 restart"},
 ]
 HUB_SETTING_SCHEMA_BY_KEY = {s["key"]: s for s in HUB_SETTING_SCHEMA}
 # advertise_host 는 yml 에서 기본 주석 처리(`# advertise_host: ...`)된 optional 키.
@@ -5790,16 +5801,17 @@ span.imp-chip:hover { filter: brightness(1.12); }
 .set-tab.active { color: var(--fg); border-bottom-color: hsl(220,80%,55%); font-weight: 600; }
 .set-pane { display: none; }
 .set-pane.active { display: block; }
-.set-row { display: flex; align-items: center; gap: 0.7rem; padding: 0.5rem 0; border-bottom: 1px dashed var(--border); }
+.set-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.7rem; padding: 0.6rem 0; border-bottom: 1px dashed var(--border); }
 .set-row:last-child { border-bottom: none; }
-.set-row label.set-key { flex: 0 0 13.5em; font-family: ui-monospace, monospace; font-size: 0.9em; }
+.set-row label.set-key { flex: 0 0 14em; font-family: ui-monospace, monospace; font-size: 0.9em; }
 .set-row .set-input { flex: 0 0 auto; }
-.set-row .set-input input[type=number] { width: 6em; }
-.set-row .set-input input[type=text] { width: 14em; }
+.set-row .set-input input[type=number] { width: 7em; }
+.set-row .set-input input[type=text] { width: 22em; max-width: 100%; }
 .set-row .set-input select, .set-row .set-input input { padding: 0.25rem 0.4rem; border: 1px solid var(--border);
   border-radius: 5px; background: var(--bg); color: var(--fg); font-size: 0.9em; }
-.set-row .set-desc { flex: 1 1 auto; min-width: 0; font-size: 0.78em; color: var(--muted); }
-.set-row .set-badge { flex: 0 0 auto; font-size: 0.72em; padding: 0.05rem 0.4rem; border-radius: 9px; white-space: nowrap; }
+/* Issue196: 설명을 컨트롤 아래 전체폭(2행)으로 — 단어당 줄바꿈 깨짐 해소 */
+.set-row .set-desc { flex: 1 0 100%; min-width: 0; font-size: 0.8em; color: var(--muted); margin: 0.15rem 0 0; padding-left: 14.7em; line-height: 1.5; }
+.set-row .set-badge { flex: 0 0 auto; margin-left: auto; font-size: 0.72em; padding: 0.05rem 0.4rem; border-radius: 9px; white-space: nowrap; }
 .set-badge.b-auto { background: #d3f0d3; color: #1a5d1a; }
 .set-badge.b-hook { background: #d0e4f7; color: #134a78; }
 .set-badge.b-restart { background: #fbe3c5; color: #8a4b08; }
@@ -6170,7 +6182,7 @@ section.sec-collapsed .htm-bar-right { display: none; }
   </div>
 </div>
 <div class="modal-backdrop" id="set-modal" hidden>
-  <div class="modal" role="dialog" aria-modal="true" aria-label="{T:settings.title}" style="width:min(720px,94vw)">
+  <div class="modal" role="dialog" aria-modal="true" aria-label="{T:settings.title}" style="width:min(960px,92vw)">
     <div class="modal-head">
       <span class="modal-title">{T:settings.title}</span>
       <button class="modal-close" id="set-close" title="{T:settings.close}" aria-label="{T:settings.close}">✕</button>
@@ -6331,13 +6343,28 @@ function renderLiveSessions(list, limit) {
   lg.innerHTML = cards.join('');
 }
 
+// Issue194: hub-shell(/hub-shell) iframe 안에서 열렸으면 카드 열기(↗) 클릭을
+//   부모 쉘 내부 탭으로 라우팅(새 OS 탭 미생성). 비임베드(직접 /hub)면 기존 새 탭.
+function fpmOpenInShell(ev, a) {
+  if (window.top === window.self) return true;   // 비임베드 → 기존 target=_blank 동작
+  ev.preventDefault();
+  var url = a.getAttribute('href') || '';
+  var t = a.getAttribute('data-title') || '';
+  var sid = a.getAttribute('data-sid') || '';
+  var ct = /_b_/.test(url) ? 'form' : (/_c_/.test(url) ? 'dashboard' : 'response');
+  try { window.parent.postMessage({type:'fpm-open-tab', view_url:url, title:t, sid:sid, content_type:ct}, '*'); }
+  catch (e) { return true; }
+  return false;
+}
+
 // Issue40: htm 스킬 단발 출력 문서 노출 (별도 섹션)
 function _htmCardHtml(d) {
   // Issue69: z_htm 기본 경로는 생략, 파일명만 열기 버튼 옆에 표시
   const fname = (d.path || '').split('/').pop();
   // Issue169: '열기' 텍스트 → 열기 이모지(↗)만. title 로 의미 보강.
+  // Issue194: 임베드(/hub-shell) 시 onclick 으로 부모 쉘 내부 탭 라우팅.
   const openLink = d.view_url
-    ? `<a class="doc-open" href="${escapeHtml(d.view_url)}" target="_blank" title="{T:htmDocs.openDocShort}">↗</a>`
+    ? `<a class="doc-open" href="${escapeHtml(d.view_url)}" target="_blank" data-title="${escapeHtml(d.title || fname)}" data-sid="${escapeHtml(d.sid || '')}" onclick="return fpmOpenInShell(event,this)" title="{T:htmDocs.openDocShort}">↗</a>`
     : `<span class="no-dash" title="{T:htmDocs.missing}">📂 ${escapeHtml(fname)}</span>`;
   // Issue169: 🆚 세션 — 이 문서를 만든 세션 탭으로 VSCode 포커스 (/open-session).
   //   sid 는 서버가 HTML 본문에서 추출. 없으면 버튼 미표시.
@@ -7322,8 +7349,8 @@ function setRenderForm() {
       if (s.deprecated) row.style.opacity = '0.55';
       row.innerHTML = `<label class="set-key" for="setf-${s.key}" title="${setEsc(s.comment||'')}">${setEsc(s.key)}${s.deprecated?' <span style="font-size:0.75em;color:#c60">(deprecated)</span>':''}</label>`
         + `<span class="set-input">${setRenderField(s, setInitial[s.key])}</span>`
-        + `<span class="set-desc" title="${setEsc(s.comment||'')}">${setEsc(s.comment||'')}</span>`
-        + setBadge(s.apply);
+        + setBadge(s.apply)
+        + `<span class="set-desc" title="${setEsc(s.comment||'')}">${setEsc(s.comment||'')}</span>`;
       pane.appendChild(row);
     }
   }

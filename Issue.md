@@ -5,7 +5,7 @@ date: 2026-03-27
 ---
 
 # Issue Management
-* Issue HWM: 195
+* Issue HWM: 197
 * 오래된 Issue: `_doc_work/Issue_OLD.md` (General)
 * Save Point:
     - 3e69d0f (2026-04-24) Feat: graphify 토큰 절감 SCAR 프로젝트 구현 (Issue11·12 등록)
@@ -38,6 +38,30 @@ date: 2026-03-27
 # 📕 중요
 
 # 📙 일반
+
+## Issue196: hub 설정창 너비 확대 + 행 레이아웃 2행화 (등록: 2026-06-23)
+* 목적: hub Settings 모달이 너무 좁아(~720px) `label · control · description` 3컬럼 중 설명 칸이 굶어 "hub / server / listen / interface…" 단어당 한 줄로 깨져 읽을 수 없음. 너비 확대 + 설명을 컨트롤 아래 전체폭으로 내리는 2행 레이아웃으로 가독성 확보.
+* 상세:
+    - 모달 너비 `min(960px, 92vw)` 로 확대 (현재 ~720px 고정)
+    - 행 구조 변경: `label · control`(1행) + `description`(아래 전체폭, `font-size:.85rem` muted) — 3컬럼 폐기
+    - `restart` 필요 배지는 설명 옆 끼임 → 컨트롤 행 우측 고정
+* 구현 명세:
+    - SSOT=`services/hub/server.py`(설정 모달 렌더 HTML/CSS) + `plugins/fpm-core/services/hub/server.py` 미러
+    - triage=단순(CSS/마크업 레이아웃 변경, 키 의미 무변경). 탭 재배치(Issue197)와 독립 — 본 이슈 먼저 처리 권장(가독성 최우선)
+    - 설계 근거: `_doc_work/z_htm/hub_htm_20260623_215458_a_settings-final.htm`
+
+## Issue197: hub 설정 탭 내용 재배치 (Basic/Sessions/Advanced 그룹 정리) + browser_focus 정합 (등록: 2026-06-23)
+* 목적: 기존 3탭(Basic/Sessions/Advanced)에 설정 키가 임의 배치됨. 의미별 응집도 기준으로 재배치하고, deprecated `browser_focus` 제거(타 세션 작업)와 정합.
+* depends: Issue196
+* 상세 (탭 매핑):
+    - Basic(General): `language`, `default_browser`, `browser_open`, `browser_tab_reuse` — 브라우저 키 3종 이동
+    - Sessions(Display): `feed_*`(5), `card_limit`, `search_limit`, `live_session_*`(3)
+    - Advanced(Render·Tabs+Network): `render_target`, `render_tab_mode`, `tab_close_shortcut`, `hub_single_window`, `hub_lease_ttl`, `bind_host`, `advertise_host`, `allow_server_list`, `allow_list`
+    - `browser_focus` 제외 (deprecated, 타 세션 제거 작업중 — 본 이슈에서 탭 배치 대상 아님)
+* 구현 명세:
+    - SSOT=`services/hub/server.py`(탭별 키 그룹 정의) + 미러
+    - triage=단순(키→탭 매핑 재배치). Advanced 9키로 무거우면 후속 4탭 승격 옵션(Render·Tabs / Network 분리) — 본 이슈는 3탭 유지(안 A)
+    - 설계 근거: `_doc_work/z_htm/hub_htm_20260623_215458_a_settings-final.htm` + `..._214944_a_settings-tabs-v2.htm`
 
 ## Issue193: `/boards` 카드 progress 스칼라 미집계 — 문자열 value 타입 불일치 (등록: 2026-06-21)
 * 목적: Issue189 board rename 재테스트(board-retest)서 발견. `/boards` 카드 레벨 `progress` 스칼라가 `null`. rename 회귀 아님(엔드포인트·식별자만 변경, 집계 로직 무관).
