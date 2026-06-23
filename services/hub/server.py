@@ -189,9 +189,16 @@ HUB_SHELL_HTML = r"""<!DOCTYPE html>
     if(tabs.length > 1) parts.push("탭 전환: alt+Tab");
     hint.textContent = parts.join("  ·  ");
   }
+  // Issue202: iframe 로드는 _shell=1 마커를 붙여 결정적으로 "쉘 임베드"임을 표시.
+  //   서버 _handle_htm_doc 는 _shell 마커 없는 /htm-doc(=최상위 직접 열람)만 /hub-shell 로 302.
+  //   Sec-Fetch-Dest 헤더 의존 제거(일부 네비에서 헤더 누락 → standalone 누출 차단).
+  function embedUrl(u){
+    if(!u || u.charAt(0) !== "/") return u;  // 외부/특수 URL 은 그대로
+    return u + (u.indexOf("?")>=0 ? "&" : "?") + "_shell=1";
+  }
   function activate(id){
     var t = tabs.filter(function(x){return x.id===id;})[0]; if(!t) return;
-    activeId = id; view.src = t.view_url; render();
+    activeId = id; view.src = embedUrl(t.view_url); render();
   }
   function closeTab(id){
     if(id === "home") return;
@@ -207,7 +214,7 @@ HUB_SHELL_HTML = r"""<!DOCTYPE html>
     if(ex){
       var changed = ex.view_url !== d.view_url;
       ex.view_url = d.view_url; ex.title = d.title || ex.title; ex.content_type = d.content_type;
-      if(changed && activeId===ex.id){ view.src = d.view_url + "#r" + Date.now(); }  // 실제 변경 시에만 reload(폴 루프 reload 방지)
+      if(changed && activeId===ex.id){ view.src = embedUrl(d.view_url) + "#r" + Date.now(); }  // 실제 변경 시에만 reload(폴 루프 reload 방지)
       render(); return;
     }
     var id = "t" + Math.random().toString(36).slice(2);
@@ -4487,12 +4494,15 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         if not abs_path.endswith((".html", ".htm")):
             self._send_json(403, {"error": "extension not allowed"})
             return
-        # Issue201: hub-internal 모드 + 최상위 네비게이션(주소창/링크 클릭, Sec-Fetch-Dest=document)
-        #   이면 raw 문서 대신 hub 쉘로 302 → 표준 htm-doc URL 을 직접 열어도 OS 새 탭이 아니라
-        #   /hub-shell 내부 iframe 탭으로 착지(쉘 onload pollDocs 가 등록분을 탭으로 수거).
-        #   iframe src 요청(Sec-Fetch-Dest: iframe/empty)·메타데이터 미지원 브라우저는 그대로 serve
-        #   (redirect loop·iframe 깨짐 방지).
-        if (self.headers.get("Sec-Fetch-Dest") == "document"
+        # Issue201/Issue202: hub-internal 모드에서 최상위 직접 열람(주소창/링크/새 탭)은 raw 문서
+        #   대신 hub 쉘로 302 → 표준 htm-doc URL 을 어디서 열어도 OS 새 탭이 아니라 /hub-shell
+        #   내부 iframe 탭으로 착지(쉘 onload pollDocs 가 등록분을 탭으로 수거).
+        #   임베드 판정은 결정적 마커 _shell=1(쉘 JS embedUrl 부여)을 1순위로 사용 — Sec-Fetch-Dest
+        #   헤더는 보조(일부 네비에서 헤더 누락 시 standalone 누출하던 Issue201 한계 보완).
+        #   iframe src(_shell=1 또는 Sec-Fetch-Dest: iframe/embed)·메타데이터는 그대로 serve(redirect loop 방지).
+        _is_embed = ((qs.get("_shell") or [""])[0] == "1"
+                     or self.headers.get("Sec-Fetch-Dest") in ("iframe", "embed"))
+        if (not _is_embed
                 and _load_hub_setting().get("render_tab_mode") == "hub-internal"):
             self.send_response(302)
             self.send_header("Location", "/hub-shell")
