@@ -237,13 +237,13 @@ HUB_SHELL_HTML = r"""<!DOCTYPE html>
   }
   function addTab(d){
     if(!d || !d.view_url) return;
-    // dedup: 같은 sid(세션당 1탭 재사용), sid 없으면 같은 view_url. 폴링 재발견 중복 방지.
-    var ex = d.sid ? tabs.filter(function(t){return t.sid===d.sid;})[0]
-                   : tabs.filter(function(t){return t.view_url===d.view_url;})[0];
+    // dedup: 문서 식별자(view_url=path 내포) 기준. 폴링 재발견·SSE 중복은 같은 view_url →
+    //   기존 탭 재사용, 서로 다른 문서는 다른 view_url → 새 탭 추가. (이전: sid 기준 →
+    //   같은 세션의 별개 문서가 한 탭으로 replace 되던 버그. 세션당 1탭 정책 폐기.)
+    var ex = tabs.filter(function(t){return t.view_url===d.view_url;})[0];
     if(ex){
-      var changed = ex.view_url !== d.view_url;
-      ex.view_url = d.view_url; ex.title = d.title || ex.title; ex.content_type = d.content_type;
-      if(changed && activeId===ex.id){ view.src = embedUrl(d.view_url) + "#r" + Date.now(); }  // 실제 변경 시에만 reload(폴 루프 reload 방지)
+      // 같은 문서 재발견 — 메타만 갱신, iframe reload 안 함(폴 루프 reload 방지).
+      ex.title = d.title || ex.title; ex.content_type = d.content_type; ex.sid = d.sid || ex.sid;
       render(); return;
     }
     var id = "t" + Math.random().toString(36).slice(2);
