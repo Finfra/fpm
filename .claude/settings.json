@@ -28,6 +28,16 @@
             "statusMessage": "Projects.md \ub3d9\uae30\ud654 \uc911 (projects/\u00b7.vscode\u00b7iterm-bg)..."
           }
         ]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/_git/___pm/.claude/hooks/hub-py-restart.sh",
+            "statusMessage": "hub server.py \ud3b8\uc9d1 \uac10\uc9c0 \u2014 hub \uc11c\ubc84 restart \uc911..."
+          }
+        ]
       }
     ],
     "PreToolUse": [
