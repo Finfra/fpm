@@ -5,7 +5,7 @@ date: 2026-03-27
 ---
 
 # Issue Management
-* Issue HWM: 197
+* Issue HWM: 198
 * 오래된 Issue: `_doc_work/Issue_OLD.md` (General)
 * Save Point:
     - 3e69d0f (2026-04-24) Feat: graphify 토큰 절감 SCAR 프로젝트 구현 (Issue11·12 등록)
@@ -78,6 +78,16 @@ date: 2026-03-27
 # 📗 선택
 
 # ✅ 완료
+## Issue198: browser_focus deprecated 줄 제거 + org 템플릿 현행화 (등록: 2026-06-23, 해결: 2026-06-23, commit: 08c0df4) ✅
+* 목적: Issue170 에서 `browser_open` 이 `browser_focus` 를 흡수(3옵션 통합)한 뒤 `hub_setting.yml` 에 deprecated 주석으로 남아있던 `browser_focus` 줄을 완전 제거하고, 설치 템플릿 `hub_setting_org.yml` 을 현행 스키마·안전 기본값으로 현행화.
+* 상세:
+    - `data/hub_setting.yml`: `browser_focus` 줄 삭제. loader 가 `browser_focus` 미참조(`HUB_SETTING_DEFAULTS` 미포함) → `browser_open: background` 가 동작 결정, 영향 없음.
+    - `data/hub_setting_org.yml`: 섹션 구분 + Issue194 키 4종(`render_tab_mode`/`tab_close_shortcut`/`hub_single_window`/`hub_lease_ttl`) + `allow_server_list`/`allow_list`(주석) 추가, 네트워크 키 주석화(루프백 전용 기본 = 가장 안전), "미설정 키는 server.py 기본값 fallback" 안내 추가.
+    - `services/hub/server.py` `HUB_SETTING_SCHEMA` 의 `browser_focus` deprecated 토글 + hook fallback grep 은 Issue170/197 결정대로 **의도 보존**(설정 UI 하위호환 표시) → 본 이슈 범위 외.
+* 구현 명세:
+    - triage=단순(설정 파일 2개 정리, 키 의미 무변경). reg→commit→close.
+    - 검증: `test_settings_loader.py` 10/10, `test_settings_writer.py` 17/17 pass, 서버 재시작 정상(healthz ok).
+
 ## Issue197: hub 설정 탭 내용 재배치 (Basic/Sessions/Advanced 그룹 정리) (등록: 2026-06-23, 해결: 2026-06-23, commit: 3842ee0) ✅
 * 목적: 기존 3탭에 설정 키 임의 배치 → 의미별 응집도 기준 재배치. deprecated `browser_focus` 정합.
 * depends: Issue196
