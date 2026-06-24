@@ -19,16 +19,6 @@ date: 2026-03-27
 
 # 🚧 진행중
 
-## Issue210: hub Settings 필드 tooltip 언어 불일치 — 영문 모드에 한글 설명 노출 (등록: 2026-06-24)
-* 목적: hub Settings(Advanced 등) 일부 필드의 `?` tooltip 이 language=en 인데도 한글로 표시됨. i18n catalog 에 해당 키가 누락되어 schema 내장 한글 comment 로 fallback 되는 게 원인.
-* 상세:
-    - `services/hub/server.py` `_handle_get_settings` (3782~) 는 `settings.field.<key>` locale 키로 comment 를 번역하되, 키 부재 시 schema 의 한글 `comment` 로 fallback.
-    - `data/locales/{en,ko}.json` 에 5개 키 누락: `render_tab_mode`, `tab_close_shortcut`, `hub_single_window`, `hub_lease_ttl`, `allow_server_list` (Issue194/197 신설 필드인데 locale 미등록). → en 모드에서 한글 fallback.
-    - 역방향(ko 모드에 영문): catalog 점검 결과 en-only 키·en 값 한글 혼입 없음 → 현존하지 않음. 누락 5키만 수정 대상.
-* 구현 명세:
-    - en.json: 5키 영문 설명 추가. ko.json: 5키 한글 설명 추가(schema comment 일치).
-    - 검증: 누락 0 재확인 + `t(key,'en')`/`t(key,'ko')` 가 schema comment 로 fallback 안 함 확인.
-
 ## Issue209: hub 외부 링크 클릭 시 새 hub-shell 탭 충돌 — 기존 쉘 합류 (등록: 2026-06-24)
 * 목적: VSCode 등 외부에서 `/htm-doc?path=` 링크 클릭 시 OS 새 탭에 2번째 hub-shell 이 떠 단일 인스턴스 lease 가드("이미 hub 창 열림 / 여기서 인계") 오버레이가 발동. 기존 쉘에 합류시키고 새 탭엔 경량 확인 페이지를 serve해 충돌 제거.
 * 상세:
@@ -45,6 +35,16 @@ date: 2026-03-27
 # 📗 선택
 
 # ✅ 완료
+
+## Issue210: hub Settings 필드 tooltip 언어 불일치 — 영문 모드에 한글 설명 노출 (등록: 2026-06-24, 해결: 2026-06-24, commit: 54d1caf) ✅
+* 목적: hub Settings(Advanced 등) 일부 필드의 `?` tooltip 이 language=en 인데도 한글로 표시됨. i18n catalog 에 해당 키가 누락되어 schema 내장 한글 comment 로 fallback 되는 게 원인.
+* 상세:
+    - `services/hub/server.py` `_handle_get_settings` (3782~) 는 `settings.field.<key>` locale 키로 comment 를 번역하되, 키 부재 시 schema 의 한글 `comment` 로 fallback.
+    - `data/locales/{en,ko}.json` 에 5개 키 누락: `render_tab_mode`, `tab_close_shortcut`, `hub_single_window`, `hub_lease_ttl`, `allow_server_list` (Issue194/197 신설 필드인데 locale 미등록). → en 모드에서 한글 fallback.
+    - 역방향(ko 모드에 영문): catalog 점검 결과 en-only 키·en 값 한글 혼입 없음 → 현존하지 않음. 누락 5키만 수정 대상.
+* 구현 명세:
+    - en.json: 5키 영문 설명 추가. ko.json: 5키 한글 설명 추가(schema comment 일치).
+    - 검증: 누락 0 재확인 + `t(key,'en')`/`t(key,'ko')` 가 schema comment 로 fallback 안 함 확인 (스크립트 PASS).
 
 ## Issue208: hub Settings 키 라벨 `_` 시각적 숨김 (등록: 2026-06-24, 해결: 2026-06-24, commit: b476f3a) ✅
 * 목적: hub Settings 다이얼로그의 설정 키 라벨(`default_browser` 등)에서 언더스코어를 배경색과 동일 색으로 렌더해 시각적으로 숨김. space 치환이 아닌 색상 처리인 이유는 복붙 시 실제 키명(`default_browser`)이 보존되어야 하기 때문.
