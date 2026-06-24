@@ -5933,10 +5933,9 @@ span.imp-chip:hover { filter: brightness(1.12); }
   color: white; padding: 0.4rem 0.5rem; border-radius: 6px; font-size: 1.1em; cursor: pointer; line-height: 1; }
 .btn-settings:hover { background: rgba(255,255,255,0.2); }
 /* Issue168: 설정 모달 (3탭) */
-/* Issue205: 탭바 상단 고정(sticky) — 음수 마진으로 modal-body 패딩 bleed 후 패딩 재부여 → 배경 좌우 끝까지 덮어 측면 누출 방지 */
+/* Issue205/207: 탭바를 modal-body 밖(head 직후 비스크롤 형제)에 배치 → 자연 고정. 음수마진 sticky 폐기 */
 .set-tabs { display: flex; gap: 0.3rem; border-bottom: 1px solid var(--border);
-  position: sticky; top: 0; z-index: 5; background: var(--bg);
-  margin: -0.9rem -1.1rem 0.9rem; padding: 0.9rem 1.1rem 0; }
+  background: var(--bg); padding: 0 1.1rem; flex: 0 0 auto; }
 .set-tab { background: transparent; border: none; border-bottom: 2px solid transparent; color: var(--muted);
   padding: 0.5rem 0.9rem; font-size: 0.95em; cursor: pointer; }
 .set-tab:hover { color: var(--fg); }
@@ -5952,7 +5951,9 @@ span.imp-chip:hover { filter: brightness(1.12); }
 .set-row .set-input select, .set-row .set-input input { padding: 0.25rem 0.4rem; border: 1px solid var(--border);
   border-radius: 5px; background: var(--bg); color: var(--fg); font-size: 0.9em; }
 /* Issue196: 설명을 컨트롤 아래 전체폭(2행)으로 — 단어당 줄바꿈 깨짐 해소 */
-.set-row .set-desc { flex: 1 0 100%; min-width: 0; font-size: 0.8em; color: var(--muted); margin: 0.15rem 0 0; padding-left: 14.7em; line-height: 1.5; }
+.set-row .set-desc { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  width: 1.35em; height: 1.35em; font-size: 0.78em; font-weight: 700; color: var(--muted);
+  border: 1px solid var(--border); border-radius: 50%; cursor: help; user-select: none; }
 .set-row .set-badge { flex: 0 0 auto; margin-left: auto; font-size: 0.72em; padding: 0.05rem 0.4rem; border-radius: 9px; white-space: nowrap; }
 .set-badge.b-auto { background: #d3f0d3; color: #1a5d1a; }
 .set-badge.b-hook { background: #d0e4f7; color: #134a78; }
@@ -6329,12 +6330,12 @@ section.sec-collapsed .htm-bar-right { display: none; }
       <span class="modal-title">{T:settings.title}</span>
       <button class="modal-close" id="set-close" title="{T:settings.close}" aria-label="{T:settings.close}">✕</button>
     </div>
+    <div class="set-tabs" id="set-tabs">
+      <button class="set-tab active" data-tab="basic">{T:settings.tab.basic}</button>
+      <button class="set-tab" data-tab="session">{T:settings.tab.session}</button>
+      <button class="set-tab" data-tab="advanced">{T:settings.tab.advanced}</button>
+    </div>
     <div class="modal-body">
-      <div class="set-tabs" id="set-tabs">
-        <button class="set-tab active" data-tab="basic">{T:settings.tab.basic}</button>
-        <button class="set-tab" data-tab="session">{T:settings.tab.session}</button>
-        <button class="set-tab" data-tab="advanced">{T:settings.tab.advanced}</button>
-      </div>
       <div class="set-pane active" data-pane="basic" id="set-pane-basic"></div>
       <div class="set-pane" data-pane="session" id="set-pane-session"></div>
       <div class="set-pane" data-pane="advanced" id="set-pane-advanced">
@@ -7491,8 +7492,8 @@ function setRenderForm() {
       if (s.deprecated) row.style.opacity = '0.55';
       row.innerHTML = `<label class="set-key" for="setf-${s.key}" title="${setEsc(s.comment||'')}">${setEsc(s.key)}${s.deprecated?' <span style="font-size:0.75em;color:#c60">(deprecated)</span>':''}</label>`
         + `<span class="set-input">${setRenderField(s, setInitial[s.key])}</span>`
-        + setBadge(s.apply)
-        + `<span class="set-desc" title="${setEsc(s.comment||'')}">${setEsc(s.comment||'')}</span>`;
+        + `<span class="set-desc" data-tip="${setEsc(s.comment||'')}">?</span>`
+        + setBadge(s.apply);
       pane.appendChild(row);
     }
   }
@@ -7565,8 +7566,8 @@ function setTipShow(badge) {
   setTip.style.setProperty('--tip-arrow', (br.left + br.width/2 - left) + 'px');
 }
 function setTipHide() { setTip.hidden = true; }
-setModal.addEventListener('mouseover', e => { const b = e.target.closest('.set-badge'); if (b) setTipShow(b); });
-setModal.addEventListener('mouseout', e => { if (e.target.closest('.set-badge')) setTipHide(); });
+setModal.addEventListener('mouseover', e => { const b = e.target.closest('.set-badge, .set-desc'); if (b) setTipShow(b); });
+setModal.addEventListener('mouseout', e => { if (e.target.closest('.set-badge, .set-desc')) setTipHide(); });
 document.getElementById('btn-settings').addEventListener('click', openSettings);
 document.getElementById('set-close').addEventListener('click', () => { setTipHide(); closeSettings(); });
 document.getElementById('set-cancel').addEventListener('click', closeSettings);
