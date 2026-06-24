@@ -5,7 +5,7 @@ date: 2026-03-27
 ---
 
 # Issue Management
-* Issue HWM: 207
+* Issue HWM: 208
 * 오래된 Issue: `_doc_work/Issue_OLD.md` (General)
 * Save Point:
     - 3e69d0f (2026-04-24) Feat: graphify 토큰 절감 SCAR 프로젝트 구현 (Issue11·12 등록)
@@ -19,17 +19,14 @@ date: 2026-03-27
 
 # 🚧 진행중
 
-## Issue206: hub Settings 모달 설명·배지 아이콘+팝업 통일 (등록: 2026-06-24)
-* 목적: 설정 모달 행이 인라인 설명 풀텍스트로 길어짐. 아이콘+hover팝업으로 압축해 가독성·밀도 개선
+## Issue208: hub Settings 키 라벨 `_` 시각적 숨김 (등록: 2026-06-24)
+* 목적: hub Settings 다이얼로그의 설정 키 라벨(`default_browser` 등)에서 언더스코어를 배경색과 동일 색으로 렌더해 시각적으로 숨김. space 치환이 아닌 색상 처리인 이유는 복붙 시 실제 키명(`default_browser`)이 보존되어야 하기 때문.
 * 상세:
-    - set-desc(회색 인라인 설명 텍스트) → `?` 아이콘만 표시, hover 시 comment 를 풍선 팝업으로
-    - apply 배지(🟢 Auto / 🔵 Next turn / 🟠 restart) → 이모지 bullet 만 남기고 텍스트 라벨 제거 (팝업 tip 이미 존재)
-    - 둘 다 "아이콘 hover → setTip 팝업" 단일 패턴으로 통일
+    - `services/hub/server.py` set-key 라벨 렌더(라인 ~7490)에서 `_` 를 `<span class="set-us">_</span>` 로 래핑
+    - CSS `.set-row label.set-key .set-us { color: var(--bg) }` 추가 → 모달 배경(`var(--bg)`)과 동색 → 비가시. 문자 자체는 유지 → 텍스트 선택·복사 시 `default_browser` 그대로
 * 구현 명세:
-    - `services/hub/server.py`: setRenderForm() set-desc 렌더를 `?` 아이콘+data-tip 으로, mouseover/out 핸들러를 `.set-badge, .set-desc` 로 확장. CSS `.set-desc` 아이콘화
-    - `data/locales/{en,ko}.json`: settings.applyBadge.{auto,hook,restart} 텍스트 제거 → 이모지만
-    - `plugins/fpm-core/services/hub/server.py` 미러 동기화 (해당 코드 존재 시)
-    - 검증: hub restart 후 모달 렌더 확인
+    - 라벨: `setEsc(s.key)` → `setEsc(s.key).replaceAll('_','<span class="set-us">_</span>')` (키는 식별자 안전 — 이스케이프 후 치환 무해)
+    - 검증: hub 재시작 후 Settings 열어 키에 `_` 안 보임 + 키 텍스트 드래그 복사 시 `_` 포함 확인
 
 # 📕 중요
 
@@ -38,6 +35,18 @@ date: 2026-03-27
 # 📗 선택
 
 # ✅ 완료
+
+## Issue206: hub Settings 모달 설명·배지 아이콘+팝업 통일 (등록: 2026-06-24) → (해결: 2026-06-24, commit: 02075c9) ✅
+* 목적: 설정 모달 행이 인라인 설명 풀텍스트로 길어짐. 아이콘+hover팝업으로 압축해 가독성·밀도 개선
+* 상세:
+    - set-desc(회색 인라인 설명 텍스트) → `?` 도움말 아이콘만 표시, hover 시 comment 를 풍선 팝업으로
+    - apply 배지(🟢 Auto / 🔵 Next turn / 🟠 restart) → 이모지 bullet 만 남기고 텍스트 라벨 제거 (팝업 tip 유지)
+    - 둘 다 "아이콘 hover → setTip 팝업" 단일 패턴으로 통일
+* 구현 명세:
+    - `services/hub/server.py`: setRenderForm() set-desc → `?`+data-tip, mouseover/out 핸들러 `.set-badge, .set-desc` 확장, CSS `.set-desc` 원형 아이콘화
+    - `data/locales/{en,ko}.json`: settings.applyBadge.{auto,hook,restart} 텍스트 제거 → 이모지만
+    - `plugins/fpm-core` 미러엔 해당 설정 코드 부재(구버전) → 미수정
+    - 검증: py_compile + JSON valid + 단일 인스턴스 재시작 healthz 200 + 서빙 페이지 신 마커 확인
 
 ## Issue207: hub Settings 탭바 sticky 음수마진 갭 회귀 (등록: 2026-06-24) → (해결: 2026-06-24, commit: 20b2527) ✅
 * 목적: Issue205 의 `.set-tabs` 음수마진+sticky+top패딩 방식이 head 와 탭바 사이 빈 갭 + 첫 행(default browser) 위치 어긋남 유발. 음수마진 제거하고 탭바를 스크롤 영역 밖으로 분리.

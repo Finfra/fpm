@@ -1109,13 +1109,10 @@ HUB_SETTING_SCHEMA = [
     {"key": "default_browser", "tab": "basic", "widget": "select",
      "options": ["firefox", "chrome", "edge", "safari"], "allow_custom": True,
      "apply": "hook", "comment": "렌더 브라우저 (firefox/chrome/edge/safari 또는 .app 절대경로)"},
-    # Issue170: 3-way 브라우저 자동 open 동작. browser_focus 흡수(off/background/foreground).
+    # Issue170: 3-way 브라우저 자동 open 동작 (구 browser_focus 대체, off/background/foreground).
     {"key": "browser_open", "tab": "basic", "widget": "select",
      "options": ["off", "background", "foreground"],
      "apply": "hook", "comment": "브라우저 자동 open — off(채팅 URL만)/background(open -g, 포커스 미탈취)/foreground(포커스 탈취)"},
-    {"key": "browser_focus", "tab": "basic", "widget": "toggle",
-     "apply": "hook", "deprecated": True,
-     "comment": "[deprecated → browser_open] 포커스 탈취. hook 이 browser_open 미설정 시에만 fallback 참조"},
     {"key": "browser_tab_reuse", "tab": "basic", "widget": "toggle",
      "apply": "hook", "comment": "/hub 단일 탭 재사용 (Issue171). 렌더(..show/..ask)는 값 무관 항상 새 탭. 🚧 신 의미 hook 구현 글로벌 Issue153"},
     # Issue169: hub UI 언어 (en/ko). 저장 후 hub 페이지 reload 시 반영. 설계: _doc_arch/localization.md
@@ -5945,6 +5942,8 @@ span.imp-chip:hover { filter: brightness(1.12); }
 .set-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.7rem; padding: 0.6rem 0; border-bottom: 1px dashed var(--border); }
 .set-row:last-child { border-bottom: none; }
 .set-row label.set-key { flex: 0 0 14em; font-family: ui-monospace, monospace; font-size: 0.9em; }
+/* Issue208: 키의 `_` 를 배경색과 동색으로 숨김(비가시). 문자 유지 → 복붙 시 실제 키명 보존 */
+.set-row label.set-key .set-us { color: var(--bg); }
 .set-row .set-input { flex: 0 0 auto; }
 .set-row .set-input input[type=number] { width: 7em; }
 .set-row .set-input input[type=text] { width: 22em; max-width: 100%; }
@@ -7490,7 +7489,7 @@ function setRenderForm() {
       const row = document.createElement('div');
       row.className = 'set-row' + (s.deprecated ? ' set-deprecated' : '');
       if (s.deprecated) row.style.opacity = '0.55';
-      row.innerHTML = `<label class="set-key" for="setf-${s.key}" title="${setEsc(s.comment||'')}">${setEsc(s.key)}${s.deprecated?' <span style="font-size:0.75em;color:#c60">(deprecated)</span>':''}</label>`
+      row.innerHTML = `<label class="set-key" for="setf-${s.key}" title="${setEsc(s.comment||'')}">${setEsc(s.key).replaceAll('_','<span class="set-us">_</span>')}${s.deprecated?' <span style="font-size:0.75em;color:#c60">(deprecated)</span>':''}</label>`
         + `<span class="set-input">${setRenderField(s, setInitial[s.key])}</span>`
         + `<span class="set-desc" data-tip="${setEsc(s.comment||'')}">?</span>`
         + setBadge(s.apply);
