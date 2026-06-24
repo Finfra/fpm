@@ -658,10 +658,12 @@ fpm-projects-sync() {
 # (이전 위치 ~/.zsh_functions → 2026-06-09 fpm 으로 이관. fpm 색상 기능 일체화)
 # iterm-bg : iTerm2 배경색 변경. 인자 없으면 기본값 복원. iterm-bg-N alias(생성물)·chpwd 의 베이스.
 iterm-bg() {
+    # 제어 터미널 없는 셸(Claude Code Bash 등)에선 /dev/tty open 실패 → 에러 노이즈.
+    # 그룹+2>/dev/null 로 리다이렉트 실패를 침묵 처리(정상 터미널에선 그대로 동작).
     if [[ -z "$1" ]]; then
-        printf '\033]111;\007' > /dev/tty
+        { printf '\033]111;\007' > /dev/tty; } 2>/dev/null
     else
-        printf '\033]1337;SetColors=bg=%s\007' "$1" > /dev/tty
+        { printf '\033]1337;SetColors=bg=%s\007' "$1" > /dev/tty; } 2>/dev/null
     fi
 }
 
