@@ -19,15 +19,6 @@ date: 2026-03-27
 
 # 🚧 진행중
 
-## Issue208: hub Settings 키 라벨 `_` 시각적 숨김 (등록: 2026-06-24)
-* 목적: hub Settings 다이얼로그의 설정 키 라벨(`default_browser` 등)에서 언더스코어를 배경색과 동일 색으로 렌더해 시각적으로 숨김. space 치환이 아닌 색상 처리인 이유는 복붙 시 실제 키명(`default_browser`)이 보존되어야 하기 때문.
-* 상세:
-    - `services/hub/server.py` set-key 라벨 렌더(라인 ~7490)에서 `_` 를 `<span class="set-us">_</span>` 로 래핑
-    - CSS `.set-row label.set-key .set-us { color: var(--bg) }` 추가 → 모달 배경(`var(--bg)`)과 동색 → 비가시. 문자 자체는 유지 → 텍스트 선택·복사 시 `default_browser` 그대로
-* 구현 명세:
-    - 라벨: `setEsc(s.key)` → `setEsc(s.key).replaceAll('_','<span class="set-us">_</span>')` (키는 식별자 안전 — 이스케이프 후 치환 무해)
-    - 검증: hub 재시작 후 Settings 열어 키에 `_` 안 보임 + 키 텍스트 드래그 복사 시 `_` 포함 확인
-
 # 📕 중요
 
 # 📙 일반
@@ -35,6 +26,15 @@ date: 2026-03-27
 # 📗 선택
 
 # ✅ 완료
+
+## Issue208: hub Settings 키 라벨 `_` 시각적 숨김 (등록: 2026-06-24, 해결: 2026-06-24, commit: b476f3a) ✅
+* 목적: hub Settings 다이얼로그의 설정 키 라벨(`default_browser` 등)에서 언더스코어를 배경색과 동일 색으로 렌더해 시각적으로 숨김. space 치환이 아닌 색상 처리인 이유는 복붙 시 실제 키명(`default_browser`)이 보존되어야 하기 때문.
+* 상세:
+    - `services/hub/server.py` set-key 라벨 렌더에서 `_` 를 `<span class="set-us">_</span>` 로 래핑
+    - CSS `.set-row label.set-key .set-us { color: var(--bg) }` 추가 → 모달 배경(`var(--bg)`)과 동색 → 비가시. 문자 자체 유지 → 텍스트 선택·복사 시 `default_browser` 그대로
+* 구현 명세:
+    - 라벨: `setEsc(s.key).replaceAll('_','<span class="set-us">_</span>')` (키는 식별자 안전 — 이스케이프 후 치환 무해)
+    - 검증: hub 재시작(pid 60601, etime 38s) 후 serve HTML 에 `set-us` 2회(CSS+JS) 확인
 
 ## Issue206: hub Settings 모달 설명·배지 아이콘+팝업 통일 (등록: 2026-06-24) → (해결: 2026-06-24, commit: 02075c9) ✅
 * 목적: 설정 모달 행이 인라인 설명 풀텍스트로 길어짐. 아이콘+hover팝업으로 압축해 가독성·밀도 개선
