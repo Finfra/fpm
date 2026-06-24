@@ -5933,7 +5933,10 @@ span.imp-chip:hover { filter: brightness(1.12); }
   color: white; padding: 0.4rem 0.5rem; border-radius: 6px; font-size: 1.1em; cursor: pointer; line-height: 1; }
 .btn-settings:hover { background: rgba(255,255,255,0.2); }
 /* Issue168: 설정 모달 (3탭) */
-.set-tabs { display: flex; gap: 0.3rem; border-bottom: 1px solid var(--border); margin-bottom: 0.9rem; }
+/* Issue205: 탭바 상단 고정(sticky) — 음수 마진으로 modal-body 패딩 bleed 후 패딩 재부여 → 배경 좌우 끝까지 덮어 측면 누출 방지 */
+.set-tabs { display: flex; gap: 0.3rem; border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 5; background: var(--bg);
+  margin: -0.9rem -1.1rem 0.9rem; padding: 0.9rem 1.1rem 0; }
 .set-tab { background: transparent; border: none; border-bottom: 2px solid transparent; color: var(--muted);
   padding: 0.5rem 0.9rem; font-size: 0.95em; cursor: pointer; }
 .set-tab:hover { color: var(--fg); }
