@@ -158,5 +158,10 @@
   "settings.field.feed_show_project_name": "피드 항목 프로젝트명 표시",
   "settings.field.bind_host": "hub 서버 listen 인터페이스 (127.0.0.1/0.0.0.0/IP). 변경 시 restart 필요",
   "settings.field.advertise_host": "hub|both URL host (생략 시 bind_host fallback). 0.0.0.0+생략 금지",
-  "settings.field.feed_poll_interval": "피드 폴링 주기(초, 참고값)"
+  "settings.field.feed_poll_interval": "피드 폴링 주기(초, 참고값)",
+  "settings.field.render_tab_mode": "렌더 표시 방식 — browser-tab(기본·OS 탭)/hub-internal(/hub-shell 내부 iframe 탭, OS 새 탭 미생성)",
+  "settings.field.tab_close_shortcut": "hub 내부 탭 닫기 단축키 ([ctrl+][alt+][shift+][meta+]<key>). ⚠️ ctrl+w/meta+w 는 브라우저 선점 가능",
+  "settings.field.hub_single_window": "호스트(source-IP)당 hub 쉘 창 1개 강제 — true=2번째 창 takeover 안내/false=다중 허용",
+  "settings.field.hub_lease_ttl": "hub 쉘 리스 heartbeat 만료(초). SSE keepalive 미수신 초과 시 회수",
+  "settings.field.allow_server_list": "source-IP allowlist 게이트 (true=Servers.md 화이트리스트+self 허용 / false=bind_host(self)만 허용, 외부 전부 차단). 변경 시 restart"
 }

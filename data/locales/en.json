@@ -158,5 +158,10 @@
   "settings.field.feed_show_project_name": "Show project name on feed items",
   "settings.field.bind_host": "hub server listen interface (127.0.0.1/0.0.0.0/IP). Restart required on change",
   "settings.field.advertise_host": "hub|both URL host (falls back to bind_host if omitted). Do not omit with 0.0.0.0",
-  "settings.field.feed_poll_interval": "Feed polling interval (sec, reference value)"
+  "settings.field.feed_poll_interval": "Feed polling interval (sec, reference value)",
+  "settings.field.render_tab_mode": "Render display mode — browser-tab(default, OS tab)/hub-internal(iframe tab inside /hub-shell, no new OS tab)",
+  "settings.field.tab_close_shortcut": "hub internal tab close shortcut ([ctrl+][alt+][shift+][meta+]<key>). ⚠️ ctrl+w/meta+w may be claimed by the browser",
+  "settings.field.hub_single_window": "Force one hub shell window per host (source-IP) — true=2nd window shows takeover prompt/false=allow multiple",
+  "settings.field.hub_lease_ttl": "hub shell lease heartbeat expiry (sec). Reclaimed when SSE keepalive missed beyond this",
+  "settings.field.allow_server_list": "source-IP allowlist gate (true=Servers.md whitelist+self / false=bind_host(self) only, block all external). Restart required on change"
 }
