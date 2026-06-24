@@ -5,7 +5,7 @@ date: 2026-03-27
 ---
 
 # Issue Management
-* Issue HWM: 204
+* Issue HWM: 205
 * 오래된 Issue: `_doc_work/Issue_OLD.md` (General)
 * Save Point:
     - 3e69d0f (2026-04-24) Feat: graphify 토큰 절감 SCAR 프로젝트 구현 (Issue11·12 등록)
@@ -26,6 +26,16 @@ date: 2026-03-27
 # 📗 선택
 
 # ✅ 완료
+
+## Issue205: hub Settings 모달 탭바 스크롤 시 고정 (등록: 2026-06-24) → (해결: 2026-06-24, commit: e6f7d3d) ✅
+* 목적: hub Settings 모달에서 본문(panes)을 스크롤하면 탭바(Basic/Sessions/Advanced)도 함께 위로 사라짐 → 탭 전환 접근성 저하. 탭바를 상단 고정(sticky)하여 스크롤 무관 상시 노출.
+* 상세:
+    - `services/hub/server.py` `.set-tabs` CSS 단일 수정 (triage: 단순)
+    - 원인: `.set-tabs` 가 스크롤 컨테이너 `.modal-body`(`overflow-y:auto`) 내부에 위치 → 콘텐츠와 함께 스크롤
+* 구현 명세:
+    - `.set-tabs` 에 `position: sticky; top: 0; z-index: 5; background: var(--bg)` 부여
+    - modal-body 패딩(0.9rem/1.1rem)을 음수 마진으로 bleed + 패딩 재부여 → 고정 바 배경이 좌우 끝까지 덮어 콘텐츠 측면 누출 방지
+    - 검증: py_compile OK / 서버 재시작 후 healthz 200 / curl `/hub` HTML 에 `position: sticky` + `top: 0` + `var(--bg)` 토큰 노출 확인
 
 ## Issue204: hub-shell 모든 탭 닫기 버튼 추가 (등록: 2026-06-24) → (해결: 2026-06-24, commit: e90fc3b) ✅
 * 목적: `/hub-shell` 내부 탭바에서 열린 렌더 탭을 한 번에 정리하는 "🗑️ 모든 탭 닫기" 버튼 제공 (기존엔 탭별 ✕ 또는 단축키만 존재)
