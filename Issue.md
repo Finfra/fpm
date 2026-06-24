@@ -5,7 +5,7 @@ date: 2026-03-27
 ---
 
 # Issue Management
-* Issue HWM: 208
+* Issue HWM: 210
 * 오래된 Issue: `_doc_work/Issue_OLD.md` (General)
 * Save Point:
     - 3e69d0f (2026-04-24) Feat: graphify 토큰 절감 SCAR 프로젝트 구현 (Issue11·12 등록)
@@ -18,6 +18,25 @@ date: 2026-03-27
 # 🌱 이슈후보
 
 # 🚧 진행중
+
+## Issue210: hub Settings 필드 tooltip 언어 불일치 — 영문 모드에 한글 설명 노출 (등록: 2026-06-24)
+* 목적: hub Settings(Advanced 등) 일부 필드의 `?` tooltip 이 language=en 인데도 한글로 표시됨. i18n catalog 에 해당 키가 누락되어 schema 내장 한글 comment 로 fallback 되는 게 원인.
+* 상세:
+    - `services/hub/server.py` `_handle_get_settings` (3782~) 는 `settings.field.<key>` locale 키로 comment 를 번역하되, 키 부재 시 schema 의 한글 `comment` 로 fallback.
+    - `data/locales/{en,ko}.json` 에 5개 키 누락: `render_tab_mode`, `tab_close_shortcut`, `hub_single_window`, `hub_lease_ttl`, `allow_server_list` (Issue194/197 신설 필드인데 locale 미등록). → en 모드에서 한글 fallback.
+    - 역방향(ko 모드에 영문): catalog 점검 결과 en-only 키·en 값 한글 혼입 없음 → 현존하지 않음. 누락 5키만 수정 대상.
+* 구현 명세:
+    - en.json: 5키 영문 설명 추가. ko.json: 5키 한글 설명 추가(schema comment 일치).
+    - 검증: 누락 0 재확인 + `t(key,'en')`/`t(key,'ko')` 가 schema comment 로 fallback 안 함 확인.
+
+## Issue209: hub 외부 링크 클릭 시 새 hub-shell 탭 충돌 — 기존 쉘 합류 (등록: 2026-06-24)
+* 목적: VSCode 등 외부에서 `/htm-doc?path=` 링크 클릭 시 OS 새 탭에 2번째 hub-shell 이 떠 단일 인스턴스 lease 가드("이미 hub 창 열림 / 여기서 인계") 오버레이가 발동. 기존 쉘에 합류시키고 새 탭엔 경량 확인 페이지를 serve해 충돌 제거.
+* 상세:
+    - 근원: `services/hub/server.py` `_handle_htm_doc` 의 302 가 `Location: /hub-shell` bare 로 보내 새 탭이 full hub-shell 이 됨 → lease 충돌 오버레이. 외부 `open` 은 OS 새 탭 강제라 브라우저 레벨 기존 탭 재사용 불가.
+    - 인프라: `/register-doc` 가 이미 hub-internal 시 기존 쉘에 `tab-open` SSE push (3383~) → 문서는 기존 쉘에 탭으로 들어감. 새 탭은 잉여.
+* 구현 명세:
+    - 302 분기에서 살아있는 lease 보유자(`hub_single_window` on + last_seen ≤ ttl) 판정 추가. 보유자 있으면: `tab-open` SSE push(즉시 반영) + 경량 확인 HTML(`기존 hub 창에 열었습니다. 닫아도 됨`) serve. 보유자 없으면 종전 302 `/hub-shell`.
+    - 검증: `py_compile` + 보유자 없음 시 302 유지, 보유자 있을 때 확인 페이지(200) serve 확인.
 
 # 📕 중요
 
