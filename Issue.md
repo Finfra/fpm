@@ -5,7 +5,7 @@ date: 2026-03-27
 ---
 
 # Issue Management
-* Issue HWM: 205
+* Issue HWM: 207
 * 오래된 Issue: `_doc_work/Issue_OLD.md` (General)
 * Save Point:
     - 3e69d0f (2026-04-24) Feat: graphify 토큰 절감 SCAR 프로젝트 구현 (Issue11·12 등록)
@@ -19,6 +19,18 @@ date: 2026-03-27
 
 # 🚧 진행중
 
+## Issue206: hub Settings 모달 설명·배지 아이콘+팝업 통일 (등록: 2026-06-24)
+* 목적: 설정 모달 행이 인라인 설명 풀텍스트로 길어짐. 아이콘+hover팝업으로 압축해 가독성·밀도 개선
+* 상세:
+    - set-desc(회색 인라인 설명 텍스트) → `?` 아이콘만 표시, hover 시 comment 를 풍선 팝업으로
+    - apply 배지(🟢 Auto / 🔵 Next turn / 🟠 restart) → 이모지 bullet 만 남기고 텍스트 라벨 제거 (팝업 tip 이미 존재)
+    - 둘 다 "아이콘 hover → setTip 팝업" 단일 패턴으로 통일
+* 구현 명세:
+    - `services/hub/server.py`: setRenderForm() set-desc 렌더를 `?` 아이콘+data-tip 으로, mouseover/out 핸들러를 `.set-badge, .set-desc` 로 확장. CSS `.set-desc` 아이콘화
+    - `data/locales/{en,ko}.json`: settings.applyBadge.{auto,hook,restart} 텍스트 제거 → 이모지만
+    - `plugins/fpm-core/services/hub/server.py` 미러 동기화 (해당 코드 존재 시)
+    - 검증: hub restart 후 모달 렌더 확인
+
 # 📕 중요
 
 # 📙 일반
@@ -26,6 +38,17 @@ date: 2026-03-27
 # 📗 선택
 
 # ✅ 완료
+
+## Issue207: hub Settings 탭바 sticky 음수마진 갭 회귀 (등록: 2026-06-24) → (해결: 2026-06-24, commit: 20b2527) ✅
+* 목적: Issue205 의 `.set-tabs` 음수마진+sticky+top패딩 방식이 head 와 탭바 사이 빈 갭 + 첫 행(default browser) 위치 어긋남 유발. 음수마진 제거하고 탭바를 스크롤 영역 밖으로 분리.
+* depends: Issue205 (commit e6f7d3d)
+* 상세:
+    - `services/hub/server.py` `.set-tabs` CSS + 모달 HTML 구조 수정 (triage: 단순)
+    - 근원: 탭바가 `.modal-body`(`overflow-y:auto`) 내부에 있어 sticky+음수마진으로만 고정 가능 → padding-top 0.9rem 잔여 갭
+* 구현 명세:
+    - HTML: `.set-tabs` 를 `.modal-body` 밖, `.modal-head` 직후로 이동 → `.modal` flex 컬럼의 비스크롤 형제(head/tabs/body/foot)로 자연 고정
+    - CSS: sticky·음수마진·top패딩 제거, `padding: 0 1.1rem; flex: 0 0 auto` 단순화
+    - 검증: py_compile OK / 서버 재시작 healthz 200 / DOM 순서 head→set-tabs→modal-body 확인 (갭 소멸)
 
 ## Issue205: hub Settings 모달 탭바 스크롤 시 고정 (등록: 2026-06-24) → (해결: 2026-06-24, commit: e6f7d3d) ✅
 * 목적: hub Settings 모달에서 본문(panes)을 스크롤하면 탭바(Basic/Sessions/Advanced)도 함께 위로 사라짐 → 탭 전환 접근성 저하. 탭바를 상단 고정(sticky)하여 스크롤 무관 상시 노출.
