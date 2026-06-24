@@ -206,6 +206,7 @@ HUB_SHELL_HTML = r"""<!DOCTYPE html>
     var parts = [];
     if(a && RENDER_CT[a.content_type]) parts.push("탭 닫기: " + SHORTCUT);
     if(tabs.length > 1) parts.push("탭 전환: alt+Tab");
+    parts.push("Hub: alt+h");   // fpm 로고 버튼 단축키 (홈 탭 = 통합 Hub)
     hint.textContent = parts.join("  ·  ");
   }
   // Issue202: iframe 로드는 _shell=1 마커를 붙여 결정적으로 "쉘 임베드"임을 표시.
@@ -277,6 +278,11 @@ HUB_SHELL_HTML = r"""<!DOCTYPE html>
     activate(tabs[(i + dir + tabs.length) % tabs.length].id);
   }
   function onKeydown(e){
+    // Hub(홈 탭)로 이동 — alt+h. fpm 로고(.hub-link) 버튼 단축키.
+    // macOS Option+h 는 e.key 가 특수문자(˙)로 바뀜 → 물리 키 e.code 로 비교.
+    if(e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && e.code==="KeyH"){
+      e.preventDefault(); activate("home"); return;
+    }
     // 탭 순환 (e.code==="Tab" — Option 무관 물리 키)
     if(e.altKey && !e.ctrlKey && !e.metaKey && e.code==="Tab"){
       e.preventDefault(); cycleTab(e.shiftKey ? -1 : 1); return;
@@ -365,6 +371,45 @@ HUB_SHELL_HTML = r"""<!DOCTYPE html>
   pollDocs(); setInterval(pollDocs, 30000);
 })();
 </script>
+</body>
+</html>
+"""
+
+# Issue209: 외부(VSCode 등) 링크 클릭으로 열린 OS 새 탭에 serve 하는 경량 확인 페이지.
+#   살아있는 hub-shell lease 보유자가 있을 때 302 /hub-shell(2번째 쉘 → takeover 오버레이)
+#   대신 이 페이지를 보내고, 문서는 tab-open SSE 로 기존 쉘에 합류시킨다. __TITLE__ 치환.
+HUB_OPENED_HTML = r"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>___pm — 기존 hub 창에 열림</title>
+<link rel="icon" href="/fpm-icon.png">
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    display: flex; min-height: 100vh; margin: 0; align-items: center;
+    justify-content: center; background: #faf9f0; color: #1a1a1a; }
+  .card { max-width: 460px; text-align: center; padding: 2rem; }
+  .card h1 { font-size: 1.2rem; margin: 0 0 0.6rem; }
+  .card p { line-height: 1.6; opacity: 0.85; }
+  .doc { font-weight: 600; }
+  button { margin-top: 1.2rem; font-size: 0.95rem; padding: 0.5rem 1.2rem;
+    border-radius: 8px; border: 1px solid rgba(0,0,0,0.2);
+    background: hsl(60,72%,80%); color: #1a1a1a; cursor: pointer; }
+  button:hover { background: hsl(60,72%,72%); }
+  @media (prefers-color-scheme: dark) {
+    body { background: #1a1a1a; color: #e0e0e0; }
+    button { background: #3a3a28; color: #eee; border-color: #555; }
+    button:hover { background: #4a4a30; }
+  }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>✅ 기존 hub 창에 열었습니다</h1>
+  <p><span class="doc">__TITLE__</span> 문서를 이미 열려 있는 hub 창에 새 탭으로 추가했습니다.<br>이 탭은 닫아도 됩니다.</p>
+  <button type="button" onclick="window.close()">이 탭 닫기 ✕</button>
+</div>
 </body>
 </html>
 """
@@ -3401,6 +3446,20 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"status": "ok", "type": kind, "path": path, "count": count})
 
     # ── Issue194: hub 내부 탭 쉘 ─────────────────────────────────────────
+    def _hub_holder_alive(self, ip):
+        """Issue209: 이 host(ip)에 살아있는 hub-shell lease 보유자가 있는가.
+        단일 창 모드(hub_single_window) off → 다중 쉘 허용이라 충돌 없음 → False(종전 302).
+        on 이면 lease 보유자의 last_seen 이 ttl 이내(heartbeat 15s 갱신)일 때만 alive."""
+        setting = _load_hub_setting()
+        if not bool(setting.get("hub_single_window", True)):
+            return False
+        ttl = int(setting.get("hub_lease_ttl", 30))
+        with hub_lease_lock:
+            cur = hub_lease.get(ip)
+            if not cur:
+                return False
+            return (time.time() - cur.get("last_seen", 0)) <= ttl
+
     def _hub_lease_acquire(self, ip, cid, single, ttl):
         """host(ip) 단일 창 리스 획득 시도. single=False 면 항상 grant.
         리스 없음·본인 보유·TTL 만료 → grant. 타인 활성 보유 → 거부(False)."""
@@ -4530,6 +4589,33 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
                      or self.headers.get("Sec-Fetch-Dest") in ("iframe", "embed"))
         if (not _is_embed
                 and _load_hub_setting().get("render_tab_mode") == "hub-internal"):
+            # Issue209: 외부(VSCode 등) 링크 클릭은 OS 새 탭을 강제 — 브라우저 레벨에서
+            #   기존 hub-shell 탭 재사용 불가. 살아있는 lease 보유자(=이미 열린 쉘)가 있으면
+            #   그 쉘에 tab-open SSE push(즉시 합류) + 새 탭엔 경량 확인 페이지를 serve.
+            #   종전엔 무조건 302 /hub-shell → 새 탭이 2번째 쉘이 되어 단일 인스턴스 lease
+            #   가드("이미 hub 창 열림 / 여기서 인계") 오버레이가 떴다. 보유자 없으면 종전대로
+            #   302 → 이 탭이 첫 쉘이 되고 pollDocs/register-doc 가 문서를 수거.
+            ip = self.client_address[0] if self.client_address else ""
+            if self._hub_holder_alive(ip):
+                base = os.path.basename(abs_path)
+                ctype = ("form" if "_b_" in base
+                         else ("dashboard" if "_c_" in base else "response"))
+                title = self._extract_html_title(abs_path) or base
+                from urllib.parse import quote as _q
+                sse_broadcast(HUB_SHELL_HASH, "tab-open", {
+                    "view_url": "/htm-doc?path=" + _q(abs_path),
+                    "title": title,
+                    "sid": "",
+                    "content_type": ctype,
+                })
+                page = HUB_OPENED_HTML.replace("__TITLE__", html.escape(title))
+                body = page.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             self.send_response(302)
             self.send_header("Location", "/hub-shell")
             self.end_headers()
