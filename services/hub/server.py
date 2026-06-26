@@ -3952,6 +3952,22 @@ class Handler(BaseHTTPRequestHandler):
         if target not in ("on", "off"):
             self._send_json(400, {"error": "state must be 'on' or 'off'"})
             return
+        # Issue215: 마스터 토글 = 진짜 hub 마스터(`..hub on/off` 동치). per-cwd 만
+        #   기록하면 dominant 플래그 `.hub-system-off` 가 모두 마스킹 → 토글 무력.
+        #   target=on → 시스템 OFF 플래그 해제, target=off → 시스템 OFF 플래그 생성.
+        sys_off_flag = os.path.join(os.path.expanduser("~"), ".claude", ".hub-system-off")
+        try:
+            if target == "on":
+                if os.path.exists(sys_off_flag):
+                    os.remove(sys_off_flag)
+            else:
+                os.makedirs(os.path.dirname(sys_off_flag), exist_ok=True)
+                with open(sys_off_flag, "w", encoding="utf-8") as f:
+                    f.write("")
+        except OSError as e:
+            log(f"POST /htm-toggle-all — system flag {target} failed: {e}")
+            self._send_json(500, {"error": f"system flag update failed: {e}"})
+            return
         results = []
         for r in _load_projects_list():
             path = r["path"]
@@ -5291,13 +5307,24 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             '.then(function(j){if(j&&j.error)alert("VSCode 열기 실패: "+j.error);})'
             '.catch(function(){alert("hub 서버 미응답 — VSCode 열기 실패");});'
         )
+        # Issue214: 헤더 액션 개편 — (1) 🔗 문서 링크 복사 버튼 추가(쉘 iframe 내에선
+        #   주소창이 /hub-shell 만 보여 문서 URL 직접 복사 불가) (2) 닫기를 ✕ 아이콘화 +
+        #   맨 오른쪽 끝 분리(margin) (3) 전 액션 title 툴팁 부착.
+        #   Issue213: hub-link target="_blank" 제거 — 새 OS 창(중복) 차단, 쉘 iframe 안 in-place 합류.
+        copy_onclick = (
+            "(function(b){var u=location.href.replace(/[?&]_shell=1$/,'');"
+            "navigator.clipboard.writeText(u).then(function(){var o=b.textContent;"
+            "b.textContent='✓';setTimeout(function(){b.textContent=o;},1200);})"
+            ".catch(function(){window.prompt('문서 링크 복사',u);});})(this)"
+        )
         header_html = (
             '<header class="dash-hdr"><h1>' + esc(title) + '</h1>'
             '<nav class="hdr-actions">'
-            '<a class="proj-badge" href="#" title="VSCode 로 ' + proj_label + ' 열기" onclick=\'' + onclick_open + '\'>📁 ' + proj_label + '</a>'
-            '<a class="sess-link" href="/hub" title="활성 세션 목록 (hub)">🛰 활성 세션</a>'
-            '<a class="hub-link" href="/hub">🗂 Hub</a>'  # Issue213: target="_blank" 제거 — 새 OS 창(중복) 차단, 쉘 iframe 안 in-place 합류
-            '<button type="button" onclick="window.close()">닫기 ✕</button>'
+            '<a class="proj-badge" href="#" title="VSCode 로 ' + proj_label + ' 프로젝트 열기" onclick=\'' + onclick_open + '\'>📁 ' + proj_label + '</a>'
+            '<a class="sess-link" href="/hub" title="활성 세션 목록 보기 (hub)">🛰 활성 세션</a>'
+            '<button type="button" class="copy-link" title="이 문서 링크 복사" onclick="' + copy_onclick + '">🔗</button>'
+            '<a class="hub-link" href="/hub" title="통합 Hub 대시보드로 이동">🗂 Hub</a>'
+            '<button type="button" class="close-btn" title="이 문서 탭 닫기" onclick="window.close()">✕</button>'
             '</nav></header>'
         )
 
@@ -5409,8 +5436,12 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
   .dash-hdr {{ position: sticky; top: 0; z-index: 100; display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; padding: 0.8rem 1.2rem; margin: 0 -1rem 1rem; background: hsl(273,60%,45%); color: #fff; }}
   .dash-hdr h1 {{ margin: 0; font-size: 1.15rem; flex: 1 1 auto; min-width: 0; color: #fff; }}
   .hdr-actions {{ display: flex; align-items: center; gap: 0.5rem; flex: 0 0 auto; }}
-  .hdr-actions .proj-badge, .hdr-actions .sess-link, .hdr-actions .hub-link, .hdr-actions button {{ color: #fff; text-decoration: none; cursor: pointer; white-space: nowrap; background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.35); padding: 0.2rem 0.6rem; border-radius: 6px; font-size: 0.85rem; }}
+  .hdr-actions .proj-badge, .hdr-actions .sess-link, .hdr-actions .hub-link, .hdr-actions button {{ display: inline-flex; align-items: center; line-height: 1; color: #fff; text-decoration: none; cursor: pointer; white-space: nowrap; background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.35); padding: 0.2rem 0.6rem; border-radius: 6px; font-size: 0.85rem; }}
   .hdr-actions .proj-badge:hover, .hdr-actions .sess-link:hover, .hdr-actions .hub-link:hover, .hdr-actions button:hover {{ background: rgba(255,255,255,0.28); text-decoration: underline; }}
+  /* Issue214: 🔗 복사·✕ 닫기 아이콘 버튼 — 정사각 정렬 + 닫기는 맨 오른쪽 분리 */
+  .hdr-actions .copy-link, .hdr-actions .close-btn {{ justify-content: center; padding: 0.2rem 0.5rem; }}
+  .hdr-actions .close-btn {{ margin-left: 0.6rem; }}
+  .hdr-actions .close-btn:hover {{ background: rgba(255,90,90,0.45); border-color: #fff; text-decoration: none; }}
   /* Issue138: 컨트롤바 */
   .dctl-bar {{ display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; padding: 0.6rem 0.8rem; background: #f5f3fa; border: 1px solid #e0d8f0; border-radius: 8px; }}
   .dctl {{ font-size: 0.88rem; padding: 0.35rem 0.8rem; border-radius: 6px; cursor: pointer; border: 1px solid #ccc; background: #fff; font-weight: 600; }}
