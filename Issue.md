@@ -5,28 +5,33 @@ date: 2026-03-27
 ---
 
 # Issue Management
-* Issue HWM: 210
+* Issue HWM: 213
 * 오래된 Issue: `_doc_work/Issue_OLD.md` (General)
 * Save Point:
     - 3e69d0f (2026-04-24) Feat: graphify 토큰 절감 SCAR 프로젝트 구현 (Issue11·12 등록)
     
 # 🤔 결정사항
-
+* Issue.md파일 공개 하기로 함(소스코드 수정시 너무 위험함.)
 * **htm-doc 빈 화면 ↔ VSCode OUTLINE 괴리는 추가 구현하지 않는다** : htm-doc 는 registry 화이트리스트만 serve(미등록=403), OUTLINE 은 파일 직접 파싱이라 구조상 독립. fallback 렌더링 등 우회 장치 불필요 — hub 서버 모드 끄고(`..hub off`) `file://` 직접 열거나 register-doc 등록하면 보임. 같은 조사·구현 시도 반복 금지. 상세: `_doc_work/debug_TECH.md` 2026-06-14 항목
-* Issue.md파일 공개 하기로 함. 
 
 # 🌱 이슈후보
 
 # 🚧 진행중
 
-## Issue209: hub 외부 링크 클릭 시 새 hub-shell 탭 충돌 — 기존 쉘 합류 (등록: 2026-06-24)
-* 목적: VSCode 등 외부에서 `/htm-doc?path=` 링크 클릭 시 OS 새 탭에 2번째 hub-shell 이 떠 단일 인스턴스 lease 가드("이미 hub 창 열림 / 여기서 인계") 오버레이가 발동. 기존 쉘에 합류시키고 새 탭엔 경량 확인 페이지를 serve해 충돌 제거.
+## Issue211: fpm 공개 배포 전 검증(release test) 구축 (등록: 2026-06-26)
+* 목적: fpm 공개(GitHub 미러 prj7 + 마켓 플러그인 fpm-core) 전, 임의 사용자 환경에서 설치·작동·설정·다국어가 정상이고 **공개 push 시 개인정보/시크릿 누출 0** 임을 보증. 기존 자산(check.sh 10항목 + hub test_*.py 7개) 위에 신규 테스트 5건 + release gate 통합.
+* depends: Issue213 (hub-internal standalone /hub 중복창 funnel — 공개 전 hub UX 선결. B-2 수동검증이 Issue213 fix 후라야 통과)
+* plan: `_doc_work/plan/fpm-release-test_plan.md`
+* task: `_doc_work/tasks/fpm-release-test_task.md`
+* arch: `_doc_arch/fpm-release-test.md`
 * 상세:
-    - 근원: `services/hub/server.py` `_handle_htm_doc` 의 302 가 `Location: /hub-shell` bare 로 보내 새 탭이 full hub-shell 이 됨 → lease 충돌 오버레이. 외부 `open` 은 OS 새 탭 강제라 브라우저 레벨 기존 탭 재사용 불가.
-    - 인프라: `/register-doc` 가 이미 hub-internal 시 기존 쉘에 `tab-open` SSE push (3383~) → 문서는 기존 쉘에 탭으로 들어감. 새 탭은 잉여.
+    - 검증 5영역: A 설치/제거 / B 작동회귀(Issue181~210 hub) / C 설정옵션 / D 다국어(i18n) / E 공개게이트(개인정보·시크릿 차단)
+    - E 가 release-critical 최우선 — guard·secret-scan·dir-gate·sanitize 4머신 자동테스트 0개. 전례: resource/·keyboard-maestro/ exclude 갭 유출(Issue163)
 * 구현 명세:
-    - 302 분기에서 살아있는 lease 보유자(`hub_single_window` on + last_seen ≤ ttl) 판정 추가. 보유자 있으면: `tab-open` SSE push(즉시 반영) + 경량 확인 HTML(`기존 hub 창에 열었습니다. 닫아도 됨`) serve. 보유자 없으면 종전 302 `/hub-shell`.
-    - 검증: `py_compile` + 보유자 없음 시 302 유지, 보유자 있을 때 확인 페이지(200) serve 확인.
+    - 신규: `sh/release-check.sh`(샌드박스 하니스) / `scripts/test_publish_gates.sh`(게이트 양·음성 픽스처) / `services/hub/test_i18n_parity.py`(en↔ko 패리티) / 설정 cast·mtime 갭 테스트 / hub UI 수동 체크리스트
+    - 우선순위 E>A>D>C>B. 완료: 자동영역 release-check exit 0 + 게이트 dry-run 누출 0 + report 사인오프
+    - triage: 복잡 (5영역·신규 5건·후속 공개 게이트 영향) → plan+task+report 전체 사이클
+* 진행: Phase 1(E 공개 게이트) 착수
 
 # 📕 중요
 
@@ -35,6 +40,14 @@ date: 2026-03-27
 # 📗 선택
 
 # ✅ 완료
+
+## Issue213: hub-internal 모드 standalone `/hub` 중복 창 제거 — 단일 쉘 funnel (등록: 2026-06-26, 해결: 2026-06-26, commit: ecae701) ✅
+* 목적: `hub_single_window=true` + `render_tab_mode=hub-internal` 인데도 `/hub-shell`(렌더 경로)과 `/hub`(루트/Hub링크 경로) 두 창 공존. `/hub` 는 이미 쉘 home 탭(iframe src=/hub?_shell=1)이므로 standalone 진입을 전부 `/hub-shell` 로 funnel → 단일 창 보장.
+* 구현 명세:
+    - 핵심: `_handle_hub` 진입부 — hub-internal + top-level(무마커) → `302 /hub-shell`. 임베드(`_shell=1`/Sec-Fetch-Dest:iframe)는 raw serve(loop 방지). htm-doc 와 동일 패턴
+    - 보조: 루트 `/` 302 hub-internal 분기(`/hub-shell`), static iframe src `/hub`→`/hub?_shell=1`, nav "🗂 Hub" 링크 ×3 `target="_blank"` 제거 (server.py + hook 637·803)
+    - 검증: hub test_*.py 8개 127 pass / 격리 라우팅 5경로 통과 / browser-tab 회귀 0 / 실서버(pid 70379) 재기동 후 `/hub`·`/`→302 /hub-shell 확인
+    - 후행: **Issue211 진행 가능** (B-2 수동검증 선결 완료)
 
 ## Issue212: gstack 잔재 제거 (Harness.md + .claude/ dead 참조) (등록: 2026-06-26, 해결: 2026-06-26, commit: c1264f7) ✅
 * 목적: gstack 은 Issue143(2026-06-12)에서 제거됨. Harness.md 의 `gstack ↔ nPTiR bridge` 블록(존재 안 하는 /gstack-plan·/gstack-report·/gstack-retro-report 3 커맨드) + 삭제된 `~/.claude/rules/gstack-nptir-rules.md` 를 가리키는 dead 참조 4건이 활성 SCAR 영역에 잔존 → 제거.
@@ -45,6 +58,15 @@ date: 2026-03-27
     - 보존: CLAUDE.md·sp-plan.md 의 "gstack 제거 — Issue143" 의도적 이력 마커는 미변경
 * 검증: `grep -rn "gstack" Harness.md .claude/` → 0건 (exit 1)
 * triage: 단순 (변경 4파일·방법 자명) → plan/task/report 불요
+
+## Issue209: hub 외부 링크 클릭 시 새 hub-shell 탭 충돌 — 기존 쉘 합류 (등록: 2026-06-24, 해결: 2026-06-24, commit: 3c95aa6) ✅
+* 목적: VSCode 등 외부에서 `/htm-doc?path=` 링크 클릭 시 OS 새 탭에 2번째 hub-shell 이 떠 단일 인스턴스 lease 가드("이미 hub 창 열림 / 여기서 인계") 오버레이가 발동. 기존 쉘에 합류시키고 새 탭엔 경량 확인 페이지를 serve해 충돌 제거.
+* 상세:
+    - 근원: `services/hub/server.py` `_handle_htm_doc` 의 302 가 `Location: /hub-shell` bare 로 보내 새 탭이 full hub-shell 이 됨 → lease 충돌 오버레이. 외부 `open` 은 OS 새 탭 강제라 브라우저 레벨 기존 탭 재사용 불가.
+    - 인프라: `/register-doc` 가 이미 hub-internal 시 기존 쉘에 `tab-open` SSE push → 문서는 기존 쉘에 탭으로 들어감. 새 탭은 잉여.
+* 구현 명세:
+    - `_handle_htm_doc` 302 분기에 `_hub_holder_alive(ip)` 판정 추가(`hub_single_window` on + lease last_seen ≤ ttl). 보유자 있으면: `tab-open` SSE push(즉시 반영) + 경량 확인 HTML(`HUB_OPENED_HTML`) serve. 보유자 없거나 단일창 off → 종전 302 `/hub-shell`.
+    - 검증: `py_compile` OK + bg SSE 로 lease 보유 시 200 확인 페이지 + `tab-open` 수신 / lease 만료 후 302 / `_shell=1` embed raw serve 3분기 모두 통과.
 
 ## Issue210: hub Settings 필드 tooltip 언어 불일치 — 영문 모드에 한글 설명 노출 (등록: 2026-06-24, 해결: 2026-06-24, commit: 54d1caf) ✅
 * 목적: hub Settings(Advanced 등) 일부 필드의 `?` tooltip 이 language=en 인데도 한글로 표시됨. i18n catalog 에 해당 키가 누락되어 schema 내장 한글 comment 로 fallback 되는 게 원인.
