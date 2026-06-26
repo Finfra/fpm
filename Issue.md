@@ -18,17 +18,6 @@ date: 2026-03-27
 
 # 🚧 진행중
 
-## Issue215: Project List 마스터 "hub" 토글 무력 — 시스템 OFF 마스킹 (등록: 2026-06-26)
-* 목적: Project List 헤더 마스터 "hub" 토글 클릭 시 화면 무변화("버튼 안 됨"). 사용자는 hub 전체 on/off 를 기대하나 dominant 플래그(`.hub-system-off`)를 무시하여 무력.
-* 상세:
-    - 근본 원인: `/htm-toggle-all` 은 per-cwd state 파일만 기록(정상 작동). 그러나 `_htm_state` 우선순위 `SYSTEM_OFF > per-cwd > default` 때문에 `~/.claude/.hub-system-off` 존재 시 모든 행이 "시스템 OFF" 로 마스킹 → 토글 ON 해도 전 행 off 잔류
-    - 마스터 토글은 라벨·툴팁(masterAllOn/Off)상 hub 전체 마스터인데 종속 per-cwd 만 건드림 → 시스템 플래그를 통제 못 함
-    - 시스템 OFF 가 막고 있다는 피드백 0 → "버튼 고장" 으로 오인
-* 구현 명세:
-    - `services/hub/server.py` `_handle_htm_toggle_all`(~3941): target=on → `.hub-system-off` 삭제(시스템 on 해제) + per-cwd on, target=off → `.hub-system-off` 생성 + per-cwd off. 마스터 토글을 진짜 마스터(= `..hub on/off` 동치)로 승격
-    - 검증: curl `/htm-toggle-all {state:on}` 후 전 행 `htm_off:false` 확인
-    - triage: 중간 (1파일이나 시스템 플래그 통제 = 후속 동작 영향). 자동 결정: 마스터 토글이 시스템 플래그까지 통제하도록 승격(라벨·사용자 기대 일치)
-
 ## Issue214: hub 렌더 문서 헤더 UX 개선 (Issue213 후속) (등록: 2026-06-26)
 * 목적: Issue213 으로 문서가 쉘 iframe 안에서 열리며 주소창이 `/hub-shell` 만 보임 → 브라우저로 문서 URL 직접 복사 불가. 헤더 액션 4종 개편.
 * 상세:
@@ -48,6 +37,17 @@ date: 2026-03-27
 # 📗 선택
 
 # ✅ 완료
+
+## Issue215: Project List 마스터 "hub" 토글 무력 — 시스템 OFF 마스킹 (등록: 2026-06-26, 해결: 2026-06-26, commit: 704a82f) ✅
+* 목적: Project List 헤더 마스터 "hub" 토글 클릭 시 화면 무변화("버튼 안 됨"). 사용자는 hub 전체 on/off 를 기대하나 dominant 플래그(`.hub-system-off`)를 무시하여 무력.
+* 상세:
+    - 근본 원인: `/htm-toggle-all` 은 per-cwd state 파일만 기록(정상 작동). 그러나 `_htm_state` 우선순위 `SYSTEM_OFF > per-cwd > default` 때문에 `~/.claude/.hub-system-off` 존재 시 모든 행이 "시스템 OFF" 로 마스킹 → 토글 ON 해도 전 행 off 잔류
+    - 마스터 토글은 라벨·툴팁(masterAllOn/Off)상 hub 전체 마스터인데 종속 per-cwd 만 건드림 → 시스템 플래그를 통제 못 함
+    - 시스템 OFF 가 막고 있다는 피드백 0 → "버튼 고장" 으로 오인
+* 구현 명세:
+    - `services/hub/server.py` `_handle_htm_toggle_all`: target=on → `.hub-system-off` 삭제(시스템 on 해제) + per-cwd on, target=off → `.hub-system-off` 생성 + per-cwd off. 마스터 토글을 진짜 마스터(= `..hub on/off` 동치)로 승격
+    - 검증: curl `/htm-toggle-all {state:on}` → `still_off:0` + 플래그 삭제, `{state:off}` → 36/36 off + 플래그 생성. 양방향 통과
+    - triage: 중간 (1파일이나 시스템 플래그 통제 = 후속 동작 영향). 자동 결정: 마스터 토글이 시스템 플래그까지 통제하도록 승격(라벨·사용자 기대 일치)
 
 ## Issue211: fpm 공개 배포 전 검증(release test) 구축 (등록: 2026-06-26, 해결: 2026-06-26, commit: dfa105d, 0943883) ✅
 * 목적: fpm 공개(GitHub 미러 prj7 + 마켓 플러그인 fpm-core) 전, 임의 사용자 환경에서 설치·작동·설정·다국어가 정상이고 **공개 push 시 개인정보/시크릿 누출 0** 임을 보증. 기존 자산(check.sh 10항목 + hub test_*.py 7개) 위에 신규 테스트 5건 + release gate 통합.
