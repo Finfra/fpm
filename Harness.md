@@ -75,10 +75,6 @@ date: 2026-04-18
 * nPTiR entry (needs stage)
   - /needs          (R1 routing: superpowers:brainstorming or writing-plans)
   - /sp-plan        (writing-plans direct)
-* gstack ↔ nPTiR bridge
-  - /gstack-plan
-  - /gstack-report
-  - /gstack-retro-report
 * design SSOT management (_doc_arch operations)
   - /design-doc
   - rule: doc-design-rules
