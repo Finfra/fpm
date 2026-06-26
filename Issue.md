@@ -36,6 +36,16 @@ date: 2026-03-27
 
 # ✅ 완료
 
+## Issue212: gstack 잔재 제거 (Harness.md + .claude/ dead 참조) (등록: 2026-06-26, 해결: 2026-06-26, commit: c1264f7) ✅
+* 목적: gstack 은 Issue143(2026-06-12)에서 제거됨. Harness.md 의 `gstack ↔ nPTiR bridge` 블록(존재 안 하는 /gstack-plan·/gstack-report·/gstack-retro-report 3 커맨드) + 삭제된 `~/.claude/rules/gstack-nptir-rules.md` 를 가리키는 dead 참조 4건이 활성 SCAR 영역에 잔존 → 제거.
+* 상세:
+    - Harness.md `gstack ↔ nPTiR bridge` 블록(4줄) 전체 삭제
+    - dead 참조 4건 제거: `.claude/rules/issue-rules.md`, `.claude/commands/issue-reg.md`, `.claude/commands/issue-fix.md`, `.claude/commands/issue-closer.md`
+    - 원본 룰은 `~/.claude/_doc_arch/z_done/` 로 아카이브됨 (참조만 죽음)
+    - 보존: CLAUDE.md·sp-plan.md 의 "gstack 제거 — Issue143" 의도적 이력 마커는 미변경
+* 검증: `grep -rn "gstack" Harness.md .claude/` → 0건 (exit 1)
+* triage: 단순 (변경 4파일·방법 자명) → plan/task/report 불요
+
 ## Issue210: hub Settings 필드 tooltip 언어 불일치 — 영문 모드에 한글 설명 노출 (등록: 2026-06-24, 해결: 2026-06-24, commit: 54d1caf) ✅
 * 목적: hub Settings(Advanced 등) 일부 필드의 `?` tooltip 이 language=en 인데도 한글로 표시됨. i18n catalog 에 해당 키가 누락되어 schema 내장 한글 comment 로 fallback 되는 게 원인.
 * 상세:
