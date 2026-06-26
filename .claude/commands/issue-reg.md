@@ -6,7 +6,6 @@ date: 2026-03-28
 ---
 
 > 글로벌 `/issue-reg-g` 커맨드가 있습니다. 본 로컬 커맨드는 ___pm 프로젝트 특화 절차(HWM·헬퍼 함수) 적용 후 필요 시 `-g` 버전에 위임합니다.
-> gStack v1.0.0 연동 규칙: `~/.claude/rules/gstack-nptir-rules.md` (plan/task/report 양방향 연결)
 
 **역할**: 새로운 이슈를 `Issue.md`에 등록합니다.
 

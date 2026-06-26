@@ -6,7 +6,6 @@ date: 2026-03-28
 ---
 
 > 글로벌 `/issue-fix-g` 커맨드가 있습니다. 본 로컬 커맨드는 ___pm 프로젝트 특화 절차 적용 후 필요 시 `-g` 버전에 위임합니다.
-> gStack v1.0.0 연동 규칙: `~/.claude/rules/gstack-nptir-rules.md`
 
 # 사전 준비
 
