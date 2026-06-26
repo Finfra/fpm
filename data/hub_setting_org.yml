@@ -41,4 +41,4 @@ bind_host: 127.0.0.1       # hub 서버 listen 인터페이스 — 127.0.0.1=루
 
 render_target: both          # ..show 표시 경로 — local-open(file:// 직접 open, 서버 불요·오프라인 안전) / hub(open 생략, URL 만 채팅 emit) / both(open + URL)
 
-language: ko               # hub UI 언어 — en(영어) / ko(한국어). 설계: _doc_arch/localization.md
+language: en               # hub UI 언어 — en(영어, 기본) / ko(한국어). 공개 미러 국제 사용자 대비 en 기본. 설계: _doc_arch/localization.md
