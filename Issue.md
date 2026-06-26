@@ -5,7 +5,7 @@ date: 2026-03-27
 ---
 
 # Issue Management
-* Issue HWM: 213
+* Issue HWM: 214
 * 오래된 Issue: `_doc_work/Issue_OLD.md` (General)
 * Save Point:
     - 3e69d0f (2026-04-24) Feat: graphify 토큰 절감 SCAR 프로젝트 구현 (Issue11·12 등록)
@@ -18,7 +18,27 @@ date: 2026-03-27
 
 # 🚧 진행중
 
-## Issue211: fpm 공개 배포 전 검증(release test) 구축 (등록: 2026-06-26)
+## Issue214: hub 렌더 문서 헤더 UX 개선 (Issue213 후속) (등록: 2026-06-26)
+* 목적: Issue213 으로 문서가 쉘 iframe 안에서 열리며 주소창이 `/hub-shell` 만 보임 → 브라우저로 문서 URL 직접 복사 불가. 헤더 액션 4종 개편.
+* 상세:
+    - (1) 🔗 "문서 링크 복사" 버튼 추가 — `_shell=1` 마커 제거한 문서 URL 을 clipboard 복사, 실패 시 prompt fallback
+    - (2) 닫기 버튼 `닫기 ✕` → `✕` 아이콘화 + 맨 오른쪽 끝 분리(`margin-left`) + 높이 정렬
+    - (3) 전 액션(📁프로젝트·🛰활성세션·🔗복사·🗂Hub·✕닫기) `title` 툴팁 부착
+    - (4) 아이콘 높이 정렬: `display:inline-flex; align-items:center; line-height:1`
+* 구현 명세:
+    - `services/hub/server.py` `header_html`(~5294) + `.dash-hdr` CSS(~5412) 2곳 수정
+    - triage: 단순 (1파일·방법 자명) → plan/task 생략
+
+
+# 📕 중요
+
+# 📙 일반
+
+# 📗 선택
+
+# ✅ 완료
+
+## Issue211: fpm 공개 배포 전 검증(release test) 구축 (등록: 2026-06-26, 해결: 2026-06-26, commit: dfa105d, 0943883) ✅
 * 목적: fpm 공개(GitHub 미러 prj7 + 마켓 플러그인 fpm-core) 전, 임의 사용자 환경에서 설치·작동·설정·다국어가 정상이고 **공개 push 시 개인정보/시크릿 누출 0** 임을 보증. 기존 자산(check.sh 10항목 + hub test_*.py 7개) 위에 신규 테스트 5건 + release gate 통합.
 * depends: Issue213 (hub-internal standalone /hub 중복창 funnel — 공개 전 hub UX 선결. B-2 수동검증이 Issue213 fix 후라야 통과)
 * plan: `_doc_work/plan/fpm-release-test_plan.md`
@@ -32,15 +52,7 @@ date: 2026-03-27
     - 신규: `sh/release-check.sh`(샌드박스 하니스) / `scripts/test_publish_gates.sh`(게이트 양·음성 픽스처) / `services/hub/test_i18n_parity.py`(en↔ko 패리티) / 설정 cast·mtime 갭 테스트 / hub UI 수동 체크리스트
     - 우선순위 E>A>D>C>B. 완료: 자동영역 release-check exit 0 + 게이트 dry-run 누출 0 + report 사인오프
     - triage: 복잡 (5영역·신규 5건·후속 공개 게이트 영향) → plan+task+report 전체 사이클
-* 진행: 자동 영역(A~E) 전부 ✅ — release-check 4 stage exit 0. 신규 테스트 4 + funnel smoke. A-4 가 org `language: ko→en` 결함 검출·수정(commit 0943883). 잔여=hub Settings 모달 순수 시각 항목(공개 직전 육안 1회)
-
-# 📕 중요
-
-# 📙 일반
-
-# 📗 선택
-
-# ✅ 완료
+* 결과: 자동 영역(A~E) 전부 ✅ — release-check 4 stage exit 0. 신규 테스트 5종(release-check·publish-gates 18/18·mirror-install 10/10·i18n-parity 8/8·funnel-smoke 6/6). A-4 가 org `language: ko→en` 결함 검출·수정(0943883). fpm 미러 v0.6.5 반영(forward, push 본인). 선행 Issue213 ✅(ecae701). 잔여=hub Settings 모달 순수 시각 항목(공개 직전 육안 1회 — Issue211 범위 외).
 
 ## Issue213: hub-internal 모드 standalone `/hub` 중복 창 제거 — 단일 쉘 funnel (등록: 2026-06-26, 해결: 2026-06-26, commit: ecae701) ✅
 * 목적: `hub_single_window=true` + `render_tab_mode=hub-internal` 인데도 `/hub-shell`(렌더 경로)과 `/hub`(루트/Hub링크 경로) 두 창 공존. `/hub` 는 이미 쉘 home 탭(iframe src=/hub?_shell=1)이므로 standalone 진입을 전부 `/hub-shell` 로 funnel → 단일 창 보장.
