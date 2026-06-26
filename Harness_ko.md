@@ -8,11 +8,15 @@ date: 2026-04-18
 
 # 관련 문서
 
+* `_doc_arch/scar-layering-design.md` — **SCAR 레이어링 설계 SSOT** (접미사 체계·참조 방향·책임 분담·레이어링 판정 기준). 해당 문서가 WHY/HOW(설계), 본 문서가 WHAT(카탈로그).
 * `_doc_arch/Harness/Harness.md` — Harness 상세 설계
 * `_doc_arch/Harness/harness_architecture.mermaid` — 아키텍처 다이어그램
 * `_doc_arch/Harness/fapps-shared-tech.excalidraw` — fApp 공유 기술 다이어그램
 
 # Harness Define
+
+> **역할 분리 (Issue165)**: 본 문서 = **카탈로그**(실제 SCAR 인스턴스 + 프로젝트별 매핑). 레이어링 설계 근거(접미사 체계·참조 방향·판정 기준)는 `_doc_arch/scar-layering-design.md`(SSOT) 에 둠. 아래 범례+다이어그램은 네비게이션 보조로만 유지 — 설계 서술 중복 금지.
+
 * global General (공통) : g
 * global Domain(분야)
    - Web         : w
@@ -261,7 +265,7 @@ PM 도구 프로젝트 쌍. `___pm`(prj1) = 개발 원본 SSOT, `fpm`(prj7, `~/_
     - /issue-closer-w
 * capture
 
-# ollamaClaude (g 도메인, 외주)
+# air-gap-claudeCode (g 도메인, 외주)
 ## main
 * dev
 * issue
