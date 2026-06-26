@@ -24,6 +24,7 @@ date: 2026-03-27
 * plan: `_doc_work/plan/fpm-release-test_plan.md`
 * task: `_doc_work/tasks/fpm-release-test_task.md`
 * arch: `_doc_arch/fpm-release-test.md`
+* report: `_doc_work/report/fpm-release-test_issue211_report.md`
 * 상세:
     - 검증 5영역: A 설치/제거 / B 작동회귀(Issue181~210 hub) / C 설정옵션 / D 다국어(i18n) / E 공개게이트(개인정보·시크릿 차단)
     - E 가 release-critical 최우선 — guard·secret-scan·dir-gate·sanitize 4머신 자동테스트 0개. 전례: resource/·keyboard-maestro/ exclude 갭 유출(Issue163)
@@ -31,7 +32,7 @@ date: 2026-03-27
     - 신규: `sh/release-check.sh`(샌드박스 하니스) / `scripts/test_publish_gates.sh`(게이트 양·음성 픽스처) / `services/hub/test_i18n_parity.py`(en↔ko 패리티) / 설정 cast·mtime 갭 테스트 / hub UI 수동 체크리스트
     - 우선순위 E>A>D>C>B. 완료: 자동영역 release-check exit 0 + 게이트 dry-run 누출 0 + report 사인오프
     - triage: 복잡 (5영역·신규 5건·후속 공개 게이트 영향) → plan+task+report 전체 사이클
-* 진행: Phase 1(E 공개 게이트) 착수
+* 진행: 자동 영역(A~E) 전부 ✅ — release-check 4 stage exit 0. 신규 테스트 4 + funnel smoke. A-4 가 org `language: ko→en` 결함 검출·수정(commit 0943883). 잔여=hub Settings 모달 순수 시각 항목(공개 직전 육안 1회)
 
 # 📕 중요
 
