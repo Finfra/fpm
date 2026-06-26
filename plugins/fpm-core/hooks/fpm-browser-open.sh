@@ -17,7 +17,7 @@
 # url 을 마지막 위치인자로 둔 이유: hook instruction `{open_cmd} "url"` 패턴(url 후행)과
 # 직접 호환 — HTM_OPEN_CMD="bash helper -a chrome -f false -r true" 뒤에 Claude 가 url 을 붙임.
 #
-# 순수 helper — hub_setting.yml 을 읽지 않음. default_browser/browser_focus/browser_tab_reuse
+# 순수 helper — hub_setting.yml 을 읽지 않음. default_browser/browser_open/browser_tab_reuse
 # 해석은 호출자(hook 또는 fhub 함수) 책임. 그래야 인자만으로 단독 테스트 가능.
 set -euo pipefail
 
@@ -70,36 +70,14 @@ if [[ -z "$match" ]]; then
   match=$(printf '%s' "$url" | sed -E 's#^([a-z]+://[^/]+).*#\1#')
 fi
 
-# Issue: 진짜 백그라운드 열기 (깜빡임 0). Chromium(Chrome/Edge)은 open -g 를 무시하고
-#   self-activate 하므로(→ Issue173 trap 복원 = "전면화 후 복구" 깜빡임), open 대신
-#   AppleScript make new tab(activate 미호출)로 탭만 생성 → 전면화 자체를 회피.
-#   미실행 시엔 launch 가 activate 를 동반하므로 open -g 폴백(어차피 한 번은 떠야 함).
-#   창 0개면 make new tab 대상 부재 → open -g 로 새 창(이 경우만 1회 전면화 감수).
+# Issue166: Chrome/Edge AppleScript 구동 전면 제거 — macOS 26.6 + Chrome 149 에서
+#   scripting bridge(make new tab / 탭순회 reuse)로 보낸 AppleEvent 를 Chrome main thread 가
+#   서비스하다 EXC_BREAKPOINT(AX MIG CHECK 실패)로 크래시함(반복 재현). 모든 앱을 순수
+#   `open -g`(LaunchServices, AppleEvent 미발생)로 통일. self-activate 깜빡임은 trap 포커스
+#   복원으로 흡수. OS 탭 관리는 render_tab_mode:hub-internal(hub 쉘 iframe 탭)이 담당하므로
+#   make new tab / 탭 재사용은 레거시 — 제거해도 기능 손실 없음.
 _bg_open() {
-  case "$app" in
-    "Google Chrome"|"Microsoft Edge")
-      if ! pgrep -xq "$app" || [[ "$(osascript -e "tell application \"$app\" to count windows" 2>/dev/null || echo 0)" == "0" ]]; then
-        open -g -a "$app" "$url"
-        return
-      fi
-      osascript - "$url" "$app" <<'OSA' >/dev/null 2>&1 || open -g -a "$app" "$url"
-on run argv
-  set theURL to item 1 of argv
-  set appName to item 2 of argv
-  -- 동적 앱명(Chrome/Edge)은 Chrome 사전으로 컴파일 후 런타임 전달 (Chromium 공통 사전)
-  using terms from application "Google Chrome"
-    tell application appName
-      tell front window to make new tab with properties {URL:theURL}
-      -- activate 미호출 → 전면화 안 됨 → 포커스 미탈취 (Firefox 의 open -g 동등)
-    end tell
-  end using terms from
-end run
-OSA
-      ;;
-    *)
-      open -g -a "$app" "$url"  # Firefox 등은 open -g 존중
-      ;;
-  esac
+  open -g -a "$app" "$url"   # 전 브라우저 공통 — AppleScript 미사용
 }
 
 # Firefox / reuse=false → open 폴백 (focus 에 따라 분기)
@@ -118,48 +96,10 @@ fi
 
 case "$app" in
   "Google Chrome"|"Microsoft Edge")
-    # Chromium 계열 — KM 매크로와 동일 로직 + URL 덮어쓰기(htm-doc 단일 탭 재사용)
-    # Issue150: doFocus=false 면 윈도우 raise/탭 전환 skip (URL 만 덮어씀 → 포커스 미탈취).
-    #           탭 미발견(notfound)은 osascript 가 반환 → shell 이 _fallback_open(-g) 처리.
-    osa_result=$(osascript - "$url" "$match" "$focus" "$app" <<'OSA'
-on run argv
-  set theURL to item 1 of argv
-  set theMatch to item 2 of argv
-  set doFocus to (item 3 of argv is "true")
-  set appName to item 4 of argv
-  -- 동적 앱명(Chrome/Edge)은 Chrome 사전으로 컴파일 후 런타임 전달 (Chromium 공통 사전)
-  using terms from application "Google Chrome"
-    tell application appName
-      set found to false
-      repeat with w in windows
-        set i to 0
-        repeat with t in tabs of w
-          set i to i + 1
-          if (URL of t) starts with theMatch then
-            set URL of t to theURL
-            -- Issue150: 전면화(탭 활성·윈도우 raise)는 focus 요청 시에만
-            if doFocus then
-              set active tab index of w to i
-              set index of w to 1
-            end if
-            set found to true
-            exit repeat
-          end if
-        end repeat
-        if found then exit repeat
-      end repeat
-      if not found then return "notfound"
-      if doFocus then activate
-    end tell
-  end using terms from
-  return "reused"
-end run
-OSA
-)
-    # 탭 미발견 → focus 정책 존중하는 폴백 열기 (doFocus=false 면 open -g 백그라운드)
-    if [[ "$osa_result" == "notfound" ]]; then
-      _fallback_open
-    fi
+    # Issue166: Chromium 탭 재사용 AppleScript(windows×tabs 순회 `URL of t`) 제거 —
+    #   AppleEvent 폭탄이 Chrome 149/macOS 26.6 을 크래시시킴. 순수 open 폴백으로 강등.
+    #   단일 탭 보장은 render_tab_mode:hub-internal(hub 쉘 단일창) + hub_single_window 가 담당.
+    _fallback_open
     ;;
   "Safari")
     # Safari — Apple Events 자동화 허용(개발자 메뉴) 사전 설정 필요할 수 있음
