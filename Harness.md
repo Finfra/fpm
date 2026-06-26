@@ -8,11 +8,15 @@ date: 2026-04-18
 
 # Related Documents
 
+* `_doc_arch/scar-layering-design.md` — **SCAR layering DESIGN SSOT** (suffix system, reference direction, responsibility split, layering decision criteria). This document is the WHY/HOW; the present file is the WHAT.
 * `_doc_arch/Harness/Harness.md` — Harness detailed design
 * `_doc_arch/Harness/harness_architecture.mermaid` — architecture diagram
 * `_doc_arch/Harness/fapps-shared-tech.excalidraw` — fApp shared-tech diagram
 
 # Harness Define
+
+> **Role separation (Issue165)**: This file = **catalog** (the actual SCAR instances + per-project mapping). The layering design rationale (suffix system, reference direction, decision criteria) lives in `_doc_arch/scar-layering-design.md` (SSOT). The legend + diagram below are kept only as a navigation aid — do not duplicate design prose here.
+
 * global General (common) : g
 * global Domain
    - Web         : w
@@ -257,7 +261,7 @@ The public distribution that bundle-installs the global `~/.claude` hub/dashboar
     - /issue-closer-w
 * capture
 
-# ollamaClaude (g domain, contract work)
+# air-gap-claudeCode (g domain, contract work)
 ## main
 * dev
 * issue
