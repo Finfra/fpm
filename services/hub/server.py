@@ -141,7 +141,7 @@ HUB_SHELL_HTML = r"""<!DOCTYPE html>
 </head>
 <body>
 <div id="tabbar"></div>
-<iframe id="view" src="/hub"></iframe>
+<iframe id="view" src="/hub?_shell=1"></iframe>
 <div id="overlay">
   <div id="ovmsg"></div>
   <button id="ovbtn" type="button">여기서 인계</button>
@@ -1805,8 +1805,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         parsed = urlparse(self.path)
         if parsed.path == "/":
+            # Issue213: hub-internal 모드면 쉘(/hub-shell)로, 아니면 종전 /hub 로.
+            #   standalone /hub 진입은 _handle_hub guard 가 어차피 쉘로 302 하지만,
+            #   루트는 여기서 직접 분기해 불필요한 더블 302 를 줄인다.
+            dest = "/hub-shell" if _load_hub_setting().get("render_tab_mode") == "hub-internal" else "/hub"
             self.send_response(302)
-            self.send_header("Location", "/hub")
+            self.send_header("Location", dest)
             self.end_headers()
             return
         # Issue182: fPm 프로젝트 아이콘 서빙 (favicon + 헤더 브랜딩 공용)
@@ -3077,6 +3081,19 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_hub(self, parsed):
         # Issue42/47: hub_setting.yml 값으로 HUB_HTML placeholder 치환
         setting = _load_hub_setting()
+        # Issue213: hub-internal 모드에서 standalone /hub(=탭바 없는 hub 홈)를 top-level 로
+        #   직접 열면 /hub-shell(쉘) 과 두 창이 공존한다. /hub 는 이미 쉘의 home 탭(iframe
+        #   src=/hub?_shell=1)이므로, 최상위 직접 열람은 /hub-shell 로 302 → 단일 쉘로 funnel.
+        #   임베드(_shell=1 마커 1순위 / Sec-Fetch-Dest 보조)는 raw serve 유지(redirect loop 방지).
+        #   htm-doc(_handle_htm_doc) 와 동일 패턴.
+        qs = parse_qs(parsed.query)
+        _is_embed = ((qs.get("_shell") or [""])[0] == "1"
+                     or self.headers.get("Sec-Fetch-Dest") in ("iframe", "embed"))
+        if not _is_embed and setting.get("render_tab_mode") == "hub-internal":
+            self.send_response(302)
+            self.send_header("Location", "/hub-shell")
+            self.end_headers()
+            return
         html_str = (HUB_HTML
             .replace("{FEED_DEFAULT_VISIBLE}",
                      "true" if setting.get("feed_default_visible", True) else "false")
@@ -5279,7 +5296,7 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             '<nav class="hdr-actions">'
             '<a class="proj-badge" href="#" title="VSCode 로 ' + proj_label + ' 열기" onclick=\'' + onclick_open + '\'>📁 ' + proj_label + '</a>'
             '<a class="sess-link" href="/hub" title="활성 세션 목록 (hub)">🛰 활성 세션</a>'
-            '<a class="hub-link" href="/hub" target="_blank">🗂 Hub</a>'
+            '<a class="hub-link" href="/hub">🗂 Hub</a>'  # Issue213: target="_blank" 제거 — 새 OS 창(중복) 차단, 쉘 iframe 안 in-place 합류
             '<button type="button" onclick="window.close()">닫기 ✕</button>'
             '</nav></header>'
         )
@@ -7592,6 +7609,23 @@ function setRenderForm() {
     const c = document.getElementById('setf-' + sel.dataset.key + '-c');
     if (c) c.style.display = sel.value === '__custom__' ? '' : 'none';
   }));
+  // Issue153: advanced 경고 배너는 위험 조합일 때만 표시 (정적 상시노출 → 조건부)
+  ['bind_host', 'advertise_host'].forEach(k => {
+    const el = document.getElementById('setf-' + k);
+    if (el) el.addEventListener('input', setUpdateWarn);
+  });
+  setUpdateWarn();
+}
+// Issue153: bind_host 에 0.0.0.0 포함 + advertise_host 빈값일 때만 경고 표시.
+function setUpdateWarn() {
+  const warn = document.querySelector('#set-pane-advanced .set-warn');
+  if (!warn) return;
+  const bh = (document.getElementById('setf-bind_host') || {}).value || '';
+  const ah = ((document.getElementById('setf-advertise_host') || {}).value || '').trim();
+  // bind_host 는 "0.0.0.0" 또는 "[127.0.0.1, 0.0.0.0]" 형태 — 구분자 정규화 후 토큰 일치
+  const bhNorm = ' ' + bh.split('[').join(' ').split(']').join(' ').split(',').join(' ') + ' ';
+  const hasAny = bhNorm.indexOf(' 0.0.0.0 ') >= 0;
+  warn.style.display = (hasAny && !ah) ? '' : 'none';
 }
 function setReadForm() {
   // 현재 폼 값 수집 → {key: value}
