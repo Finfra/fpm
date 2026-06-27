@@ -51,7 +51,7 @@ date: 2026-03-27
 # 📗 선택
 
 # ✅ 완료
-## Issue217: hub-shell 내부 탭 문서 닫기 버튼 무동작 (Issue214 ✕ 닫기 기능 결함) (등록: 2026-06-27, 해결: 2026-06-27, commit: TBD) ✅
+## Issue217: hub-shell 내부 탭 문서 닫기 버튼 무동작 (Issue214 ✕ 닫기 기능 결함) (등록: 2026-06-27, 해결: 2026-06-27, commit: 81d8e0c) ✅
 * 목적: hub 렌더 문서 헤더의 닫기 버튼(canonical pink 헤더 `닫기 ✕`·dash 헤더 `✕`·Issue214 추가분)이 `/hub-shell` iframe 탭 안에서 클릭해도 아무 동작 안 함. 사용자가 "닫기 작동 안 함 + Issue214 미해결"로 보고.
 * 상세:
     - 근본 원인: 닫기 버튼이 `onclick="window.close()"` 호출. 문서는 부모 쉘(`/hub-shell`)이 관리하는 iframe 탭 안에 로드 → iframe 은 자신이 속한 탭을 못 닫음 → `window.close()` no-op. Issue214 가 추가한 ✕ 버튼도 시각만 존재·기능 깨짐(사용자의 "214 미해결" 체감 원인).
