@@ -18,18 +18,6 @@ date: 2026-03-27
 
 # 🚧 진행중
 
-## Issue214: hub 렌더 문서 헤더 UX 개선 (Issue213 후속) (등록: 2026-06-26)
-* 목적: Issue213 으로 문서가 쉘 iframe 안에서 열리며 주소창이 `/hub-shell` 만 보임 → 브라우저로 문서 URL 직접 복사 불가. 헤더 액션 4종 개편.
-* 상세:
-    - (1) 🔗 "문서 링크 복사" 버튼 추가 — `_shell=1` 마커 제거한 문서 URL 을 clipboard 복사, 실패 시 prompt fallback
-    - (2) 닫기 버튼 `닫기 ✕` → `✕` 아이콘화 + 맨 오른쪽 끝 분리(`margin-left`) + 높이 정렬
-    - (3) 전 액션(📁프로젝트·🛰활성세션·🔗복사·🗂Hub·✕닫기) `title` 툴팁 부착
-    - (4) 아이콘 높이 정렬: `display:inline-flex; align-items:center; line-height:1`
-* 구현 명세:
-    - `services/hub/server.py` `header_html`(~5294) + `.dash-hdr` CSS(~5412) 2곳 수정
-    - triage: 단순 (1파일·방법 자명) → plan/task 생략
-
-
 # 📕 중요
 
 # 📙 일반
@@ -37,6 +25,18 @@ date: 2026-03-27
 # 📗 선택
 
 # ✅ 완료
+
+## Issue214: hub 렌더 문서 헤더 UX 개선 (Issue213 후속) (등록: 2026-06-26, 해결: 2026-06-27, commit: 704a82f) ✅
+* 목적: Issue213 으로 문서가 쉘 iframe 안에서 열리며 주소창이 `/hub-shell` 만 보임 → 브라우저로 문서 URL 직접 복사 불가. 헤더 액션 4종 개편.
+* 상세:
+    - (1) 🔗 "문서 링크 복사" 버튼 추가 — `_shell=1` 마커 제거한 문서 URL 을 clipboard 복사, 실패 시 prompt fallback
+    - (2) 닫기 버튼 `닫기 ✕` → `✕` 아이콘화 + 맨 오른쪽 끝 분리(`margin-left`) + 높이 정렬
+    - (3) 전 액션(📁프로젝트·🛰활성세션·🔗복사·🗂Hub·✕닫기) `title` 툴팁 부착
+    - (4) 아이콘 높이 정렬: `display:inline-flex; align-items:center; line-height:1`
+* 구현 명세:
+    - `services/hub/server.py` `_serve_dash_inline` 내 `header_html`(5320) + `.dash-hdr`/`.hdr-actions` CSS(5436~5445) 수정
+    - triage: 단순 (1파일·방법 자명) → plan/task 생략
+* 결과: 4항목 전부 구현·커밋(704a82f, Issue215 와 번들). 검증 — 정적 grep 으로 `copy-link`(5325)·`close-btn`+`margin-left:0.6rem`(5327,5444)·5개 액션 title·`inline-flex;align-items:center;line-height:1`(5439) 확인. hub 커스텀 테스트 47/47 pass(settings_loader 10·settings_writer 17·i18n_parity 8·allowlist 12). server.py uncommitted 0.
 
 ## Issue215: Project List 마스터 "hub" 토글 무력 — 시스템 OFF 마스킹 (등록: 2026-06-26, 해결: 2026-06-26, commit: 704a82f) ✅
 * 목적: Project List 헤더 마스터 "hub" 토글 클릭 시 화면 무변화("버튼 안 됨"). 사용자는 hub 전체 on/off 를 기대하나 dominant 플래그(`.hub-system-off`)를 무시하여 무력.
