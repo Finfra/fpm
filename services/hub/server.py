@@ -343,6 +343,13 @@ HUB_SHELL_HTML = r"""<!DOCTYPE html>
     if(d && d.type === "fpm-open-tab" && d.view_url){
       addTab({view_url:d.view_url, title:d.title, sid:d.sid, content_type:d.content_type});
     }
+    // Issue216: 문서 헤더의 닫기 버튼(window.close())은 iframe 안에선 no-op →
+    //   serve 시 주입된 close 쉼(CLOSE_SHIM)이 이 메시지를 부모 쉘로 보낸다.
+    //   활성 탭(=메시지를 보낸 iframe)을 닫는다. home 탭은 닫지 않음.
+    if(d && d.type === "fpm-close-tab"){
+      var a = active();
+      if(a && a.id !== "home"){ closeTab(a.id); }
+    }
   });
 
   // Issue199: 폴링 fallback — SSE 끊김(서버 재시작) 구간에 누락된 신규 렌더 문서를
@@ -413,6 +420,25 @@ HUB_OPENED_HTML = r"""<!DOCTYPE html>
 </body>
 </html>
 """
+
+# Issue216: hub-shell iframe 안에서 문서 헤더의 닫기 버튼은 window.close() 를 호출하나,
+#   iframe 은 자신이 속한 탭(부모 쉘이 관리)을 닫을 수 없어 no-op 였다(Issue214 ✕ 닫기·
+#   canonical 렌더 헤더 닫기 공통 결함). serve 시 window.close 를 override 하는 쉼을 주입해
+#   임베드(_shell)면 부모 쉘로 fpm-close-tab postMessage(쉘이 활성 탭 닫음), 최상위
+#   standalone 이면 네이티브 close 를 유지한다. 헤더 템플릿(prj3 자산) 수정 불요.
+CLOSE_SHIM = (
+    b"<script>(function(){var _c=window.close;window.close=function(){"
+    b"if(window.parent&&window.parent!==window){"
+    b"try{window.parent.postMessage({type:'fpm-close-tab'},'*');}catch(e){}"
+    b"}else{try{_c.call(window);}catch(e){}}};})();</script>"
+)
+
+
+def _inject_before_body_end(body: bytes, snippet: bytes) -> bytes:
+    """snippet 을 </body> 직전에 삽입(없으면 끝에 append)."""
+    idx = body.lower().rfind(b"</body>")
+    return body[:idx] + snippet + body[idx:] if idx >= 0 else body + snippet
+
 
 pids_lock = threading.Lock()
 pids = {}  # cwd_hash -> set[int]  (Issue16: stop 제어 대상으로 등록된 runner PIDs)
@@ -4659,6 +4685,8 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         except FileNotFoundError:
             self._send_json(404, {"error": "file not found"})
             return
+        # Issue216: 닫기 버튼이 쉘 탭을 닫도록 window.close override 쉼 주입.
+        body = _inject_before_body_end(body, CLOSE_SHIM)
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -5469,6 +5497,8 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
 </body>
 </html>"""
         body = page.encode("utf-8")
+        # Issue216: dash 헤더 닫기(✕)도 쉘 탭을 닫도록 window.close override 쉼 주입.
+        body = _inject_before_body_end(body, CLOSE_SHIM)
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))

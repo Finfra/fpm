@@ -5,7 +5,7 @@ date: 2026-03-27
 ---
 
 # Issue Management
-* Issue HWM: 215
+* Issue HWM: 217
 * 오래된 Issue: `_doc_work/Issue_OLD.md` (General)
 * Save Point:
     - 3e69d0f (2026-04-24) Feat: graphify 토큰 절감 SCAR 프로젝트 구현 (Issue11·12 등록)
@@ -17,15 +17,6 @@ date: 2026-03-27
 # 🌱 이슈후보
 
 # 🚧 진행중
-
-# 📕 중요
-
-# 📙 일반
-
-# 📗 선택
-
-# ✅ 완료
-
 ## Issue214: hub 렌더 문서 헤더 UX 개선 (Issue213 후속) (등록: 2026-06-26, 해결: 2026-06-27, commit: 704a82f) ✅
 * 목적: Issue213 으로 문서가 쉘 iframe 안에서 열리며 주소창이 `/hub-shell` 만 보임 → 브라우저로 문서 URL 직접 복사 불가. 헤더 액션 4종 개편.
 * 상세:
@@ -37,6 +28,46 @@ date: 2026-03-27
     - `services/hub/server.py` `_serve_dash_inline` 내 `header_html`(5320) + `.dash-hdr`/`.hdr-actions` CSS(5436~5445) 수정
     - triage: 단순 (1파일·방법 자명) → plan/task 생략
 * 결과: 4항목 전부 구현·커밋(704a82f, Issue215 와 번들). 검증 — 정적 grep 으로 `copy-link`(5325)·`close-btn`+`margin-left:0.6rem`(5327,5444)·5개 액션 title·`inline-flex;align-items:center;line-height:1`(5439) 확인. hub 커스텀 테스트 47/47 pass(settings_loader 10·settings_writer 17·i18n_parity 8·allowlist 12). server.py uncommitted 0.
+# 📕 중요
+
+# 📙 일반
+
+## Issue216: hub 렌더 문서를 VSCode Simple Browser 패널에 띄우는 브리지 신설 (등록: 2026-06-27)
+* 목적: 글로벌 Issue170(~/.claude) 에서 hub 가 채팅에 출력하는 문서 링크가 클릭 시 외부 브라우저로 빠져나감. 사용자는 VSCode 안에서 작업하므로 렌더된 문서가 VSCode 내부(Simple Browser 패널)에 뜨길 원함. 조사 결과 현재 hub 서버의 VSCode 제어 메커니즘으로는 Simple Browser 를 트리거할 수 없어 본 브리지 신설이 글로벌 Issue170 의 선행 조건이 됨.
+* 상세:
+    - 출처: 글로벌 `~/.claude` 세션의 Issue170 구현 조사 (2026-06-27). 사용자가 폼으로 타겟 "Simple Browser (렌더)" 선택.
+    - 조사 결과: `/open-project` = `open -a "Visual Studio Code" <cwd>` (macOS 앱 실행), `/open-session` = 확장 URI `vscode://anthropic.claude-code/open?session=<sid>`. **Simple Browser(`simple-browser.show`)는 `vscode://` URI 핸들러가 없어** 서버/클릭 링크에서 직접 호출 불가. VSCode 채팅의 `command:` URI 도 차단됨.
+    - 관련 파일: `plugins/fpm-core/services/hub/server.py` (`_handle_open_project` 2872행 인근 — 신규 핸들러 추가 위치).
+* 구현 명세:
+    - 신규 서버 엔드포인트 (예: `POST /open-simple-browser?path=<abs.htm>`) — localhost only + register-doc 화이트리스트 검증(htm-doc 와 동일 보안 모델) 후 VSCode 에 Simple Browser 로 해당 URL(`/htm-doc?path=...`)을 열도록 지시.
+    - Simple Browser 트리거 수단 후보 (구현 세션에서 1개 선택·검증):
+        1. 전용 VSCode 확장 명령 신설 → `vscode://<publisher.ext>/open-simple-browser?url=...` URI 핸들러 등록 (가장 견고, 확장 패키징 필요).
+        2. `code` CLI + 워크스페이스 task/keybinding 우회 (확장 없이, 신뢰성 낮음 — 검증 필수).
+        3. claude-code 확장이 이미 노출하는 URI 중 Simple Browser 연동 가능 항목 탐색 (없으면 1번).
+    - 검증: 채팅/서버에서 브리지 호출 → VSCode Simple Browser 패널에 렌더된 hub 문서 표시 확인. 첫 페이지 진입 후 in-page `http` 링크가 패널 내 네비게이션으로 유지되는지 확인.
+    - 완료 후: 글로벌 Issue170 측 hook `~/.claude/hooks/fpm-hub-trigger.sh` type1 채팅 URL 을 본 브리지로 전환 (글로벌 SCAR — 별도 ~/.claude 세션 처리).
+* depends: 없음 (선행). 후행 = 글로벌 ~/.claude Issue170.
+
+# 📗 선택
+
+# ✅ 완료
+## Issue217: hub-shell 내부 탭 문서 닫기 버튼 무동작 (Issue214 ✕ 닫기 기능 결함) (등록: 2026-06-27, 해결: 2026-06-27, commit: TBD) ✅
+* 목적: hub 렌더 문서 헤더의 닫기 버튼(canonical pink 헤더 `닫기 ✕`·dash 헤더 `✕`·Issue214 추가분)이 `/hub-shell` iframe 탭 안에서 클릭해도 아무 동작 안 함. 사용자가 "닫기 작동 안 함 + Issue214 미해결"로 보고.
+* 상세:
+    - 근본 원인: 닫기 버튼이 `onclick="window.close()"` 호출. 문서는 부모 쉘(`/hub-shell`)이 관리하는 iframe 탭 안에 로드 → iframe 은 자신이 속한 탭을 못 닫음 → `window.close()` no-op. Issue214 가 추가한 ✕ 버튼도 시각만 존재·기능 깨짐(사용자의 "214 미해결" 체감 원인).
+    - 쉘 `message` 핸들러는 `fpm-open-tab`(탭 열기)만 처리, 닫기 메시지 경로 부재.
+    - canonical 헤더 템플릿은 prj3(`~/.claude`) 자산 → 직접 수정 회피. serve 시점 주입으로 prj1 단독 해결.
+* 구현 명세:
+    - `services/hub/server.py` 4곳:
+        1. `CLOSE_SHIM` 상수 + `_inject_before_body_end()` 헬퍼 신설 — `window.close` override: 임베드(`window.parent!==window`)면 부모로 `postMessage({type:'fpm-close-tab'})`, 최상위면 네이티브 close 유지.
+        2. hub-shell `message` 핸들러에 `fpm-close-tab` 분기 추가 → `active()` 탭 닫기(home 탭 제외).
+        3. `_handle_htm_doc`(canonical 렌더 문서) serve body 에 `CLOSE_SHIM` 주입.
+        4. `_serve_dash_inline`(dash 헤더) serve body 에 `CLOSE_SHIM` 주입.
+    - triage: 단순 (1파일·방법 자명) → plan/task 생략. prj1 hub 서버 버그 (트리거 변경 아님 → prj3 무관).
+* 결과: 서버 재시작 후 검증 — `/hub-shell` 에 `fpm-close-tab` 핸들러 1건, `/htm-doc?...&_shell=1` serve 응답에 `window.close=function` 쉼 1건 주입 확인. hub 테스트 8파일 127 pass(allowlist 12·control_gate 45·dash_tombstone 6·feed_link 21·i18n_parity 8·live_dismiss 8·settings_loader 10·settings_writer 17). server.py 문법 OK.
+
+
+
 
 ## Issue215: Project List 마스터 "hub" 토글 무력 — 시스템 OFF 마스킹 (등록: 2026-06-26, 해결: 2026-06-26, commit: 704a82f) ✅
 * 목적: Project List 헤더 마스터 "hub" 토글 클릭 시 화면 무변화("버튼 안 됨"). 사용자는 hub 전체 on/off 를 기대하나 dominant 플래그(`.hub-system-off`)를 무시하여 무력.
