@@ -5,7 +5,7 @@ date: 2026-03-27
 ---
 
 # Issue Management
-* Issue HWM: 217
+* Issue HWM: 218
 * 오래된 Issue: `_doc_work/Issue_OLD.md` (General)
 * Save Point:
     - 3e69d0f (2026-04-24) Feat: graphify 토큰 절감 SCAR 프로젝트 구현 (Issue11·12 등록)
@@ -17,20 +17,24 @@ date: 2026-03-27
 # 🌱 이슈후보
 
 # 🚧 진행중
-## Issue214: hub 렌더 문서 헤더 UX 개선 (Issue213 후속) (등록: 2026-06-26, 해결: 2026-06-27, commit: 704a82f) ✅
-* 목적: Issue213 으로 문서가 쉘 iframe 안에서 열리며 주소창이 `/hub-shell` 만 보임 → 브라우저로 문서 URL 직접 복사 불가. 헤더 액션 4종 개편.
-* 상세:
-    - (1) 🔗 "문서 링크 복사" 버튼 추가 — `_shell=1` 마커 제거한 문서 URL 을 clipboard 복사, 실패 시 prompt fallback
-    - (2) 닫기 버튼 `닫기 ✕` → `✕` 아이콘화 + 맨 오른쪽 끝 분리(`margin-left`) + 높이 정렬
-    - (3) 전 액션(📁프로젝트·🛰활성세션·🔗복사·🗂Hub·✕닫기) `title` 툴팁 부착
-    - (4) 아이콘 높이 정렬: `display:inline-flex; align-items:center; line-height:1`
-* 구현 명세:
-    - `services/hub/server.py` `_serve_dash_inline` 내 `header_html`(5320) + `.dash-hdr`/`.hdr-actions` CSS(5436~5445) 수정
-    - triage: 단순 (1파일·방법 자명) → plan/task 생략
-* 결과: 4항목 전부 구현·커밋(704a82f, Issue215 와 번들). 검증 — 정적 grep 으로 `copy-link`(5325)·`close-btn`+`margin-left:0.6rem`(5327,5444)·5개 액션 title·`inline-flex;align-items:center;line-height:1`(5439) 확인. hub 커스텀 테스트 47/47 pass(settings_loader 10·settings_writer 17·i18n_parity 8·allowlist 12). server.py uncommitted 0.
+
 # 📕 중요
 
 # 📙 일반
+
+## Issue218: hub 채팅 링크 2종을 외부 브라우저 대신 VSCode 로 (사용자 원 요청 · 통합 추적) (등록: 2026-06-27)
+* 목적: 본 작업의 **시작점(origin)** — 사용자 원 요청을 추적하는 umbrella 이슈. VSCode 채팅에서 hub 가 출력하는 링크 2종이 클릭 시 외부 브라우저(Firefox)로 빠져나감. 사용자는 VSCode 안에서 작업하므로 VSCode 내부에 머물기를 원함. 외부 브라우저가 꼭 필요하면 URL 복붙으로 열 수 있어 기본 동작 전환에 손실 없음. 이 요청이 두 갈래로 분해됨 — prj1 서버 브리지(Issue216) + prj3 글로벌 hook 전환(Issue170).
+* depends: prj3#Issue170
+* 상세:
+    - 출처: prj1 ___pm 세션 사용자 요청 "브라우저로 넘어가는 링크 + 브라우저 내부로 떨어지는 링크 둘 다 vscode 로". 진단 페이지: `_doc_work/z_htm/hub_htm_20260627_160732_b_vscode-link.htm`, `…_163834_a_issue-chain.htm`
+    - **링크 type1 (브라우저로 넘어가는)** = 채팅 raw URL `http://host.local:9876/htm-doc?path=<abs>` (Issue104 형식) → VSCode 채팅 클릭 시 외부 Firefox open
+    - **링크 type2 (브라우저 내부로 떨어지는)** = 렌더된 HTML 내부 링크 — canonical 헤더 `🗂 Hub`(`<a href="…/hub">`) + 문서 간 `<a href="…/htm-doc?path=…">`(..show 페어 임베드 등) → 브라우저 내부 탭 네비게이션
+    - 최종 타겟: VSCode **Simple Browser 패널 렌더** (Issue216 조사에서 사용자 폼 선택으로 확정. 초기 ".htm 에디터 열기" 안은 렌더 불가로 폐기)
+* 분해 / 의존 체인 (실행 순서):
+    1. **prj1#Issue216** (선행-most, depends 없음) — hub 서버에 Simple Browser 브리지 엔드포인트 신설
+    2. **prj3#Issue170** (중간, depends prj1#Issue216) — 글로벌 hook `fpm-hub-trigger.sh` 의 채팅 URL·헤더 링크를 216 브리지로 전환 (~/.claude SCAR)
+    3. **본 이슈 Issue218** (후행-most/umbrella, depends prj3#Issue170) — 두 갈래 완료 시 사용자 체감(클릭 → VSCode 내부 표시) 충족 → 종결
+* 구현 명세: 직접 구현 작업 없음(통합 추적용). prj1#216 → prj3#170 순차 완료 후 사용자 검증으로 종결. 종결 시 본 이슈에 216·170 commit hash 참조.
 
 ## Issue216: hub 렌더 문서를 VSCode Simple Browser 패널에 띄우는 브리지 신설 (등록: 2026-06-27)
 * 목적: 글로벌 Issue170(~/.claude) 에서 hub 가 채팅에 출력하는 문서 링크가 클릭 시 외부 브라우저로 빠져나감. 사용자는 VSCode 안에서 작업하므로 렌더된 문서가 VSCode 내부(Simple Browser 패널)에 뜨길 원함. 조사 결과 현재 hub 서버의 VSCode 제어 메커니즘으로는 Simple Browser 를 트리거할 수 없어 본 브리지 신설이 글로벌 Issue170 의 선행 조건이 됨.
@@ -46,11 +50,24 @@ date: 2026-03-27
         3. claude-code 확장이 이미 노출하는 URI 중 Simple Browser 연동 가능 항목 탐색 (없으면 1번).
     - 검증: 채팅/서버에서 브리지 호출 → VSCode Simple Browser 패널에 렌더된 hub 문서 표시 확인. 첫 페이지 진입 후 in-page `http` 링크가 패널 내 네비게이션으로 유지되는지 확인.
     - 완료 후: 글로벌 Issue170 측 hook `~/.claude/hooks/fpm-hub-trigger.sh` type1 채팅 URL 을 본 브리지로 전환 (글로벌 SCAR — 별도 ~/.claude 세션 처리).
-* depends: 없음 (선행). 후행 = 글로벌 ~/.claude Issue170.
+* depends: 없음 (선행-most). 후행 = prj3#Issue170 → prj1#Issue218(umbrella/origin).
 
 # 📗 선택
 
 # ✅ 완료
+## Issue214: hub 렌더 문서 헤더 UX 개선 (Issue213 후속) (등록: 2026-06-26, 해결: 2026-06-27, commit: 704a82f, 81d8e0c) ✅
+* 목적: Issue213 으로 문서가 쉘 iframe 안에서 열리며 주소창이 `/hub-shell` 만 보임 → 브라우저로 문서 URL 직접 복사 불가. 헤더 액션 4종 개편.
+* 상세:
+    - (1) 🔗 "문서 링크 복사" 버튼 추가 — `_shell=1` 마커 제거한 문서 URL 을 clipboard 복사, 실패 시 prompt fallback
+    - (2) 닫기 버튼 `닫기 ✕` → `✕` 아이콘화 + 맨 오른쪽 끝 분리(`margin-left`) + 높이 정렬
+    - (3) 전 액션(📁프로젝트·🛰활성세션·🔗복사·🗂Hub·✕닫기) `title` 툴팁 부착
+    - (4) 아이콘 높이 정렬: `display:inline-flex; align-items:center; line-height:1`
+* 구현 명세:
+    - `services/hub/server.py` `_serve_dash_inline` 내 `header_html`(5320) + `.dash-hdr`/`.hdr-actions` CSS(5436~5445) 수정
+    - triage: 단순 (1파일·방법 자명) → plan/task 생략
+* 결과: 4항목 전부 구현·커밋(704a82f, Issue215 와 번들). 검증 — 정적 grep 으로 `copy-link`(5325)·`close-btn`+`margin-left:0.6rem`(5327,5444)·5개 액션 title·`inline-flex;align-items:center;line-height:1`(5439) 확인. hub 커스텀 테스트 47/47 pass(settings_loader 10·settings_writer 17·i18n_parity 8·allowlist 12). server.py uncommitted 0.
+* 후속 결함 해소: (2) 추가한 ✕ 버튼이 `/hub-shell` iframe 탭 안에서 `window.close()` no-op 으로 무동작(사용자 "214 미해결" 체감) → **Issue217**(commit 81d8e0c) 이 `CLOSE_SHIM` 주입(임베드 시 부모로 `postMessage{type:'fpm-close-tab'}`)으로 정상 종결. Issue214 헤더 UX + 닫기 기능 모두 동작.
+
 ## Issue217: hub-shell 내부 탭 문서 닫기 버튼 무동작 (Issue214 ✕ 닫기 기능 결함) (등록: 2026-06-27, 해결: 2026-06-27, commit: 81d8e0c) ✅
 * 목적: hub 렌더 문서 헤더의 닫기 버튼(canonical pink 헤더 `닫기 ✕`·dash 헤더 `✕`·Issue214 추가분)이 `/hub-shell` iframe 탭 안에서 클릭해도 아무 동작 안 함. 사용자가 "닫기 작동 안 함 + Issue214 미해결"로 보고.
 * 상세:
