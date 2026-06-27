@@ -1,0 +1,22 @@
+{
+  "name": "fpm-simple-browser",
+  "displayName": "fPm Simple Browser Bridge",
+  "description": "URI 핸들러로 hub 렌더 문서를 VSCode Simple Browser 패널에 연다 (___pm Issue216).",
+  "version": "0.0.1",
+  "publisher": "finfra",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onUri"
+  ],
+  "contributes": {},
+  "repository": {
+    "type": "git",
+    "url": "https://finfra.kr/nowage"
+  }
+}

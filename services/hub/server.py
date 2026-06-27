@@ -1979,6 +1979,9 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/open-session":
             self._handle_open_session(parsed)
             return
+        if parsed.path == "/open-simple-browser":
+            self._handle_open_simple_browser(parsed)
+            return
         if parsed.path == "/htm-toggle":
             self._handle_htm_toggle(parsed)
             return
@@ -3852,6 +3855,58 @@ class Handler(BaseHTTPRequestHandler):
             return
         log(f"POST /open-session — cwd={cwd} sid={sid}")
         self._send_json(200, {"status": "opened", "sid": sid})
+
+    def _handle_open_simple_browser(self, parsed):
+        """Issue216: hub 렌더 문서(htm)를 VSCode Simple Browser 패널에 띄운다.
+        VSCode 내장 `simpleBrowser.show` 는 외부 vscode:// URI·CLI 로 직접 호출 불가 →
+        전용 확장 finfra.fpm-simple-browser 가 등록한 URI 핸들러를 경유한다:
+          open "vscode://finfra.fpm-simple-browser/open?url=<htm-doc URL>"
+        보안: localhost only + register-doc 화이트리스트 exact-match(htm-doc 동일 보안 모델).
+        임의 경로/외부 URL open 차단. 확장 측에서도 host 화이트리스트 재검증."""
+        client_ip = self.client_address[0] if self.client_address else ""
+        if not _ip_allowed(client_ip):
+            self._send_json(403, {"error": "localhost only"})
+            return
+        body, err = self._read_json_body()
+        if err:
+            self._send_json(400, {"error": err})
+            return
+        path = (body.get("path") or "").strip()
+        if not path:
+            self._send_json(400, {"error": "path required"})
+            return
+        abs_path = os.path.realpath(os.path.expanduser(path))
+        # register-doc 화이트리스트 검증 (htm-doc 동일 패턴)
+        with registry_lock:
+            reg = load_registry(HTM_REGISTRY)
+        reg_paths = set()
+        for e in reg:
+            p = e.get("path") or ""
+            if p:
+                reg_paths.add(p)
+                reg_paths.add(os.path.realpath(p))
+        if abs_path not in reg_paths and path not in reg_paths:
+            log(f"POST /open-simple-browser REJECT — unregistered path: {abs_path}")
+            self._send_json(403, {"error": "not a registered htm doc"})
+            return
+        if not abs_path.endswith((".html", ".htm")):
+            self._send_json(403, {"error": "extension not allowed"})
+            return
+        if not os.path.isfile(abs_path):
+            self._send_json(404, {"error": "file not found"})
+            return
+        # Simple Browser 에는 raw 문서를 띄운다 — _shell=1 로 hub-shell 302 우회.
+        import urllib.parse as _u
+        doc_url = f"http://127.0.0.1:{PORT}/htm-doc?path={_u.quote(abs_path)}&_shell=1"
+        uri = f"vscode://finfra.fpm-simple-browser/open?url={_u.quote(doc_url, safe='')}"
+        try:
+            subprocess.Popen(["open", uri],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            self._send_json(500, {"error": f"spawn failed: {e}"})
+            return
+        log(f"POST /open-simple-browser — path={abs_path}")
+        self._send_json(200, {"status": "opened", "path": abs_path})
 
     def _handle_open_settings_yml(self, parsed):
         """⚙️ 설정 버튼 — data/hub_setting.yml 을 VSCode 로 연다."""
