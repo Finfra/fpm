@@ -36,25 +36,17 @@ date: 2026-03-27
     3. **본 이슈 Issue218** (후행-most/umbrella, depends prj3#Issue170) — 두 갈래 완료 시 사용자 체감(클릭 → VSCode 내부 표시) 충족 → 종결
 * 구현 명세: 직접 구현 작업 없음(통합 추적용). prj1#216 → prj3#170 순차 완료 후 사용자 검증으로 종결. 종결 시 본 이슈에 216·170 commit hash 참조.
 
-## Issue216: hub 렌더 문서를 VSCode Simple Browser 패널에 띄우는 브리지 신설 (등록: 2026-06-27)
-* 목적: 글로벌 Issue170(~/.claude) 에서 hub 가 채팅에 출력하는 문서 링크가 클릭 시 외부 브라우저로 빠져나감. 사용자는 VSCode 안에서 작업하므로 렌더된 문서가 VSCode 내부(Simple Browser 패널)에 뜨길 원함. 조사 결과 현재 hub 서버의 VSCode 제어 메커니즘으로는 Simple Browser 를 트리거할 수 없어 본 브리지 신설이 글로벌 Issue170 의 선행 조건이 됨.
-* 상세:
-    - 출처: 글로벌 `~/.claude` 세션의 Issue170 구현 조사 (2026-06-27). 사용자가 폼으로 타겟 "Simple Browser (렌더)" 선택.
-    - 조사 결과: `/open-project` = `open -a "Visual Studio Code" <cwd>` (macOS 앱 실행), `/open-session` = 확장 URI `vscode://anthropic.claude-code/open?session=<sid>`. **Simple Browser(`simple-browser.show`)는 `vscode://` URI 핸들러가 없어** 서버/클릭 링크에서 직접 호출 불가. VSCode 채팅의 `command:` URI 도 차단됨.
-    - 관련 파일: `plugins/fpm-core/services/hub/server.py` (`_handle_open_project` 2872행 인근 — 신규 핸들러 추가 위치).
-* 구현 명세:
-    - 신규 서버 엔드포인트 (예: `POST /open-simple-browser?path=<abs.htm>`) — localhost only + register-doc 화이트리스트 검증(htm-doc 와 동일 보안 모델) 후 VSCode 에 Simple Browser 로 해당 URL(`/htm-doc?path=...`)을 열도록 지시.
-    - Simple Browser 트리거 수단 후보 (구현 세션에서 1개 선택·검증):
-        1. 전용 VSCode 확장 명령 신설 → `vscode://<publisher.ext>/open-simple-browser?url=...` URI 핸들러 등록 (가장 견고, 확장 패키징 필요).
-        2. `code` CLI + 워크스페이스 task/keybinding 우회 (확장 없이, 신뢰성 낮음 — 검증 필수).
-        3. claude-code 확장이 이미 노출하는 URI 중 Simple Browser 연동 가능 항목 탐색 (없으면 1번).
-    - 검증: 채팅/서버에서 브리지 호출 → VSCode Simple Browser 패널에 렌더된 hub 문서 표시 확인. 첫 페이지 진입 후 in-page `http` 링크가 패널 내 네비게이션으로 유지되는지 확인.
-    - 완료 후: 글로벌 Issue170 측 hook `~/.claude/hooks/fpm-hub-trigger.sh` type1 채팅 URL 을 본 브리지로 전환 (글로벌 SCAR — 별도 ~/.claude 세션 처리).
-* depends: 없음 (선행-most). 후행 = prj3#Issue170 → prj1#Issue218(umbrella/origin).
-
 # 📗 선택
 
 # ✅ 완료
+## Issue216: hub 렌더 문서를 VSCode Simple Browser 패널에 띄우는 브리지 신설 (등록: 2026-06-27, 해결: 2026-06-27, commit: 0461cfa) ✅
+* 목적: 글로벌 Issue170(~/.claude) 에서 hub 가 채팅에 출력하는 문서 링크가 클릭 시 외부 브라우저로 빠져나감. 사용자는 VSCode 안에서 작업하므로 렌더된 문서가 VSCode 내부(Simple Browser 패널)에 뜨길 원함. 본 브리지가 글로벌 Issue170 의 선행 조건.
+* 해결: 트리거 후보 1번(전용 확장) 채택.
+    - 서버: `services/hub/server.py` `_handle_open_simple_browser` + `POST /open-simple-browser` 라우팅. localhost-only + register-doc 화이트리스트 exact-match(htm-doc 동일 보안). `open "vscode://finfra.fpm-simple-browser/open?url=<htm-doc URL+_shell=1>"` 트리거.
+    - 확장: `plugins/fpm-core/vscode-ext/fpm-simple-browser` — URI 핸들러(`onUri`)가 `simpleBrowser.show` 실행, host 화이트리스트(`127.0.0.1|localhost|host.local`) 재검증. `install.sh` = vsce package + code --install-extension.
+* 검증: 서버 `POST /open-simple-browser` → `{"status":"opened"}` → vscode:// 트리거 확인. 확장 `finfra.fpm-simple-browser-0.0.1` 설치 확인. settings 테스트 10 passed.
+* 후행: prj3#Issue170 (글로벌 hook `fpm-hub-trigger.sh` type1 채팅 URL → 본 브리지 전환) → prj1#Issue218(umbrella) 종결.
+
 ## Issue214: hub 렌더 문서 헤더 UX 개선 (Issue213 후속) (등록: 2026-06-26, 해결: 2026-06-27, commit: 704a82f, 81d8e0c) ✅
 * 목적: Issue213 으로 문서가 쉘 iframe 안에서 열리며 주소창이 `/hub-shell` 만 보임 → 브라우저로 문서 URL 직접 복사 불가. 헤더 액션 4종 개편.
 * 상세:
