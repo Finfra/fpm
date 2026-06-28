@@ -44,7 +44,9 @@ date: 2026-03-27
     - 검증: 설정 적용 후 `browser_navigate` + `browser_snapshot` 1회 라운드트립 크래시 없음 확인
 * 진행:
     - 2026-06-28: `~/.claude.json` args `--isolated --headless` 적용(JSON 유효). 현 세션 MCP 로 `example.com` navigate+snapshot 라운드트립 정상 — headless 에서 snapshot 동작 확인(핵심 리스크 해소).
-    - ⚠️ 잔여: 원 크래시는 외부 macOS 접근성 클라이언트 트리거(간헐성) → 단발 테스트로 부재 증명 불가. 새 세션 재시작 후 재발 모니터링 필요. 일정 기간 무재발 시 ✅ 완료 이동.
+    - 2026-06-28(재검증): 신규 세션에서 설정 `--isolated --headless` 재확인 + `example.com` navigate+snapshot+close 라운드트립 2회차 클린(크래시 없음).
+    - **구조적 차단 근거**: 크래시 스택이 전부 macOS 접근성 경로(visible 윈도우의 NSAccessibility 노출 시에만 진입). headless = 네이티브 윈도우 없음 = AX 경로 진입 불가 → 재발은 간헐 부재가 아니라 트리거 경로 제거로 결정론적 차단. "일정 기간 무재발" 단서는 보수적 표현.
+    - ⚠️ 잔여 한계: 수동 로그인 흐름(naver-blog, linkedin)은 headless 불가 → 해당 스킬만 비-headless 별도 실행 필요(본 이슈 범위 외).
 
 
 ## Issue233: [강화 Phase2·T6] Issue.md ↔ GitHub Issues 양방향 동기(옵트인 브리지) (등록: 2026-06-28)
@@ -75,6 +77,15 @@ date: 2026-03-27
 * 구현 명세:
     - quickstart(원라인 최상단)·기능 표·데모 GIF·아키텍처 다이어그램 추가
     - 검증: prj7 README 렌더 + 원라인 명령 정확성
+* 진척 (2026-06-28, fpm 0ca1e9a):
+    - ✅ Quick Start 원라인 최상단(라이선스 직후) — `curl|sh` 원격 설치 + `cdf`/`fpm update` 예시. 기존 git-clone-only 흐름 격상
+    - ✅ Installation 재작성 — 원라인 우선·수동 클론 강등·`fpm` 셀프관리 커맨드(update/upgrade/version/uninstall) 명시
+    - ✅ 아키텍처 다이어그램 — mermaid flowchart(셸 레이어·설정 SSOT·Claude SCAR/MCP·hub :9876·브라우저 대시보드). EN+KO 양판
+    - ✅ 기능 표 — 기존 Key Features 표 충분(보존)
+    - ✅ 부수: repo 케이스 `finfra/fpm`→`Finfra/fpm` 교정(redirect 경고 제거), README_ko 동등 미러
+    - ✅ 검증: 코드(bootstrap.sh·fpm_function.sh) 대조 — 원라인 URL·fpm 서브커맨드·비공개 gh-api fallback 정확. push 후 공개 raw README Quick Start 반영 + bootstrap raw HTTP 200(원라인 실동작)
+    - 🚧 잔여(자산 부재): 데모 GIF — 터미널 세션 녹화(vhs/asciinema) 필요, 자동 생성 불가. 사용자 수동 녹화 후 `img/` 추가 + README 링크 1줄. 핵심 4개 중 3개 완료, GIF만 잔여
+* Hash: 0ca1e9a(fpm)
 
 ## Issue227: [강화 Phase1·T4] cdf frecency / 퍼지 점프 옵션 (등록: 2026-06-28)
 * 목적: 공개 후 사용성. `cdf` 번호 SSOT 유지 + 인자가 번호 아닐 때 최근 방문·fuzzy 매칭(`fzf` 가용 시) 보조 점프. 번호 결정론성은 약화 금지 — fuzzy 는 fallback 레이어 한정.
