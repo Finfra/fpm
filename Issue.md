@@ -58,7 +58,8 @@ date: 2026-03-27
     - ✅ design 확정(권장 기본값): 양방향(local-wins)·인라인 `* gh:#M` 매핑·섹션→label/🚧✅→state·수동 `/gh-sync` 트리거
     - ✅ MVP 구현(2026-06-28): `data/gh-sync.yml`(토글 기본 off) + `scripts/gh-sync/{parse_issuemd,map,engine}.py` + `scripts/gh-sync.sh` + `.claude/commands/gh-sync.md`
     - ✅ 검증: 파서 217이슈 정확 파싱, push dry-run 7건(label/state 정확·📜참고 제외), pull read-only, writeback `* gh:#M` 삽입/갱신 데이터 안전(이슈수 STABLE)
-    - 🚧 잔여(종결 전): enabled:true 실 repo 에 push --apply E2E(개인정보 가드 통과 후 실 gh create) 1건 라운드트립. 현재 repo PRIVATE·미활성으로 보류
+    - ✅ dry-run E2E 재검증(2026-06-28, /dev): 임시 enabled:true+repo 로 push dry-run → active 6건 CREATE payload(title/label/state 정확), enabled-gate→payload 전 경로 무결, 복원 후 enabled:false 확인. gh API 미접촉(외부 쓰기 0)
+    - 🚧 잔여(종결 전, 자동 진행 불가): enabled:true 실 repo push --apply E2E(가드 통과 후 실 gh create) 1건 라운드트립. 차단 — ___pm 원격 없음(no git remotes) + 대상 repo PRIVATE·미활성 + `gh issue create`=외부 시스템 쓰기(§5 사용자 승인 필수). 활성 repo 지정 + 승인 시 1회 수행 후 종결 가능
 
 # 📕 중요
 
