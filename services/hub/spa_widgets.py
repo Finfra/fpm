@@ -9,14 +9,41 @@ WIDGET_JS = r"""
 function renderWidget(w) {
   if (!w || typeof w !== 'object') return `<div class="widget unknown">invalid widget</div>`;
   const title = w.title ? `<div class="w-title">${esc(w.title)}</div>` : '';
+  // Issue230: runner 는 dynamic_eval 결과를 w.value (스칼라 또는 JSON 문자열) 에 기록한다.
+  //   native 필드(rows/items/content)가 비면 _pval 을 주입한다. JSON 문자열은 파싱, 스칼라는 그대로.
+  const _pval = (function () {
+    if (w.value === undefined || w.value === null) return undefined;
+    if (typeof w.value === 'string') {
+      const s = w.value.trim();
+      if (s && (s[0] === '[' || s[0] === '{')) { try { return JSON.parse(s); } catch (e) {} }
+      return w.value;
+    }
+    return w.value;
+  })();
   switch (w.type) {
     case 'progress': {
-      const pct = typeof w.value === 'number' ? Math.max(0, Math.min(100, w.value)) : 0;
-      return `<div class="widget progress">${title}<div class="bar"><div class="bar-fill" style="width:${pct}%"></div></div><div class="pct">${pct}%${w.label ? ' — ' + esc(w.label) : ''}</div></div>`;
+      // Issue230: value/max 를 문자열·숫자 양쪽 수용. max>0 이면 분수, 아니면 value 자체를 퍼센트.
+      const val = typeof w.value === 'number' ? w.value : parseFloat(w.value);
+      const maxv = typeof w.max === 'number' ? w.max : parseFloat(w.max);
+      let pct;
+      if (!isNaN(val) && !isNaN(maxv) && maxv > 0) pct = (val / maxv) * 100;
+      else if (!isNaN(val)) pct = val;
+      else pct = 0;
+      pct = Math.max(0, Math.min(100, pct));
+      const pctTxt = Number.isInteger(pct) ? String(pct) : pct.toFixed(1);
+      return `<div class="widget progress">${title}<div class="bar"><div class="bar-fill" style="width:${pct}%"></div></div><div class="pct">${pctTxt}%${w.label ? ' — ' + esc(w.label) : ''}</div></div>`;
     }
     case 'table': {
-      const rows = Array.isArray(w.rows) ? w.rows : [];
-      const headers = Array.isArray(w.headers) ? w.headers : (rows[0] ? Object.keys(rows[0]) : []);
+      let rows = Array.isArray(w.rows) ? w.rows : [];
+      if (!rows.length && Array.isArray(_pval)) rows = _pval;  // Issue230: value 폴백
+      let headers = Array.isArray(w.headers) ? w.headers : [];
+      // Issue230: array-of-arrays + 헤더 미지정 → 첫 행을 헤더로 승격. object 행이면 keys.
+      if (!headers.length && rows.length && Array.isArray(rows[0])) {
+        headers = rows[0];
+        rows = rows.slice(1);
+      } else if (!headers.length && rows[0] && typeof rows[0] === 'object') {
+        headers = Object.keys(rows[0]);
+      }
       const thead = headers.length ? `<thead><tr>${headers.map(h => `<th>${esc(h)}</th>`).join('')}</tr></thead>` : '';
       const tbody = rows.map(r => {
         const cells = Array.isArray(r) ? r : headers.map(h => r[h]);
@@ -25,7 +52,8 @@ function renderWidget(w) {
       return `<div class="widget table">${title}<table>${thead}<tbody>${tbody}</tbody></table></div>`;
     }
     case 'checklist': {
-      const items = Array.isArray(w.items) ? w.items : [];
+      let items = Array.isArray(w.items) ? w.items : [];
+      if (!items.length && Array.isArray(_pval)) items = _pval;  // Issue230: value 폴백
       const lis = items.map(it => {
         const done = (typeof it === 'object' && it.done) ? 'done' : '';
         const text = typeof it === 'object' ? (it.text || it.label || '') : String(it);
@@ -35,7 +63,10 @@ function renderWidget(w) {
       return `<div class="widget checklist">${title}<ul>${lis}</ul></div>`;
     }
     case 'text': {
-      return `<div class="widget text">${title}<pre>${esc(w.content || w.text || '')}</pre></div>`;
+      // Issue230: 스칼라 value(live) 가 정적 content/text 보다 우선.
+      const content = (_pval !== undefined && typeof _pval !== 'object')
+        ? String(_pval) : (w.content || w.text || '');
+      return `<div class="widget text">${title}<pre>${esc(content)}</pre></div>`;
     }
     case 'chart': {
       const series = Array.isArray(w.series) ? w.series.filter(n => typeof n === 'number') : [];
