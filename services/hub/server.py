@@ -958,7 +958,13 @@ def _session_transcript_html(cwd, sid):
 
 
 # Issue28: Projects.md peacock.color 매핑 (cwd 경로 → hex 컬러). mtime 기반 캐시.
-PROJECTS_MD = os.path.expanduser("~/_git/___pm/Projects.md")
+# 설치 위치 무관 ($FPM_BASE 기반). env 우선, 없으면 self-detect:
+#   server.py = <FPM_BASE>/services/hub/server.py → 3단계 상위가 FPM_BASE.
+# (구: ~/_git/___pm 하드코딩 → fg1 등 fpm 설치 머신에서 Projects.md 미발견 → 빈 목록 버그)
+FPM_BASE = os.environ.get("FPM_BASE") or os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
+PROJECTS_MD = os.path.join(FPM_BASE, "Projects.md")
 _projects_color_cache: dict = {}
 _projects_color_cache_mtime: float = 0.0
 
@@ -1282,7 +1288,14 @@ HUB_SETTING_DEFAULTS = {"feed_limit": 100, "feed_default_visible": True, "feed_p
                         "render_tab_mode": "hub-internal",
                         "tab_close_shortcut": "alt+w",
                         "hub_single_window": True,
-                        "hub_lease_ttl": 30}
+                        "hub_lease_ttl": 30,
+                        # Issue237: 원격 브라우저 → Remote-SSH 연결 VSCode 에디터 열기.
+                        #   비루프백 source IP 의 open-project/open-session 요청에 한해 서버 `open` 대신
+                        #   vscode-remote://ssh-remote+<alias><path> URI 를 반환 → 브라우저가
+                        #   window.location 으로 발사, 클라이언트측(브라우저 머신) VSCode 가 이미 연결된
+                        #   Remote-SSH 창을 재사용해 연다. 빈 문자열(기본)=원격 분기 비활성(host-local open 폴백).
+                        #   값=클라이언트 ~/.ssh/config 의 이 서버 Host alias (예: gl).
+                        "ssh_remote_alias": ""}
 _hub_setting_cache: dict = {}
 _hub_setting_cache_mtime: float = 0.0
 
@@ -1339,6 +1352,14 @@ def _load_hub_setting() -> dict:
     _hub_setting_cache = setting
     _hub_setting_cache_mtime = st.st_mtime
     return setting
+
+
+def _ssh_remote_uri(cwd: str, alias: str) -> str:
+    """Issue237: Remote-SSH 워크스페이스 열기 URI.
+    클라이언트(브라우저) OS 의 vscode-remote:// 핸들러가 alias 로 이미 연결된
+    창을 재사용해 cwd 를 연다. alias 는 클라이언트 ~/.ssh/config 기준 Host 이름이며
+    절대경로 cwd 를 변환 없이 그대로 사용(Remote-SSH 는 서버 파일시스템 경로 그대로)."""
+    return f"vscode-remote://ssh-remote+{alias}{cwd}"
 
 
 # Issue168: 설정 모달 UI 스키마 — ⚙️ 버튼이 여는 인앱 3탭 설정창의 분류·위젯·유효값·적용방식.
@@ -1407,6 +1428,8 @@ HUB_SETTING_SCHEMA = [
      "apply": "hook", "comment": "hub|both URL host (생략 시 bind_host fallback). 0.0.0.0+생략 금지"},
     {"key": "allow_server_list", "tab": "advanced", "widget": "toggle",
      "apply": "restart", "comment": "source-IP allowlist 게이트 (true=Servers.md 화이트리스트+self 허용 / false=bind_host(self)만 허용, 외부 전부 차단). 변경 시 restart"},
+    {"key": "ssh_remote_alias", "tab": "advanced", "widget": "text", "optional": True,
+     "apply": "auto", "comment": "Issue237: 원격 브라우저의 open-project/open-session 을 vscode-remote://ssh-remote+<alias> 로 응답 (클라이언트 ~/.ssh/config Host 이름, 예: gl). 빈 값=비활성"},
 ]
 HUB_SETTING_SCHEMA_BY_KEY = {s["key"]: s for s in HUB_SETTING_SCHEMA}
 # advertise_host 는 yml 에서 기본 주석 처리(`# advertise_host: ...`)된 optional 키.
@@ -4073,6 +4096,15 @@ __WARN__
         if not os.path.isdir(cwd):
             self._send_json(404, {"error": "cwd not a directory"})
             return
+        # Issue237: 비루프백 클라이언트 + alias 설정 시 서버 host-local `open` 대신
+        #   vscode-remote:// URI 반환 → 브라우저(같은 머신의 VSCode)가 Remote-SSH 창 재사용해 연다.
+        if client_ip not in LOOPBACK_IPS:
+            alias = (_load_hub_setting().get("ssh_remote_alias") or "").strip()
+            if alias:
+                uri = _ssh_remote_uri(cwd, alias)
+                log(f"POST /open-project — remote client={client_ip} → {uri}")
+                self._send_json(200, {"status": "remote", "uri": uri, "cwd": cwd})
+                return
         try:
             subprocess.Popen(["open", "-a", "Visual Studio Code", cwd],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -4117,6 +4149,18 @@ __WARN__
             self._send_json(404, {"error": "cwd not a directory"})
             return
         uri = f"vscode://anthropic.claude-code/open?session={sid}"
+        # Issue237: 원격 클라이언트 + alias 설정 시 클라이언트측 URI 반환.
+        #   세션 포커스 URI(uri)는 이미 연결된 워크스페이스 창에서 탭을 포커스한다.
+        #   워크스페이스가 안 열려 있을 때를 대비해 folder_uri(vscode-remote)를 함께 반환 —
+        #   브라우저 JS 가 folder_uri 로 창을 보장한 뒤 세션 URI 로 포커스한다.
+        if client_ip not in LOOPBACK_IPS:
+            alias = (_load_hub_setting().get("ssh_remote_alias") or "").strip()
+            if alias:
+                folder_uri = _ssh_remote_uri(cwd, alias)
+                log(f"POST /open-session — remote client={client_ip} sid={sid}")
+                self._send_json(200, {"status": "remote", "uri": uri,
+                                      "folder_uri": folder_uri, "sid": sid})
+                return
         try:
             # 워크스페이스 창 보장·전면화 후(0.4s) 세션 URI 로 탭 포커스.
             subprocess.Popen(
@@ -5667,7 +5711,7 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             'fetch("/open-project",{method:"POST",headers:{"Content-Type":"application/json"},'
             'body:JSON.stringify({cwd:' + cwd_js + '})})'
             '.then(function(r){return r.json();})'
-            '.then(function(j){if(j&&j.error)alert("VSCode 열기 실패: "+j.error);})'
+            '.then(function(j){if(j&&j.uri){window.location.href=j.uri;}else if(j&&j.error)alert("VSCode 열기 실패: "+j.error);})'
             '.catch(function(){alert("hub 서버 미응답 — VSCode 열기 실패");});'
         )
         # Issue214: 헤더 액션 개편 — (1) 🔗 문서 링크 복사 버튼 추가(쉘 iframe 내에선
@@ -7401,6 +7445,8 @@ async function openProject(cwd) {
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    // Issue237: 원격 응답이면 클라이언트측 vscode-remote:// URI 를 브라우저가 발사.
+    if (j.uri) { window.location.href = j.uri; return; }
     toast(t('msg.vscodeOpened', {cwd: cwd}), 'ok');
   } catch (e) {
     toast('❌ ' + e.message, 'err');
@@ -7418,6 +7464,11 @@ async function openSession(cwd, sid) {
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    // Issue237: 원격 응답이면 folder_uri 로 Remote-SSH 창 보장 후 세션 URI 로 탭 포커스.
+    if (j.uri) {
+      if (j.folder_uri) { try { window.open(j.folder_uri); } catch (e2) {} }
+      window.location.href = j.uri; return;
+    }
     toast(t('msg.sessionTabOpened'), 'ok');
   } catch (e) {
     toast('❌ ' + e.message, 'err');
@@ -8476,6 +8527,9 @@ async function reload(force) {
       contentEl.innerHTML = renderDashboard(d.content);
       // Issue29 Phase 6: progress 임계치 알림 (hysteresis)
       try { maybeNotifyProgress(parseJSON(d.content)); } catch (e) {}
+      // 디스크 전용 대시보드(runner 가 파일만 갱신, sessions 미push)는 SSE reload 이벤트가
+      // 발생하지 않아 SSE 정상 시 동결된다. dash interval 주기로 /data 를 자체 폴링해 라이브 유지.
+      try { ensureDashPoll((parseJSON(d.content) || {}).interval); } catch (e) {}
     } else {
       contentEl.innerHTML = `<em>unknown mode: ${esc(d.mode)}</em>`;
     }
@@ -8489,6 +8543,14 @@ async function reload(force) {
 reload();
 // Issue24 Phase 4: SSE-only + es.onerror polling fallback (status 표시 🟢🟡🔴)
 let pollingId = null;
+// 디스크 전용 대시보드 전용 주기 폴링 — SSE 연결 여부와 무관하게 dash interval 마다
+// /data 재fetch. reload() 의 sig 디듑으로 변화 없으면 재렌더 생략(저비용).
+let dashPollId = null;
+function ensureDashPoll(sec) {
+  if (PREVIEW || dashPollId) return;
+  const ms = Math.max(5, Number(sec) || 10) * 1000;
+  dashPollId = setInterval(() => reload(), ms);
+}
 function setStatus(state, text) {
   statusEl.classList.remove('connected', 'polling', 'error');
   let icon = '🔴';
