@@ -5,7 +5,7 @@ date: 2026-03-27
 ---
 
 # Issue Management
-* Issue HWM: 234
+* Issue HWM: 235
 * 오래된 Issue: `_doc_work/Issue_OLD.md` (General)
 * Save Point:
     - 3e69d0f (2026-04-24) Feat: graphify 토큰 절감 SCAR 프로젝트 구현 (Issue11·12 등록)
@@ -96,10 +96,11 @@ date: 2026-03-27
 
 # 📗 선택
 
-## Issue234: [강화 Phase2·T7] SCAR 크로스 툴 이식(Cursor·Codex·Gemini export) (등록: 2026-06-28)
+# ✅ 완료
+## Issue235: [강화 Phase2·T7] SCAR 크로스 툴 이식(Cursor·Codex·Gemini export) (등록: 2026-06-28, 해결: 2026-06-28, commit: 3d0c3c2) ✅
 * 목적: ___pm 의 SCAR(Skill/Command/Agent/Rule) 자산을 Cursor·Codex·Gemini 등 타 AI 코딩 툴 포맷으로 export. fPm 생태계 확장·락인 완화. 강화 로드맵 Phase 2 T7(최장기).
 * depends: Issue233
-* plan: `_doc_work/plan/fpm-enhancement-roadmap_plan.md`
+* plan: `_doc_work/plan/scar-crosstool-export_plan.md`
 * arch: `_doc_arch/fpm-competitive-benchmark.md`
 * 상세:
     - 출처: prj1 ___pm 강화 로드맵 Phase 2 (📗, 복잡, 최장기)
@@ -109,7 +110,6 @@ date: 2026-03-27
     - ✅ MVP 구현(2026-06-28): `scripts/scar-export/{scan,emit}.py` + `scripts/scar-export.sh` + `.claude/commands/scar-export.md`. plan: `_doc_work/plan/scar-crosstool-export_plan.md`
     - ✅ 검증: scan 16항목(command12·skill3·agent1), export all → AGENTS.md·GEMINI.md·16 .cursor/rules/*.mdc, .mdc frontmatter YAML 유효, 이름충돌 kind접미사 분리(데이터 손실 0)
 
-# ✅ 완료
 
 ## Issue234: board 이슈 대시보드 카드 배치 최적화 (좁은 카드 단일 컬럼 낭비) (등록: 2026-06-28, 해결: 2026-06-28, commit: 276bd99) ✅
 * 목적: board(`/s/<hash>/issue-status`) 대시보드에서 좁은 status 카드(활성 이슈·진행중 목록·Issue.md 수정)가 full-width 위젯 사이에 끼어 각자 한 행을 독점, 옆 2칸이 빈공간으로 낭비되는 단일 컬럼 문제 해소.
