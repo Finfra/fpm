@@ -5,7 +5,7 @@ date: 2026-03-27
 ---
 
 # Issue Management
-* Issue HWM: 229
+* Issue HWM: 231
 * 오래된 Issue: `_doc_work/Issue_OLD.md` (General)
 * Save Point:
     - 3e69d0f (2026-04-24) Feat: graphify 토큰 절감 SCAR 프로젝트 구현 (Issue11·12 등록)
@@ -86,6 +86,21 @@ date: 2026-03-27
 # 📗 선택
 
 # ✅ 완료
+
+## Issue230: Mode C dashboard 위젯 데이터 미렌더 (progress 0%·table/text/checklist 공백) (완료: 2026-06-28, Hash: 6401989)
+* 목적: hub SPA dashboard(`/s/<hash>/issue-status` 등)에서 progress 바가 0% 로만 나오고 table·text·checklist 위젯이 빈 칸으로 표시됨. 이슈 번호(graph DAG 노드)만 보이고 나머지 데이터가 전부 누락되는 회귀.
+* 상세:
+    - `services/hub/spa_widgets.py` `renderWidget`
+    - progress: `typeof w.value === 'number'` 체크 → `value: '5'`(문자열, dynamic_eval/YAML 직렬화 결과)가 항상 0% 로 렌더. `max` 분수 계산 미적용 (build-1000·copytest1·이슈현황 등 `value:'N' max:N` 전부 0% 였음).
+    - table/checklist/text: 실데이터가 runner 가 기록한 `w.value`(JSON 문자열)에 들어있는데 렌더러는 `w.rows`/`w.items`/`w.content`(YAML 정적 빈 값)만 읽어 무시.
+    - graph(DAG)만 `w.nodes`/`w.edges` 정적 필드를 직접 읽어 정상 → 노드만 보이는 증상.
+* 구현 명세:
+    - `renderWidget` 상단에 `_pval` 헬퍼 추가 (JSON 문자열 → 객체/배열, 스칼라는 그대로).
+    - progress: `value`·`max` `parseFloat` 강제 → `max>0` 분수, 아니면 `value` 퍼센트. 하위호환 `value:100` no-max → 100%.
+    - table: native `rows` 비면 `_pval` 주입 + array-of-arrays 첫 행 헤더 승격.
+    - checklist: native `items` 비면 `_pval` 주입.
+    - text: 스칼라 `value`(live) 가 정적 `content` 보다 우선.
+* 검증: node 런타임 harness 로 5/5→100%, value:100→100%(하위호환), 7.7G/60G→12.8%, table 헤더승격+데이터, text live override, checklist done 전부 통과. `/hub restart` 후 server pid 3268 fresh + 새 WIDGET_JS 6마커 로드 확인.
 ## Issue229: dashboard /s/{sid} 뷰어 "대기 중..." — 디스크 dashboard sessions 미등록 (등록: 2026-06-28, 해결: 2026-06-28, commit: dd16318) ✅
 * 목적: `..board` 로 띄운 dashboard 가 SSE 연결됐는데도 위젯이 안 뜨고 "대기 중..." 만 표시되는 문제 해결. 사용자 스크린샷 보고.
 * arch: `_doc_arch/hub_htm.md`
