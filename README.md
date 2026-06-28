@@ -16,6 +16,26 @@ A set of zsh functions for fast number-indexed access to project directories (`c
 
 > Dual license: free for personal/non-commercial use / paid for enterprises. [LICENSE](LICENSE) · [Commercial License](COMMERCIAL.md)
 
+## Quick Start
+
+Install with a single line — no clone needed:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Finfra/fpm/main/sh/bootstrap.sh | sh
+source ~/.zshrc
+```
+
+Then jump to any project by number and self-update anytime:
+
+```bash
+cdf 11        # cd to project 11
+cdf 11-16     # range → iTerm2 split
+fpm update    # pull latest + refresh SCAR plugin
+```
+
+> Shell-only (cdf/sshf) needs nothing beyond zsh. SCAR/hub/dashboard pull in extra tools — see [Requirements](#requirements).
+> Installing from a private mirror? Use `gh api -H "Accept: application/vnd.github.raw" repos/Finfra/fpm/contents/sh/bootstrap.sh | sh` (needs `gh` CLI auth).
+
 ## Key Features
 
 * **cdf** — instantly `cd` by project number; splits iTerm2 when multiple are given. Supports ranges (`11-16`), command forwarding (`--- cmd`), and heredoc
@@ -44,14 +64,23 @@ Configuration is based on plain text (`projects/<number>`) and Markdown (`Projec
 
 ## Installation
 
+**Recommended — one-line remote install** (clones to `~/.fpm`, idempotent):
+
 ```bash
-git clone https://github.com/finfra/fpm.git ~/_git/fpm
+curl -fsSL https://raw.githubusercontent.com/Finfra/fpm/main/sh/bootstrap.sh | sh
+source ~/.zshrc
+```
+
+**Manual — clone first:**
+
+```bash
+git clone https://github.com/Finfra/fpm.git ~/_git/fpm
 cd ~/_git/fpm
 bash sh/install.sh
 source ~/.zshrc
 ```
 
-For detailed configuration, see [INSTALL.md](INSTALL.md).
+Manage the install afterward with the `fpm` command: `fpm update` (branch latest) · `fpm upgrade` (latest release tag) · `fpm version` · `fpm uninstall`. For detailed configuration, see [INSTALL.md](INSTALL.md).
 
 ## Usage Examples
 
@@ -95,6 +124,40 @@ The `hub` server (port 9876) unifies Claude Code work from all projects into a s
 | Two-way Q&A form         | Presents `AskUserQuestion` as an HTML form and automatically collects the response |
 
 Internals: a single Python stdlib HTTP+SSE daemon, bound to `127.0.0.1`, with token authentication. Details: [services/hub/README.md](services/hub/README.md)
+
+## Architecture
+
+```mermaid
+flowchart TB
+    User([User · Claude Code])
+    subgraph Shell["Shell layer (zsh)"]
+        cdf["cdf · cdfn · cdfv"]
+        sshf["sshf"]
+    end
+    subgraph SSOT["Config SSOT (plain text)"]
+        proj["Projects.md → projects/N"]
+        srv["Servers.md"]
+    end
+    subgraph Claude["Claude Code"]
+        scar["SCAR (fpm-core plugin)"]
+        mcp["MCP servers"]
+    end
+    Hub["hub server :9876<br/>HTTP + SSE (Python stdlib)"]
+    Browser([Browser dashboard])
+
+    User --> cdf
+    User --> sshf
+    User --> scar
+    cdf --> proj
+    sshf --> srv
+    scar --> Hub
+    mcp --> Hub
+    Hub --> Browser
+```
+
+* **Shell layer** resolves a project number/name to a path from the `Projects.md`/`Servers.md` SSOT — no daemon, no parser.
+* **SCAR + MCP** drive Claude Code; work responses are pushed to the **hub** server.
+* **hub** renders every response into HTML and streams live events (SSE) to the browser dashboard.
 
 ## Structure
 
