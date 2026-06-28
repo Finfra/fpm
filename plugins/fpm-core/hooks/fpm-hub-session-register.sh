@@ -34,9 +34,22 @@ except Exception:
 
 [ -z "$SID" ] && exit 0
 
-# pid: JSON 값이 있고 정수면 사용, 아니면 훅 부모 pid(=claude 세션) fallback
-PID="$PID_JSON"
-case "$PID" in ''|*[!0-9]*) PID="$PPID" ;; esac
+# live_pid: 세션 카드 liveness anchor. stdin JSON pid·$PPID 는 훅 실행용 transient
+#   프로세스(턴 종료 시 사망)일 수 있어 부적합 — 그 pid 가 죽으면 서버가 세션을 즉시
+#   prune 해 "0 live session" 이 된다. → 조상 체인에서 영속 claude 프로세스(comm=claude)
+#   를 탐색해 권위 pid 로 사용. 실패 시 JSON pid → $PPID fallback (하위호환).
+PID=""
+_p=$PPID; _d=0
+while [ "${_p:-0}" -gt 1 ] && [ "$_d" -lt 12 ]; do
+  _c=$(ps -o comm= -p "$_p" 2>/dev/null | awk -F/ '{print $NF}')
+  case "$_c" in *claude*) PID=$_p; break ;; esac
+  _p=$(ps -o ppid= -p "$_p" 2>/dev/null | tr -d ' ')
+  _d=$((_d+1))
+done
+if [ -z "$PID" ]; then
+  PID="$PID_JSON"
+  case "$PID" in ''|*[!0-9]*) PID="$PPID" ;; esac
+fi
 [ -z "$CWD" ] && CWD="$PWD"
 case "$CWD" in /*) ;; *) exit 0 ;; esac   # 절대경로만
 
