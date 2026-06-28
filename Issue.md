@@ -21,17 +21,6 @@ date: 2026-03-27
 
 # 🚧 진행중
 
-## Issue223: hub-shell 탭 빠른 닫기 시 Chrome 렌더러 크래시 — iframe 재네비 디바운스 (등록: 2026-06-28)
-* 목적: 여러 탭이 떠 있을 때 탭을 빠르게 연속으로 닫으면 이벤트가 꼬여 Chrome 이 죽는 문제 해결. hub-shell 안전성 강화. 사용자 보고.
-* 상세:
-    - 출처: prj1 ___pm 세션 — "크롬 자꾸 죽음. 탭 여러개일 때 빨리 닫으면 이벤트 꼬여 죽음" 보고.
-    - 근본 원인: `closeTab(id)` 가 활성 탭을 닫을 때마다 `activate()` → `view.src` 재할당으로 단일 iframe 을 즉시 재네비게이트함. 탭 N개를 빠르게 닫으면 iframe 네비게이션이 버스트로 발생, 각 문서 페이지가 자기 SSE EventSource 를 생성/고아화 → Chrome 의 호스트당 HTTP/1.1 연결 6개 상한 포화 + 서버 SSE keepalive 15s 지연 reap → 렌더러 핸들/메모리 누적 → 탭(렌더러) 크래시("죽음").
-    - 디바운스·멱등 가드 부재: 버스트 닫기 시 매 `activate` 가 별개 네비 유발, 같은 URL 재네비도 막지 못함.
-* 구현 명세:
-    - `services/hub/server.py` `HUB_SHELL_HTML` 의 iframe 네비게이션을 디바운스(`navTo()`)로 코얼레싱 — 버스트 close→activate 가 최종 1회 네비만 유발.
-    - 멱등 가드: 목표 embed URL 이 현재 로드된 `view.src` 와 절대 URL 기준 동일하면 재네비 skip(불필요 EventSource churn 차단).
-    - 검증: `python3 -c "import ast; ast.parse(...)"` 구문 검사 후 `/hub restart` (hub-dev-rules 강제) + healthz uptime 확인.
-
 # 📕 중요
 
 # 📙 일반
@@ -39,6 +28,16 @@ date: 2026-03-27
 # 📗 선택
 
 # ✅ 완료
+## Issue223: hub-shell 탭 빠른 닫기 시 Chrome 렌더러 크래시 — iframe 재네비 디바운스 (등록: 2026-06-28, 해결: 2026-06-28, commit: 77d237b) ✅
+* 목적: 여러 탭이 떠 있을 때 탭을 빠르게 연속으로 닫으면 이벤트가 꼬여 Chrome 이 죽는 문제 해결. hub-shell 안전성 강화. 사용자 보고.
+* 상세:
+    - 출처: prj1 ___pm 세션 — "크롬 자꾸 죽음. 탭 여러개일 때 빨리 닫으면 이벤트 꼬여 죽음" 보고.
+    - 근본 원인: `closeTab(id)` 가 활성 탭을 닫을 때마다 `activate()` → `view.src` 재할당으로 단일 iframe 을 즉시 재네비게이트함. 탭 N개를 빠르게 닫으면 iframe 네비게이션이 버스트로 발생, 각 문서 페이지가 자기 SSE EventSource 를 생성/고아화 → Chrome 의 호스트당 HTTP/1.1 연결 6개 상한 포화 + 서버 SSE keepalive 15s 지연 reap → 렌더러 핸들/메모리 누적 → 탭(렌더러) 크래시("죽음").
+    - 디바운스·멱등 가드 부재: 버스트 닫기 시 매 `activate` 가 별개 네비 유발, 같은 URL 재네비도 막지 못함.
+* 구현 명세:
+    - `services/hub/server.py` `HUB_SHELL_HTML` 에 `navTo(url)` 추가 — 60ms 윈도로 버스트 네비를 코얼레싱(최종 목표 1회만 `view.src` 할당) + 멱등 가드(목표 embed URL 이 현재 `view.src` 와 절대 URL 기준 동일하면 skip → EventSource churn 제거). `activate` 가 `view.src` 직접 할당 대신 `navTo` 경유. 탭바 `render()` 는 동기 유지(시각 지연 없음).
+    - 검증: `ast.parse` 구문검사 통과 → `/hub restart`(hub-dev-rules) → healthz pid=80569·listener 일치, 서빙 `/hub-shell` 에 `navTo` ×4 확인(새 코드 live). 브라우저 크래시 자체는 재현 테스트 불가 — 로직상 버스트 네비 제거로 근본 차단(미재현 검증).
+
 ## Issue222: hub-shell 기존 탭 포커스 미이동 버그 수정 + /hub restart 자동화(rule) (등록: 2026-06-28, 해결: 2026-06-28, commit: ff78e21) ✅
 * 목적: (1) hub-shell 내부 탭에서 이미 열린 문서 카드(↗)를 재클릭해도 포커스가 이동하지 않는 버그 수정. (2) `/hub restart` 가 pidfile stale 시 silently no-op 하던 문제 해결로 "코드 수정 → 재시작 반영"을 신뢰성 있게 자동화. (3) hub 서버 코드 편집 시 자동 재시작을 hook 없이 rule 로 강제. 사용자 스크린샷 보고.
 * 상세:
