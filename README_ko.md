@@ -16,6 +16,26 @@ date: 2026-06-06
 
 > 듀얼 라이선스: 개인·비영리 무료 / 기업 유료. [LICENSE](LICENSE) · [COMMERCIAL_ko.md](COMMERCIAL_ko.md)
 
+## 빠른 시작
+
+클론 없이 한 줄로 설치:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Finfra/fpm/main/sh/bootstrap.sh | sh
+source ~/.zshrc
+```
+
+이후 번호로 프로젝트 점프 + 셀프 업데이트:
+
+```bash
+cdf 11        # 프로젝트 11 로 cd
+cdf 11-16     # 범위 → iTerm2 분할
+fpm update    # 최신 pull + SCAR 플러그인 갱신
+```
+
+> 셸만(cdf/sshf) 쓰면 zsh 외 의존성 없음. SCAR/hub/dashboard 는 추가 도구 필요 — [요구 사항](#요구-사항) 참조.
+> 비공개 미러 설치 시: `gh api -H "Accept: application/vnd.github.raw" repos/Finfra/fpm/contents/sh/bootstrap.sh | sh` (`gh` CLI 인증 필요).
+
 ## 핵심 기능
 
 * **cdf** — 프로젝트 번호로 즉시 `cd`, 복수 지정 시 iTerm2 분할. 범위(`11-16`)·명령 전달(`--- cmd`)·heredoc 지원
@@ -44,14 +64,23 @@ date: 2026-06-06
 
 ## 설치
 
+**권장 — 원격 원라인 설치** (`~/.fpm` 에 클론, 멱등):
+
 ```bash
-git clone https://github.com/finfra/fpm.git ~/_git/fpm
+curl -fsSL https://raw.githubusercontent.com/Finfra/fpm/main/sh/bootstrap.sh | sh
+source ~/.zshrc
+```
+
+**수동 — 클론 먼저:**
+
+```bash
+git clone https://github.com/Finfra/fpm.git ~/_git/fpm
 cd ~/_git/fpm
 bash sh/install.sh
 source ~/.zshrc
 ```
 
-자세한 설정은 [INSTALL_ko.md](INSTALL_ko.md) 참조.
+설치 후 `fpm` 커맨드로 관리: `fpm update`(브랜치 최신) · `fpm upgrade`(최신 릴리즈 태그) · `fpm version` · `fpm uninstall`. 자세한 설정은 [INSTALL_ko.md](INSTALL_ko.md) 참조.
 
 ## 사용 예
 
@@ -95,6 +124,40 @@ sshf 1 2 3     # 다중 서버 → iTerm2 분할
 | 양방향 Q&A 폼     | `AskUserQuestion` 을 HTML 폼으로 제시하고 응답 자동 회수                         |
 
 내부: Python stdlib HTTP+SSE 단일 daemon, `127.0.0.1` 바인딩, token 인증. 상세: [services/hub/README.md](services/hub/README.md)
+
+## 아키텍처
+
+```mermaid
+flowchart TB
+    User([사용자 · Claude Code])
+    subgraph Shell["셸 레이어 (zsh)"]
+        cdf["cdf · cdfn · cdfv"]
+        sshf["sshf"]
+    end
+    subgraph SSOT["설정 SSOT (평문)"]
+        proj["Projects.md → projects/N"]
+        srv["Servers.md"]
+    end
+    subgraph Claude["Claude Code"]
+        scar["SCAR (fpm-core 플러그인)"]
+        mcp["MCP 서버"]
+    end
+    Hub["hub 서버 :9876<br/>HTTP + SSE (Python stdlib)"]
+    Browser([브라우저 대시보드])
+
+    User --> cdf
+    User --> sshf
+    User --> scar
+    cdf --> proj
+    sshf --> srv
+    scar --> Hub
+    mcp --> Hub
+    Hub --> Browser
+```
+
+* **셸 레이어** — 번호/이름을 `Projects.md`/`Servers.md` SSOT 경로로 해석. daemon·파서 불필요.
+* **SCAR + MCP** — Claude Code 구동, 작업 응답을 **hub** 서버로 push.
+* **hub** — 매 응답을 HTML 로 렌더 + 실시간 이벤트(SSE)를 브라우저 대시보드로 스트리밍.
 
 ## 구조
 
