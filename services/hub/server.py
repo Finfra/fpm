@@ -5891,6 +5891,54 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         log(f"POST /session/update — hash={h} sid={sid} mode={mode} ctype={ctype} clients={clients}")
         self._send_json(200, {"ok": True, "mode": mode, "clients": clients})
 
+    def _dash_entry_for_sid(self, cwd_h, cwd, sid):
+        """Issue229: DASH_REGISTRY 에 등록된 dash 중 (cwd_h, sid) 매칭 파일을 풀 파싱해
+        sessions 엔트리 형태로 합성 반환. dashboard runner 는 dash.yaml 파일만 갱신하고
+        /session/register 로 sessions dict 에 push 하지 않으므로(파일 기반·HTTP 없음),
+        /s/{sid}/data 가 sessions 에서 못 찾는다. registry(디스크)에서 직접 읽어 메운다.
+        반환: sessions entry 호환 dict(content_type=dashboard, content=full dash JSON) 또는 None."""
+        if not sid:
+            return None
+        try:
+            with registry_lock:
+                dash_entries = load_registry(DASH_REGISTRY)
+        except Exception:
+            return None
+        for e in dash_entries:
+            if e.get("sid", "") != sid:
+                continue
+            ecwd = os.path.normpath(e.get("cwd", "") or "")
+            if ecwd and cwd_hash(ecwd) != cwd_h:
+                continue
+            path = e.get("path", "")
+            if not path:
+                continue
+            try:
+                with open(path, encoding="utf-8") as f:
+                    raw = f.read()
+                if path.endswith(".dash.json"):
+                    data = json.loads(raw)
+                else:
+                    try:
+                        import yaml  # type: ignore
+                        data = yaml.safe_load(raw)
+                    except ImportError:
+                        data = self._parse_dash_yaml(raw)
+                if not isinstance(data, dict):
+                    return None
+                st = os.stat(path)
+                return {
+                    "content_type": "dashboard",
+                    "content": json.dumps(data, ensure_ascii=False),
+                    "mode": "A",
+                    "updated": st.st_mtime,
+                    "capabilities": {},
+                }
+            except Exception as ex:
+                log(f"_dash_entry_for_sid fail {path}: {ex}")
+                return None
+        return None
+
     def _handle_session_get(self, parsed):
         """GET /s/{cwd_hash}/{sid}?token=  → SPA shell HTML
         GET /s/{cwd_hash}/{sid}/data?token= → session JSON
@@ -5925,6 +5973,10 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         if is_data:
             with sessions_lock:
                 entry = sessions.get((cwd_h, sid))
+            if not entry:
+                # Issue229: 디스크 dashboard(runner 가 파일만 갱신, sessions 미push)는
+                #   registry 에서 sid 매칭 dash 파일을 직접 읽어 serve (SPA "대기 중" 해소).
+                entry = self._dash_entry_for_sid(cwd_h, cwd, sid)
             if not entry:
                 self._send_json(404, {"error": "session not registered"})
                 return
