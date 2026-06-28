@@ -5,7 +5,7 @@ date: 2026-03-27
 ---
 
 # Issue Management
-* Issue HWM: 235
+* Issue HWM: 236
 * 오래된 Issue: `_doc_work/Issue_OLD.md` (General)
 * Save Point:
     - 3e69d0f (2026-04-24) Feat: graphify 토큰 절감 SCAR 프로젝트 구현 (Issue11·12 등록)
@@ -17,6 +17,21 @@ date: 2026-03-27
 # 🌱 이슈후보
 
 # 🚧 진행중
+
+## Issue236: fpm-core 발행(소스→마켓)·머신 갱신 자동화 — update.sh + install.sh skip 갭 수정 (등록: 2026-06-28)
+* 목적: fpm-core SCAR 갱신 경로가 수동·갭 다수. (1) fpm `plugins/fpm-core` 소스 → `f-claude-plugins`(prj20) 마켓 발행이 수동 rsync+버전 bump+push, (2) `install.sh` 재실행은 이미 설치된 플러그인을 skip 하여 SCAR 업데이트 불가(설계 갭), (3) 머신 갱신은 `claude plugin marketplace update` + `claude plugin update` 2단계 수동. fg1 진단 중 fpm-core 가 0.3.1(마켓 동결) ↔ 0.7.11(소스) 로 크게 벌어진 채 방치됐음이 드러남(2026-06-28 발행으로 해소).
+* plan: `_doc_work/plan/fpm-scar-publish_plan.md`
+* 상세:
+    - 출처: fg1 SCAR/훅 점검 작업(fpm prj7 세션). 발행 누락이 근본 원인으로 판명 → 수동 발행 1회 수행(f-claude-plugins commit 13f1c02, fpm-core 0.3.1→0.7.11) + fg1 plugin update 완료. 본 이슈는 재발 방지 자동화.
+    - triage: 중간(설계 결정 — 발행 SSOT·버전 동기 규약·셸/SCAR 이원 갱신 경로). plan 권장
+* 구현 명세:
+    - **발행 자동화**: `fpm plugins/fpm-core` → `f-claude-plugins/fpm-core` rsync(--delete) + `plugin.json`↔`marketplace.json` 버전 동기 bump + 무관 변경 제외 staging + commit/push 를 단일 스크립트(ex: `sh/publish-scar.sh`)로. `claude plugin validate` 게이트 포함
+    - **install.sh skip 갭**: `install_scar()` 가 이미 설치 시 "skip" 대신 `claude plugin update` 호출하도록 수정(install=update 멱등 통합) — 옵션 A
+    - **update.sh 신설(옵션 B)**: ① 셸 `git -C $FPM_BASE pull`(+재source 안내) ② `claude plugin marketplace update` + `claude plugin update fpm-core@f-claude-plugins` 오케스트레이션. 셸·SCAR 이원 경로를 한 진입점으로
+    - **버전 SSOT**: fpm `VERSION`/`plugin.json` ↔ 마켓 `marketplace.json` fpm-core entry 3곳 버전 일치 강제(release-check 확장 후보)
+    - **부수 정리**: f-claude-plugins origin URL 대소문자 교정(`finfra`→`Finfra`, push redirect 경고 제거)
+    - 검증: 클린 머신에서 install → 소스 변경 → publish → update 1회 라운드트립, 버전 3곳 일치 확인
+
 
 ## Issue233: [강화 Phase2·T6] Issue.md ↔ GitHub Issues 양방향 동기(옵트인 브리지) (등록: 2026-06-28)
 * 목적: Issue.md(로컬 SSOT) 와 GitHub Issues 를 옵트인 브리지로 양방향 동기. 1인 우선 기본값(브리지 off) 유지하되, 팀·외부 기여 시 GH Issues 로 노출. 강화 로드맵 Phase 2 T6.
