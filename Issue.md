@@ -18,6 +18,18 @@ date: 2026-03-27
 
 # 🚧 진행중
 
+## Issue225: [강화 Phase0·T2] 디스커버리 등재 (awesome-claude-code + 마켓 디렉토리) (등록: 2026-06-28)
+* 목적: 공개 blocker. 미등재 = 가시성 0. 공개 직후 awesome-claude-code + 마켓 디렉토리 등재. 등재 본문이 T1 원라인 설치 명령을 인용하므로 Issue224 선행.
+* depends: Issue224
+* plan: `_doc_work/plan/fpm-enhancement-roadmap_plan.md`
+* report: `_doc_work/report/fpm-discovery-listing_issue225_report.md`
+* arch: `_doc_arch/fpm-competitive-benchmark.md`
+* 진척 (2026-06-28):
+    - ✅ 인프라: Finfra/fpm **public 전환**(gitleaks worktree+178커밋 history leak 0 확인 후), description+topics 8종 보강, raw URL HTTP 200, 원라인 설치 E2E 검증(격리 HOME — .fpm 배치+rc hook+fpm-core 플러그인+uninstall, 실 HOME 무오염).
+    - ✅ 등재 메타데이터 패키지 작성(report) — Category=Tooling/Orchestrators, 폼 필드값+disclosure 본문 완비.
+    - ⏳ **사용자 수동 잔여**: awesome-claude-code 는 PR/CLI/AI 제출 금지 → 사용자가 웹 이슈 폼 직접 제출. 마켓 디렉토리도 동일.
+    - ⚠️ 반려 리스크: 폼 가이드 "general-purpose marketplace 회피" → Orchestrators 각도로 완화했으나 maintainer 재량 반려 가능.
+
 ## Issue237: Playwright MCP Chrome 반복 크래시 — macOS 접근성 API 충돌 (등록: 2026-06-28)
 * 목적: Playwright MCP(`@playwright/mcp@latest`, `~/.claude.json` 글로벌)가 띄운 Chrome(149.0.7827.200)이 macOS 26.6에서 반복 크래시. `EXC_BREAKPOINT(SIGTRAP)` — Chrome 안전 단언 실패. 스택 전체가 macOS 접근성 경로(`NSAccessibilityEntryPointValueForAttributeWithParameter` → `CopyParameterizedAttributeValue` → `CoreAccessibility` → `_AXMIGCopyParameterizedAttributeValue`). 부모=`node`, 책임=VSCode → 자동화 브라우저 확정.
 * 상세:
@@ -30,6 +42,9 @@ date: 2026-03-27
     - **트레이드오프**: 수동 로그인 필요 흐름(naver-blog, linkedin)은 headless 불가 → 해당 스킬은 영속 프로필 + 비-headless 별도 실행 필요. 본 이슈는 기본값만 headless 전환.
     - 대안(미채택): ① Chrome 런치 플래그 `--disable-renderer-accessibility`(snapshot 손상 위험) ② Chrome 채널 다운그레이드(유지보수 부담)
     - 검증: 설정 적용 후 `browser_navigate` + `browser_snapshot` 1회 라운드트립 크래시 없음 확인
+* 진행:
+    - 2026-06-28: `~/.claude.json` args `--isolated --headless` 적용(JSON 유효). 현 세션 MCP 로 `example.com` navigate+snapshot 라운드트립 정상 — headless 에서 snapshot 동작 확인(핵심 리스크 해소).
+    - ⚠️ 잔여: 원 크래시는 외부 macOS 접근성 클라이언트 트리거(간헐성) → 단발 테스트로 부재 증명 불가. 새 세션 재시작 후 재발 모니터링 필요. 일정 기간 무재발 시 ✅ 완료 이동.
 
 
 ## Issue233: [강화 Phase2·T6] Issue.md ↔ GitHub Issues 양방향 동기(옵트인 브리지) (등록: 2026-06-28)
@@ -46,18 +61,6 @@ date: 2026-03-27
     - 🚧 잔여(종결 전): enabled:true 실 repo 에 push --apply E2E(개인정보 가드 통과 후 실 gh create) 1건 라운드트립. 현재 repo PRIVATE·미활성으로 보류
 
 # 📕 중요
-
-## Issue225: [강화 Phase0·T2] 디스커버리 등재 (awesome-claude-code + 마켓 디렉토리) (등록: 2026-06-28)
-* 목적: 공개 blocker. 미등재 = 가시성 0. 공개 직후 awesome-claude-code PR + claudemarketplaces.com 등 마켓 디렉토리에 등재. 등재 본문이 T1 원라인 설치 명령을 인용하므로 Issue224 선행.
-* depends: Issue224
-* plan: `_doc_work/plan/fpm-enhancement-roadmap_plan.md`
-* arch: `_doc_arch/fpm-competitive-benchmark.md`
-* 상세:
-    - 출처: prj1 ___pm 강화 로드맵 Phase 0 (벤치마킹 강화 과제 📕 #2)
-    - 코드보다 등재 액션·메타데이터(설명·태그·스크린샷) 위주
-* 구현 명세:
-    - 등재 메타데이터 작성(T1 원라인 명령 인용) → awesome-claude-code PR → 마켓 디렉토리 등재
-    - 검증: 등재 링크에서 원라인 명령 복붙 설치 동작 확인
 
 # 📙 일반
 
