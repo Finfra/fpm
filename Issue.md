@@ -68,19 +68,23 @@ date: 2026-03-27
     - 🚧 잔여(자산 부재): 데모 GIF — 터미널 세션 녹화(vhs/asciinema) 필요, 자동 생성 불가. 사용자 수동 녹화 후 `img/` 추가 + README 링크 1줄. 핵심 4개 중 3개 완료, GIF만 잔여
 * Hash: 0ca1e9a(fpm)
 
-## Issue227: [강화 Phase1·T4] cdf frecency / 퍼지 점프 옵션 (등록: 2026-06-28)
+# 📗 선택
+
+# ✅ 완료
+
+## Issue227: [강화 Phase1·T4] cdf frecency / 퍼지 점프 옵션 (등록: 2026-06-28, 해결: 2026-06-29, commit: 89b53a6) ✅
 * 목적: 공개 후 사용성. `cdf` 번호 SSOT 유지 + 인자가 번호 아닐 때 최근 방문·fuzzy 매칭(`fzf` 가용 시) 보조 점프. 번호 결정론성은 약화 금지 — fuzzy 는 fallback 레이어 한정.
 * plan: `_doc_work/plan/fpm-enhancement-roadmap_plan.md`
 * arch: `_doc_arch/fpm-competitive-benchmark.md`
 * 상세:
     - 출처: prj1 ___pm 강화 로드맵 Phase 1 (📙, 근거 zoxide). cdf frecency 흔적 0 — 그린필드
 * 구현 명세:
-    - `sh/fpm_function.sh` cdf 패밀리에 fallback 레이어 추가(번호 우선, 비번호 인자 시 fuzzy)
-    - 검증: 번호 점프 회귀 없음 + fuzzy 보조 동작
-
-# 📗 선택
-
-# ✅ 완료
+    - `sh/fpm_function.sh` 단일 파일. frecency 스토어 `projects/.frecency`(`id|freq|epoch`, projects/ 전체 gitignore) + `_cdf_resolve_smart`(fzf 가용+tty → fuzzy picker / 미가용·no-match → 기존 `_cdfn_resolve` 이름·한글 substring 위임)
+    - `_cdf_base` case 분기: 첫 토큰 비번호 → smart resolve, 번호/범위/`list`/`---` → 기존 경로(결정론 100% 보존). `cdf()` 가 방문 id frecency bump
+    - zsh 함정 2건 처리: (1) `$path` 는 `$PATH` tie 특수배열 → 변수명 `_p` 회피, (2) 외부명령 alias 오파싱 → `command` prefix 통일
+    - 검증: zsh -f·bash 양쪽 통과 — 번호 `11`·범위 `11-16`·subfolder `1 sh`·`1 --- ls` 회귀 없음 + 비번호 `cdf fBanner` fallback 라우팅 동작
+    - 잔여(범위 외): 라이브 셸 적용은 새 셸/`source` 재실행 / fpm 공개 미러 동기화는 `fpm-sync` 별도
+* Hash: 89b53a6
 
 ## Issue237: Playwright MCP Chrome 반복 크래시 — macOS 접근성 API 충돌 (등록: 2026-06-28, 해결: 2026-06-29, commit: 274b7c5) ✅
 * 목적: Playwright MCP(`@playwright/mcp@latest`, `~/.claude.json` 글로벌)가 띄운 Chrome(149.0.7827.200)이 macOS 26.6에서 반복 크래시. `EXC_BREAKPOINT(SIGTRAP)` — Chrome 안전 단언 실패. 스택 전체가 macOS 접근성 경로(`NSAccessibilityEntryPointValueForAttributeWithParameter` → `CopyParameterizedAttributeValue` → `CoreAccessibility` → `_AXMIGCopyParameterizedAttributeValue`). 부모=`node`, 책임=VSCode → 자동화 브라우저 확정.
