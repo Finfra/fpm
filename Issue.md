@@ -24,6 +24,7 @@ date: 2026-03-27
 # 📕 중요
 
 ## Issue224: [강화 Phase0·T1] 원라인 설치(curl|sh) + 셀프업데이트 fpm 셸 커맨드 (등록: 2026-06-28)
+* 상태(2026-06-28): 구현·E2E·미러 sync+push 완료. 원격 main 에 `sh/bootstrap.sh`+`fpm()` 반영(미러 `42cede7`, ahead 0). **종결 미완 — repo `Finfra/fpm` 가 PRIVATE 라 미인증 `curl|sh` 404. 사용자 결정으로 PRIVATE 유지 → public 전환 시 종결.** 상세: `_doc_work/tasks/fpm-oneline-install_task.md` T1-6
 * 목적: fPm 공개 blocker. 현재 `sh/install.sh` 는 repo 를 먼저 클론해야 실행 가능하고, 설치본을 갱신하는 셀프업데이트 커맨드가 없다. 경쟁자(ccpi `install/update/upgrade`) 대비 가장 뼈아픈 격차. 원격 `curl | sh` 원라인 진입점 + `fpm` 셸 커맨드를 신설하여 "설치·갱신 가능" 상태로 만든다.
 * plan: `_doc_work/plan/fpm-enhancement-roadmap_plan.md`
 * task: `_doc_work/tasks/fpm-oneline-install_task.md`
