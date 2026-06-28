@@ -67,6 +67,85 @@ _pm_manager() {
     echo "$base_dir"
 }
 
+# === FRECENCY + FUZZY FALLBACK (Issue227 / T4) =========================
+# 번호 점프(SSOT·결정론)는 그대로. 비번호 인자일 때만 아래 fallback 레이어 발동.
+#   store: $FPM_BASE/projects/.frecency  (행 = "id|freq|epoch", gitignore)
+#   bump : cdf 로 실제 cd 한 id 의 빈도 +1·최근시각 갱신 (zoxide-lite, recency 우선)
+#   resolve: fzf 가용·tty → frecency 정렬 리스트 + fuzzy picker
+#            fzf 미가용/ESC 아닌 no-match → _cdfn_resolve(이름·한글 substring) 로 위임
+
+# _fpm_frecency_file : store 경로 출력
+_fpm_frecency_file() {
+    local base; base=$(_pm_manager) || return 1
+    printf '%s/.frecency' "$base"
+}
+
+# _fpm_frecency_bump <id> : 해당 id 의 freq +1, epoch 갱신 (없으면 신규 행)
+_fpm_frecency_bump() {
+    local id="$1"; [ -n "$id" ] || return 0
+    local f; f=$(_fpm_frecency_file) || return 0
+    local now; now=$(command date +%s)
+    local tmp="${f}.tmp.$$" found=0 i fr la
+    if [ -f "$f" ]; then
+        while IFS='|' read -r i fr la; do
+            [ -z "$i" ] && continue
+            if [ "$i" = "$id" ]; then fr=$((fr + 1)); la=$now; found=1; fi
+            printf '%s|%s|%s\n' "$i" "$fr" "$la"
+        done < "$f" > "$tmp"
+    fi
+    [ "$found" -eq 0 ] && printf '%s|%s|%s\n' "$id" 1 "$now" >> "$tmp"
+    command mv -f "$tmp" "$f" 2>/dev/null
+}
+
+# _fpm_frecency_candidates : "<id>\t<id>  <path>" 행을 frecency-desc 로 emit.
+#   1) store 가 있으면 epoch desc · freq desc 정렬해 먼저 (최근 방문 상단)
+#   2) store 에 없는 나머지 프로젝트를 id 순으로 뒤에 append (전체 탐색 가능)
+#   외부명령은 전부 `command` prefix — 유저 zsh 의 alias(grep/sort/cat 등) 우회
+#   (코드베이스 관례; 미prefix 시 함수 내 alias 오파싱으로 "command not found" 발생).
+#   ⚠️ 변수명 path 금지 — zsh 에서 $path 는 $PATH 에 tie 된 특수배열.
+#      local path 선언 시 함수 내 PATH 가 깨져 외부명령 전멸. _p 사용.
+_fpm_frecency_candidates() {
+    local base; base=$(_pm_manager) || return 1
+    local f="${base}/.frecency" id fr la _p pf
+    if [ -f "$f" ]; then
+        command sort -t'|' -k3,3nr -k2,2nr "$f" | while IFS='|' read -r id fr la; do
+            [ -n "$id" ] || continue
+            pf="${base}/${id}"; [ -f "$pf" ] || continue
+            _p=$(eval echo $(command cat "$pf"))
+            printf '%s\t%s  %s\n' "$id" "$id" "$_p"
+        done
+    fi
+    for pf in "${base}"/[0-9]*; do
+        [ -f "$pf" ] || continue
+        id=$(command basename "$pf")
+        [ -f "$f" ] && command grep -q "^${id}|" "$f" && continue   # 이미 위에서 emit
+        _p=$(eval echo $(command cat "$pf"))
+        printf '%s\t%s  %s\n' "$id" "$id" "$_p"
+    done
+}
+
+# _cdf_resolve_smart <query> : 비번호 인자 → 단일 id 를 stdout 으로 반환
+#   fzf 가용 + stdout tty → frecency 리스트 fuzzy picker (query 초기 필터)
+#     fzf rc: 0=선택 / 1=no-match → 이름·한글 resolver 위임 / 130=ESC → 취소
+#   fzf 미가용 → 바로 _cdfn_resolve
+_cdf_resolve_smart() {
+    local q="$1"
+    if command -v fzf >/dev/null 2>&1 && [ -t 1 ]; then
+        local picked rc
+        picked=$(_fpm_frecency_candidates | command cut -f2- | \
+            command fzf --query="$q" --select-1 --exit-0 --height=40% --reverse \
+                --prompt='cdf> ' --header='frecency+fuzzy (번호 점프가 우선; 이건 fallback)')
+        rc=$?
+        if [ "$rc" -eq 0 ] && [ -n "$picked" ]; then
+            printf '%s' "${picked%% *}"; return 0
+        fi
+        [ "$rc" -eq 130 ] && { echo "취소됨" >&2; return 1; }
+        # rc==1 (no match) → 이름·한글 substring resolver 로 위임
+    fi
+    _cdfn_resolve "$q"
+}
+# ======================================================================
+
 # cdf : 터미널 내 디렉토리 이동
 # 사용법:
 #   cdf 1 2 3              : 각 인덱스 폴더로 이동
@@ -82,8 +161,21 @@ _pm_manager() {
 # 반환: 0=성공, 1=list 출력(호출측 return 필요)
 _cdf_base() {
     _CDF_TARGETS=()
+    _CDF_IDS=()
     _CDF_CMD=""
     [[ -z "$1" ]] && { _pm_manager "list"; return 1; }
+
+    # --- fallback 레이어 (Issue227 / T4): 첫 토큰이 비번호 텍스트면 frecency+fuzzy 로 id 해석.
+    #     번호/범위(11-16)/특수(list·---)는 건너뜀 → 번호 결정론성 100% 보존.
+    case "$1" in
+        list|---|[0-9]*) : ;;                       # 번호·범위·특수 → 기존 경로
+        *)
+            local _fid
+            _fid=$(_cdf_resolve_smart "$1") || return 1
+            shift; set -- "$_fid" "$@"
+            ;;
+    esac
+
     local base_dir=$(_pm_manager)
 
     # --- 구분자 파싱: 앞은 인덱스+서브폴더, 뒤는 _CDF_CMD
@@ -131,6 +223,7 @@ _cdf_base() {
         local target=$(eval echo $(command cat "$file"))
         [[ -n "$subfolder" && -d "$target/$subfolder" ]] && target="$target/$subfolder"
         _CDF_TARGETS+=("$target")
+        _CDF_IDS+=("$idx")          # frecency bump 용 (cdf 가 cd 후 갱신)
     done
     return 0
 }
@@ -170,6 +263,10 @@ cdf() {
             sleep 0.1
         fi
     done
+
+    # frecency bump (Issue227 / T4): 방문한 모든 인덱스의 빈도·최근시각 갱신.
+    local _bid
+    for _bid in "${_CDF_IDS[@]}"; do _fpm_frecency_bump "$_bid"; done
 }
 
 # cdff : Finder에서 해당 경로 열기
