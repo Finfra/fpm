@@ -5,7 +5,7 @@ date: 2026-03-27
 ---
 
 # Issue Management
-* Issue HWM: 222
+* Issue HWM: 228
 * 오래된 Issue: `_doc_work/Issue_OLD.md` (General)
 * Save Point:
     - 3e69d0f (2026-04-24) Feat: graphify 토큰 절감 SCAR 프로젝트 구현 (Issue11·12 등록)
@@ -16,7 +16,21 @@ date: 2026-03-27
 
 # 🌱 이슈후보
 
+1. T6 — Issue.md ↔ GitHub Issues 양방향 동기(옵션, 옵트인 브리지). 강화 로드맵 Phase 2 📗. plan: `_doc_work/plan/fpm-enhancement-roadmap_plan.md`
+2. T7 — SCAR 크로스 툴 이식(Cursor·Codex·Gemini export). 강화 로드맵 Phase 2 📗(최장기). plan: `_doc_work/plan/fpm-enhancement-roadmap_plan.md`
+
 # 🚧 진행중
+
+## Issue223: hub-shell 탭 빠른 닫기 시 Chrome 렌더러 크래시 — iframe 재네비 디바운스 (등록: 2026-06-28)
+* 목적: 여러 탭이 떠 있을 때 탭을 빠르게 연속으로 닫으면 이벤트가 꼬여 Chrome 이 죽는 문제 해결. hub-shell 안전성 강화. 사용자 보고.
+* 상세:
+    - 출처: prj1 ___pm 세션 — "크롬 자꾸 죽음. 탭 여러개일 때 빨리 닫으면 이벤트 꼬여 죽음" 보고.
+    - 근본 원인: `closeTab(id)` 가 활성 탭을 닫을 때마다 `activate()` → `view.src` 재할당으로 단일 iframe 을 즉시 재네비게이트함. 탭 N개를 빠르게 닫으면 iframe 네비게이션이 버스트로 발생, 각 문서 페이지가 자기 SSE EventSource 를 생성/고아화 → Chrome 의 호스트당 HTTP/1.1 연결 6개 상한 포화 + 서버 SSE keepalive 15s 지연 reap → 렌더러 핸들/메모리 누적 → 탭(렌더러) 크래시("죽음").
+    - 디바운스·멱등 가드 부재: 버스트 닫기 시 매 `activate` 가 별개 네비 유발, 같은 URL 재네비도 막지 못함.
+* 구현 명세:
+    - `services/hub/server.py` `HUB_SHELL_HTML` 의 iframe 네비게이션을 디바운스(`navTo()`)로 코얼레싱 — 버스트 close→activate 가 최종 1회 네비만 유발.
+    - 멱등 가드: 목표 embed URL 이 현재 로드된 `view.src` 와 절대 URL 기준 동일하면 재네비 skip(불필요 EventSource churn 차단).
+    - 검증: `python3 -c "import ast; ast.parse(...)"` 구문 검사 후 `/hub restart` (hub-dev-rules 강제) + healthz uptime 확인.
 
 # 📕 중요
 

@@ -221,9 +221,29 @@ HUB_SHELL_HTML = r"""<!DOCTYPE html>
     if(!isRel && !isSameOrigin) return u;  // 외부 URL 은 그대로
     return u + (u.indexOf("?")>=0 ? "&" : "?") + "_shell=1";
   }
+  // Issue223: iframe 재네비 디바운스 — 탭을 빠르게 연속으로 닫으면 closeTab→activate 가
+  //   매번 view.src 를 재할당해 iframe 을 버스트 재네비게이트했다. 각 문서가 자기 SSE
+  //   EventSource 를 생성/고아화 → Chrome 호스트당 연결 6개 상한 포화 → 렌더러 크래시.
+  //   navTo 는 60ms 윈도로 버스트를 코얼레싱(최종 목표 1회만 네비) + 현재 로드 URL 과
+  //   동일하면 skip(멱등 가드). 탭바 하이라이트(render)는 동기 유지 — 시각 지연 없음.
+  var _navTimer = null, _navTarget = null;
+  function navTo(url){
+    _navTarget = url;
+    if(_navTimer) return;                 // 이미 예약됨 → 최종 _navTarget 만 반영
+    _navTimer = setTimeout(function(){
+      _navTimer = null;
+      var u = _navTarget; _navTarget = null;
+      if(u == null) return;
+      try{
+        var abs = new URL(u, location.href).href;
+        if(view.src === abs) return;      // 멱등 가드: 같은 문서 재로딩 차단(EventSource churn 방지)
+      }catch(_){}
+      view.src = u;
+    }, 60);
+  }
   function activate(id){
     var t = tabs.filter(function(x){return x.id===id;})[0]; if(!t) return;
-    activeId = id; view.src = embedUrl(t.view_url); render();
+    activeId = id; navTo(embedUrl(t.view_url)); render();
   }
   function closeTab(id){
     if(id === "home") return;
