@@ -36,30 +36,25 @@ date: 2026-03-27
 
 # 📙 일반
 
-## Issue226: [강화 Phase1·T3] README·랜딩 보강 (prj7 미러) (등록: 2026-06-28)
-* 목적: 공개 후 사용성. fpm(prj7) 미러 README 에 quickstart·기능 표·데모 GIF·아키텍처 다이어그램 보강. T1 원라인 명령을 최상단 배치.
+# 📗 선택
+
+# ✅ 완료
+
+## Issue226: [강화 Phase1·T3] README·랜딩 보강 (prj7 미러) (등록: 2026-06-28, 해결: 2026-06-29) ✅
+* 결과: T3 핵심 4종 전부 완료 — quickstart 원라인 최상단·기능 표·아키텍처 다이어그램(mermaid)·데모 GIF. fpm(prj7) 공개 미러 README EN+KO 양판. 검증: 공개 raw README Quick Start/Demo 반영 + bootstrap raw HTTP 200(원라인 실동작) + GIF raw HTTP 200(8.3MB) + 코드(bootstrap.sh·fpm_function.sh) 대조 명령 정확성.
 * gh: #3
 * depends: Issue224
 * plan: `_doc_work/plan/fpm-enhancement-roadmap_plan.md`
 * arch: `_doc_arch/fpm-competitive-benchmark.md`
-* 상세:
-    - 출처: prj1 ___pm 강화 로드맵 Phase 1 (📙). 편집은 prj7 에서 — `publishable-policy.yml` exclude 가 README 보호
 * 구현 명세:
-    - quickstart(원라인 최상단)·기능 표·데모 GIF·아키텍처 다이어그램 추가
-    - 검증: prj7 README 렌더 + 원라인 명령 정확성
-* 진척 (2026-06-28, fpm 0ca1e9a):
+    - quickstart(원라인 최상단)·기능 표·데모 GIF·아키텍처 다이어그램 추가 / 검증: prj7 README 렌더 + 원라인 명령 정확성
+* 진척:
     - ✅ Quick Start 원라인 최상단(라이선스 직후) — `curl|sh` 원격 설치 + `cdf`/`fpm update` 예시. 기존 git-clone-only 흐름 격상
     - ✅ Installation 재작성 — 원라인 우선·수동 클론 강등·`fpm` 셀프관리 커맨드(update/upgrade/version/uninstall) 명시
-    - ✅ 아키텍처 다이어그램 — mermaid flowchart(셸 레이어·설정 SSOT·Claude SCAR/MCP·hub :9876·브라우저 대시보드). EN+KO 양판
-    - ✅ 기능 표 — 기존 Key Features 표 충분(보존)
+    - ✅ 아키텍처 다이어그램 — mermaid flowchart(셸 레이어·설정 SSOT·Claude SCAR/MCP·hub :9876·브라우저 대시보드)
+    - ✅ 데모 GIF — Desktop mp4(50s,1722x842) → ffmpeg palettegen 2-pass(960px·10fps) → `img/fpm-demo.gif`(8.3MB). 원본 mp4 는 `_doc_work/refs/`(gitignored) 보관·refs.md 등재. 부수: ffmpeg libunibreak.6 dylib 누락 심링크 보정
     - ✅ 부수: repo 케이스 `finfra/fpm`→`Finfra/fpm` 교정(redirect 경고 제거), README_ko 동등 미러
-    - ✅ 검증: 코드(bootstrap.sh·fpm_function.sh) 대조 — 원라인 URL·fpm 서브커맨드·비공개 gh-api fallback 정확. push 후 공개 raw README Quick Start 반영 + bootstrap raw HTTP 200(원라인 실동작)
-    - 🚧 잔여(자산 부재): 데모 GIF — 터미널 세션 녹화(vhs/asciinema) 필요, 자동 생성 불가. 사용자 수동 녹화 후 `img/` 추가 + README 링크 1줄. 핵심 4개 중 3개 완료, GIF만 잔여
-* Hash: 0ca1e9a(fpm)
-
-# 📗 선택
-
-# ✅ 완료
+* Hash: 0ca1e9a, 3ac0ea7(fpm)
 
 ## Issue233: [강화 Phase2·T6] Issue.md ↔ GitHub Issues 양방향 동기(옵트인 브리지) (등록: 2026-06-28, 해결: 2026-06-29) ✅
 * 목적: Issue.md(로컬 SSOT) 와 GitHub Issues 를 옵트인 브리지로 양방향 동기. 1인 우선 기본값(브리지 off) 유지하되, 팀·외부 기여 시 GH Issues 로 노출. 강화 로드맵 Phase 2 T6.
