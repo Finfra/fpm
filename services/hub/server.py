@@ -5929,8 +5929,10 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
                 st = os.stat(path)
                 return {
                     "content_type": "dashboard",
+                    # SPA reload() 는 mode 로 렌더 분기 — dashboard 는 "C"(renderDashboard).
+                    #   "A" 면 raw content 를 그대로 innerHTML 덤프(JSON 문자열 노출). (Issue229)
                     "content": json.dumps(data, ensure_ascii=False),
-                    "mode": "A",
+                    "mode": "C",
                     "updated": st.st_mtime,
                     "capabilities": {},
                 }
