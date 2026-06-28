@@ -106,6 +106,16 @@ date: 2026-03-27
 
 # ✅ 완료
 
+## Issue234: board 이슈 대시보드 카드 배치 최적화 (좁은 카드 단일 컬럼 낭비) (등록: 2026-06-28, 해결: 2026-06-28, commit: 276bd99) ✅
+* 목적: board(`/s/<hash>/issue-status`) 대시보드에서 좁은 status 카드(활성 이슈·진행중 목록·Issue.md 수정)가 full-width 위젯 사이에 끼어 각자 한 행을 독점, 옆 2칸이 빈공간으로 낭비되는 단일 컬럼 문제 해소.
+* 상세:
+    - 원인: `.dash-grid` 기본 `grid-auto-flow: row` — full-width 위젯(표·체크리스트·DAG)이 행을 끊으면 배치 커서가 위 행의 빈칸으로 되돌아가지 못함.
+    - triage: 단순 (`services/hub/server.py` 1파일, CSS 1줄, 방법 자명) → plan/task/report 불요.
+* 구현 명세:
+    - `services/hub/server.py` `.dash-grid` 에 `grid-auto-flow: row dense` (빈칸 backfill) + `align-items: start` (행 내 카드 높이 강제 stretch 방지) 추가.
+    - 위젯 데이터(`dash.yaml`)·렌더 로직 무변경 → 의미 순서·full 위젯 `grid-column: 1 / -1` 호환.
+    - 검증: `ast.parse` SYNTAX_OK → hub 재시작 (old pid 9876 점유 → 강제 kill 후 pid 90089 uptime 3 = 새 코드 반영).
+
 ## Issue232: hub Simple Browser 문서가 생성 프로젝트 아닌 frontmost VSCode 창에 표시 (완료: 2026-06-28, Hash: 34dc55d)
 * 목적: hub 렌더 문서가 자기 owner 프로젝트 창에 뜨도록 보장 (다른 프로젝트 작업 후 복귀 시 엉뚱한 창에 표시되는 문제 차단)
 * 상세:
