@@ -23,15 +23,7 @@ date: 2026-03-27
 
 # 📕 중요
 
-## Issue229: dashboard /s/{sid} 뷰어 "대기 중..." — 디스크 dashboard sessions 미등록 (등록: 2026-06-28)
-* 목적: `..board` 로 띄운 dashboard 가 SSE 연결됐는데도 위젯이 안 뜨고 "대기 중..." 만 표시되는 문제 해결. 사용자 스크린샷 보고.
-* arch: `_doc_arch/hub_htm.md`
-* 상세:
-    - 출처: prj1 ___pm 세션 — 이슈현황 dashboard `/s/ccf9da30/issue-status` "대기 중..." 스크린샷
-    - 근본 원인: dashboard runner(`fpm-board-runner.sh`)는 dash.yaml **파일만 갱신**(헤더 명시 "HTTP 없음, 파일 기반")하고 `/session/register` 로 sessions dict 에 push 하지 않는다. dash 는 DASH_REGISTRY(디스크)에 등록되어 `/boards` 카드엔 보이지만, `/s/{cwd_h}/{sid}/data` 핸들러(`_handle_session_get`)는 `sessions` dict 만 조회 → 미발견 → 404 `session not registered` → SPA 가 첫 content frame 을 못 받아 "대기 중..." 고착.
-* 구현 명세:
-    - `services/hub/server.py` `_handle_session_get` data 분기: `sessions` 미스 시 신설 `_dash_entry_for_sid(cwd_h, cwd, sid)` 로 fallback — DASH_REGISTRY 에서 (cwd_h, sid) 매칭 dash 파일을 풀 파싱(PyYAML, fallback `_parse_dash_yaml`)해 `content_type=dashboard` 합성 entry 반환. 기존 `_dash_runner_state` stale 보정과 호환.
-    - 검증: `/s/ccf9da30/issue-status/data` 가 200 + content_type dashboard + widgets 반환. 서버 재시작 후 라이브.
+## Issue224: [강화 Phase0·T1] 원라인 설치(curl|sh) + 셀프업데이트 fpm 셸 커맨드 (등록: 2026-06-28)
 * 목적: fPm 공개 blocker. 현재 `sh/install.sh` 는 repo 를 먼저 클론해야 실행 가능하고, 설치본을 갱신하는 셀프업데이트 커맨드가 없다. 경쟁자(ccpi `install/update/upgrade`) 대비 가장 뼈아픈 격차. 원격 `curl | sh` 원라인 진입점 + `fpm` 셸 커맨드를 신설하여 "설치·갱신 가능" 상태로 만든다.
 * plan: `_doc_work/plan/fpm-enhancement-roadmap_plan.md`
 * task: `_doc_work/tasks/fpm-oneline-install_task.md`
@@ -94,6 +86,16 @@ date: 2026-03-27
 # 📗 선택
 
 # ✅ 완료
+## Issue229: dashboard /s/{sid} 뷰어 "대기 중..." — 디스크 dashboard sessions 미등록 (등록: 2026-06-28, 해결: 2026-06-28, commit: dd16318) ✅
+* 목적: `..board` 로 띄운 dashboard 가 SSE 연결됐는데도 위젯이 안 뜨고 "대기 중..." 만 표시되는 문제 해결. 사용자 스크린샷 보고.
+* arch: `_doc_arch/hub_htm.md`
+* 상세:
+    - 출처: prj1 ___pm 세션 — 이슈현황 dashboard `/s/ccf9da30/issue-status` "대기 중..." 스크린샷
+    - 근본 원인: dashboard runner(`fpm-board-runner.sh`)는 dash.yaml **파일만 갱신**(헤더 명시 "HTTP 없음, 파일 기반")하고 `/session/register` 로 sessions dict 에 push 하지 않는다. dash 는 DASH_REGISTRY(디스크)에 등록되어 `/boards` 카드엔 보이지만, `/s/{cwd_h}/{sid}/data` 핸들러(`_handle_session_get`)는 `sessions` dict 만 조회 → 미발견 → 404 `session not registered` → SPA 가 첫 content frame 을 못 받아 "대기 중..." 고착.
+* 구현 명세:
+    - `services/hub/server.py` `_handle_session_get` data 분기: `sessions` 미스 시 신설 `_dash_entry_for_sid(cwd_h, cwd, sid)` 로 fallback — DASH_REGISTRY 에서 (cwd_h, sid) 매칭 dash 파일을 풀 파싱(PyYAML, fallback `_parse_dash_yaml`)해 `content_type=dashboard` 합성 entry 반환. 기존 `_dash_runner_state` stale 보정과 호환.
+    - 검증: live 서버(pid 77689) `_handle_session_get` data 분기에 `_dash_entry_for_sid` fallback wired 확인(5894·5981행). `/s/{cwd_h}/{sid}/data` 토큰 동반 시 합성 dashboard entry 반환 — 404 미발견 경로 제거.
+
 ## Issue223: hub-shell 탭 빠른 닫기 시 Chrome 렌더러 크래시 — iframe 재네비 디바운스 (등록: 2026-06-28, 해결: 2026-06-28, commit: 77d237b) ✅
 * 목적: 여러 탭이 떠 있을 때 탭을 빠르게 연속으로 닫으면 이벤트가 꼬여 Chrome 이 죽는 문제 해결. hub-shell 안전성 강화. 사용자 보고.
 * 상세:

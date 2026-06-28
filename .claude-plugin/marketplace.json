@@ -6,14 +6,14 @@
   },
   "metadata": {
     "description": "fpm SCAR marketplace — 프로젝트 관리용 Claude Code Skills/Commands/Agents/Rules. 듀얼 라이선스(개인 무료/기업 유료).",
-    "version": "0.7.7"
+    "version": "0.7.8"
   },
   "plugins": [
     {
       "name": "fpm-core",
       "source": "./plugins/fpm-core",
       "description": "fpm 핵심 SCAR — pm 프로젝트 관리(cdf), hub 렌더 + 양방향 Q&A + Live Dashboard. 글로벌 hub/dashboard 스택 번들.",
-      "version": "0.7.7"
+      "version": "0.7.8"
     }
   ]
 }
