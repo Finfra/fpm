@@ -30,25 +30,6 @@ date: 2026-03-27
     - ⏳ **사용자 수동 잔여**: awesome-claude-code 는 PR/CLI/AI 제출 금지 → 사용자가 웹 이슈 폼 직접 제출. 마켓 디렉토리도 동일.
     - ⚠️ 반려 리스크: 폼 가이드 "general-purpose marketplace 회피" → Orchestrators 각도로 완화했으나 maintainer 재량 반려 가능.
 
-## Issue237: Playwright MCP Chrome 반복 크래시 — macOS 접근성 API 충돌 (등록: 2026-06-28)
-* 목적: Playwright MCP(`@playwright/mcp@latest`, `~/.claude.json` 글로벌)가 띄운 Chrome(149.0.7827.200)이 macOS 26.6에서 반복 크래시. `EXC_BREAKPOINT(SIGTRAP)` — Chrome 안전 단언 실패. 스택 전체가 macOS 접근성 경로(`NSAccessibilityEntryPointValueForAttributeWithParameter` → `CopyParameterizedAttributeValue` → `CoreAccessibility` → `_AXMIGCopyParameterizedAttributeValue`). 부모=`node`, 책임=VSCode → 자동화 브라우저 확정.
-* 상세:
-    - 출처: 2026-06-28 ___pm 세션 중 Chrome 크래시 리포트 제출(사용자 "또 죽었다" — 반복 발생). 분석 문서: `_doc_work/z_htm/hub_htm_20260628_233156_a_chrome-crash.htm`
-    - 근본 원인: macOS 접근성 클라이언트가 Chrome 네이티브 윈도우 AX 트리 조회 → Chrome 접근성 핸들러 단언 실패. headless 가 아닌 보이는 윈도우(NSAccessibility 노출)일 때만 발생.
-    - triage: 중간(글로벌 MCP 설정 변경 + 트레이드오프 결정 — accessibility off vs headless vs 버전 회피)
-* 구현 명세:
-    - **채택안**: Playwright MCP 를 `--isolated --headless` 로 실행 → 네이티브 윈도우 없음 → macOS AX 경로 미진입 → 크래시 차단. `browser_snapshot`(CDP 기반)은 headless 에서도 동작.
-    - 적용: `~/.claude.json` `mcpServers.playwright.args` 에 `--headless`(+ `--isolated`) 추가
-    - **트레이드오프**: 수동 로그인 필요 흐름(naver-blog, linkedin)은 headless 불가 → 해당 스킬은 영속 프로필 + 비-headless 별도 실행 필요. 본 이슈는 기본값만 headless 전환.
-    - 대안(미채택): ① Chrome 런치 플래그 `--disable-renderer-accessibility`(snapshot 손상 위험) ② Chrome 채널 다운그레이드(유지보수 부담)
-    - 검증: 설정 적용 후 `browser_navigate` + `browser_snapshot` 1회 라운드트립 크래시 없음 확인
-* 진행:
-    - 2026-06-28: `~/.claude.json` args `--isolated --headless` 적용(JSON 유효). 현 세션 MCP 로 `example.com` navigate+snapshot 라운드트립 정상 — headless 에서 snapshot 동작 확인(핵심 리스크 해소).
-    - 2026-06-28(재검증): 신규 세션에서 설정 `--isolated --headless` 재확인 + `example.com` navigate+snapshot+close 라운드트립 2회차 클린(크래시 없음).
-    - **구조적 차단 근거**: 크래시 스택이 전부 macOS 접근성 경로(visible 윈도우의 NSAccessibility 노출 시에만 진입). headless = 네이티브 윈도우 없음 = AX 경로 진입 불가 → 재발은 간헐 부재가 아니라 트리거 경로 제거로 결정론적 차단. "일정 기간 무재발" 단서는 보수적 표현.
-    - ⚠️ 잔여 한계: 수동 로그인 흐름(naver-blog, linkedin)은 headless 불가 → 해당 스킬만 비-headless 별도 실행 필요(본 이슈 범위 외).
-
-
 ## Issue233: [강화 Phase2·T6] Issue.md ↔ GitHub Issues 양방향 동기(옵트인 브리지) (등록: 2026-06-28)
 * 목적: Issue.md(로컬 SSOT) 와 GitHub Issues 를 옵트인 브리지로 양방향 동기. 1인 우선 기본값(브리지 off) 유지하되, 팀·외부 기여 시 GH Issues 로 노출. 강화 로드맵 Phase 2 T6.
 * plan: `_doc_work/plan/gh-issue-bridge_plan.md`
@@ -100,6 +81,25 @@ date: 2026-03-27
 # 📗 선택
 
 # ✅ 완료
+
+## Issue237: Playwright MCP Chrome 반복 크래시 — macOS 접근성 API 충돌 (등록: 2026-06-28, 해결: 2026-06-29) ✅
+* 목적: Playwright MCP(`@playwright/mcp@latest`, `~/.claude.json` 글로벌)가 띄운 Chrome(149.0.7827.200)이 macOS 26.6에서 반복 크래시. `EXC_BREAKPOINT(SIGTRAP)` — Chrome 안전 단언 실패. 스택 전체가 macOS 접근성 경로(`NSAccessibilityEntryPointValueForAttributeWithParameter` → `CopyParameterizedAttributeValue` → `CoreAccessibility` → `_AXMIGCopyParameterizedAttributeValue`). 부모=`node`, 책임=VSCode → 자동화 브라우저 확정.
+* 상세:
+    - 출처: 2026-06-28 ___pm 세션 중 Chrome 크래시 리포트 제출(사용자 "또 죽었다" — 반복 발생). 분석 문서: `_doc_work/z_htm/hub_htm_20260628_233156_a_chrome-crash.htm`
+    - 근본 원인: macOS 접근성 클라이언트가 Chrome 네이티브 윈도우 AX 트리 조회 → Chrome 접근성 핸들러 단언 실패. headless 가 아닌 보이는 윈도우(NSAccessibility 노출)일 때만 발생.
+    - triage: 중간(글로벌 MCP 설정 변경 + 트레이드오프 결정 — accessibility off vs headless vs 버전 회피)
+* 구현 명세:
+    - **채택안**: Playwright MCP 를 `--isolated --headless` 로 실행 → 네이티브 윈도우 없음 → macOS AX 경로 미진입 → 크래시 차단. `browser_snapshot`(CDP 기반)은 headless 에서도 동작.
+    - 적용: `~/.claude.json` `mcpServers.playwright.args` 에 `--headless`(+ `--isolated`) 추가
+    - **트레이드오프**: 수동 로그인 필요 흐름(naver-blog, linkedin)은 headless 불가 → 해당 스킬은 영속 프로필 + 비-headless 별도 실행 필요. 본 이슈는 기본값만 headless 전환.
+    - 대안(미채택): ① Chrome 런치 플래그 `--disable-renderer-accessibility`(snapshot 손상 위험) ② Chrome 채널 다운그레이드(유지보수 부담)
+    - 검증: 설정 적용 후 `browser_navigate` + `browser_snapshot` 1회 라운드트립 크래시 없음 확인
+* 진행:
+    - 2026-06-28: `~/.claude.json` args `--isolated --headless` 적용(JSON 유효). 현 세션 MCP 로 `example.com` navigate+snapshot 라운드트립 정상 — headless 에서 snapshot 동작 확인(핵심 리스크 해소).
+    - 2026-06-28(재검증): 신규 세션에서 설정 `--isolated --headless` 재확인 + `example.com` navigate+snapshot+close 라운드트립 2회차 클린(크래시 없음).
+    - **구조적 차단 근거**: 크래시 스택이 전부 macOS 접근성 경로(visible 윈도우의 NSAccessibility 노출 시에만 진입). headless = 네이티브 윈도우 없음 = AX 경로 진입 불가 → 재발은 간헐 부재가 아니라 트리거 경로 제거로 결정론적 차단. "일정 기간 무재발" 단서는 보수적 표현.
+    - ⚠️ 잔여 한계: 수동 로그인 흐름(naver-blog, linkedin)은 headless 불가 → 해당 스킬만 비-headless 별도 실행 필요(본 이슈 범위 외).
+
 
 ## Issue228: [강화 Phase1·T5] 모바일·원격 hub 접속 (QR + 반응형) (등록: 2026-06-28, 해결: 2026-06-29, commit: 927c290) ✅
 * 결과: hub `/qr` 모바일 반응형 + QR MVP 완료·검증. `bind_host: [127.0.0.1, 192.168.0.17]` 멀티소켓 LAN bind 활성(0.0.0.0 전노출 대신 LAN IP 스코프 — 더 안전). 휴대폰 실스캔은 사용자 LAN 환경 확인 항목으로 종결.
