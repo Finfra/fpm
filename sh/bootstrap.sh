@@ -7,7 +7,10 @@
 #   절차: ~/.claude/rules/global-scar-change-rules.md
 #
 # 용도: repo 를 먼저 클론하지 않고도 한 줄로 fpm 을 설치한다.
-#   curl -fsSL https://raw.githubusercontent.com/Finfra/fpm/main/sh/bootstrap.sh | sh
+#   [공개 repo]  curl -fsSL https://raw.githubusercontent.com/Finfra/fpm/main/sh/bootstrap.sh | sh
+#   [비공개 repo] gh api -H "Accept: application/vnd.github.raw" \
+#                   repos/Finfra/fpm/contents/sh/bootstrap.sh | sh
+#                 (gh CLI 인증 필요. 본 스크립트가 gh auth setup-git 으로 clone/pull 자동 인증)
 #
 # 동작:
 #   1. 의존성 확인 (git)
@@ -36,6 +39,18 @@ err()  { printf '\033[31m[fpm]\033[0m %s\n' "$1" >&2; }
 if ! command -v git >/dev/null 2>&1; then
     err "git 미발견 — git 설치 후 재실행 (macOS: xcode-select --install)"
     exit 1
+fi
+
+# ── 1b. private repo 대비: gh 인증 git 자격증명 셋업 (Issue224) ──
+#   FPM_REPO 가 비공개면 익명 https clone 이 실패한다. gh CLI 가 인증돼 있으면
+#   git credential helper 를 구성해(https 자동 인증) clone/pull 양쪽이 동작한다.
+#   gh 없거나 미인증이면 무시(공개 repo·SSH·기존 자격증명 경로 그대로).
+if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    if gh auth setup-git >/dev/null 2>&1; then
+        info "gh 인증 git 자격증명 구성 — 비공개 repo clone/pull 가능"
+    else
+        warn "gh auth setup-git 실패 — 공개 repo 또는 별도 자격증명 필요"
+    fi
 fi
 
 # ── 2~3. 설치 위치 확보 (clone 또는 pull, 멱등) ──────────────
