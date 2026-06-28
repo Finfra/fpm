@@ -433,6 +433,28 @@ CLOSE_SHIM = (
     b"}else{try{_c.call(window);}catch(e){}}};})();</script>"
 )
 
+# Issue214(재해결): canonical pink 헤더(prj3 자산, hook 템플릿)에는 🔗 "문서 링크 복사"
+#   버튼이 없어 hub-shell iframe 안에서 주소창이 /hub-shell 만 보일 때 문서 URL 직접 복사가
+#   불가했다(Issue214 의 핵심 목적이 dash 헤더에만 적용되고 메인 렌더 경로엔 누락). dash 헤더
+#   _serve_dash_inline 와 동일한 복사 로직을 serve 시점에 주입해 prj3 템플릿 수정 없이 해소.
+#   주입 스크립트는 nav.header-actions 의 닫기 버튼 직전에 🔗 버튼을 삽입(중복 가드).
+COPY_LINK_SHIM = (
+    b"<script>(function(){function ins(){"
+    b"var nav=document.querySelector('header .header-actions');"
+    b"if(!nav||nav.querySelector('.copy-link'))return;"
+    b"var b=document.createElement('button');b.type='button';"
+    b"b.className='copy-link';b.title='\xec\x9d\xb4 \xeb\xac\xb8\xec\x84\x9c \xeb\xa7\x81\xed\x81\xac \xeb\xb3\xb5\xec\x82\xac';"
+    b"b.textContent='\xf0\x9f\x94\x97';"
+    b"b.onclick=function(){var u=location.href.replace(/[?&]_shell=1$/,'');"
+    b"navigator.clipboard.writeText(u).then(function(){var o=b.textContent;"
+    b"b.textContent='\xe2\x9c\x93';setTimeout(function(){b.textContent=o;},1200);})"
+    b".catch(function(){window.prompt('\xeb\xac\xb8\xec\x84\x9c \xeb\xa7\x81\xed\x81\xac \xeb\xb3\xb5\xec\x82\xac',u);});};"
+    b"var c=nav.querySelector('button[onclick*=\"window.close\"]')||nav.querySelector('button:last-of-type');"
+    b"if(c){nav.insertBefore(b,c);}else{nav.appendChild(b);}}"
+    b"if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',ins);}else{ins();}"
+    b"})();</script>"
+)
+
 
 def _inject_before_body_end(body: bytes, snippet: bytes) -> bytes:
     """snippet 을 </body> 직전에 삽입(없으면 끝에 append)."""
@@ -4742,6 +4764,8 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             return
         # Issue216: 닫기 버튼이 쉘 탭을 닫도록 window.close override 쉼 주입.
         body = _inject_before_body_end(body, CLOSE_SHIM)
+        # Issue214(재해결): canonical 헤더에 🔗 문서 링크 복사 버튼 주입.
+        body = _inject_before_body_end(body, COPY_LINK_SHIM)
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -4811,6 +4835,12 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
                 body = body[:idx] + inject + body[idx:]
             else:
                 body = body + inject
+        # Issue214(재해결): /view 로 serve 되는 문서(form `_b_`·response 등)도 hub-shell
+        #   iframe 안에서 열리므로 닫기 버튼의 window.close() 가 no-op 였다(간헐적 닫기 실패의
+        #   원인 — 탭이 /htm-doc 경로로 열리면 닫히고 /view 경로면 안 닫힘). _handle_htm_doc 와
+        #   동일하게 CLOSE_SHIM(닫기 정상화) + COPY_LINK_SHIM(🔗 링크 복사) 주입.
+        body = _inject_before_body_end(body, CLOSE_SHIM)
+        body = _inject_before_body_end(body, COPY_LINK_SHIM)
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
