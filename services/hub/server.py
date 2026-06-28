@@ -2031,6 +2031,25 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 self._send_json(404, {"error": "icon not found"})
             return
+        # Issue228: vendored QR 라이브러리 서빙 (오프라인 — 런타임 외부 의존 0)
+        if parsed.path == "/assets/qrcode.min.js":
+            js_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "qrcode.min.js")
+            try:
+                with open(js_path, "rb") as f:
+                    data = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/javascript; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "public, max-age=86400")
+                self.end_headers()
+                self.wfile.write(data)
+            except OSError:
+                self._send_json(404, {"error": "asset not found"})
+            return
+        # Issue228: 모바일 접속 QR 페이지 (반응형). LAN 접속 URL 의 QR 을 vendored JS 로 렌더.
+        if parsed.path == "/qr":
+            self._handle_qr(parsed)
+            return
         if parsed.path == "/healthz":
             with projects_lock:
                 pc = len(projects)
@@ -3283,6 +3302,84 @@ class Handler(BaseHTTPRequestHandler):
                             pass
 
         self._send_json(200, {"files": files})
+
+    def _handle_qr(self, parsed):
+        # Issue228: 모바일 접속 QR. advertise_host 우선, 없으면 LAN IP 자동탐지.
+        setting = _load_hub_setting()
+        host = (setting.get("advertise_host") or "").strip()
+        if not host:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(("8.8.8.8", 80))  # 실제 송신 없음 — 로컬 라우팅 소스 IP 획득
+                host = s.getsockname()[0]
+                s.close()
+            except OSError:
+                host = socket.gethostname() or "127.0.0.1"
+        bind = setting.get("bind_host", "127.0.0.1")
+        if isinstance(bind, list):
+            bind = bind[0] if bind else "127.0.0.1"
+        lan_active = str(bind) not in ("127.0.0.1", "localhost", "::1")
+        url = "http://%s:%d/hub" % (host, PORT)
+        # url 을 JS 문자열 리터럴로 안전 임베드
+        url_js = json.dumps(url)
+        warn_html = "" if lan_active else (
+            '<p class="warn">⚠️ 현재 bind_host 가 로컬 전용(<code>%s</code>)이라 다른 기기에서 '
+            '접속되지 않습니다. LAN 접속하려면 설정에서 <code>bind_host: 0.0.0.0</code> + '
+            '<code>advertise_host</code> 지정 후 hub 재시작하세요.</p>' % bind)
+        html = """<!DOCTYPE html>
+<html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="/fpm-icon.png"><title>fPm — 모바일 접속 QR</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    margin: 0; padding: 1.5rem 1rem 3rem; line-height: 1.6; text-align: center;
+    color: #1a1a1a; background: #fff; }
+  h1 { font-size: 1.3rem; margin: 0.4rem 0 1rem; }
+  #qr { display: inline-block; padding: 1rem; background: #fff; border-radius: 12px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.12); margin: 0.5rem auto 1.2rem; }
+  #qr svg, #qr img { width: min(72vw, 320px); height: auto; }
+  .url { font-family: ui-monospace, monospace; font-size: 1.05rem; word-break: break-all;
+    background: rgba(0,0,0,0.06); padding: 0.5rem 0.8rem; border-radius: 8px;
+    display: inline-block; margin-bottom: 1rem; }
+  .hint { color: #555; font-size: 0.95rem; max-width: 30rem; margin: 0.5rem auto; }
+  .warn { color: #9a3a00; background: hsl(40,80%,92%); border-radius: 8px;
+    padding: 0.7rem 1rem; max-width: 32rem; margin: 1rem auto; text-align: left; }
+  code { background: rgba(0,0,0,0.08); padding: 0.05rem 0.3rem; border-radius: 4px; }
+  @media (prefers-color-scheme: dark) {
+    body { color: #e0e0e0; background: #161616; }
+    .url { background: rgba(255,255,255,0.1); } .hint { color: #aaa; }
+    .warn { color: #ffca8a; background: hsl(40,40%,18%); }
+    code { background: rgba(255,255,255,0.12); }
+  }
+</style></head><body>
+<h1>📱 fPm hub 모바일 접속</h1>
+<div id="qr">QR 생성 중…</div>
+<div class="url">__URL__</div>
+<p class="hint">같은 Wi-Fi 에서 휴대폰 카메라로 QR 을 스캔하면 이 hub 에 접속됩니다.</p>
+__WARN__
+<script src="/assets/qrcode.min.js"></script>
+<script>
+  (function(){
+    var url = __URL_JS__;
+    try {
+      var qr = qrcode(0, 'M');
+      qr.addData(url);
+      qr.make();
+      document.getElementById('qr').innerHTML = qr.createSvgTag({cellSize:6, margin:2});
+    } catch (e) {
+      document.getElementById('qr').textContent = 'QR 생성 실패: ' + e.message;
+    }
+  })();
+</script>
+</body></html>"""
+        html = html.replace("__URL_JS__", url_js).replace("__URL__", url).replace("__WARN__", warn_html)
+        body = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _handle_hub(self, parsed):
         # Issue42/47: hub_setting.yml 값으로 HUB_HTML placeholder 치환

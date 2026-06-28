@@ -91,8 +91,9 @@ date: 2026-03-27
 * 상세:
     - 출처: prj1 ___pm 강화 로드맵 Phase 1 (📙, 근거 claude-code-monitor). hub 모바일·QR 흔적 0 — 그린필드
 * 구현 명세:
-    - `services/hub/server.py` 모바일 반응형 뷰 + QR 생성 엔드포인트 + 바인드 호스트·인증(로컬 네트워크 한정) 가드
-    - 검증: 모바일 브라우저 접속 + QR 스캔 흐름
+    - ✅ MVP 구현(2026-06-28): `/qr` 반응형 페이지 + `/assets/qrcode.min.js`(vendored qrcode-generator MIT, 오프라인) + LAN URL 자동탐지(advertise_host 우선) + bind 127.0.0.1 경고. plan: `_doc_work/plan/mobile-hub-qr_plan.md`
+    - ✅ 검증: ast OK → /hub restart(pid 8058) → `/qr` 200(LAN IP 192.168.0.17 자동탐지·QR DOM·경고 표시), `/assets/qrcode.min.js` 200(20KB)
+    - 🚧 잔여: (수동) 휴대폰 실스캔은 사용자 LAN 환경 + `bind_host:0.0.0.0`+`advertise_host` 설정 시 검증(기본 127.0.0.1 유지 — 사용자 결정)
 
 # 📗 선택
 
