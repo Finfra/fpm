@@ -20,6 +20,7 @@ date: 2026-03-27
 
 ## Issue225: [강화 Phase0·T2] 디스커버리 등재 (awesome-claude-code + 마켓 디렉토리) (등록: 2026-06-28)
 * 목적: 공개 blocker. 미등재 = 가시성 0. 공개 직후 awesome-claude-code + 마켓 디렉토리 등재. 등재 본문이 T1 원라인 설치 명령을 인용하므로 Issue224 선행.
+* gh: #1
 * depends: Issue224
 * plan: `_doc_work/plan/fpm-enhancement-roadmap_plan.md`
 * report: `_doc_work/report/fpm-discovery-listing_issue225_report.md`
@@ -30,19 +31,6 @@ date: 2026-03-27
     - ⏳ **사용자 수동 잔여**: awesome-claude-code 는 PR/CLI/AI 제출 금지 → 사용자가 웹 이슈 폼 직접 제출. 마켓 디렉토리도 동일.
     - ⚠️ 반려 리스크: 폼 가이드 "general-purpose marketplace 회피" → Orchestrators 각도로 완화했으나 maintainer 재량 반려 가능.
 
-## Issue233: [강화 Phase2·T6] Issue.md ↔ GitHub Issues 양방향 동기(옵트인 브리지) (등록: 2026-06-28)
-* 목적: Issue.md(로컬 SSOT) 와 GitHub Issues 를 옵트인 브리지로 양방향 동기. 1인 우선 기본값(브리지 off) 유지하되, 팀·외부 기여 시 GH Issues 로 노출. 강화 로드맵 Phase 2 T6.
-* plan: `_doc_work/plan/gh-issue-bridge_plan.md`
-* arch: `_doc_arch/fpm-competitive-benchmark.md`
-* 상세:
-    - 출처: prj1 ___pm 강화 로드맵 Phase 2 (📗, 복잡, 장기 옵트인)
-    - 복잡 triage → design(needs 탐색 → plan) 선행. 동기 방향·충돌 해소·필드 매핑·옵트인 토글이 핵심 설계 결정
-* 구현 명세:
-    - ✅ design 확정(권장 기본값): 양방향(local-wins)·인라인 `* gh:#M` 매핑·섹션→label/🚧✅→state·수동 `/gh-sync` 트리거
-    - ✅ MVP 구현(2026-06-28): `data/gh-sync.yml`(토글 기본 off) + `scripts/gh-sync/{parse_issuemd,map,engine}.py` + `scripts/gh-sync.sh` + `.claude/commands/gh-sync.md`
-    - ✅ 검증: 파서 217이슈 정확 파싱, push dry-run 7건(label/state 정확·📜참고 제외), pull read-only, writeback `* gh:#M` 삽입/갱신 데이터 안전(이슈수 STABLE)
-    - ✅ dry-run E2E 재검증(2026-06-28, /dev): 임시 enabled:true+repo 로 push dry-run → active 6건 CREATE payload(title/label/state 정확), enabled-gate→payload 전 경로 무결, 복원 후 enabled:false 확인. gh API 미접촉(외부 쓰기 0)
-    - 🚧 잔여(종결 전, 자동 진행 불가): enabled:true 실 repo push --apply E2E(가드 통과 후 실 gh create) 1건 라운드트립. 차단 — ___pm 원격 없음(no git remotes) + 대상 repo PRIVATE·미활성 + `gh issue create`=외부 시스템 쓰기(§5 사용자 승인 필수). 활성 repo 지정 + 승인 시 1회 수행 후 종결 가능
 
 # 📕 중요
 
@@ -50,6 +38,7 @@ date: 2026-03-27
 
 ## Issue226: [강화 Phase1·T3] README·랜딩 보강 (prj7 미러) (등록: 2026-06-28)
 * 목적: 공개 후 사용성. fpm(prj7) 미러 README 에 quickstart·기능 표·데모 GIF·아키텍처 다이어그램 보강. T1 원라인 명령을 최상단 배치.
+* gh: #3
 * depends: Issue224
 * plan: `_doc_work/plan/fpm-enhancement-roadmap_plan.md`
 * arch: `_doc_arch/fpm-competitive-benchmark.md`
@@ -71,6 +60,22 @@ date: 2026-03-27
 # 📗 선택
 
 # ✅ 완료
+
+## Issue233: [강화 Phase2·T6] Issue.md ↔ GitHub Issues 양방향 동기(옵트인 브리지) (등록: 2026-06-28, 해결: 2026-06-29) ✅
+* 목적: Issue.md(로컬 SSOT) 와 GitHub Issues 를 옵트인 브리지로 양방향 동기. 1인 우선 기본값(브리지 off) 유지하되, 팀·외부 기여 시 GH Issues 로 노출. 강화 로드맵 Phase 2 T6.
+* gh: #2
+* plan: `_doc_work/plan/gh-issue-bridge_plan.md`
+* arch: `_doc_arch/fpm-competitive-benchmark.md`
+* 상세:
+    - 출처: prj1 ___pm 강화 로드맵 Phase 2 (📗, 복잡, 장기 옵트인)
+    - 복잡 triage → design(needs 탐색 → plan) 선행. 동기 방향·충돌 해소·필드 매핑·옵트인 토글이 핵심 설계 결정
+* 구현 명세:
+    - ✅ design 확정(권장 기본값): 양방향(local-wins)·인라인 `* gh:#M` 매핑·섹션→label/🚧✅→state·수동 `/gh-sync` 트리거
+    - ✅ MVP 구현(2026-06-28): `data/gh-sync.yml`(토글 기본 off) + `scripts/gh-sync/{parse_issuemd,map,engine}.py` + `scripts/gh-sync.sh` + `.claude/commands/gh-sync.md`
+    - ✅ 검증: 파서 217이슈 정확 파싱, push dry-run 7건(label/state 정확·📜참고 제외), pull read-only, writeback `* gh:#M` 삽입/갱신 데이터 안전(이슈수 STABLE)
+    - ✅ dry-run E2E 재검증(2026-06-28, /dev): 임시 enabled:true+repo 로 push dry-run → active 6건 CREATE payload(title/label/state 정확), enabled-gate→payload 전 경로 무결, 복원 후 enabled:false 확인. gh API 미접촉(외부 쓰기 0)
+    - ✅ 실 repo push --apply E2E(2026-06-29, prj7 `Finfra/fpm` 활성 remote): fpm-sync forward 출고(동기 상태) → prj7 `data/gh-sync.yml` enabled:true+repo 임시 → dry-run 3 CREATE(label/state 정확) → `push --apply` → 실 `gh issue create` 3건 성공(#1 Issue225·#2 Issue233·#3 Issue226) → writeback `* gh: #N` 삽입 → status 매핑됨 3/미매핑 0 라운드트립 검증 → enabled:false 복원. 매핑 ___pm SSOT 전파. gh 이슈: https://github.com/Finfra/fpm/issues
+    - 비고: prj7 가드 skip(`fpm-guard.sh` 공개 미러 제외) — push 대상이 이미 공개 미러 콘텐츠라 무해. ___pm 직접 push 는 원격 부재로 불가 → 공개 repo 소속 prj7 경유가 정상 경로
 
 ## Issue227: [강화 Phase1·T4] cdf frecency / 퍼지 점프 옵션 (등록: 2026-06-28, 해결: 2026-06-29, commit: 89b53a6) ✅
 * 목적: 공개 후 사용성. `cdf` 번호 SSOT 유지 + 인자가 번호 아닐 때 최근 방문·fuzzy 매칭(`fzf` 가용 시) 보조 점프. 번호 결정론성은 약화 금지 — fuzzy 는 fallback 레이어 한정.
