@@ -36,6 +36,10 @@ fpm update    # 최신 pull + SCAR 플러그인 갱신
 > 셸만(cdf/sshf) 쓰면 zsh 외 의존성 없음. SCAR/hub/dashboard 는 추가 도구 필요 — [요구 사항](#요구-사항) 참조.
 > 비공개 미러 설치 시: `gh api -H "Accept: application/vnd.github.raw" repos/Finfra/fpm/contents/sh/bootstrap.sh | sh` (`gh` CLI 인증 필요).
 
+## 데모
+
+![fpm 데모 — 번호 인덱스 cdf 이동 + hub HTML 대시보드 동작](img/fpm-demo.gif)
+
 ## 핵심 기능
 
 * **cdf** — 프로젝트 번호로 즉시 `cd`, 복수 지정 시 iTerm2 분할. 범위(`11-16`)·명령 전달(`--- cmd`)·heredoc 지원
