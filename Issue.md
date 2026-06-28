@@ -105,7 +105,9 @@ date: 2026-03-27
     - 출처: prj1 ___pm 강화 로드맵 Phase 2 (📗, 복잡, 최장기)
     - T6(Issue233) 동기 브리지 패턴 선행 — export 변환 레이어가 브리지 추상화 재사용 가능
 * 구현 명세:
-    - 🚧 [TODO] design 단계에서 확정 — 타깃 툴별 포맷 매핑(Cursor rules, Codex AGENTS.md, Gemini GEMINI.md), export 커맨드, 라운드트립 여부
+    - ✅ design 확정: 단방향(export-only), frontmatter 추출 공통 레이어 + 포맷별 emitter, 라운드트립 불요
+    - ✅ MVP 구현(2026-06-28): `scripts/scar-export/{scan,emit}.py` + `scripts/scar-export.sh` + `.claude/commands/scar-export.md`. plan: `_doc_work/plan/scar-crosstool-export_plan.md`
+    - ✅ 검증: scan 16항목(command12·skill3·agent1), export all → AGENTS.md·GEMINI.md·16 .cursor/rules/*.mdc, .mdc frontmatter YAML 유효, 이름충돌 kind접미사 분리(데이터 손실 0)
 
 # ✅ 완료
 
