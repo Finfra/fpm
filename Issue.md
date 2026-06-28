@@ -97,20 +97,19 @@ date: 2026-03-27
     - `sh/fpm_function.sh` cdf 패밀리에 fallback 레이어 추가(번호 우선, 비번호 인자 시 fuzzy)
     - 검증: 번호 점프 회귀 없음 + fuzzy 보조 동작
 
-## Issue228: [강화 Phase1·T5] 모바일·원격 hub 접속 (QR + 반응형) (등록: 2026-06-28)
-* 목적: 공개 후 사용성. hub `:9876` 에 모바일 반응형 뷰 + 접속 QR 생성 엔드포인트. `host.local` 원격 표시 자산 재활용. 네트워크 한정 보안 가드 필수.
-* plan: `_doc_work/plan/fpm-enhancement-roadmap_plan.md`
-* arch: `_doc_arch/fpm-competitive-benchmark.md`
-* 상세:
-    - 출처: prj1 ___pm 강화 로드맵 Phase 1 (📙, 근거 claude-code-monitor). hub 모바일·QR 흔적 0 — 그린필드
-* 구현 명세:
-    - ✅ MVP 구현(2026-06-28): `/qr` 반응형 페이지 + `/assets/qrcode.min.js`(vendored qrcode-generator MIT, 오프라인) + LAN URL 자동탐지(advertise_host 우선) + bind 127.0.0.1 경고. plan: `_doc_work/plan/mobile-hub-qr_plan.md`
-    - ✅ 검증: ast OK → /hub restart(pid 8058) → `/qr` 200(LAN IP 192.168.0.17 자동탐지·QR DOM·경고 표시), `/assets/qrcode.min.js` 200(20KB)
-    - 🚧 잔여: (수동) 휴대폰 실스캔은 사용자 LAN 환경 + `bind_host:0.0.0.0`+`advertise_host` 설정 시 검증(기본 127.0.0.1 유지 — 사용자 결정)
-
 # 📗 선택
 
 # ✅ 완료
+
+## Issue228: [강화 Phase1·T5] 모바일·원격 hub 접속 (QR + 반응형) (등록: 2026-06-28, 해결: 2026-06-29, commit: 927c290) ✅
+* 결과: hub `/qr` 모바일 반응형 + QR MVP 완료·검증. `bind_host: [127.0.0.1, 192.168.0.17]` 멀티소켓 LAN bind 활성(0.0.0.0 전노출 대신 LAN IP 스코프 — 더 안전). 휴대폰 실스캔은 사용자 LAN 환경 확인 항목으로 종결.
+* 목적: 공개 후 사용성. hub `:9876` 에 모바일 반응형 뷰 + 접속 QR 생성 엔드포인트. `host.local` 원격 표시 자산 재활용. 네트워크 한정 보안 가드 필수.
+* plan: `_doc_work/plan/mobile-hub-qr_plan.md`, `_doc_work/plan/fpm-enhancement-roadmap_plan.md`
+* arch: `_doc_arch/fpm-competitive-benchmark.md`
+* 구현 명세:
+    - ✅ `/qr` 반응형 페이지 + `/assets/qrcode.min.js`(vendored qrcode-generator MIT, 오프라인) + LAN URL 자동탐지(advertise_host 우선) + bind 127.0.0.1 경고
+    - ✅ 검증(2026-06-29 재확인): healthz LIVE(pid 81927) → `/qr` 200(advertise `http://192.168.0.17:9876`·QR DOM·경고) → `/assets/qrcode.min.js` 200(20KB). bind_host LAN IP 포함 → 동일 Wi-Fi 휴대폰 접속 가능 상태
+* Hash: 927c290
 
 ## Issue236: fpm-core 발행(소스→마켓)·머신 갱신 자동화 — update.sh + install.sh skip 갭 수정 (등록: 2026-06-28)
 * 목적: fpm-core SCAR 갱신 경로가 수동·갭 다수. (1) fpm `plugins/fpm-core` 소스 → `f-claude-plugins`(prj20) 마켓 발행이 수동 rsync+버전 bump+push, (2) `install.sh` 재실행은 이미 설치된 플러그인을 skip 하여 SCAR 업데이트 불가(설계 갭), (3) 머신 갱신은 `claude plugin marketplace update` + `claude plugin update` 2단계 수동. fg1 진단 중 fpm-core 가 0.3.1(마켓 동결) ↔ 0.7.11(소스) 로 크게 벌어진 채 방치됐음이 드러남(2026-06-28 발행으로 해소).
