@@ -26,7 +26,10 @@ date: 2026-03-27
     - 출처: prj1 ___pm 강화 로드맵 Phase 2 (📗, 복잡, 장기 옵트인)
     - 복잡 triage → design(needs 탐색 → plan) 선행. 동기 방향·충돌 해소·필드 매핑·옵트인 토글이 핵심 설계 결정
 * 구현 명세:
-    - 🚧 [TODO] design 단계에서 확정 — 브리지 토글(기본 off), Issue.md 파서 ↔ GH Issues API 필드 매핑, 충돌 해소 정책(로컬 우선/원격 우선/타임스탬프), 동기 트리거(수동 커맨드 vs hook)
+    - ✅ design 확정(권장 기본값): 양방향(local-wins)·인라인 `* gh:#M` 매핑·섹션→label/🚧✅→state·수동 `/gh-sync` 트리거
+    - ✅ MVP 구현(2026-06-28): `data/gh-sync.yml`(토글 기본 off) + `scripts/gh-sync/{parse_issuemd,map,engine}.py` + `scripts/gh-sync.sh` + `.claude/commands/gh-sync.md`
+    - ✅ 검증: 파서 217이슈 정확 파싱, push dry-run 7건(label/state 정확·📜참고 제외), pull read-only, writeback `* gh:#M` 삽입/갱신 데이터 안전(이슈수 STABLE)
+    - 🚧 잔여(종결 전): enabled:true 실 repo 에 push --apply E2E(개인정보 가드 통과 후 실 gh create) 1건 라운드트립. 현재 repo PRIVATE·미활성으로 보류
 
 # 📕 중요
 

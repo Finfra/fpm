@@ -1,0 +1,34 @@
+# gh-sync.yml — Issue.md ↔ GitHub Issues 옵트인 브리지 설정 (Issue233 T6)
+#
+# 기본값: 브리지 off. 로컬 Issue.md 가 SSOT 이며 GitHub Issues 는 옵트인 미러.
+# 활성화: enabled: true + repo 지정 후 `/gh-sync push|pull` 수동 실행.
+# 설계 SSOT: _doc_work/plan/gh-issue-bridge_plan.md
+
+# 마스터 토글 — true 여야 push/pull 동작 (기본 false → no-op)
+enabled: false
+
+# 동기 대상 GitHub repo (owner/name). 비우면 git origin 에서 추론
+repo: ""
+
+# 기본 동기 방향 (push=로컬→GH, pull=GH→로컬). 커맨드 인자로 override
+direction_default: push
+
+# 충돌 해소 정책 (local|remote|manual). 기본 local-wins (Issue.md SSOT)
+conflict: local
+
+# 섹션 → GitHub label 매핑 (Issue.md 우선순위 섹션 → priority label)
+label_map:
+  "📕 중요": "priority:high"
+  "📙 일반": "priority:normal"
+  "📗 선택": "priority:low"
+  "🚧 진행중": "status:in-progress"
+
+# 동기 제외 섹션 (이 섹션 이슈는 push 안 함)
+exclude_sections:
+  - "🌱 이슈후보"
+  - "🚫 취소"
+  - "⏸️ 보류"
+  - "📜 참고"
+
+# push 전 개인정보 가드 (scripts/fpm-guard.sh 재사용). true 권장
+guard_before_push: true
