@@ -106,6 +106,18 @@ date: 2026-03-27
 
 # ✅ 완료
 
+## Issue232: hub Simple Browser 문서가 생성 프로젝트 아닌 frontmost VSCode 창에 표시 (완료: 2026-06-28, Hash: 34dc55d)
+* 목적: hub 렌더 문서가 자기 owner 프로젝트 창에 뜨도록 보장 (다른 프로젝트 작업 후 복귀 시 엉뚱한 창에 표시되는 문제 차단)
+* 상세:
+    - 증상: ___pm 세션이 만든 hub htm 을 `/open-simple-browser` 로 띄울 때, 직전에 포커스했던 m2slide(prj42) 창에 Simple Browser 패널이 열림
+    - 원인: `services/hub/server.py` `_handle_open_simple_browser` 가 `open vscode://finfra.fpm-simple-browser/open?url=...` 만 실행 → macOS 가 URI 를 frontmost VSCode 창으로 라우팅. 문서 owner cwd 무관
+    - 대조: `_handle_open_session` 은 `open -a "Visual Studio Code" <cwd>; sleep 0.4; open <uri>` 로 owner 창을 먼저 전면화 후 URI 호출 → 올바른 창에 뜸
+* 구현 명세:
+    - registry 엔트리의 `cwd`(owner 프로젝트 경로)를 조회하여, 등록 프로젝트면 owner 폴더를 먼저 `open -a "Visual Studio Code" <cwd>` 로 전면화 후 0.4s sleep → URI 호출 (open-session 동일 패턴)
+    - cwd 미등록·부재 시 기존 동작(URI 단독 호출) fallback
+    - 검증: server.log 에 `owner_cwd=$HOME/_git/___pm` 기록 확인, hub 서버 재기동(pid 24242) 후 새 코드 로드
+    - plugin 미러(`plugins/fpm-core/services/hub/server.py`)는 핸들러 자체가 없는 stale 스냅샷 → 본 이슈 범위 밖(별도 릴리스 사안)
+
 ## Issue230: Mode C dashboard 위젯 데이터 미렌더 (progress 0%·table/text/checklist 공백) (완료: 2026-06-28, Hash: 6401989)
 * 목적: hub SPA dashboard(`/s/<hash>/issue-status` 등)에서 progress 바가 0% 로만 나오고 table·text·checklist 위젯이 빈 칸으로 표시됨. 이슈 번호(graph DAG 노드)만 보이고 나머지 데이터가 전부 누락되는 회귀.
 * 상세:
