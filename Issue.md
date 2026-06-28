@@ -5,7 +5,7 @@ date: 2026-03-27
 ---
 
 # Issue Management
-* Issue HWM: 236
+* Issue HWM: 237
 * 오래된 Issue: `_doc_work/Issue_OLD.md` (General)
 * Save Point:
     - 3e69d0f (2026-04-24) Feat: graphify 토큰 절감 SCAR 프로젝트 구현 (Issue11·12 등록)
@@ -18,19 +18,18 @@ date: 2026-03-27
 
 # 🚧 진행중
 
-## Issue236: fpm-core 발행(소스→마켓)·머신 갱신 자동화 — update.sh + install.sh skip 갭 수정 (등록: 2026-06-28)
-* 목적: fpm-core SCAR 갱신 경로가 수동·갭 다수. (1) fpm `plugins/fpm-core` 소스 → `f-claude-plugins`(prj20) 마켓 발행이 수동 rsync+버전 bump+push, (2) `install.sh` 재실행은 이미 설치된 플러그인을 skip 하여 SCAR 업데이트 불가(설계 갭), (3) 머신 갱신은 `claude plugin marketplace update` + `claude plugin update` 2단계 수동. fg1 진단 중 fpm-core 가 0.3.1(마켓 동결) ↔ 0.7.11(소스) 로 크게 벌어진 채 방치됐음이 드러남(2026-06-28 발행으로 해소).
-* plan: `_doc_work/plan/fpm-scar-publish_plan.md`
+## Issue237: Playwright MCP Chrome 반복 크래시 — macOS 접근성 API 충돌 (등록: 2026-06-28)
+* 목적: Playwright MCP(`@playwright/mcp@latest`, `~/.claude.json` 글로벌)가 띄운 Chrome(149.0.7827.200)이 macOS 26.6에서 반복 크래시. `EXC_BREAKPOINT(SIGTRAP)` — Chrome 안전 단언 실패. 스택 전체가 macOS 접근성 경로(`NSAccessibilityEntryPointValueForAttributeWithParameter` → `CopyParameterizedAttributeValue` → `CoreAccessibility` → `_AXMIGCopyParameterizedAttributeValue`). 부모=`node`, 책임=VSCode → 자동화 브라우저 확정.
 * 상세:
-    - 출처: fg1 SCAR/훅 점검 작업(fpm prj7 세션). 발행 누락이 근본 원인으로 판명 → 수동 발행 1회 수행(f-claude-plugins commit 13f1c02, fpm-core 0.3.1→0.7.11) + fg1 plugin update 완료. 본 이슈는 재발 방지 자동화.
-    - triage: 중간(설계 결정 — 발행 SSOT·버전 동기 규약·셸/SCAR 이원 갱신 경로). plan 권장
+    - 출처: 2026-06-28 ___pm 세션 중 Chrome 크래시 리포트 제출(사용자 "또 죽었다" — 반복 발생). 분석 문서: `_doc_work/z_htm/hub_htm_20260628_233156_a_chrome-crash.htm`
+    - 근본 원인: macOS 접근성 클라이언트가 Chrome 네이티브 윈도우 AX 트리 조회 → Chrome 접근성 핸들러 단언 실패. headless 가 아닌 보이는 윈도우(NSAccessibility 노출)일 때만 발생.
+    - triage: 중간(글로벌 MCP 설정 변경 + 트레이드오프 결정 — accessibility off vs headless vs 버전 회피)
 * 구현 명세:
-    - **발행 자동화**: `fpm plugins/fpm-core` → `f-claude-plugins/fpm-core` rsync(--delete) + `plugin.json`↔`marketplace.json` 버전 동기 bump + 무관 변경 제외 staging + commit/push 를 단일 스크립트(ex: `sh/publish-scar.sh`)로. `claude plugin validate` 게이트 포함
-    - **install.sh skip 갭**: `install_scar()` 가 이미 설치 시 "skip" 대신 `claude plugin update` 호출하도록 수정(install=update 멱등 통합) — 옵션 A
-    - **update.sh 신설(옵션 B)**: ① 셸 `git -C $FPM_BASE pull`(+재source 안내) ② `claude plugin marketplace update` + `claude plugin update fpm-core@f-claude-plugins` 오케스트레이션. 셸·SCAR 이원 경로를 한 진입점으로
-    - **버전 SSOT**: fpm `VERSION`/`plugin.json` ↔ 마켓 `marketplace.json` fpm-core entry 3곳 버전 일치 강제(release-check 확장 후보)
-    - **부수 정리**: f-claude-plugins origin URL 대소문자 교정(`finfra`→`Finfra`, push redirect 경고 제거)
-    - 검증: 클린 머신에서 install → 소스 변경 → publish → update 1회 라운드트립, 버전 3곳 일치 확인
+    - **채택안**: Playwright MCP 를 `--isolated --headless` 로 실행 → 네이티브 윈도우 없음 → macOS AX 경로 미진입 → 크래시 차단. `browser_snapshot`(CDP 기반)은 headless 에서도 동작.
+    - 적용: `~/.claude.json` `mcpServers.playwright.args` 에 `--headless`(+ `--isolated`) 추가
+    - **트레이드오프**: 수동 로그인 필요 흐름(naver-blog, linkedin)은 headless 불가 → 해당 스킬은 영속 프로필 + 비-headless 별도 실행 필요. 본 이슈는 기본값만 headless 전환.
+    - 대안(미채택): ① Chrome 런치 플래그 `--disable-renderer-accessibility`(snapshot 손상 위험) ② Chrome 채널 다운그레이드(유지보수 부담)
+    - 검증: 설정 적용 후 `browser_navigate` + `browser_snapshot` 1회 라운드트립 크래시 없음 확인
 
 
 ## Issue233: [강화 Phase2·T6] Issue.md ↔ GitHub Issues 양방향 동기(옵트인 브리지) (등록: 2026-06-28)
@@ -97,6 +96,23 @@ date: 2026-03-27
 # 📗 선택
 
 # ✅ 완료
+
+## Issue236: fpm-core 발행(소스→마켓)·머신 갱신 자동화 — update.sh + install.sh skip 갭 수정 (등록: 2026-06-28)
+* 목적: fpm-core SCAR 갱신 경로가 수동·갭 다수. (1) fpm `plugins/fpm-core` 소스 → `f-claude-plugins`(prj20) 마켓 발행이 수동 rsync+버전 bump+push, (2) `install.sh` 재실행은 이미 설치된 플러그인을 skip 하여 SCAR 업데이트 불가(설계 갭), (3) 머신 갱신은 `claude plugin marketplace update` + `claude plugin update` 2단계 수동. fg1 진단 중 fpm-core 가 0.3.1(마켓 동결) ↔ 0.7.11(소스) 로 크게 벌어진 채 방치됐음이 드러남(2026-06-28 발행으로 해소).
+* plan: `_doc_work/plan/fpm-scar-publish_plan.md`
+* 상세:
+    - 출처: fg1 SCAR/훅 점검 작업(fpm prj7 세션). 발행 누락이 근본 원인으로 판명 → 수동 발행 1회 수행(f-claude-plugins commit 13f1c02, fpm-core 0.3.1→0.7.11) + fg1 plugin update 완료. 본 이슈는 재발 방지 자동화.
+    - triage: 중간(설계 결정 — 발행 SSOT·버전 동기 규약·셸/SCAR 이원 갱신 경로). plan 권장
+* 구현 명세:
+    - **발행 자동화**: `fpm plugins/fpm-core` → `f-claude-plugins/fpm-core` rsync(--delete) + `plugin.json`↔`marketplace.json` 버전 동기 bump + 무관 변경 제외 staging + commit/push 를 단일 스크립트(ex: `sh/publish-scar.sh`)로. `claude plugin validate` 게이트 포함
+    - **install.sh skip 갭**: `install_scar()` 가 이미 설치 시 "skip" 대신 `claude plugin update` 호출하도록 수정(install=update 멱등 통합) — 옵션 A
+    - **update.sh 신설(옵션 B)**: ① 셸 `git -C $FPM_BASE pull`(+재source 안내) ② `claude plugin marketplace update` + `claude plugin update fpm-core@f-claude-plugins` 오케스트레이션. 셸·SCAR 이원 경로를 한 진입점으로
+    - **버전 SSOT**: fpm `VERSION`/`plugin.json` ↔ 마켓 `marketplace.json` fpm-core entry 3곳 버전 일치 강제(release-check 확장 후보)
+    - **부수 정리**: f-claude-plugins origin URL 대소문자 교정(`finfra`→`Finfra`, push redirect 경고 제거)
+    - 검증: 클린 머신에서 install → 소스 변경 → publish → update 1회 라운드트립, 버전 3곳 일치 확인
+* 결과: T1~T6 완료. publish-scar.sh/update.sh 신설 + install.sh 멱등화 + release-check 스테이지5 + origin/manifest 케이스 교정 (___pm 936c54d). 마켓 발행 push 검증 — 원격 fpm-core 0.7.11→0.8.6 (f-claude-plugins d4e8b32). 드리프트 해소.
+* Hash: 936c54d, d4e8b32(f-claude-plugins)
+
 ## Issue224: [강화 Phase0·T1] 원라인 설치(curl|sh) + 셀프업데이트 fpm 셸 커맨드 (등록: 2026-06-28, 해결: 2026-06-28, commit: 154d218, 2011a29) ✅
 * 결과: 구현·E2E·미러 sync+push 완료 + **PRIVATE repo 설치 지원**(2011a29) — bootstrap 이 `gh auth setup-git` 으로 비공개 clone/pull 자동 인증. 공개=`curl|sh`, 비공개=`gh api raw bootstrap.sh|sh`. 검증: 실 gh 인증 private `git clone Finfra/fpm` OK(VERSION 0.7.10). public 전환은 불요(원라인이 비공개에서도 동작) — 디스커버리 등재(Issue225) 시 public 결정.
 * 목적: fPm 공개 blocker. 현재 `sh/install.sh` 는 repo 를 먼저 클론해야 실행 가능하고, 설치본을 갱신하는 셀프업데이트 커맨드가 없다. 경쟁자(ccpi `install/update/upgrade`) 대비 가장 뼈아픈 격차. 원격 `curl | sh` 원라인 진입점 + `fpm` 셸 커맨드를 신설하여 "설치·갱신 가능" 상태로 만든다.

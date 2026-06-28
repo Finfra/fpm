@@ -65,7 +65,7 @@ info "버전: 마켓 $OLD_VER → $SRC_VER"
 
 if [[ "$DRY" -eq 1 ]]; then
     info "[dry-run] rsync diff (소스 → 마켓):"
-    rsync -ain --delete --exclude '.git' --exclude '.DS_Store' "$SRC/" "$DEST/" | sed 's/^/  /' || true
+    rsync -ain --delete --exclude '.git' --exclude '.DS_Store' --exclude '__pycache__' --exclude '*.pyc' "$SRC/" "$DEST/" | sed 's/^/  /' || true
     info "[dry-run] 버전 동기 대상: $DEST_PJSON, $MKT_JSON entry(fpm-core) → $SRC_VER"
     info "[dry-run] 쓰기·commit·push 없음. 종료."
     exit 0
@@ -73,7 +73,7 @@ fi
 
 # ── 1. rsync 미러 (--delete) ────────────────────────────────
 info "rsync 미러 (--delete)…"
-rsync -a --delete --exclude '.git' --exclude '.DS_Store' "$SRC/" "$DEST/" || { err "🚨 rsync 실패"; exit 1; }
+rsync -a --delete --exclude '.git' --exclude '.DS_Store' --exclude '__pycache__' --exclude '*.pyc' "$SRC/" "$DEST/" || { err "🚨 rsync 실패"; exit 1; }
 
 # ── 2. 버전 3곳 동기 (소스→마켓 plugin.json + marketplace.json entry) ──
 python3 - "$DEST_PJSON" "$MKT_JSON" "$FPM_PLUGIN_NAME" "$SRC_VER" <<'PY'
