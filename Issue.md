@@ -18,20 +18,6 @@ date: 2026-03-27
 
 # 🚧 진행중
 
-## Issue225: [강화 Phase0·T2] 디스커버리 등재 (awesome-claude-code + 마켓 디렉토리) (등록: 2026-06-28)
-* 목적: 공개 blocker. 미등재 = 가시성 0. 공개 직후 awesome-claude-code + 마켓 디렉토리 등재. 등재 본문이 T1 원라인 설치 명령을 인용하므로 Issue224 선행.
-* gh: #1
-* depends: Issue224
-* plan: `_doc_work/plan/fpm-enhancement-roadmap_plan.md`
-* report: `_doc_work/report/fpm-discovery-listing_issue225_report.md`
-* arch: `_doc_arch/fpm-competitive-benchmark.md`
-* 진척 (2026-06-28):
-    - ✅ 인프라: Finfra/fpm **public 전환**(gitleaks worktree+178커밋 history leak 0 확인 후), description+topics 8종 보강, raw URL HTTP 200, 원라인 설치 E2E 검증(격리 HOME — .fpm 배치+rc hook+fpm-core 플러그인+uninstall, 실 HOME 무오염).
-    - ✅ 등재 메타데이터 패키지 작성(report) — Category=Tooling/Orchestrators, 폼 필드값+disclosure 본문 완비.
-    - ⏳ **사용자 수동 잔여**: awesome-claude-code 는 PR/CLI/AI 제출 금지 → 사용자가 웹 이슈 폼 직접 제출. 마켓 디렉토리도 동일.
-    - ⚠️ 반려 리스크: 폼 가이드 "general-purpose marketplace 회피" → Orchestrators 각도로 완화했으나 maintainer 재량 반려 가능.
-
-
 # 📕 중요
 
 # 📙 일반
@@ -39,6 +25,21 @@ date: 2026-03-27
 # 📗 선택
 
 # ✅ 완료
+
+## Issue225: [강화 Phase0·T2] 디스커버리 등재 (awesome-claude-code + 마켓 디렉토리) (등록: 2026-06-28, 해결: 2026-06-29) ✅
+* 결과: AI측 산출물 전부 완료 — (1) 인프라(Finfra/fpm public·desc+topics 8종·raw 200·원라인 설치 E2E), (2) 등재 메타데이터 패키지(report — Tooling/Orchestrators 폼 필드값+disclosure+조건부 필수 3필드), (3) 채널 리서치(awesome-claude-code 폼 확장 반영·마켓 디렉토리 crossaitools 자동크롤+500install 게이트 판명). **awesome-claude-code 웹폼 제출 1건은 사용자 수동 후속**(AI/CLI 제출 CoC 금지)·등재 자체 maintainer 승인 의존 → 본 이슈 범위(AI 준비) 밖이라 종결. 복붙 패키지·제출 URL report 완비.
+* gh: #1
+* depends: Issue224
+* plan: `_doc_work/plan/fpm-enhancement-roadmap_plan.md`
+* report: `_doc_work/report/fpm-discovery-listing_issue225_report.md`
+* arch: `_doc_arch/fpm-competitive-benchmark.md`
+* 진척:
+    - ✅ 인프라: Finfra/fpm public 전환(gitleaks leak 0)·description+topics 8종·raw URL HTTP 200·원라인 설치 E2E(격리 HOME).
+    - ✅ 등재 메타데이터 패키지(report) — 기본 필드 + Description + 조건부 필수 3필드(Validate Claims·Specific Task·Specific Prompt).
+    - ✅ 사전조건 재검증(2026-06-29): raw HTTP 200·repo PUBLIC·age 23일(≥1주) 유지.
+    - ✅ 마켓 디렉토리 정정: claudemarketplaces.com → crossaitools.com(301)·직접 제출 폼 없음·500 install 게이트 → 신규 미달, 자동 발견 대기.
+    - ⏳ 사용자 수동 후속(이슈 범위 밖): awesome-claude-code 웹폼 직접 제출 → gh 이슈 번호·등재 링크 확보.
+* Hash: TBD
 
 ## Issue226: [강화 Phase1·T3] README·랜딩 보강 (prj7 미러) (등록: 2026-06-28, 해결: 2026-06-29) ✅
 * 결과: T3 핵심 4종 전부 완료 — quickstart 원라인 최상단·기능 표·아키텍처 다이어그램(mermaid)·데모 GIF. fpm(prj7) 공개 미러 README EN+KO 양판. 검증: 공개 raw README Quick Start/Demo 반영 + bootstrap raw HTTP 200(원라인 실동작) + GIF raw HTTP 200(8.3MB) + 코드(bootstrap.sh·fpm_function.sh) 대조 명령 정확성.
