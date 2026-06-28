@@ -82,7 +82,7 @@ date: 2026-03-27
 
 # ✅ 완료
 
-## Issue237: Playwright MCP Chrome 반복 크래시 — macOS 접근성 API 충돌 (등록: 2026-06-28, 해결: 2026-06-29) ✅
+## Issue237: Playwright MCP Chrome 반복 크래시 — macOS 접근성 API 충돌 (등록: 2026-06-28, 해결: 2026-06-29, commit: 274b7c5) ✅
 * 목적: Playwright MCP(`@playwright/mcp@latest`, `~/.claude.json` 글로벌)가 띄운 Chrome(149.0.7827.200)이 macOS 26.6에서 반복 크래시. `EXC_BREAKPOINT(SIGTRAP)` — Chrome 안전 단언 실패. 스택 전체가 macOS 접근성 경로(`NSAccessibilityEntryPointValueForAttributeWithParameter` → `CopyParameterizedAttributeValue` → `CoreAccessibility` → `_AXMIGCopyParameterizedAttributeValue`). 부모=`node`, 책임=VSCode → 자동화 브라우저 확정.
 * 상세:
     - 출처: 2026-06-28 ___pm 세션 중 Chrome 크래시 리포트 제출(사용자 "또 죽었다" — 반복 발생). 분석 문서: `_doc_work/z_htm/hub_htm_20260628_233156_a_chrome-crash.htm`
