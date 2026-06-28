@@ -23,7 +23,65 @@ date: 2026-03-27
 
 # 📕 중요
 
+## Issue224: [강화 Phase0·T1] 원격 원라인 설치 + fpm 셀프업데이트 커맨드 (등록: 2026-06-28)
+* 목적: fPm 공개 blocker. 현재 `sh/install.sh` 는 repo 를 먼저 클론해야 실행 가능하고, 설치본을 갱신하는 셀프업데이트 커맨드가 없다. 경쟁자(ccpi `install/update/upgrade`) 대비 가장 뼈아픈 격차. 원격 `curl | sh` 원라인 진입점 + `fpm` 셸 커맨드를 신설하여 "설치·갱신 가능" 상태로 만든다.
+* plan: `_doc_work/plan/fpm-enhancement-roadmap_plan.md`
+* task: `_doc_work/tasks/fpm-oneline-install_task.md`
+* arch: `_doc_arch/fpm-competitive-benchmark.md`
+* 상세:
+    - 출처: prj1 ___pm 강화 로드맵 Phase 0 (벤치마킹 강화 과제 📕 #1)
+    - 그라운딩(2026-06-28): `install.sh`·`uninstall.sh`·`marketplace.json`·`VERSION`(0.7.2) SSOT 는 존재. 빈틈 = 원격 원라인 + 셀프업데이트 셸 함수
+* 구현 명세:
+    - `sh/bootstrap.sh` 신설: `curl -fsSL <raw>/sh/bootstrap.sh | sh` 진입점. repo `git clone`(또는 tarball) → 표준 위치 배치 → 기존 `sh/install.sh` 위임(멱등)
+    - `fpm` 셸 함수(`sh/fpm_function.sh`): `fpm update`(git pull + install.sh 재실행 + `claude plugin update`), `fpm upgrade`(VERSION 비교 후 최신 태그 체크아웃), `fpm version`, `fpm uninstall`(→ uninstall.sh)
+    - clean-check 가드: 로컬 미커밋 변경 있으면 셀프업데이트 중단·경고
+    - 설치 표준 위치 결정(`~/_git/__all/fpm` vs `~/.fpm`) — 기존 prj7 미러 경로와 정합
+    - 검증: 클린 머신(임시 HOME)에서 원라인 → 셸·SCAR 설치 → `fpm update` 멱등 재실행
+
+## Issue225: [강화 Phase0·T2] 디스커버리 등재 (awesome-claude-code + 마켓 디렉토리) (등록: 2026-06-28)
+* 목적: 공개 blocker. 미등재 = 가시성 0. 공개 직후 awesome-claude-code PR + claudemarketplaces.com 등 마켓 디렉토리에 등재. 등재 본문이 T1 원라인 설치 명령을 인용하므로 Issue224 선행.
+* depends: Issue224
+* plan: `_doc_work/plan/fpm-enhancement-roadmap_plan.md`
+* arch: `_doc_arch/fpm-competitive-benchmark.md`
+* 상세:
+    - 출처: prj1 ___pm 강화 로드맵 Phase 0 (벤치마킹 강화 과제 📕 #2)
+    - 코드보다 등재 액션·메타데이터(설명·태그·스크린샷) 위주
+* 구현 명세:
+    - 등재 메타데이터 작성(T1 원라인 명령 인용) → awesome-claude-code PR → 마켓 디렉토리 등재
+    - 검증: 등재 링크에서 원라인 명령 복붙 설치 동작 확인
+
 # 📙 일반
+
+## Issue226: [강화 Phase1·T3] README·랜딩 보강 (prj7 미러) (등록: 2026-06-28)
+* 목적: 공개 후 사용성. fpm(prj7) 미러 README 에 quickstart·기능 표·데모 GIF·아키텍처 다이어그램 보강. T1 원라인 명령을 최상단 배치.
+* depends: Issue224
+* plan: `_doc_work/plan/fpm-enhancement-roadmap_plan.md`
+* arch: `_doc_arch/fpm-competitive-benchmark.md`
+* 상세:
+    - 출처: prj1 ___pm 강화 로드맵 Phase 1 (📙). 편집은 prj7 에서 — `publishable-policy.yml` exclude 가 README 보호
+* 구현 명세:
+    - quickstart(원라인 최상단)·기능 표·데모 GIF·아키텍처 다이어그램 추가
+    - 검증: prj7 README 렌더 + 원라인 명령 정확성
+
+## Issue227: [강화 Phase1·T4] cdf frecency / 퍼지 점프 옵션 (등록: 2026-06-28)
+* 목적: 공개 후 사용성. `cdf` 번호 SSOT 유지 + 인자가 번호 아닐 때 최근 방문·fuzzy 매칭(`fzf` 가용 시) 보조 점프. 번호 결정론성은 약화 금지 — fuzzy 는 fallback 레이어 한정.
+* plan: `_doc_work/plan/fpm-enhancement-roadmap_plan.md`
+* arch: `_doc_arch/fpm-competitive-benchmark.md`
+* 상세:
+    - 출처: prj1 ___pm 강화 로드맵 Phase 1 (📙, 근거 zoxide). cdf frecency 흔적 0 — 그린필드
+* 구현 명세:
+    - `sh/fpm_function.sh` cdf 패밀리에 fallback 레이어 추가(번호 우선, 비번호 인자 시 fuzzy)
+    - 검증: 번호 점프 회귀 없음 + fuzzy 보조 동작
+
+## Issue228: [강화 Phase1·T5] 모바일·원격 hub 접속 (QR + 반응형) (등록: 2026-06-28)
+* 목적: 공개 후 사용성. hub `:9876` 에 모바일 반응형 뷰 + 접속 QR 생성 엔드포인트. `host.local` 원격 표시 자산 재활용. 네트워크 한정 보안 가드 필수.
+* plan: `_doc_work/plan/fpm-enhancement-roadmap_plan.md`
+* arch: `_doc_arch/fpm-competitive-benchmark.md`
+* 상세:
+    - 출처: prj1 ___pm 강화 로드맵 Phase 1 (📙, 근거 claude-code-monitor). hub 모바일·QR 흔적 0 — 그린필드
+* 구현 명세:
+    - `services/hub/server.py` 모바일 반응형 뷰 + QR 생성 엔드포인트 + 바인드 호스트·인증(로컬 네트워크 한정) 가드
+    - 검증: 모바일 브라우저 접속 + QR 스캔 흐름
 
 # 📗 선택
 
