@@ -4057,11 +4057,15 @@ class Handler(BaseHTTPRequestHandler):
         with registry_lock:
             reg = load_registry(HTM_REGISTRY)
         reg_paths = set()
+        owner_cwd = ""   # Issue232: 매칭 엔트리의 owner 프로젝트 cwd
         for e in reg:
             p = e.get("path") or ""
             if p:
+                rp = os.path.realpath(p)
                 reg_paths.add(p)
-                reg_paths.add(os.path.realpath(p))
+                reg_paths.add(rp)
+                if abs_path in (p, rp) or path in (p, rp):
+                    owner_cwd = (e.get("cwd") or "").rstrip("/")
         if abs_path not in reg_paths and path not in reg_paths:
             log(f"POST /open-simple-browser REJECT — unregistered path: {abs_path}")
             self._send_json(403, {"error": "not a registered htm doc"})
@@ -4076,13 +4080,30 @@ class Handler(BaseHTTPRequestHandler):
         import urllib.parse as _u
         doc_url = f"http://127.0.0.1:{PORT}/htm-doc?path={_u.quote(abs_path)}&_shell=1"
         uri = f"vscode://finfra.fpm-simple-browser/open?url={_u.quote(doc_url, safe='')}"
+        # Issue232: `open <uri>` 는 macOS 가 frontmost VSCode 창으로 라우팅 →
+        #   직전 포커스한 다른 프로젝트 창에 패널이 열리는 문제. owner cwd 가
+        #   등록 프로젝트면 그 폴더를 먼저 전면화 후 URI 호출(open-session 동일 패턴).
+        target_cwd = ""
+        if owner_cwd and os.path.isdir(owner_cwd):
+            allowed = set(_load_projects_colors().keys())
+            with projects_lock:
+                allowed.update((p.get("cwd", "") or "").rstrip("/") for p in projects.values())
+            if owner_cwd in allowed:
+                target_cwd = owner_cwd
         try:
-            subprocess.Popen(["open", uri],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if target_cwd:
+                subprocess.Popen(
+                    ["bash", "-c",
+                     f'open -a "Visual Studio Code" {shlex.quote(target_cwd)}; '
+                     f'sleep 0.4; open {shlex.quote(uri)}'],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                subprocess.Popen(["open", uri],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
             self._send_json(500, {"error": f"spawn failed: {e}"})
             return
-        log(f"POST /open-simple-browser — path={abs_path}")
+        log(f"POST /open-simple-browser — path={abs_path} owner_cwd={target_cwd or '-'}")
         self._send_json(200, {"status": "opened", "path": abs_path})
 
     def _handle_open_settings_yml(self, parsed):
