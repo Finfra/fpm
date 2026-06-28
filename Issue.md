@@ -5,7 +5,7 @@ date: 2026-03-27
 ---
 
 # Issue Management
-* Issue HWM: 231
+* Issue HWM: 234
 * 오래된 Issue: `_doc_work/Issue_OLD.md` (General)
 * Save Point:
     - 3e69d0f (2026-04-24) Feat: graphify 토큰 절감 SCAR 프로젝트 구현 (Issue11·12 등록)
@@ -16,10 +16,17 @@ date: 2026-03-27
 
 # 🌱 이슈후보
 
-1. T6 — Issue.md ↔ GitHub Issues 양방향 동기(옵션, 옵트인 브리지). 강화 로드맵 Phase 2 📗. plan: `_doc_work/plan/fpm-enhancement-roadmap_plan.md`
-2. T7 — SCAR 크로스 툴 이식(Cursor·Codex·Gemini export). 강화 로드맵 Phase 2 📗(최장기). plan: `_doc_work/plan/fpm-enhancement-roadmap_plan.md`
-
 # 🚧 진행중
+
+## Issue233: [강화 Phase2·T6] Issue.md ↔ GitHub Issues 양방향 동기(옵트인 브리지) (등록: 2026-06-28)
+* 목적: Issue.md(로컬 SSOT) 와 GitHub Issues 를 옵트인 브리지로 양방향 동기. 1인 우선 기본값(브리지 off) 유지하되, 팀·외부 기여 시 GH Issues 로 노출. 강화 로드맵 Phase 2 T6.
+* plan: `_doc_work/plan/fpm-enhancement-roadmap_plan.md`
+* arch: `_doc_arch/fpm-competitive-benchmark.md`
+* 상세:
+    - 출처: prj1 ___pm 강화 로드맵 Phase 2 (📗, 복잡, 장기 옵트인)
+    - 복잡 triage → design(needs 탐색 → plan) 선행. 동기 방향·충돌 해소·필드 매핑·옵트인 토글이 핵심 설계 결정
+* 구현 명세:
+    - 🚧 [TODO] design 단계에서 확정 — 브리지 토글(기본 off), Issue.md 파서 ↔ GH Issues API 필드 매핑, 충돌 해소 정책(로컬 우선/원격 우선/타임스탬프), 동기 트리거(수동 커맨드 vs hook)
 
 # 📕 중요
 
@@ -85,6 +92,17 @@ date: 2026-03-27
     - 검증: 모바일 브라우저 접속 + QR 스캔 흐름
 
 # 📗 선택
+
+## Issue234: [강화 Phase2·T7] SCAR 크로스 툴 이식(Cursor·Codex·Gemini export) (등록: 2026-06-28)
+* 목적: ___pm 의 SCAR(Skill/Command/Agent/Rule) 자산을 Cursor·Codex·Gemini 등 타 AI 코딩 툴 포맷으로 export. fPm 생태계 확장·락인 완화. 강화 로드맵 Phase 2 T7(최장기).
+* depends: Issue233
+* plan: `_doc_work/plan/fpm-enhancement-roadmap_plan.md`
+* arch: `_doc_arch/fpm-competitive-benchmark.md`
+* 상세:
+    - 출처: prj1 ___pm 강화 로드맵 Phase 2 (📗, 복잡, 최장기)
+    - T6(Issue233) 동기 브리지 패턴 선행 — export 변환 레이어가 브리지 추상화 재사용 가능
+* 구현 명세:
+    - 🚧 [TODO] design 단계에서 확정 — 타깃 툴별 포맷 매핑(Cursor rules, Codex AGENTS.md, Gemini GEMINI.md), export 커맨드, 라운드트립 여부
 
 # ✅ 완료
 
