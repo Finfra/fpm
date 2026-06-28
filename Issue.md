@@ -39,7 +39,7 @@ date: 2026-03-27
     - ✅ 사전조건 재검증(2026-06-29): raw HTTP 200·repo PUBLIC·age 23일(≥1주) 유지.
     - ✅ 마켓 디렉토리 정정: claudemarketplaces.com → crossaitools.com(301)·직접 제출 폼 없음·500 install 게이트 → 신규 미달, 자동 발견 대기.
     - ⏳ 사용자 수동 후속(이슈 범위 밖): awesome-claude-code 웹폼 직접 제출 → gh 이슈 번호·등재 링크 확보.
-* Hash: TBD
+* Hash: 8e081c0
 
 ## Issue226: [강화 Phase1·T3] README·랜딩 보강 (prj7 미러) (등록: 2026-06-28, 해결: 2026-06-29) ✅
 * 결과: T3 핵심 4종 전부 완료 — quickstart 원라인 최상단·기능 표·아키텍처 다이어그램(mermaid)·데모 GIF. fpm(prj7) 공개 미러 README EN+KO 양판. 검증: 공개 raw README Quick Start/Demo 반영 + bootstrap raw HTTP 200(원라인 실동작) + GIF raw HTTP 200(8.3MB) + 코드(bootstrap.sh·fpm_function.sh) 대조 명령 정확성.
