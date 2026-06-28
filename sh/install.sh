@@ -81,9 +81,16 @@ install_scar() {
         fi
     fi
 
-    # 2) 플러그인 설치 (멱등: 이미 설치 시 skip)
+    # 2) 플러그인 설치/갱신 (멱등 통합: 이미 설치 시 update — install=update, Issue236)
+    #    과거 "이미 설치 — skip" 은 마켓이 갱신돼도 로컬 SCAR 가 구버전으로 고착되는 갭이었다.
+    #    install 재실행이 곧 update 가 되도록 plugin update 를 호출한다.
     if claude plugin list 2>/dev/null | grep -qF "fpm-core"; then
-        info "플러그인 'fpm-core' 이미 설치 — skip"
+        info "플러그인 'fpm-core' 이미 설치 — update"
+        if ! claude plugin update "$FPM_PLUGIN" >/dev/null 2>&1; then
+            # 일부 CLI 버전은 marketplace ref 없는 plugin 이름만 받는다 → fallback
+            claude plugin update "$FPM_PLUGIN_NAME" >/dev/null 2>&1 \
+                || warn "plugin update 실패 (기존 설치 유지) — 수동 'claude plugin update' 권장"
+        fi
     else
         info "플러그인 설치: $FPM_PLUGIN"
         if ! claude plugin install "$FPM_PLUGIN" --scope user; then
@@ -92,7 +99,7 @@ install_scar() {
             return 0
         fi
     fi
-    info "fpm-core SCAR 설치 완료 (claude 재시작 후 적용)"
+    info "fpm-core SCAR 설치/갱신 완료 (claude 재시작 후 적용)"
 }
 
 # ── 0. 인자 파싱 ──────────────────────────────────────────────

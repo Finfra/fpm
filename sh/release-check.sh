@@ -122,6 +122,41 @@ else
     hr; echo "[3-4/4] 샌드박스·미러 생략 (--no-sandbox)"; hr
 fi
 
+# ── 스테이지 5: fpm-core 버전 SSOT 일치 (Issue236) ───────────────
+#   in-repo 불변식: VERSION == plugins/fpm-core/.claude-plugin/plugin.json (불일치 → FAIL)
+#   마켓 사본(f-claude-plugins) 존재 시: plugin.json + marketplace.json entry 와 비교
+#   (뒤처지면 WARN — 발행은 publish-scar.sh 별도 단계).
+hr; echo "[5] fpm-core 버전 SSOT 일치 검사"; hr
+ver_fail=0
+# shellcheck source=data/install_manifest.sh
+[ -f "$REPO/data/install_manifest.sh" ] && source "$REPO/data/install_manifest.sh"
+SRC_PJSON="$REPO/${FPM_PLUGIN_SRC_REL_REPO:-plugins/fpm-core}/.claude-plugin/plugin.json"
+REPO_VER="$(cat "$REPO/VERSION" 2>/dev/null | tr -d '[:space:]')"
+SRC_VER="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$SRC_PJSON" 2>/dev/null)"
+echo "  VERSION=$REPO_VER  소스 plugin.json=$SRC_VER"
+if [ -n "$REPO_VER" ] && [ -n "$SRC_VER" ] && [ "$REPO_VER" = "$SRC_VER" ]; then
+    echo "  in-repo 일치 PASS"
+else
+    echo "  🚨 in-repo 불일치 (VERSION ↔ 소스 plugin.json) FAIL"; ver_fail=$((ver_fail+1))
+fi
+MKT=""
+for c in "${FPM_MKT_LOCAL:-}" "$REPO/../f-claude-plugins" "$HOME/_git/__all/f-claude-plugins"; do
+    [ -n "$c" ] && [ -d "$c/.claude-plugin" ] && { MKT="$c"; break; }
+done
+if [ -n "$MKT" ]; then
+    MKT_PV="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$MKT/${FPM_PLUGIN_NAME:-fpm-core}/.claude-plugin/plugin.json" 2>/dev/null)"
+    MKT_EV="$(python3 -c 'import json,sys;m=json.load(open(sys.argv[1]));print(next((p["version"] for p in m["plugins"] if p.get("name")==sys.argv[2]),"?"))' "$MKT/.claude-plugin/marketplace.json" "${FPM_PLUGIN_NAME:-fpm-core}" 2>/dev/null)"
+    echo "  마켓 plugin.json=$MKT_PV  marketplace.json entry=$MKT_EV"
+    if [ "$MKT_PV" = "$SRC_VER" ] && [ "$MKT_EV" = "$SRC_VER" ]; then
+        echo "  마켓 일치 PASS"
+    else
+        echo "  ⚠️ 마켓 뒤처짐 → 발행 필요: bash sh/publish-scar.sh"
+    fi
+else
+    echo "  마켓 사본 미발견 — 마켓 비교 생략(SKIP)"
+fi
+[ "$ver_fail" -eq 0 ] && echo "→ 스테이지5 PASS" || { echo "→ 스테이지5 FAIL"; STAGE_FAIL=$((STAGE_FAIL+1)); }
+
 # ── 요약 ─────────────────────────────────────────────────────────
 hr
 if [ "$STAGE_FAIL" -eq 0 ]; then
