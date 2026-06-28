@@ -8238,7 +8238,7 @@ main#content th { background: var(--code-bg); }
 .q-field .q-hint { font-size: 0.8em; color: var(--muted); }
 .q-required-mark { color: var(--danger); margin-left: 0.2rem; }
 /* Issue19 Phase 3: dashboard widgets */
-.dash-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; }
+.dash-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; grid-auto-flow: row dense; align-items: start; }
 /* Issue77 (글로벌 .claude#Issue91 짝): width:full 위젯 — 그리드 전폭 1컬럼 행 점유 */
 .dash-grid > .w-full { grid-column: 1 / -1; }
 .widget { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.2rem; }
