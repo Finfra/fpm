@@ -39,16 +39,7 @@ date: 2026-03-27
 # 📗 선택
 
 # ✅ 완료
-## Issue216: hub 렌더 문서를 VSCode Simple Browser 패널에 띄우는 브리지 신설 (등록: 2026-06-27, 해결: 2026-06-27, commit: 0461cfa, fba4dd9) ✅
-* 목적: 글로벌 Issue170(~/.claude) 에서 hub 가 채팅에 출력하는 문서 링크가 클릭 시 외부 브라우저로 빠져나감. 사용자는 VSCode 안에서 작업하므로 렌더된 문서가 VSCode 내부(Simple Browser 패널)에 뜨길 원함. 본 브리지가 글로벌 Issue170 의 선행 조건.
-* 해결: 트리거 후보 1번(전용 확장) 채택.
-    - 서버: `services/hub/server.py` `_handle_open_simple_browser` + `POST /open-simple-browser` 라우팅. localhost-only + register-doc 화이트리스트 exact-match(htm-doc 동일 보안). `open "vscode://finfra.fpm-simple-browser/open?url=<htm-doc URL+_shell=1>"` 트리거.
-    - 확장: `plugins/fpm-core/vscode-ext/fpm-simple-browser` — URI 핸들러(`onUri`)가 `simpleBrowser.show` 실행, host 화이트리스트(`127.0.0.1|localhost|host.local`) 재검증. `install.sh` = vsce package + code --install-extension.
-* 검증: 서버 `POST /open-simple-browser` → `{"status":"opened"}` → vscode:// 트리거 확인. 확장 `finfra.fpm-simple-browser-0.0.1` 설치 확인. settings 테스트 10 passed.
-* 재검증 (2026-06-28 라이브): 등록 문서 POST → HTTP 200 `{"status":"opened"}`. 보안 가드 — 미등록 `/etc/passwd` → 403, 미등록 `.htm` → 403, `path` 누락 → 400 전부 기대대로. 핸들러·확장 소스 모두 0461cfa 에 커밋 확인(`git cat-file -e`), vsix 빌드 산출물 gitignore(fba4dd9). 잔여 미커밋 `services/hub/server.py` diff 는 Issue214 COPY_LINK_SHIM 별건(216 무관).
-* 후행: prj3#Issue170 (글로벌 hook `fpm-hub-trigger.sh` type1 채팅 URL → 본 브리지 전환) → prj1#Issue218(umbrella) 종결.
-
-## Issue214: hub 렌더 문서 헤더 UX 개선 (Issue213 후속) (등록: 2026-06-26, 해결: 2026-06-27, commit: 704a82f, 81d8e0c) ✅
+## Issue214: hub 렌더 문서 헤더 UX 개선 (Issue213 후속) (등록: 2026-06-26, 해결: 2026-06-27, 재종결: 2026-06-28, commit: 704a82f, 81d8e0c, a15d817) ✅
 * 목적: Issue213 으로 문서가 쉘 iframe 안에서 열리며 주소창이 `/hub-shell` 만 보임 → 브라우저로 문서 URL 직접 복사 불가. 헤더 액션 4종 개편.
 * 상세:
     - (1) 🔗 "문서 링크 복사" 버튼 추가 — `_shell=1` 마커 제거한 문서 URL 을 clipboard 복사, 실패 시 prompt fallback
@@ -58,8 +49,18 @@ date: 2026-03-27
 * 구현 명세:
     - `services/hub/server.py` `_serve_dash_inline` 내 `header_html`(5320) + `.dash-hdr`/`.hdr-actions` CSS(5436~5445) 수정
     - triage: 단순 (1파일·방법 자명) → plan/task 생략
-* 결과: 4항목 전부 구현·커밋(704a82f, Issue215 와 번들). 검증 — 정적 grep 으로 `copy-link`(5325)·`close-btn`+`margin-left:0.6rem`(5327,5444)·5개 액션 title·`inline-flex;align-items:center;line-height:1`(5439) 확인. hub 커스텀 테스트 47/47 pass(settings_loader 10·settings_writer 17·i18n_parity 8·allowlist 12). server.py uncommitted 0.
-* 후속 결함 해소: (2) 추가한 ✕ 버튼이 `/hub-shell` iframe 탭 안에서 `window.close()` no-op 으로 무동작(사용자 "214 미해결" 체감) → **Issue217**(commit 81d8e0c) 이 `CLOSE_SHIM` 주입(임베드 시 부모로 `postMessage{type:'fpm-close-tab'}`)으로 정상 종결. Issue214 헤더 UX + 닫기 기능 모두 동작.
+* 결과: 4항목 전부 구현·커밋(704a82f, Issue215 와 번들). 검증 — 정적 grep 으로 `copy-link`·`close-btn`+`margin-left:0.6rem`·5개 액션 title·`inline-flex;align-items:center;line-height:1` 확인. hub 커스텀 테스트 pass.
+* 후속 결함 해소: (2) 추가한 ✕ 버튼이 `/hub-shell` iframe 탭 안에서 `window.close()` no-op 으로 무동작(사용자 "214 미해결" 체감) → **Issue217**(commit 81d8e0c) 이 `CLOSE_SHIM` 주입(임베드 시 부모로 `postMessage{type:'fpm-close-tab'}`)으로 종결.
+* 재종결 (2026-06-28, commit a15d817): 사용자 "닫기 간헐적 안 됨" 재보고. 근본 원인 = serve 경로별 `CLOSE_SHIM` 커버리지 불균일 — `_handle_htm_doc`·`_serve_dash_inline` 두 경로에만 주입되고 `_handle_view`(`/view`)로 serve 되는 form(`_b_`)·response 문서는 누락. 탭이 `/htm-doc` 로 열리면 닫히고 `/view` 로 열리면 안 닫혀 "간헐적"으로 발현. 수정 — `_handle_view` `.html/.htm` 분기에 `CLOSE_SHIM` + `COPY_LINK_SHIM` 주입 추가(`_handle_htm_doc` 통일). 추가로 canonical 헤더 🔗 복사 버튼을 serve-time 주입하는 `COPY_LINK_SHIM` 신설(prj3 템플릿 미수정). 검증 — 재시작 후 `/view`·`/htm-doc` 양쪽 close+copy shim 1/1(HTTP 200), hub 테스트 8파일 pass. ⚠️ 기존 열린 탭은 새로고침해야 적용.
+
+## Issue216: hub 렌더 문서를 VSCode Simple Browser 패널에 띄우는 브리지 신설 (등록: 2026-06-27, 해결: 2026-06-27, commit: 0461cfa, fba4dd9) ✅
+* 목적: 글로벌 Issue170(~/.claude) 에서 hub 가 채팅에 출력하는 문서 링크가 클릭 시 외부 브라우저로 빠져나감. 사용자는 VSCode 안에서 작업하므로 렌더된 문서가 VSCode 내부(Simple Browser 패널)에 뜨길 원함. 본 브리지가 글로벌 Issue170 의 선행 조건.
+* 해결: 트리거 후보 1번(전용 확장) 채택.
+    - 서버: `services/hub/server.py` `_handle_open_simple_browser` + `POST /open-simple-browser` 라우팅. localhost-only + register-doc 화이트리스트 exact-match(htm-doc 동일 보안). `open "vscode://finfra.fpm-simple-browser/open?url=<htm-doc URL+_shell=1>"` 트리거.
+    - 확장: `plugins/fpm-core/vscode-ext/fpm-simple-browser` — URI 핸들러(`onUri`)가 `simpleBrowser.show` 실행, host 화이트리스트(`127.0.0.1|localhost|host.local`) 재검증. `install.sh` = vsce package + code --install-extension.
+* 검증: 서버 `POST /open-simple-browser` → `{"status":"opened"}` → vscode:// 트리거 확인. 확장 `finfra.fpm-simple-browser-0.0.1` 설치 확인. settings 테스트 10 passed.
+* 재검증 (2026-06-28 라이브): 등록 문서 POST → HTTP 200 `{"status":"opened"}`. 보안 가드 — 미등록 `/etc/passwd` → 403, 미등록 `.htm` → 403, `path` 누락 → 400 전부 기대대로. 핸들러·확장 소스 모두 0461cfa 에 커밋 확인(`git cat-file -e`), vsix 빌드 산출물 gitignore(fba4dd9). 잔여 미커밋 `services/hub/server.py` diff 는 Issue214 COPY_LINK_SHIM 별건(216 무관).
+* 후행: prj3#Issue170 (글로벌 hook `fpm-hub-trigger.sh` type1 채팅 URL → 본 브리지 전환) → prj1#Issue218(umbrella) 종결.
 
 ## Issue217: hub-shell 내부 탭 문서 닫기 버튼 무동작 (Issue214 ✕ 닫기 기능 결함) (등록: 2026-06-27, 해결: 2026-06-27, commit: 81d8e0c) ✅
 * 목적: hub 렌더 문서 헤더의 닫기 버튼(canonical pink 헤더 `닫기 ✕`·dash 헤더 `✕`·Issue214 추가분)이 `/hub-shell` iframe 탭 안에서 클릭해도 아무 동작 안 함. 사용자가 "닫기 작동 안 함 + Issue214 미해결"로 보고.
