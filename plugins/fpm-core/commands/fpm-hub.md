@@ -293,8 +293,10 @@ ex)
                    onclick="event.preventDefault();fetch('http://127.0.0.1:9876/open-project',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'{cwd 절대경로}'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('VSCode 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — VSCode 열기 실패');});">📁 {프로젝트명}</a>
                 <a class="sess-link" href="#" title="클릭 → 이 문서를 만든 세션 탭으로 포커스"
                    onclick="event.preventDefault();fetch('http://127.0.0.1:9876/open-session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'{cwd 절대경로}',sid:'{session_id}'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('세션 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — 세션 열기 실패');});">🆚 세션</a>
+                <button type="button" class="copy-link" title="이 문서 링크 복사"
+                   onclick="(function(b){var u=location.href.replace(/[?&]_shell=1$/,'');navigator.clipboard.writeText(u).then(function(){var o=b.textContent;b.textContent='✓';setTimeout(function(){b.textContent=o;},1200);}).catch(function(){window.prompt('문서 링크 복사',u);});})(this)">🔗</button>
                 <a class="hub-link" href="http://127.0.0.1:9876/hub" target="_blank" title="통합 모니터링 Hub"><img src="/fpm-icon.png" alt="Hub" style="height:1.2em;vertical-align:-0.25em;"></a>
-                <button type="button" onclick="window.close()">닫기 ✕</button>
+                <button type="button" class="close-btn" title="이 문서 탭 닫기" onclick="window.close()">✕</button>
               </nav>
             </header>
             ```
@@ -312,6 +314,7 @@ ex)
               display: flex; align-items: center; gap: 0.5rem; flex: 0 0 auto;
             }
             header .proj-badge, header .sess-link, header .hub-link, header button {
+              display: inline-flex; align-items: center; line-height: 1;   /* Issue214: 아이콘·텍스트 높이 정렬 */
               color: #1a1a1a; text-decoration: none; cursor: pointer; white-space: nowrap;
               background: rgba(0,0,0,0.08); border: 1px solid rgba(0,0,0,0.15);
               padding: 0.2rem 0.6rem; border-radius: 6px; font-size: 0.85rem;
@@ -319,8 +322,12 @@ ex)
             header .proj-badge:hover, header .sess-link:hover, header .hub-link:hover, header button:hover {
               background: rgba(0,0,0,0.16); text-decoration: underline;
             }
+            /* Issue214: 🔗 복사·✕ 닫기 아이콘 버튼 — 정사각 정렬 + 닫기는 맨 오른쪽 분리 */
+            header .copy-link, header .close-btn { justify-content: center; padding: 0.2rem 0.5rem; }
+            header .close-btn { margin-left: 0.6rem; }
+            header .close-btn:hover { background: rgba(200,0,0,0.18); }
             ```
-            * **블록 불변식 (재발 차단)**: (1) 배지 = `<a class="proj-badge" onclick=...POST /open-project...>` — 정적 `<span>` 금지(Issue103, 클릭 시 VSCode 프로젝트 열기). 세션 = `<a class="sess-link" onclick=...POST /open-session {cwd,sid}...>`(Issue137, 클릭 시 이 문서를 만든 세션 탭 포커스 — `sid` 미치환 시 워크스페이스만 graceful degrade). (2) 순서 = `📁 배지` → `🆚 세션` → `🎯📊 Hub` → `닫기 ✕` (Hub=fPm 로고 `<img src="/fpm-icon.png">`·세션=🆚, Issue157·Issue182 — 🎯📊 이모지 아님). (3) 배지·세션·Hub·닫기 넷 모두 `<header>` 바 **안** `.header-actions` 동일 행 — 헤더 **밖** `.proj-name` div 금지(Issue88, sticky 단일 블록 고정). (4) `display:flex; justify-content:space-between` + `flex-wrap` → 우측 overflow 방지. (5) `<header>` 자체가 `position:sticky; top:0`(Issue74).
+            * **블록 불변식 (재발 차단)**: (1) 배지 = `<a class="proj-badge" onclick=...POST /open-project...>` — 정적 `<span>` 금지(Issue103, 클릭 시 VSCode 프로젝트 열기). 세션 = `<a class="sess-link" onclick=...POST /open-session {cwd,sid}...>`(Issue137, 클릭 시 이 문서를 만든 세션 탭 포커스 — `sid` 미치환 시 워크스페이스만 graceful degrade). (2) 순서 = `📁 배지` → `🆚 세션` → `🔗 복사` → `🗂 Hub` → `✕ 닫기` (Issue214: 🔗=`<button class="copy-link">` 문서 링크 clipboard 복사, ✕=`<button class="close-btn">` 닫기 아이콘화 + `margin-left` 로 맨 오른쪽 분리. Hub=fPm 로고 `<img src="/fpm-icon.png">`·세션=🆚, Issue157·Issue182 — 🎯📊 이모지 아님). (3) 배지·세션·복사·Hub·닫기 다섯 모두 `<header>` 바 **안** `.header-actions` 동일 행 — 헤더 **밖** `.proj-name` div 금지(Issue88, sticky 단일 블록 고정). (4) `display:flex; justify-content:space-between` + `flex-wrap` → 우측 overflow 방지. (5) `<header>` 자체가 `position:sticky; top:0`(Issue74).
             * **sticky 무효화 방지**: 조상 요소(`html`, `body`, 본문 컨테이너)에 `overflow: hidden` / `overflow: clip` 금지 — sticky 컨텍스트를 깨뜨려 헤더가 다시 스크롤됨.
             * 서버가 `Access-Control-Allow-Origin: null` 을 보내므로 file://(origin null) htm 에서도 fetch 허용. 성공 시 무음(VSCode 가시적 open), 실패(서버 미가동·비등록 경로) 시 `alert` fail-loud. endpoint = `/hub` 활성 세션 카드와 동일(Issue101/Issue42).
     - **컬러 영역 자식 인라인 요소 contrast (Issue16_4, Issue58 갱신)**:
