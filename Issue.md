@@ -33,22 +33,6 @@ date: 2026-03-27
 
 # 📕 중요
 
-## Issue224: [강화 Phase0·T1] 원라인 설치(curl|sh) + 셀프업데이트 fpm 셸 커맨드 (등록: 2026-06-28)
-* 상태(2026-06-28): 구현·E2E·미러 sync+push 완료. 원격 main 에 `sh/bootstrap.sh`+`fpm()` 반영(미러 `42cede7`, ahead 0). **종결 미완 — repo `Finfra/fpm` 가 PRIVATE 라 미인증 `curl|sh` 404. 사용자 결정으로 PRIVATE 유지 → public 전환 시 종결.** 상세: `_doc_work/tasks/fpm-oneline-install_task.md` T1-6
-* 목적: fPm 공개 blocker. 현재 `sh/install.sh` 는 repo 를 먼저 클론해야 실행 가능하고, 설치본을 갱신하는 셀프업데이트 커맨드가 없다. 경쟁자(ccpi `install/update/upgrade`) 대비 가장 뼈아픈 격차. 원격 `curl | sh` 원라인 진입점 + `fpm` 셸 커맨드를 신설하여 "설치·갱신 가능" 상태로 만든다.
-* plan: `_doc_work/plan/fpm-enhancement-roadmap_plan.md`
-* task: `_doc_work/tasks/fpm-oneline-install_task.md`
-* arch: `_doc_arch/fpm-competitive-benchmark.md`
-* 상세:
-    - 출처: prj1 ___pm 강화 로드맵 Phase 0 (벤치마킹 강화 과제 📕 #1)
-    - 그라운딩(2026-06-28): `install.sh`·`uninstall.sh`·`marketplace.json`·`VERSION`(0.7.2) SSOT 는 존재. 빈틈 = 원격 원라인 + 셀프업데이트 셸 함수
-* 구현 명세:
-    - `sh/bootstrap.sh` 신설: `curl -fsSL <raw>/sh/bootstrap.sh | sh` 진입점. repo `git clone`(또는 tarball) → 표준 위치 배치 → 기존 `sh/install.sh` 위임(멱등)
-    - `fpm` 셸 함수(`sh/fpm_function.sh`): `fpm update`(git pull + install.sh 재실행 + `claude plugin update`), `fpm upgrade`(VERSION 비교 후 최신 태그 체크아웃), `fpm version`, `fpm uninstall`(→ uninstall.sh)
-    - clean-check 가드: 로컬 미커밋 변경 있으면 셀프업데이트 중단·경고
-    - 설치 표준 위치 결정(`~/_git/__all/fpm` vs `~/.fpm`) — 기존 prj7 미러 경로와 정합
-    - 검증: 클린 머신(임시 HOME)에서 원라인 → 셸·SCAR 설치 → `fpm update` 멱등 재실행
-
 ## Issue225: [강화 Phase0·T2] 디스커버리 등재 (awesome-claude-code + 마켓 디렉토리) (등록: 2026-06-28)
 * 목적: 공개 blocker. 미등재 = 가시성 0. 공개 직후 awesome-claude-code PR + claudemarketplaces.com 등 마켓 디렉토리에 등재. 등재 본문이 T1 원라인 설치 명령을 인용하므로 Issue224 선행.
 * depends: Issue224
@@ -98,6 +82,23 @@ date: 2026-03-27
 # 📗 선택
 
 # ✅ 완료
+## Issue224: [강화 Phase0·T1] 원라인 설치(curl|sh) + 셀프업데이트 fpm 셸 커맨드 (등록: 2026-06-28, 해결: 2026-06-28, commit: 154d218, 2011a29) ✅
+* 결과: 구현·E2E·미러 sync+push 완료 + **PRIVATE repo 설치 지원**(2011a29) — bootstrap 이 `gh auth setup-git` 으로 비공개 clone/pull 자동 인증. 공개=`curl|sh`, 비공개=`gh api raw bootstrap.sh|sh`. 검증: 실 gh 인증 private `git clone Finfra/fpm` OK(VERSION 0.7.10). public 전환은 불요(원라인이 비공개에서도 동작) — 디스커버리 등재(Issue225) 시 public 결정.
+* 목적: fPm 공개 blocker. 현재 `sh/install.sh` 는 repo 를 먼저 클론해야 실행 가능하고, 설치본을 갱신하는 셀프업데이트 커맨드가 없다. 경쟁자(ccpi `install/update/upgrade`) 대비 가장 뼈아픈 격차. 원격 `curl | sh` 원라인 진입점 + `fpm` 셸 커맨드를 신설하여 "설치·갱신 가능" 상태로 만든다.
+* plan: `_doc_work/plan/fpm-enhancement-roadmap_plan.md`
+* task: `_doc_work/tasks/fpm-oneline-install_task.md`
+* arch: `_doc_arch/fpm-competitive-benchmark.md`
+* 상세:
+    - 출처: prj1 ___pm 강화 로드맵 Phase 0 (벤치마킹 강화 과제 📕 #1)
+    - 그라운딩(2026-06-28): `install.sh`·`uninstall.sh`·`marketplace.json`·`VERSION`(0.7.2) SSOT 는 존재. 빈틈 = 원격 원라인 + 셀프업데이트 셸 함수
+* 구현 명세:
+    - `sh/bootstrap.sh` 신설: `curl -fsSL <raw>/sh/bootstrap.sh | sh` 진입점. repo `git clone`(또는 tarball) → 표준 위치 배치 → 기존 `sh/install.sh` 위임(멱등)
+    - `fpm` 셸 함수(`sh/fpm_function.sh`): `fpm update`(git pull + install.sh 재실행 + `claude plugin update`), `fpm upgrade`(VERSION 비교 후 최신 태그 체크아웃), `fpm version`, `fpm uninstall`(→ uninstall.sh)
+    - clean-check 가드: 로컬 미커밋 변경 있으면 셀프업데이트 중단·경고
+    - 설치 표준 위치 결정(`~/_git/__all/fpm` vs `~/.fpm`) — 기존 prj7 미러 경로와 정합
+    - 검증: 클린 머신(임시 HOME)에서 원라인 → 셸·SCAR 설치 → `fpm update` 멱등 재실행
+
+
 ## Issue235: [강화 Phase2·T7] SCAR 크로스 툴 이식(Cursor·Codex·Gemini export) (등록: 2026-06-28, 해결: 2026-06-28, commit: 3d0c3c2) ✅
 * 목적: ___pm 의 SCAR(Skill/Command/Agent/Rule) 자산을 Cursor·Codex·Gemini 등 타 AI 코딩 툴 포맷으로 export. fPm 생태계 확장·락인 완화. 강화 로드맵 Phase 2 T7(최장기).
 * depends: Issue233
