@@ -733,3 +733,83 @@ fhub() {
     esac
     bash "$helper" -a "$db" -f true -r true -m "http://127.0.0.1:9876" "$url"
 }
+
+# --- fpm : 설치본 셀프 관리 커맨드 (Issue224 T1) ---------------------------
+# 패키지 매니저식 update/upgrade/version/uninstall. $FPM_BASE(설치 위치) 기준 동작.
+#   fpm update     git pull(+clean-check) → install.sh 재실행 → claude plugin update
+#   fpm upgrade    원격 최신 태그가 현재 VERSION 보다 새로우면 그 태그로 체크아웃 후 update
+#   fpm version    설치본 VERSION 출력
+#   fpm uninstall  uninstall.sh 위임 (인자 그대로 전달: --no-scar 등)
+#   fpm help       사용법
+# 안전장치: update/upgrade 는 로컬 미커밋 변경이 있으면 중단(사용자 변경 보호).
+fpm() {
+    local base="${FPM_BASE:-}"
+    [[ -n "$base" && -d "$base" ]] || { echo "fpm: FPM_BASE 미설정/부재 — fpm.sh 부트스트랩 확인" >&2; return 1; }
+    local sub="${1:-help}"; shift 2>/dev/null || true
+
+    # 미커밋 변경 가드 (update/upgrade 공용)
+    _fpm_clean_check() {
+        if [[ ! -d "$base/.git" ]]; then
+            echo "fpm: $base 가 git repo 아님 — 셀프업데이트 불가(수동 설치본?)" >&2; return 1
+        fi
+        if [[ -n "$(git -C "$base" status --porcelain 2>/dev/null)" ]]; then
+            echo "fpm: 로컬 미커밋 변경 있음 → 중단(덮어쓰기 방지)." >&2
+            echo "     git -C \"$base\" stash  또는 commit 후 다시 시도." >&2
+            return 1
+        fi
+        return 0
+    }
+
+    case "$sub" in
+        version|-v|--version)
+            cat "$base/VERSION" 2>/dev/null || { echo "fpm: VERSION 없음" >&2; return 1; }
+            ;;
+        update)
+            _fpm_clean_check || return 1
+            echo "[fpm] git pull ($base)…"
+            git -C "$base" pull --ff-only || { echo "fpm: pull 실패(fast-forward 불가) — 수동 확인" >&2; return 1; }
+            echo "[fpm] install.sh 재실행(멱등)…"
+            bash "$base/sh/install.sh" "$@" || return 1
+            if command -v claude >/dev/null 2>&1; then
+                echo "[fpm] SCAR 플러그인 갱신…"
+                claude plugin update fpm-core@f-claude-plugins 2>/dev/null \
+                    || echo "[fpm] (plugin update 건너뜀 — 설치 안 됨/네트워크)"
+            fi
+            echo "[fpm] update 완료 → $(cat "$base/VERSION" 2>/dev/null)"
+            ;;
+        upgrade)
+            _fpm_clean_check || return 1
+            git -C "$base" fetch --tags --quiet || { echo "fpm: fetch 실패" >&2; return 1; }
+            local cur latest
+            cur="$(cat "$base/VERSION" 2>/dev/null || echo 0)"
+            latest="$(git -C "$base" tag -l 'v*' --sort=-v:refname | head -1)"
+            if [[ -z "$latest" ]]; then
+                echo "[fpm] 원격 태그 없음 → 'fpm update'(브랜치 최신)로 갱신하세요."; return 0
+            fi
+            echo "[fpm] 현재 VERSION=$cur / 최신 태그=$latest"
+            if [[ "v$cur" == "$latest" ]]; then
+                echo "[fpm] 이미 최신 태그."; return 0
+            fi
+            echo "[fpm] $latest 로 체크아웃…"
+            git -C "$base" checkout --quiet "$latest" || { echo "fpm: 체크아웃 실패" >&2; return 1; }
+            bash "$base/sh/install.sh" "$@" || return 1
+            command -v claude >/dev/null 2>&1 && claude plugin update fpm-core@f-claude-plugins 2>/dev/null
+            echo "[fpm] upgrade 완료 → $latest"
+            ;;
+        uninstall|remove)
+            bash "$base/sh/uninstall.sh" "$@"
+            ;;
+        help|-h|--help|*)
+            cat <<'EOF'
+fpm — 설치본 셀프 관리 (Issue224)
+  fpm version     설치 버전 출력
+  fpm update      브랜치 최신으로 갱신 (git pull + install.sh + SCAR plugin update)
+  fpm upgrade     원격 최신 릴리즈 태그로 갱신
+  fpm uninstall   제거 (sh/uninstall.sh — --no-scar 등 인자 전달)
+  fpm help        이 도움말
+원격 원라인 설치:
+  curl -fsSL https://raw.githubusercontent.com/Finfra/fpm/main/sh/bootstrap.sh | sh
+EOF
+            ;;
+    esac
+}
