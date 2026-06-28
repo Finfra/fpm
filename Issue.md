@@ -39,12 +39,13 @@ date: 2026-03-27
 # 📗 선택
 
 # ✅ 완료
-## Issue216: hub 렌더 문서를 VSCode Simple Browser 패널에 띄우는 브리지 신설 (등록: 2026-06-27, 해결: 2026-06-27, commit: 0461cfa) ✅
+## Issue216: hub 렌더 문서를 VSCode Simple Browser 패널에 띄우는 브리지 신설 (등록: 2026-06-27, 해결: 2026-06-27, commit: 0461cfa, fba4dd9) ✅
 * 목적: 글로벌 Issue170(~/.claude) 에서 hub 가 채팅에 출력하는 문서 링크가 클릭 시 외부 브라우저로 빠져나감. 사용자는 VSCode 안에서 작업하므로 렌더된 문서가 VSCode 내부(Simple Browser 패널)에 뜨길 원함. 본 브리지가 글로벌 Issue170 의 선행 조건.
 * 해결: 트리거 후보 1번(전용 확장) 채택.
     - 서버: `services/hub/server.py` `_handle_open_simple_browser` + `POST /open-simple-browser` 라우팅. localhost-only + register-doc 화이트리스트 exact-match(htm-doc 동일 보안). `open "vscode://finfra.fpm-simple-browser/open?url=<htm-doc URL+_shell=1>"` 트리거.
     - 확장: `plugins/fpm-core/vscode-ext/fpm-simple-browser` — URI 핸들러(`onUri`)가 `simpleBrowser.show` 실행, host 화이트리스트(`127.0.0.1|localhost|host.local`) 재검증. `install.sh` = vsce package + code --install-extension.
 * 검증: 서버 `POST /open-simple-browser` → `{"status":"opened"}` → vscode:// 트리거 확인. 확장 `finfra.fpm-simple-browser-0.0.1` 설치 확인. settings 테스트 10 passed.
+* 재검증 (2026-06-28 라이브): 등록 문서 POST → HTTP 200 `{"status":"opened"}`. 보안 가드 — 미등록 `/etc/passwd` → 403, 미등록 `.htm` → 403, `path` 누락 → 400 전부 기대대로. 핸들러·확장 소스 모두 0461cfa 에 커밋 확인(`git cat-file -e`), vsix 빌드 산출물 gitignore(fba4dd9). 잔여 미커밋 `services/hub/server.py` diff 는 Issue214 COPY_LINK_SHIM 별건(216 무관).
 * 후행: prj3#Issue170 (글로벌 hook `fpm-hub-trigger.sh` type1 채팅 URL → 본 브리지 전환) → prj1#Issue218(umbrella) 종결.
 
 ## Issue214: hub 렌더 문서 헤더 UX 개선 (Issue213 후속) (등록: 2026-06-26, 해결: 2026-06-27, commit: 704a82f, 81d8e0c) ✅
