@@ -5,7 +5,7 @@ date: 2026-03-27
 ---
 
 # Issue Management
-* Issue HWM: 221
+* Issue HWM: 222
 * 오래된 Issue: `_doc_work/Issue_OLD.md` (General)
 * Save Point:
     - 3e69d0f (2026-04-24) Feat: graphify 토큰 절감 SCAR 프로젝트 구현 (Issue11·12 등록)
@@ -25,6 +25,18 @@ date: 2026-03-27
 # 📗 선택
 
 # ✅ 완료
+## Issue222: hub-shell 기존 탭 포커스 미이동 버그 수정 + /hub restart 자동화(rule) (등록: 2026-06-28, 해결: 2026-06-28, commit: ff78e21) ✅
+* 목적: (1) hub-shell 내부 탭에서 이미 열린 문서 카드(↗)를 재클릭해도 포커스가 이동하지 않는 버그 수정. (2) `/hub restart` 가 pidfile stale 시 silently no-op 하던 문제 해결로 "코드 수정 → 재시작 반영"을 신뢰성 있게 자동화. (3) hub 서버 코드 편집 시 자동 재시작을 hook 없이 rule 로 강제. 사용자 스크린샷 보고.
+* 상세:
+    - 출처: prj1 ___pm 세션 — "이미 열려 있는 탭은 클릭이 안 됨" 스크린샷 + "코드 수정 시 자동 재시작" 요청.
+    - 근본1(포커스): `addTab(d)` dedup 분기가 기존 탭 발견 시 `render()` 만 호출하고 `activate()` 안 함 → 새 탭만 포커스 이동하는 비대칭. dedup 에서 activate 를 뺀 이유는 30s 폴 재발견 시 iframe reload 폭주 방지였으나, "폴 재발견"과 "명시적 클릭"을 구분하지 못한 것이 문제.
+    - 근본2(재시작): `/hub restart` 가 `/tmp/___pm/claude-htm-server/pid` 단독 의존 → pidfile MISSING/stale 시 kill no-op → 구 서버가 9876 점유 → 새 nohup bind 실패 즉사(`sys.exit(2)`, PID_FILE 미기록) → 코드 미반영.
+* 구현 명세:
+    - `services/hub/server.py` `addTab(d, focus)`: focus 플래그 추가. dedup 분기에서 `focus && ex.id !== activeId` 면 `activate(ex.id)`(기존 탭 전환), 아니면 `render()`(폴·이미 활성 → reload 없음). 호출부 3곳 — `tab-open` SSE=true(신규 렌더), `fpm-open-tab` postMessage=true(카드 클릭), `pollDocs`=false(백그라운드 폴 미탈취).
+    - `.claude/commands/hub.md`: `restart`·`stop` 블록을 pidfile ∪ 포트 9876 listener(lsof) 합집합 kill 로 변경 + 포트 비움 대기 + 기동 후 pidfile 자가 보정 + uptime 검증. 가드 주석 추가.
+    - `.claude/rules/hub-dev-rules.md`(신규): `services/hub/**` 런타임 소스 편집한 응답에서 구문검사 → `/hub restart` → uptime/pidfile 검증을 자동 강제하는 rule. 한계(Claude 편집만 커버) 명시.
+    - 검증: py 문법 OK. 실제 재시작 2회 검증(85567→27081, uptime 한 자릿수, pidfile==listener). 라이브 서버에 addTab 수정 반영.
+    - 비고: 본 커밋 ff78e21 은 동일 working tree 에 있던 Issue219/220/221(funnel·HUB_LINK_SHIM·transcript) 미커밋 작업도 함께 포함("모두 커밋" 사용자 결정).
 ## Issue221: 채팅 fallback URL 외부 클릭 시 VSCode·브라우저 이중 노출 — funnel 우회 (등록: 2026-06-28, 해결: 2026-06-28) ✅
 * 목적: 외부 브라우저(Chrome)에서 채팅 fallback URL `http://host.local:9876/htm-doc?path=…` 클릭 시, funnel(Issue209/213)이 살아있는 hub-shell(=VSCode 패널, Issue170)에 tab-open SSE push + 클릭한 Chrome 엔 "기존 hub 창에 열림" 확인 페이지를 serve → 같은 문서가 VSCode·외부 브라우저 양쪽에 이중 노출. 사용자 보고.
 * 상세:
