@@ -39,7 +39,7 @@ FPM_ORG_FILES=(
 #   check    : marketplace 등록 + plugin 설치 확인
 #   uninstall: plugin uninstall (marketplace 는 공유 — 제거 금지)
 FPM_MKT_NAME="f-claude-plugins"
-FPM_MKT_REF_DEFAULT="https://github.com/finfra/f-claude-plugins"  # env FPM_MKT_REF 로 override
+FPM_MKT_REF_DEFAULT="https://github.com/Finfra/f-claude-plugins"  # env FPM_MKT_REF 로 override (Issue236: 케이스 Finfra 통일)
 FPM_PLUGIN_NAME="fpm-core"
 
 # ── [SCAR] fpm-core 번들 SCAR 인벤토리 (선언적 SSOT — drift 가드) ──
