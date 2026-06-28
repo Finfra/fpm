@@ -5,7 +5,7 @@ date: 2026-03-27
 ---
 
 # Issue Management
-* Issue HWM: 219
+* Issue HWM: 221
 * 오래된 Issue: `_doc_work/Issue_OLD.md` (General)
 * Save Point:
     - 3e69d0f (2026-04-24) Feat: graphify 토큰 절감 SCAR 프로젝트 구현 (Issue11·12 등록)
@@ -25,6 +25,28 @@ date: 2026-03-27
 # 📗 선택
 
 # ✅ 완료
+## Issue221: 채팅 fallback URL 외부 클릭 시 VSCode·브라우저 이중 노출 — funnel 우회 (등록: 2026-06-28, 해결: 2026-06-28) ✅
+* 목적: 외부 브라우저(Chrome)에서 채팅 fallback URL `http://host.local:9876/htm-doc?path=…` 클릭 시, funnel(Issue209/213)이 살아있는 hub-shell(=VSCode 패널, Issue170)에 tab-open SSE push + 클릭한 Chrome 엔 "기존 hub 창에 열림" 확인 페이지를 serve → 같은 문서가 VSCode·외부 브라우저 양쪽에 이중 노출. 사용자 보고.
+* 상세:
+    - 출처: prj1 ___pm 세션 사용자 스크린샷 "fallback 주소 클릭시 브라우저에서도 뜨고 vscode에서도 뜨는 문제"
+    - 근본: funnel 은 "모든 표면이 같은 브라우저"라는 Issue209 시절 전제. Issue170 으로 render_target 이 VSCode Simple Browser 패널로 분리되며 그 전제 붕괴 — 외부 클릭을 VSCode shell 로 funnel 하면 표면이 둘로 갈림.
+* 구현 명세:
+    - `_handle_htm_doc` (`services/hub/server.py`): non-embed(`_shell` 마커·Sec-Fetch-Dest 없음) + hub-internal 일 때의 funnel 블록 제거 → 클릭한 그 브라우저에 standalone serve(fall-through). (구 동작: holder alive → tab-open SSE + `HUB_OPENED_HTML` / else 302 `/hub-shell`)
+    - VSCode 패널 경로는 `/open-simple-browser` → `/htm-doc?…&_shell=1`(`_is_embed=True`)라 이 블록 자체를 안 타 무영향.
+    - 검증: py 문법 OK, 서버 재시작(pid 39340) 200, non-embed GET `/htm-doc?path=…` → 확인 페이지 대신 실제 문서(`<!DOCTYPE>`+제목) serve 확인. SSE push 경로 제거.
+    - 잔여: `HUB_OPENED_HTML` 상수 미사용화(제거 안 함 — 저위험 dead constant). `depends: Issue220`(같은 fallback/shell 흐름 후속).
+
+## Issue220: hub-shell 문서 헤더 🗂 Hub 링크 클릭 시 새로고침만 — home 탭 전환 안 됨 (등록: 2026-06-28, 해결: 2026-06-28) ✅
+* 목적: hub-shell iframe 안 렌더 문서 헤더의 🗂 Hub 링크(`.hub-link`, `href="/hub"`)를 클릭하면 iframe 이 in-place 로 `/hub` 로 네비게이트 → 현재 문서 탭 내용만 `/hub` 로 바뀌어 "새로고침"처럼 보이고, 정작 쉘의 기존 home(🗂 Hub) 탭으로는 전환되지 않음(`alt+h` 단축키와 동작 불일치). 사용자 요청 — 클릭 시 home 탭으로 이동.
+* 상세:
+    - 출처: prj1 ___pm 세션 사용자 스크린샷 요청 "위치 이동하고, hub 탭으로 이동되어야 함. 현재는 리프레쉬만 됨"
+    - 헤더는 prj3 자산(hook 템플릿) — 직접 수정 불요. CLOSE_SHIM(Issue216)·COPY_LINK_SHIM(Issue214) 과 동일하게 serve 시점 쉼 주입으로 해소.
+* 구현 명세:
+    - `HUB_LINK_SHIM` 신설(`services/hub/server.py`): 임베드(`window.parent!==window`)일 때만 `a.hub-link` 클릭을 capture-phase 로 가로채 `preventDefault` + 부모 쉘에 `postMessage {type:'fpm-goto-home'}`. standalone 은 native href 유지.
+    - hub-shell message 핸들러에 `fpm-goto-home` → `activate("home")` 분기 추가.
+    - serve 3경로(`/htm-doc`·`/view`·dash inline) 에 `HUB_LINK_SHIM` 주입.
+    - 검증: py 문법 OK, 서버 재시작 후 라이브 — `/hub-shell` 에 핸들러 1건, `/htm-doc?…&_shell=1` 에 `fpm-goto-home`+`fpm-close-tab`+`copy-link` 전부 주입 확인.
+
 ## Issue218: hub 채팅 링크 2종을 외부 브라우저 대신 VSCode 로 (사용자 원 요청 · 통합 추적) (등록: 2026-06-27, 해결: 2026-06-28, commit: 0461cfa, fba4dd9, prj3#0640898) ✅
 * 목적: 본 작업의 **시작점(origin)** — 사용자 원 요청 추적 umbrella 이슈. VSCode 채팅에서 hub 가 출력하는 링크 2종이 클릭 시 외부 브라우저(Firefox)로 빠져나감. 사용자는 VSCode 내부에 머물기를 원함. 두 갈래로 분해 — prj1 서버 브리지(Issue216) + prj3 글로벌 hook 전환(Issue170).
 * 해결: 두 갈래 + 사용자 E2E 검증 모두 완료.
@@ -43,7 +65,10 @@ date: 2026-03-27
     - 클릭 핸들러: 터미널 origin → 토스트 대신 `openSessionViewer(row.dataset.url, topic)` 호출
     - 신규 `openSessionViewer(url,title)`: 임베드(hub-shell) 시 `postMessage fpm-open-tab` 으로 부모 쉘 내부 탭, 비임베드면 `window.open(_,'_blank')`
     - `rowHtml` li 에 `data-url="${s.url}"` 추가, 터미널 배지 툴팁 "포커스 불가, 클릭 무동작" → "클릭 시 대화 내용 보기(뷰어)", CSS cursor default→pointer
-    - 단일 파일(`services/hub/server.py`) 프론트 JS·CSS 변경. py_compile OK. 서버 재시작 후 라이브 검증 필요.
+    - 1차(프론트 라우팅): 단일 파일(`services/hub/server.py`) 프론트 JS·CSS 변경
+    - **2차(핵심 — 빈 응답 회귀)**: `/s/{h}/{sid}` 뷰어는 세션이 **푸시한 렌더 content**(mode A)만 표시 → 터미널 CLI 세션(content_type "live", 푸시 없음)은 "(빈 응답)"만 떴음. 서버 `/data` 핸들러에 **JSONL transcript fallback** 추가: `content_out` 비면 `_session_transcript_html(cwd,sid)` 로 JSONL 파싱(user/assistant 턴·thinking 접기·tool 한 줄 요약·최근 60턴·텍스트 4000자 절단·mtime 캐시) → content_type "response"/mode A 반환, SPA 그대로 렌더
+    - 검증: py_compile OK · 서버 재시작 healthz 200 · 실제 터미널 세션 `/data` → content_type response·mode A·transcript div·60턴 렌더 확인
+    - 사용자 액션: 이미 열린 "(빈 응답)" 뷰어 탭은 SSE 미수신(터미널 세션) → **카드 재클릭으로 탭 재오픈** 필요
 
 ## Issue214: hub 렌더 문서 헤더 UX 개선 (Issue213 후속) (등록: 2026-06-26, 해결: 2026-06-27, 재종결: 2026-06-28, commit: 704a82f, 81d8e0c, a15d817) ✅
 * 목적: Issue213 으로 문서가 쉘 iframe 안에서 열리며 주소창이 `/hub-shell` 만 보임 → 브라우저로 문서 URL 직접 복사 불가. 헤더 액션 4종 개편.

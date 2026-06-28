@@ -30,7 +30,7 @@ def check(name, cond):
 SAMPLE = """# 헤더 주석 (보존 대상)
 feed_limit: 300            # 인라인 주석 (보존 대상)
 default_browser: chrome
-browser_focus: false
+browser_tab_reuse: false
 bind_host: 127.0.0.1       # bind 주소
 # advertise_host: 192.168.0.10  # 주석처리 optional
 render_target: hub

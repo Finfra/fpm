@@ -31,7 +31,7 @@ SAMPLE = """# 헤더 주석
 feed_limit: 300            # 인라인 주석
 feed_default_visible: true
 default_browser: chrome
-browser_focus: false
+browser_tab_reuse: false
 render_target: hub
 live_session_order: project
 card_limit: 0
@@ -55,7 +55,7 @@ def main():
         # 타입 캐스팅
         check("feed_limit int", v["feed_limit"] == 300 and isinstance(v["feed_limit"], int))
         check("feed_default_visible bool", v["feed_default_visible"] is True)
-        check("browser_focus false", v["browser_focus"] is False)
+        check("browser_tab_reuse false", v["browser_tab_reuse"] is False)
         # 인라인 주석 제거
         check("default_browser strip comment", v["default_browser"] == "chrome")
         check("render_target select", v["render_target"] == "hub")

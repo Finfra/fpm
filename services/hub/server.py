@@ -236,16 +236,21 @@ HUB_SHELL_HTML = r"""<!DOCTYPE html>
     tabs = tabs.filter(function(t){return t.id==="home";});
     activate("home");
   }
-  function addTab(d){
+  // focus=true → 명시적 열기(카드 ↗ 클릭·신규 렌더 SSE). 이미 열린 탭이면 그 탭으로
+  //   포커스 전환. focus=false → 백그라운드 폴 폴백(조용히 메타만 갱신, 사용자 시야 방해 금지).
+  function addTab(d, focus){
     if(!d || !d.view_url) return;
     // dedup: 문서 식별자(view_url=path 내포) 기준. 폴링 재발견·SSE 중복은 같은 view_url →
     //   기존 탭 재사용, 서로 다른 문서는 다른 view_url → 새 탭 추가. (이전: sid 기준 →
     //   같은 세션의 별개 문서가 한 탭으로 replace 되던 버그. 세션당 1탭 정책 폐기.)
     var ex = tabs.filter(function(t){return t.view_url===d.view_url;})[0];
     if(ex){
-      // 같은 문서 재발견 — 메타만 갱신, iframe reload 안 함(폴 루프 reload 방지).
+      // 같은 문서 재발견 — 메타 갱신. 명시적 열기(focus)이고 비활성 탭이면 그 탭으로 전환
+      //   (Issue: 이미 열린 탭 카드 재클릭 시 포커스 미이동 버그 수정). 폴 폴백(focus=false)
+      //   이나 이미 활성 탭이면 reload 없이 render 만(폴 루프 iframe reload 폭주 방지).
       ex.title = d.title || ex.title; ex.content_type = d.content_type; ex.sid = d.sid || ex.sid;
-      render(); return;
+      if(focus && ex.id !== activeId){ activate(ex.id); } else { render(); }
+      return;
     }
     var id = "t" + Math.random().toString(36).slice(2);
     tabs.push({id:id, view_url:d.view_url, title:d.title, sid:d.sid, content_type:d.content_type});
@@ -333,7 +338,7 @@ HUB_SHELL_HTML = r"""<!DOCTYPE html>
       showOverlay("다른 창이 이 호스트의 hub 를 인계했습니다. 이 창은 비활성화됩니다.", false);
     });
     es.addEventListener("tab-open", function(ev){
-      try{ addTab(JSON.parse(ev.data)); }catch(_){}
+      try{ addTab(JSON.parse(ev.data), true); }catch(_){}   // 신규 렌더 → 포커스
     });
   }
 
@@ -341,7 +346,7 @@ HUB_SHELL_HTML = r"""<!DOCTYPE html>
   window.addEventListener("message", function(ev){
     var d = ev.data;
     if(d && d.type === "fpm-open-tab" && d.view_url){
-      addTab({view_url:d.view_url, title:d.title, sid:d.sid, content_type:d.content_type});
+      addTab({view_url:d.view_url, title:d.title, sid:d.sid, content_type:d.content_type}, true);  // 카드 ↗ 클릭 → 포커스
     }
     // Issue216: 문서 헤더의 닫기 버튼(window.close())은 iframe 안에선 no-op →
     //   serve 시 주입된 close 쉼(CLOSE_SHIM)이 이 메시지를 부모 쉘로 보낸다.
@@ -350,6 +355,8 @@ HUB_SHELL_HTML = r"""<!DOCTYPE html>
       var a = active();
       if(a && a.id !== "home"){ closeTab(a.id); }
     }
+    // Issue220: 문서 헤더 🗂 Hub 링크 클릭(HUB_LINK_SHIM) → home 탭 전환 (iframe in-place 네비 대신).
+    if(d && d.type === "fpm-goto-home"){ activate("home"); }
   });
 
   // Issue199: 폴링 fallback — SSE 끊김(서버 재시작) 구간에 누락된 신규 렌더 문서를
@@ -368,7 +375,7 @@ HUB_SHELL_HTML = r"""<!DOCTYPE html>
           .sort(function(a,b){ return a.mtime_ts - b.mtime_ts; })
           .forEach(function(d){
             pollBaseline = Math.max(pollBaseline, d.mtime_ts);
-            addTab({view_url:d.view_url, title:d.title, sid:d.sid || "", content_type:ctOf(d.path || d.view_url)});
+            addTab({view_url:d.view_url, title:d.title, sid:d.sid || "", content_type:ctOf(d.path || d.view_url)}, false);  // 백그라운드 폴 → 포커스 미탈취
           });
     }).catch(function(){});
   }
@@ -453,6 +460,22 @@ COPY_LINK_SHIM = (
     b"if(c){nav.insertBefore(b,c);}else{nav.appendChild(b);}}"
     b"if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',ins);}else{ins();}"
     b"})();</script>"
+)
+
+# Issue220: 문서 헤더의 🗂 Hub 링크(.hub-link, href="/hub")는 hub-shell iframe 안에서
+#   클릭 시 iframe 을 in-place 로 /hub 로 네비게이트 → 현재 문서 탭이 /hub 로 바뀌어
+#   "새로고침"처럼 보이고, 정작 쉘의 기존 home(🗂 Hub) 탭으로는 전환되지 않았다(alt+h 와
+#   동작 불일치). serve 시 .hub-link 클릭을 가로채는 쉼을 주입해 임베드(_shell)면 부모
+#   쉘로 fpm-goto-home postMessage(쉘이 home 탭 활성화), 최상위 standalone 이면 native
+#   href 동작을 유지한다. 헤더 템플릿(prj3 자산) 수정 불요 — CLOSE_SHIM 패턴과 동형.
+HUB_LINK_SHIM = (
+    b"<script>(function(){"
+    b"if(!(window.parent&&window.parent!==window))return;"
+    b"document.addEventListener('click',function(e){"
+    b"var a=e.target&&e.target.closest&&e.target.closest('a.hub-link');"
+    b"if(!a)return;e.preventDefault();"
+    b"try{window.parent.postMessage({type:'fpm-goto-home'},'*');}catch(_){}"
+    b"},true);})();</script>"
 )
 
 
@@ -806,6 +829,112 @@ def _session_ai_title(cwd: str, sid: str):
         pass
     doc_cache_put(ck, st.st_mtime, title or "")
     return title
+
+
+def _html_escape(s):
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;").replace("'", "&#39;"))
+
+
+def _transcript_block_text(content):
+    """JSONL message.content (str|list[block]) → 표시용 (텍스트, [도구라벨]) 추출.
+    thinking 블록은 접어두기 위해 별도 수집, tool_use/tool_result 는 한 줄 요약."""
+    texts, tools, thinks = [], [], []
+    if isinstance(content, str):
+        if content.strip():
+            texts.append(content.strip())
+        return texts, tools, thinks
+    if isinstance(content, list):
+        for b in content:
+            if not isinstance(b, dict):
+                continue
+            bt = b.get("type")
+            if bt == "text":
+                t = b.get("text", "")
+                if t and t.strip():
+                    texts.append(t.strip())
+            elif bt == "thinking":
+                t = b.get("thinking", "")
+                if t and t.strip():
+                    thinks.append(t.strip())
+            elif bt == "tool_use":
+                tools.append("🔧 " + str(b.get("name", "tool")))
+            elif bt == "tool_result":
+                # 결과는 길어 한 줄 요약(앞 120자)만
+                c = b.get("content", "")
+                if isinstance(c, list):
+                    c = " ".join(x.get("text", "") for x in c if isinstance(x, dict))
+                c = (str(c) or "").strip().replace("\n", " ")
+                tools.append("↩ 결과: " + (c[:120] + ("…" if len(c) > 120 else "")))
+    return texts, tools, thinks
+
+
+_TRANSCRIPT_TURN_LIMIT = 60       # 최근 N개 user/assistant 턴만 렌더
+_TRANSCRIPT_TEXT_CHARS = 4000     # 텍스트 블록 1개 최대 길이
+
+
+def _session_transcript_html(cwd, sid):
+    """세션 JSONL → 대화 transcript HTML. content(푸시된 렌더)가 비어 있는
+    터미널(CLI) 세션 등에서 '대화 내용 보기' 용도. 최근 N턴만, 긴 텍스트는 절단."""
+    path = _resolve_session_jsonl(cwd, sid)
+    if not path:
+        return None
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    ck = f"transcript:{path}"
+    cached = doc_cache_get(ck, st.st_mtime)
+    if cached is not None:
+        return cached or None
+    turns = []
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as f:
+            for ln in f:
+                ln = ln.strip()
+                if not ln or '"message"' not in ln:
+                    continue
+                try:
+                    d = json.loads(ln)
+                except ValueError:
+                    continue
+                t = d.get("type")
+                if t not in ("user", "assistant"):
+                    continue
+                msg = d.get("message")
+                if not isinstance(msg, dict):
+                    continue
+                texts, tools, thinks = _transcript_block_text(msg.get("content"))
+                if not texts and not tools and not thinks:
+                    continue
+                turns.append((t, texts, tools, thinks))
+    except OSError:
+        return None
+    if not turns:
+        doc_cache_put(ck, st.st_mtime, "")
+        return None
+    turns = turns[-_TRANSCRIPT_TURN_LIMIT:]
+    parts = ['<div class="transcript">']
+    parts.append('<p class="ts-note">⌨️ 터미널(CLI) 세션 — JSONL 대화 transcript '
+                 f'(최근 {len(turns)}턴). 실시간 렌더가 아닌 기록 보기.</p>')
+    for role, texts, tools, thinks in turns:
+        label = "🧑 User" if role == "user" else "🤖 Assistant"
+        cls = "ts-user" if role == "user" else "ts-asst"
+        parts.append(f'<div class="ts-turn {cls}"><div class="ts-role">{label}</div>')
+        for tx in texts:
+            tx = tx[:_TRANSCRIPT_TEXT_CHARS] + ("…" if len(tx) > _TRANSCRIPT_TEXT_CHARS else "")
+            parts.append(f'<pre class="ts-text">{_html_escape(tx)}</pre>')
+        if thinks:
+            joined = _html_escape("\n\n".join(th[:_TRANSCRIPT_TEXT_CHARS] for th in thinks))
+            parts.append(f'<details class="ts-think"><summary>💭 thinking</summary>'
+                         f'<pre>{joined}</pre></details>')
+        for tl in tools:
+            parts.append(f'<div class="ts-tool">{_html_escape(tl)}</div>')
+        parts.append('</div>')
+    parts.append('</div>')
+    html = "".join(parts)
+    doc_cache_put(ck, st.st_mtime, html)
+    return html
 
 
 # Issue28: Projects.md peacock.color 매핑 (cwd 경로 → hex 컬러). mtime 기반 캐시.
@@ -1830,12 +1959,18 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
+    def _acao(self) -> str:
+        # 요청 Origin 을 반향: file://(Origin: null)·host.local·127.0.0.1 모두 매칭.
+        # 과거 "null" 하드코딩은 host.local:9876 로 페이지를 열면 origin 불일치 →
+        # 브라우저 CORS 차단("Failed to fetch") 유발 (Simple Browser/htm-doc 경로).
+        return self.headers.get("Origin") or "null"
+
     def _send_json(self, status: int, body: dict):
         payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
-        self.send_header("Access-Control-Allow-Origin", "null")
+        self.send_header("Access-Control-Allow-Origin", self._acao())
         self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
@@ -3562,7 +3697,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "keep-alive")
             self.send_header("X-Accel-Buffering", "no")
-            self.send_header("Access-Control-Allow-Origin", "null")
+            self.send_header("Access-Control-Allow-Origin", self._acao())
             self.end_headers()
             info = {}
             if not granted:
@@ -4627,7 +4762,7 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "keep-alive")
             self.send_header("X-Accel-Buffering", "no")
-            self.send_header("Access-Control-Allow-Origin", "null")
+            self.send_header("Access-Control-Allow-Origin", self._acao())
             self.end_headers()
             self.wfile.write(b": connected\n\n")
             self.wfile.flush()
@@ -4684,7 +4819,7 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         self.send_header("Content-Type", ct + "; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Access-Control-Allow-Origin", "null")
+        self.send_header("Access-Control-Allow-Origin", self._acao())
         self.end_headers()
         self.wfile.write(body)
 
@@ -4721,41 +4856,15 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         #   임베드 판정은 결정적 마커 _shell=1(쉘 JS embedUrl 부여)을 1순위로 사용 — Sec-Fetch-Dest
         #   헤더는 보조(일부 네비에서 헤더 누락 시 standalone 누출하던 Issue201 한계 보완).
         #   iframe src(_shell=1 또는 Sec-Fetch-Dest: iframe/embed)·메타데이터는 그대로 serve(redirect loop 방지).
-        _is_embed = ((qs.get("_shell") or [""])[0] == "1"
-                     or self.headers.get("Sec-Fetch-Dest") in ("iframe", "embed"))
-        if (not _is_embed
-                and _load_hub_setting().get("render_tab_mode") == "hub-internal"):
-            # Issue209: 외부(VSCode 등) 링크 클릭은 OS 새 탭을 강제 — 브라우저 레벨에서
-            #   기존 hub-shell 탭 재사용 불가. 살아있는 lease 보유자(=이미 열린 쉘)가 있으면
-            #   그 쉘에 tab-open SSE push(즉시 합류) + 새 탭엔 경량 확인 페이지를 serve.
-            #   종전엔 무조건 302 /hub-shell → 새 탭이 2번째 쉘이 되어 단일 인스턴스 lease
-            #   가드("이미 hub 창 열림 / 여기서 인계") 오버레이가 떴다. 보유자 없으면 종전대로
-            #   302 → 이 탭이 첫 쉘이 되고 pollDocs/register-doc 가 문서를 수거.
-            ip = self.client_address[0] if self.client_address else ""
-            if self._hub_holder_alive(ip):
-                base = os.path.basename(abs_path)
-                ctype = ("form" if "_b_" in base
-                         else ("dashboard" if "_c_" in base else "response"))
-                title = self._extract_html_title(abs_path) or base
-                from urllib.parse import quote as _q
-                sse_broadcast(HUB_SHELL_HASH, "tab-open", {
-                    "view_url": "/htm-doc?path=" + _q(abs_path),
-                    "title": title,
-                    "sid": "",
-                    "content_type": ctype,
-                })
-                page = HUB_OPENED_HTML.replace("__TITLE__", html.escape(title))
-                body = page.encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-                return
-            self.send_response(302)
-            self.send_header("Location", "/hub-shell")
-            self.end_headers()
-            return
+        # Issue221: 외부 브라우저에서 채팅 fallback URL(/htm-doc?path=, non-embed) 클릭 시
+        #   funnel(Issue209/213) 이 살아있는 hub-shell(=VSCode 패널, Issue170)에 tab-open SSE 를
+        #   push + 클릭한 브라우저엔 "기존 hub 창에 열림" 확인 페이지를 serve → 같은 문서가
+        #   VSCode 패널·외부 브라우저 양쪽에 이중 노출됐다(funnel 은 모든 표면이 같은 브라우저라는
+        #   Issue209 시절 전제. Issue170 으로 render_target 이 VSCode 패널로 분리되며 그 전제 붕괴).
+        #   해결: non-embed 외부 클릭은 funnel 하지 않고 "클릭한 그 브라우저에 standalone serve"
+        #   (아래로 fall-through). 단일 표면. VSCode 패널 경로는 /open-simple-browser →
+        #   /htm-doc?...&_shell=1(_is_embed=True) 라 이 블록 자체를 타지 않아 무영향.
+        #   (구 funnel: _hub_holder_alive → tab-open SSE + HUB_OPENED_HTML / else 302 /hub-shell)
         try:
             with open(abs_path, "rb") as f:
                 body = f.read()
@@ -4766,6 +4875,8 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         body = _inject_before_body_end(body, CLOSE_SHIM)
         # Issue214(재해결): canonical 헤더에 🔗 문서 링크 복사 버튼 주입.
         body = _inject_before_body_end(body, COPY_LINK_SHIM)
+        # Issue220: 🗂 Hub 링크 클릭 → 쉘 home 탭 전환(in-place 네비 차단).
+        body = _inject_before_body_end(body, HUB_LINK_SHIM)
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -4841,6 +4952,7 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         #   동일하게 CLOSE_SHIM(닫기 정상화) + COPY_LINK_SHIM(🔗 링크 복사) 주입.
         body = _inject_before_body_end(body, CLOSE_SHIM)
         body = _inject_before_body_end(body, COPY_LINK_SHIM)
+        body = _inject_before_body_end(body, HUB_LINK_SHIM)
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -5584,6 +5696,8 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         body = page.encode("utf-8")
         # Issue216: dash 헤더 닫기(✕)도 쉘 탭을 닫도록 window.close override 쉼 주입.
         body = _inject_before_body_end(body, CLOSE_SHIM)
+        # Issue220: dash 헤더 🗂 Hub 링크 클릭 → 쉘 home 탭 전환.
+        body = _inject_before_body_end(body, HUB_LINK_SHIM)
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -5808,10 +5922,20 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
                         content_out = json.dumps(d, ensure_ascii=False)
                     except Exception:
                         pass
+            ctype_out = entry.get("content_type", "response")
+            mode_out = entry.get("mode", "A")
+            # Issue219: 푸시된 렌더 content 가 비어 있으면(터미널 CLI 세션 등 — content_type
+            #   "live") JSONL 대화 transcript 로 fallback. '대화 내용 보기' 충족.
+            if not content_out:
+                tr = _session_transcript_html(cwd, sid)
+                if tr:
+                    content_out = tr
+                    ctype_out = "response"
+                    mode_out = "A"
             self._send_json(200, {
-                "content_type": entry.get("content_type", "response"),
+                "content_type": ctype_out,
                 "content": content_out,
-                "mode": entry.get("mode", "A"),
+                "mode": mode_out,
                 "updated": entry.get("updated", 0),
                 "capabilities": entry.get("capabilities", {}),
             })
@@ -6390,8 +6514,8 @@ main { padding: 1.5rem; max-width: 1600px; margin: 0 auto; display: flex; gap: 1
 .live-item[data-sid]:hover { background: rgba(127,127,127,.12); }
 /* Issue177: 세션 출처 배지 (🆚 VSCode / ⌨️ 터미널) — topic 앞 작은 아이콘 */
 .live-origin { flex-shrink: 0; font-size: 0.82em; line-height: 1; opacity: 0.85; cursor: help; }
-.live-item[data-origin="terminal"] { cursor: default; }
-.live-item[data-origin="terminal"]:hover { background: rgba(127,127,127,.06); }
+.live-item[data-origin="terminal"] { cursor: pointer; }
+.live-item[data-origin="terminal"]:hover { background: rgba(127,127,127,.12); }
 .live-acts { display: flex; align-items: center; gap: 0.3rem; flex-shrink: 0; }
 .live-acts .approve-btn { background: #e8a020; color: #fff; border: 1px solid #c8861a; font-weight: 600; font-size: 0.76em; padding: 0.12rem 0.45rem; border-radius: 4px; cursor: pointer; }
 .live-acts .approve-btn:hover { background: #c8861a; }
@@ -6700,11 +6824,11 @@ function renderLiveSessions(list, limit) {
     const origin = s.origin === 'vscode' ? 'vscode' : 'terminal';
     const originBadge = origin === 'vscode'
       ? `<span class="live-origin vs" title="VSCode 세션 — 클릭 시 탭 포커스">🆚</span>`
-      : `<span class="live-origin term" title="터미널 세션(CLI) — 포커스 불가, 클릭 무동작">⌨️</span>`;
+      : `<span class="live-origin term" title="터미널 세션(CLI) — 클릭 시 대화 내용 보기(뷰어)">⌨️</span>`;
     // Issue131: 행 클릭 → 해당 Claude Code 세션 탭 포커스 (data-sid·data-cwd). title 툴팁으로 전체 표시(ellipsis 보완).
     // Issue104: extraCls 로 초과 행에 live-hidden 부여 (접힘 상태 기본 숨김).
     const cls = 'live-item' + (extraCls ? ' ' + extraCls : '');
-    return `<li class="${cls}" data-sid="${escapeHtml(s.sid)}" data-cwd="${escapeHtml(s.cwd)}" data-origin="${origin}" title="${escapeHtml(t('liveSessions.topicTitle', {topic: topic}))}">${originBadge}<span class="live-topic">${escapeHtml(topic)}</span><span class="live-acts">${approveBtn}${killBtn}</span></li>`;
+    return `<li class="${cls}" data-sid="${escapeHtml(s.sid)}" data-cwd="${escapeHtml(s.cwd)}" data-origin="${origin}" data-url="${escapeHtml(s.url || '')}" title="${escapeHtml(t('liveSessions.topicTitle', {topic: topic}))}">${originBadge}<span class="live-topic">${escapeHtml(topic)}</span><span class="live-acts">${approveBtn}${killBtn}</span></li>`;
   };
   const cards = [...groups.values()].map(g => {
     // Issue129/Issue104: limit 초과 시 첫 (lim-1)개는 표시, 초과분은 live-hidden 으로 렌더(잘라내지 않음)
@@ -7106,6 +7230,20 @@ async function openSession(cwd, sid) {
   } catch (e) {
     toast('❌ ' + e.message, 'err');
   }
+}
+
+// Issue219: 터미널(CLI) 세션 클릭 → JSONL transcript 뷰어(/s/{h}/{sid}?token=) 열기.
+//   VSCode 포커스 불가 세션도 대화 내용 확인 가능. 임베드(hub-shell) 시 부모 쉘 내부 탭으로,
+//   비임베드(직접 /hub)면 새 탭. 뷰어 SPA 는 origin 무관하게 jsonl 을 읽어 렌더한다.
+function openSessionViewer(url, title) {
+  if (!url) { toast('세션 뷰어 URL 없음 (transcript 미해석)', 'err'); return; }
+  if (window.top !== window.self) {
+    try {
+      window.parent.postMessage({type:'fpm-open-tab', view_url:url, title:(title||'세션'), content_type:'response'}, '*');
+      return;
+    } catch (e) { /* fall through to new tab */ }
+  }
+  window.open(url, '_blank');
 }
 
 // 사이드바 숨김/보기 — localStorage 우선, 없으면 hub_setting.yml 기본값
@@ -7654,8 +7792,10 @@ document.getElementById('live-grid').addEventListener('click', (e) => {
   if (row && row.dataset.sid) {
     // Issue177: 터미널(CLI) 세션은 VSCode 로 포커스 불가 → openSession(vscode URI) 호출 안 함.
     //   기존엔 출처 무관하게 openSession 을 호출해 iTerm 세션도 VSCode 가 잘못 열렸음.
+    // Issue219: 터미널 세션은 포커스 대신 JSONL transcript 뷰어(/s/{h}/{sid})로 대화 내용 표시.
     if (row.dataset.origin === 'terminal') {
-      toast('⌨️ 터미널 세션 — VSCode 로 포커스 불가', 'err');
+      const topicEl = row.querySelector('.live-topic');
+      openSessionViewer(row.dataset.url, topicEl ? topicEl.textContent : '세션');
       return;
     }
     openSession(row.dataset.cwd, row.dataset.sid);
@@ -7951,6 +8091,17 @@ main#content code { background: var(--code-bg); padding: 0.1rem 0.3rem; border-r
 main#content table { border-collapse: collapse; width: 100%; }
 main#content th, main#content td { border: 1px solid var(--border); padding: 0.4rem 0.6rem; }
 main#content th { background: var(--code-bg); }
+/* Issue219: 터미널 세션 JSONL transcript */
+.transcript .ts-note { color: var(--muted); font-size: 0.85rem; font-style: italic; margin: 0 0 1rem; }
+.ts-turn { margin: 0 0 1rem; padding: 0.6rem 0.9rem; border-radius: 8px; border: 1px solid var(--border); }
+.ts-turn.ts-user { background: rgba(120,120,180,0.08); }
+.ts-turn.ts-asst { background: rgba(120,180,120,0.06); }
+.ts-role { font-weight: 600; font-size: 0.85rem; margin-bottom: 0.4rem; opacity: 0.8; }
+.ts-text { white-space: pre-wrap; word-break: break-word; background: transparent !important; padding: 0 !important; margin: 0.3rem 0; font-family: inherit; }
+.ts-think { margin: 0.3rem 0; font-size: 0.85rem; color: var(--muted); }
+.ts-think summary { cursor: pointer; }
+.ts-think pre { white-space: pre-wrap; word-break: break-word; }
+.ts-tool { font-family: ui-monospace, monospace; font-size: 0.82rem; color: var(--muted); margin: 0.15rem 0; }
 /* Issue18 Phase 2: form */
 .q-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.2rem; margin-bottom: 1rem; }
 .q-card .q-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.6rem; }
