@@ -36,6 +36,10 @@ fpm update    # pull latest + refresh SCAR plugin
 > Shell-only (cdf/sshf) needs nothing beyond zsh. SCAR/hub/dashboard pull in extra tools — see [Requirements](#requirements).
 > Installing from a private mirror? Use `gh api -H "Accept: application/vnd.github.raw" repos/Finfra/fpm/contents/sh/bootstrap.sh | sh` (needs `gh` CLI auth).
 
+## Demo
+
+![fpm demo — number-indexed cdf navigation and the hub HTML dashboard in action](img/fpm-demo.gif)
+
 ## Key Features
 
 * **cdf** — instantly `cd` by project number; splits iTerm2 when multiple are given. Supports ranges (`11-16`), command forwarding (`--- cmd`), and heredoc
