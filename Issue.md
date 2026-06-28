@@ -76,6 +76,7 @@ date: 2026-03-27
     - ✅ dry-run E2E 재검증(2026-06-28, /dev): 임시 enabled:true+repo 로 push dry-run → active 6건 CREATE payload(title/label/state 정확), enabled-gate→payload 전 경로 무결, 복원 후 enabled:false 확인. gh API 미접촉(외부 쓰기 0)
     - ✅ 실 repo push --apply E2E(2026-06-29, prj7 `Finfra/fpm` 활성 remote): fpm-sync forward 출고(동기 상태) → prj7 `data/gh-sync.yml` enabled:true+repo 임시 → dry-run 3 CREATE(label/state 정확) → `push --apply` → 실 `gh issue create` 3건 성공(#1 Issue225·#2 Issue233·#3 Issue226) → writeback `* gh: #N` 삽입 → status 매핑됨 3/미매핑 0 라운드트립 검증 → enabled:false 복원. 매핑 ___pm SSOT 전파. gh 이슈: https://github.com/Finfra/fpm/issues
     - 비고: prj7 가드 skip(`fpm-guard.sh` 공개 미러 제외) — push 대상이 이미 공개 미러 콘텐츠라 무해. ___pm 직접 push 는 원격 부재로 불가 → 공개 repo 소속 prj7 경유가 정상 경로
+* Hash: 08df279 (gh issues: Finfra/fpm #1·#2·#3)
 
 ## Issue227: [강화 Phase1·T4] cdf frecency / 퍼지 점프 옵션 (등록: 2026-06-28, 해결: 2026-06-29, commit: 89b53a6) ✅
 * 목적: 공개 후 사용성. `cdf` 번호 SSOT 유지 + 인자가 번호 아닐 때 최근 방문·fuzzy 매칭(`fzf` 가용 시) 보조 점프. 번호 결정론성은 약화 금지 — fuzzy 는 fallback 레이어 한정.
