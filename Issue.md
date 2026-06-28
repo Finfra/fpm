@@ -20,7 +20,7 @@ date: 2026-03-27
 
 ## Issue233: [강화 Phase2·T6] Issue.md ↔ GitHub Issues 양방향 동기(옵트인 브리지) (등록: 2026-06-28)
 * 목적: Issue.md(로컬 SSOT) 와 GitHub Issues 를 옵트인 브리지로 양방향 동기. 1인 우선 기본값(브리지 off) 유지하되, 팀·외부 기여 시 GH Issues 로 노출. 강화 로드맵 Phase 2 T6.
-* plan: `_doc_work/plan/fpm-enhancement-roadmap_plan.md`
+* plan: `_doc_work/plan/gh-issue-bridge_plan.md`
 * arch: `_doc_arch/fpm-competitive-benchmark.md`
 * 상세:
     - 출처: prj1 ___pm 강화 로드맵 Phase 2 (📗, 복잡, 장기 옵트인)
