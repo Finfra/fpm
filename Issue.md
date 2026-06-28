@@ -5,7 +5,7 @@ date: 2026-03-27
 ---
 
 # Issue Management
-* Issue HWM: 218
+* Issue HWM: 219
 * 오래된 Issue: `_doc_work/Issue_OLD.md` (General)
 * Save Point:
     - 3e69d0f (2026-04-24) Feat: graphify 토큰 절감 SCAR 프로젝트 구현 (Issue11·12 등록)
@@ -22,23 +22,29 @@ date: 2026-03-27
 
 # 📙 일반
 
-## Issue218: hub 채팅 링크 2종을 외부 브라우저 대신 VSCode 로 (사용자 원 요청 · 통합 추적) (등록: 2026-06-27)
-* 목적: 본 작업의 **시작점(origin)** — 사용자 원 요청을 추적하는 umbrella 이슈. VSCode 채팅에서 hub 가 출력하는 링크 2종이 클릭 시 외부 브라우저(Firefox)로 빠져나감. 사용자는 VSCode 안에서 작업하므로 VSCode 내부에 머물기를 원함. 외부 브라우저가 꼭 필요하면 URL 복붙으로 열 수 있어 기본 동작 전환에 손실 없음. 이 요청이 두 갈래로 분해됨 — prj1 서버 브리지(Issue216) + prj3 글로벌 hook 전환(Issue170).
-* depends: prj3#Issue170
-* 상세:
-    - 출처: prj1 ___pm 세션 사용자 요청 "브라우저로 넘어가는 링크 + 브라우저 내부로 떨어지는 링크 둘 다 vscode 로". 진단 페이지: `_doc_work/z_htm/hub_htm_20260627_160732_b_vscode-link.htm`, `…_163834_a_issue-chain.htm`
-    - **링크 type1 (브라우저로 넘어가는)** = 채팅 raw URL `http://host.local:9876/htm-doc?path=<abs>` (Issue104 형식) → VSCode 채팅 클릭 시 외부 Firefox open
-    - **링크 type2 (브라우저 내부로 떨어지는)** = 렌더된 HTML 내부 링크 — canonical 헤더 `🗂 Hub`(`<a href="…/hub">`) + 문서 간 `<a href="…/htm-doc?path=…">`(..show 페어 임베드 등) → 브라우저 내부 탭 네비게이션
-    - 최종 타겟: VSCode **Simple Browser 패널 렌더** (Issue216 조사에서 사용자 폼 선택으로 확정. 초기 ".htm 에디터 열기" 안은 렌더 불가로 폐기)
-* 분해 / 의존 체인 (실행 순서):
-    1. **prj1#Issue216** (선행-most, depends 없음) — hub 서버에 Simple Browser 브리지 엔드포인트 신설
-    2. **prj3#Issue170** (중간, depends prj1#Issue216) — 글로벌 hook `fpm-hub-trigger.sh` 의 채팅 URL·헤더 링크를 216 브리지로 전환 (~/.claude SCAR)
-    3. **본 이슈 Issue218** (후행-most/umbrella, depends prj3#Issue170) — 두 갈래 완료 시 사용자 체감(클릭 → VSCode 내부 표시) 충족 → 종결
-* 구현 명세: 직접 구현 작업 없음(통합 추적용). prj1#216 → prj3#170 순차 완료 후 사용자 검증으로 종결. 종결 시 본 이슈에 216·170 commit hash 참조.
-
 # 📗 선택
 
 # ✅ 완료
+## Issue218: hub 채팅 링크 2종을 외부 브라우저 대신 VSCode 로 (사용자 원 요청 · 통합 추적) (등록: 2026-06-27, 해결: 2026-06-28, commit: 0461cfa, fba4dd9, prj3#0640898) ✅
+* 목적: 본 작업의 **시작점(origin)** — 사용자 원 요청 추적 umbrella 이슈. VSCode 채팅에서 hub 가 출력하는 링크 2종이 클릭 시 외부 브라우저(Firefox)로 빠져나감. 사용자는 VSCode 내부에 머물기를 원함. 두 갈래로 분해 — prj1 서버 브리지(Issue216) + prj3 글로벌 hook 전환(Issue170).
+* 해결: 두 갈래 + 사용자 E2E 검증 모두 완료.
+    - **prj1#Issue216** ✅ (commit 0461cfa, fba4dd9) — hub 서버 `POST /open-simple-browser` + VSCode 확장 `finfra.fpm-simple-browser`(URI 핸들러 → `simpleBrowser.show`) 신설. localhost-only + register-doc 화이트리스트 exact-match 보안.
+    - **prj3#Issue170** ✅ (commit 0640898, ~/.claude SCAR) — 글로벌 hook `fpm-hub-trigger.sh` 의 type1 채팅 raw URL 을 216 브리지로 전환. type2 in-page 링크는 패널 내 네비게이션으로 자동 잔류(추가 작업 불요).
+* 검증 (2026-06-28 라이브 E2E): 등록 문서 `POST /open-simple-browser` → `200 {"status":"opened"}` → `vscode://finfra.fpm-simple-browser/open?url=…` 트리거 → **VSCode Simple Browser 패널에 문서 렌더 사용자 확인("떴다 — 정상 렌더")**. 보안 가드 미등록경로/미등록htm/path누락 = 403/403/400 전부 기대대로.
+* 결과: 사용자 원 요청(클릭 → VSCode 내부 표시) 충족. 본 세션부터 hub 자동 모드가 외부 Firefox 대신 Simple Browser 패널로 렌더.
+
+## Issue219: 터미널(CLI) 세션 카드 클릭 시 대화 내용 확인 불가 — transcript 뷰어로 라우팅 (등록: 2026-06-28, 해결: 2026-06-28) ✅
+* 목적: hub dashboard 의 터미널(iTerm/tmux) 세션 카드는 클릭해도 VSCode 로 포커스 불가(Issue177) → 빨간 토스트 "⌨️ 터미널 세션 — VSCode 로 포커스 불가" 만 뜨는 dead-end. 사용자는 포커스는 포기하되 세션 **대화 내용을 확인할 방법**을 요구.
+* 상세:
+    - 출처: prj1 ___pm 세션 사용자 요청 "터미널 세션은 앱 포커스 안 되는 건 알겠는데 내용 확인 방법은 필요함"
+    - 기존 인프라 재사용: SPA transcript 뷰어 `/s/{cwd_hash}/{sid}` (+ `/data` jsonl 파서)는 origin 무관하게 세션 JSONL 을 읽어 렌더 — 이미 존재. 서버가 live 세션 dict 에 `url: /s/{h}/{sid}?token=` 도 이미 제공(L3043).
+    - 결함 위치: 프론트 클릭 핸들러(`server.py` L7657) 가 `data-origin==='terminal'` 이면 토스트 err 후 `return` (뷰어 미연결).
+* 구현 명세:
+    - 클릭 핸들러: 터미널 origin → 토스트 대신 `openSessionViewer(row.dataset.url, topic)` 호출
+    - 신규 `openSessionViewer(url,title)`: 임베드(hub-shell) 시 `postMessage fpm-open-tab` 으로 부모 쉘 내부 탭, 비임베드면 `window.open(_,'_blank')`
+    - `rowHtml` li 에 `data-url="${s.url}"` 추가, 터미널 배지 툴팁 "포커스 불가, 클릭 무동작" → "클릭 시 대화 내용 보기(뷰어)", CSS cursor default→pointer
+    - 단일 파일(`services/hub/server.py`) 프론트 JS·CSS 변경. py_compile OK. 서버 재시작 후 라이브 검증 필요.
+
 ## Issue214: hub 렌더 문서 헤더 UX 개선 (Issue213 후속) (등록: 2026-06-26, 해결: 2026-06-27, 재종결: 2026-06-28, commit: 704a82f, 81d8e0c, a15d817) ✅
 * 목적: Issue213 으로 문서가 쉘 iframe 안에서 열리며 주소창이 `/hub-shell` 만 보임 → 브라우저로 문서 URL 직접 복사 불가. 헤더 액션 4종 개편.
 * 상세:
