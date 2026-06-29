@@ -6648,7 +6648,7 @@ span.imp-chip:hover { filter: brightness(1.12); }
 main { padding: 1.5rem; max-width: 1600px; margin: 0 auto; display: flex; gap: 1rem; align-items: flex-start; }
 .hub-main { flex: 2; min-width: 0; }
 .status-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; font-size: 0.9em; color: var(--muted); }
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1.4rem; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.4rem; }
 .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; transition: transform 0.15s; }
 .card:hover { transform: translateY(-2px); }
 /* Issue28: peacock.color (파스텔) → 어두운 글자 기본 */
