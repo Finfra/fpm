@@ -55,6 +55,18 @@ if [[ "$DO_SHELL" -eq 1 ]]; then
     fi
 fi
 
+# ── 1-b. yml SSOT ↔ 파생 manifest drift 가드 (비치명, Issue240_2) ──
+#   git pull 이 data/scar-manifest.yml 갱신을 가져왔을 수 있다. install_manifest.sh 는 그
+#   yml 에서 생성된 파생물이므로, 커밋 시 재생성을 빠뜨렸다면 stale 할 수 있다. 생성기·
+#   python3·pyyaml 가용 시에만 검사(최소 환경 graceful skip). 경고만, exit code 무변경.
+GEN="$FPM_BASE/sh/gen-install-manifest.sh"
+if [[ -f "$GEN" ]] && command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null; then
+    if ! bash "$GEN" --check >/dev/null 2>&1; then
+        warn "[manifest] install_manifest.sh 가 SSOT(data/scar-manifest.yml)와 어긋남(stale)"
+        warn "[manifest]   → 'bash sh/gen-install-manifest.sh' 재생성 후 커밋 권장"
+    fi
+fi
+
 # ── 2. SCAR 갱신 (plugin) ────────────────────────────────────
 if [[ "$DO_SCAR" -eq 1 ]]; then
     if ! command -v claude >/dev/null 2>&1; then

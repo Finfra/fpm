@@ -36,6 +36,22 @@ fi
 # shellcheck source=data/install_manifest.sh
 source "$MANIFEST"
 
+# ── yml SSOT ↔ 파생 manifest drift 가드 (비치명, Issue240_2) ──
+#   install_manifest.sh 는 data/scar-manifest.yml 에서 생성된 파생물. 누군가 yml 만 고치고
+#   재생성을 빠뜨리면 stale 한 .sh 로 설치될 수 있다. 생성기·python3·pyyaml 가용 시에만
+#   검사(최소 환경은 graceful skip — 커밋된 .sh 로 정상 진행). 경고만, exit code 무변경.
+manifest_drift_guard() {
+    local gen="$REPO_DIR/sh/gen-install-manifest.sh"
+    [[ -f "$gen" ]] || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+    python3 -c 'import yaml' 2>/dev/null || return 0
+    if ! bash "$gen" --check >/dev/null 2>&1; then
+        warn "install_manifest.sh 가 SSOT(data/scar-manifest.yml)와 어긋남(stale) — 설치는 현 파일로 계속"
+        warn "  → 'bash sh/gen-install-manifest.sh' 재생성 후 커밋 권장"
+    fi
+}
+manifest_drift_guard
+
 # 매니페스트 값 → 로컬 파생 (기준점 적용)
 BASEPATH_FILE="$HOME/$FPM_BASEPATH_REL_HOME"
 INFO_DIR="$(dirname "$BASEPATH_FILE")"
