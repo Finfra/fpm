@@ -207,6 +207,34 @@ else
     sec "── SCAR 점검 생략 (--no-scar) ──"
 fi
 
+# ── 11. flat_file 페이로드 drift (선언 ↔ 디스크 양방향, Issue240_3) ─────────
+#   원격 ~/.claude 플랫파일 배포 인벤토리(FPM_FLATFILE_FILES) ↔ 실제 소스 디렉토리 대조.
+#   claude CLI 무관·--no-scar 무관(repo 무결성). 소스 디렉토리 부재면 skip.
+if [[ -n "${FPM_FLATFILE_SRC_REL_REPO:-}" && ${#FPM_FLATFILE_FILES[@]} -gt 0 ]]; then
+    sec "── flat_file 페이로드 drift (선언 ↔ 디스크) ──"
+    FF_SRC="$REPO_DIR/$FPM_FLATFILE_SRC_REL_REPO"
+    if [[ ! -d "$FF_SRC" ]]; then
+        warn "flat_file 소스 없음: $FPM_FLATFILE_SRC_REL_REPO (배포 소스 미보유 — drift 점검 생략)"
+    else
+        ff_missing="" ff_undecl=""
+        # forward: 선언했는데 디스크 없음
+        for rel in "${FPM_FLATFILE_FILES[@]}"; do
+            [[ -e "$FF_SRC/$rel" ]] || ff_missing="$ff_missing $rel"
+        done
+        # reverse: 디스크에 있는데 선언 누락
+        declared_blob=" ${FPM_FLATFILE_FILES[*]} "
+        while IFS= read -r rel; do
+            printf '%s' "$declared_blob" | grep -qF " $rel " || ff_undecl="$ff_undecl $rel"
+        done < <(cd "$FF_SRC" && find . -type f | sed 's|^\./||' | sort)
+        if [[ -z "$ff_missing" && -z "$ff_undecl" ]]; then
+            ok "flat_file: 선언 ${#FPM_FLATFILE_FILES[@]}개 ↔ 디스크 일치"
+        else
+            [[ -n "$ff_missing" ]] && fail "flat_file: 선언했으나 디스크 없음 →$ff_missing (삭제/rename? scar-manifest.yml 갱신 후 gen 재실행)"
+            [[ -n "$ff_undecl" ]] && fail "flat_file: 디스크에 있으나 yml 미선언 →$ff_undecl (scar-manifest.yml payloads.flat_file.files 에 추가 후 gen 재실행)"
+        fi
+    fi
+fi
+
 # ── 요약 ──────────────────────────────────────────────────────
 printf '\n────────────────────────────────────────────\n'
 printf '결과: \033[32mPASS %d\033[0m / \033[33mWARN %d\033[0m / \033[31mFAIL %d\033[0m\n' "$PASS_N" "$WARN_N" "$FAIL_N"

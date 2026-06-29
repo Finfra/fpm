@@ -84,8 +84,39 @@ flowchart TD
     - `protect[]` 매칭 경로는 skip
     - 삭제 전 백업(`_doc_work/z_done/` 또는 사용자 지정) 권장
 
+# yml 갱신 프로세스 — drift 검출 + pre-commit 게이트 (Issue240_3·240_4)
+
+yml 은 **사람이 편집하는 SSOT** 이고 자동 write 는 없다. 대신 "고치는 걸 빠뜨렸을 때" 를
+두 페이로드 모두 잡아내고, 어긋난 채 커밋되는 것을 차단한다.
+
+## 양방향 drift 검출
+
+* **plugin 페이로드**: `check.sh` 가 `FPM_SCAR_*`(선언) ↔ `plugins/fpm-core/` 소스 파일 대조
+* **flat_file 페이로드** (Issue240_3): `check.sh` 가 `FPM_FLATFILE_FILES`(선언) ↔ `claude_forNewServer/` 디스크 대조.
+  생성기가 `FPM_FLATFILE_SRC_REL_REPO`·`FPM_FLATFILE_FILES` 를 install_manifest.sh 에 방출하므로 check.sh 는 zero-dep 으로 검사
+* **통합 검사**: `bash sh/gen-install-manifest.sh --check` 가 ① yml→install_manifest.sh 투영 동기 ② yml `files[]` ↔ 디스크 를 한 번에 검사 (drift 시 exit 2)
+
+## pre-commit 게이트 (Issue240_4)
+
+* 설치: `bash scripts/install-precommit-scar.sh` (멱등, 마커 가드, 다른 hook 블록과 공존)
+* 동작: 커밋 시 `gen-install-manifest.sh --check` 실행 → drift 면 **커밋 거부**(exit 1).
+  python3/pyyaml/생성기 부재 시 graceful skip(커밋 정상) — 최소 환경 무해
+* 효과: yml↔파생↔디스크가 어긋난 채 커밋되는 것을 원천 차단 → 두 페이로드 모두 stale 진입 봉쇄
+
+## 권장 작업 순서
+
+```
+1. SCAR 추가/삭제/rename
+2. data/scar-manifest.yml 의 해당 목록 편집
+   · plugin    → payloads.plugin.scar.{commands|skills|agents}
+   · flat_file → payloads.flat_file.files
+3. bash sh/gen-install-manifest.sh        # yml → install_manifest.sh 재생성
+4. (자동) git commit 시 pre-commit 게이트가 drift 면 거부 → 2~3 반복
+```
+
 # 변경 이력 기준
 
 * 2026-06-29 Issue240 신설 — 플랫파일 삭제 누락 버그 수정 + 통합 SSOT 정립.
   결정(폼 회수): 페이로드 범위=둘 다 통합, 기존 install_manifest.sh 관계=yml 이 SSOT(파생).
+* 2026-06-29 Issue240_3·240_4 — flat_file 양방향 drift 검출(check.sh + 생성기) + pre-commit 게이트.
 * SCAR 추가·삭제·rename 시: yml 의 해당 페이로드 목록 갱신 → `bash sh/gen-install-manifest.sh` 재실행.

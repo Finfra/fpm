@@ -60,3 +60,38 @@ FPM_SCAR_SKILLS=(
 FPM_SCAR_AGENTS=(
     fpm-board
 )
+
+# ── [flat_file] 원격 ~/.claude 플랫파일 페이로드 (repo 기준 소스 + 인벤토리) ──
+#   check.sh 가 FPM_FLATFILE_FILES ↔ <src>/ 실제 파일을 양방향 대조(drift 검출).
+FPM_FLATFILE_SRC_REL_REPO="data/claude_forNewServer"
+FPM_FLATFILE_FILES=(
+    CLAUDE.md
+    Harness.md
+    commands/design-doc.md
+    commands/gstack-plan.md
+    commands/gstack-report.md
+    commands/gstack-retro-report.md
+    commands/issue-closer-g.md
+    commands/issue-fix-g.md
+    commands/issue-reg-g.md
+    commands/md-add.md
+    commands/needs.md
+    commands/new-project.md
+    rules/change-detect-rules.md
+    rules/info-files.md
+    rules/issue-g.md
+    rules/language-rules.md
+    rules/md-rules.md
+    rules/naming-rules.md
+    rules/nptir-rules.md
+    rules/opus-4-7-execution-rules.md
+    rules/refs-rules.md
+    skills/dev-g/SKILL.md
+    skills/dev-w/SKILL.md
+    skills/doc-work-archive/SKILL.md
+    skills/git/SKILL.md
+    skills/git/scripts/git_wrapper.sh
+    skills/gstack/SKILL.md
+    skills/issue-g/SKILL.md
+    skills/issue-w/SKILL.md
+)
