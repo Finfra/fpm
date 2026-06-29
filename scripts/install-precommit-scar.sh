@@ -36,7 +36,9 @@ cat > "$BLOCK_FILE" <<'EOF'
     fi
 )
 RC=$?
-[ "$RC" -ne 0 ] && exit "$RC"
+# if 문 사용 — `[ ] && exit` 를 마지막 줄에 쓰면 RC=0 시 test 가 false(1) 반환되어
+# 스크립트가 1 로 종료되는 버그가 있음. if 는 조건 false 시 0 반환(후속 hook 블록도 보존).
+if [ "$RC" -ne 0 ]; then exit "$RC"; fi
 # scar-manifest-precommit-end
 
 EOF
