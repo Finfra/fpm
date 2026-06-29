@@ -1,0 +1,163 @@
+# scar-manifest.yml — fpm SCAR 설치/제거/업데이트 통합 SSOT (Issue240)
+#
+# SCAR 가 다른 머신/서버로 배포되는 두 경로(플러그인 · 플랫파일)와 셸 부트스트랩
+# 아티팩트를 한 곳에 모은 단일 진실 원본. install.sh · update.sh · uninstall.sh ·
+# remove.sh(to-be) · remote.sh(to-be) · publish-scar.sh · check.sh 가 본 파일을 참조한다.
+#
+# 본 yml 이 SSOT. data/install_manifest.sh(bash, installer 무의존용)는 본 파일에서
+# sh/gen-install-manifest.sh 로 생성되는 파생물이다 — install_manifest.sh 를 직접 손대지 말고
+# 본 파일을 고친 뒤 생성기를 재실행하라. 상세: data/scar-manifest.md
+#
+# 배경(버그): 원격 서버 배포(flat_file 경로)의 rsync 가이드가 과거 `--delete` 를 쓰지
+#   않아, 소스에서 rename·삭제된 SCAR 파일이 원격 ~/.claude/ 에 orphan 으로 잔존했다
+#   ("파일을 지우지 못하는 현상"). flat_file.rsync_delete: true + protect[] 가 해법.
+#
+# 규약:
+#   - 경로 기준점은 키 접미사로 명시: *_rel_home = $HOME 기준 / *_rel_repo = repo 루트 기준.
+#   - 값만 선언. 로직(생성·검증·삭제)은 소비 스크립트가 담당.
+#   - 파서 무의존 원칙: 생성기(gen-install-manifest.sh)는 python3 만 사용(yq 불필요).
+
+meta:
+  schema_version: 1
+  issue: Issue240
+  description: SCAR 설치/제거/업데이트 통합 SSOT — 플러그인 + 플랫파일 + 셸 아티팩트
+
+# ── 셸 부트스트랩 아티팩트 (두 페이로드 공통 전제) ───────────────────────────
+shell:
+  # rc 블록 마커 (install: 삽입 가드 / check: 존재 확인 / uninstall: 제거 범위)
+  rc_marker: "# >>> fpm functions >>>"
+  rc_marker_end: "# <<< fpm functions <<<"
+  # FPM_BASE 베이스경로 기록 파일 ($HOME 기준)
+  basepath_rel_home: ".info/__pmBasePath.txt"
+  # 부트스트랩 source 대상 (repo 기준)
+  bootstrap_rel_repo: "sh/fpm.sh"
+  # projects/ 스캐폴드 — 필수 존재 인덱스 (check 가 검증; 0=$HOME, 1=$REPO)
+  scaffold_indexes: [0, 1]
+  # 운영 필수 파일 (real:org, repo 기준) — install: org 존재+real 부재 시 복사(멱등)
+  org_files:
+    - real: Servers.md
+      org: Servers_org.md
+    - real: Projects.md
+      org: Projects_org.md
+    - real: data/hub_setting.yml
+      org: data/hub_setting_org.yml
+
+# ── 배포 페이로드 (두 경로) ──────────────────────────────────────────────────
+payloads:
+
+  # 경로 1: Claude Code 플러그인 (prj20 집약 마켓 경유). 로컬 머신 표준 설치.
+  #   install  : marketplace add(중복 update) → plugin install(중복 skip)
+  #   update   : marketplace update → plugin update
+  #   uninstall: plugin uninstall (marketplace 는 공유 — 제거 금지)
+  #   삭제 의미: `claude plugin (un)install/update` 가 플러그인 디렉토리 전체를 교체하므로
+  #            소스에서 빠진 SCAR 는 자동 정리됨 → 본 경로엔 orphan 잔존 문제가 없다.
+  plugin:
+    enabled: true
+    src_rel_repo: plugins/fpm-core
+    marketplace:
+      name: f-claude-plugins
+      ref_default: https://github.com/Finfra/f-claude-plugins   # env FPM_MKT_REF 로 override
+      shared: true            # 공유 마켓 — fQRGen·fBanner 등 타 플러그인과 공유. remove 금지(cascade).
+    plugin_name: fpm-core
+    # 번들 SCAR 인벤토리 (선언적 drift 가드). plugin.json 은 개별 SCAR 를 열거하지 않으므로
+    #   "fpm-core 가 무엇을 ship 하는가" 의 진실 원본은 본 목록. check.sh 가 소스 파일과 양방향 대조.
+    #   파일 규약: commands/<name>.md · skills/<name>/SKILL.md · agents/<name>.md
+    scar:
+      commands:
+        - fpm-cdf
+        - fpm-board
+        - fpm-board-server
+        - fpm-hub
+        - fpm-hub-server
+        - fpm-new-project
+        - fpm-pm-del
+        - fpm-pm-do
+        - fpm-pm-new
+        - fpm-pm-query
+        - fpm-pm-update
+        - fpm-show
+      skills:
+        - fpm-cdf
+        - fpm-pm
+        - fpm-pm-do
+      agents:
+        - fpm-board
+
+  # 경로 2: 원격 서버 ~/.claude 플랫파일 배포 (고객/타 서버 — claude CLI 플러그인 미가용 환경).
+  #   install/update: rsync src → dest, rsync_delete: true 로 orphan prune (★ 버그 해법)
+  #   remove(to-be) : files[] 를 dest 기준으로 정밀 삭제, protect[] 는 보존
+  #   가이드: data/claude_forNewServer.md (사람용 설치 절차)
+  flat_file:
+    enabled: true
+    src_rel_repo: data/claude_forNewServer       # 끝 슬래시는 소비 스크립트가 rsync 시 부여
+    dest_rel_home: .claude
+    rsync_delete: true        # ★ orphan prune. false 면 소스에서 지운 파일이 원격에 잔존(=원 버그).
+    # 정밀 삭제·검증·dry-run 용 전체 인벤토리 (src_rel_repo 기준 상대경로).
+    #   rsync_delete 가 자동 prune 하지만, remove.sh(to-be) 가 selective 삭제할 때 본 목록을 사용.
+    #   SCAR 추가·삭제·rename 시 본 목록을 함께 갱신해야 drift 가 안 생긴다.
+    files:
+      - CLAUDE.md
+      - Harness.md
+      - commands/design-doc.md
+      - commands/gstack-plan.md
+      - commands/gstack-report.md
+      - commands/gstack-retro-report.md
+      - commands/issue-closer-g.md
+      - commands/issue-fix-g.md
+      - commands/issue-reg-g.md
+      - commands/md-add.md
+      - commands/needs.md
+      - commands/new-project.md
+      - rules/change-detect-rules.md
+      - rules/info-files.md
+      - rules/issue-g.md
+      - rules/language-rules.md
+      - rules/md-rules.md
+      - rules/naming-rules.md
+      - rules/nptir-rules.md
+      - rules/opus-4-7-execution-rules.md
+      - rules/refs-rules.md
+      - skills/dev-g/SKILL.md
+      - skills/dev-w/SKILL.md
+      - skills/doc-work-archive/SKILL.md
+      - skills/git/SKILL.md
+      - skills/git/scripts/git_wrapper.sh
+      - skills/gstack/SKILL.md
+      - skills/issue-g/SKILL.md
+      - skills/issue-w/SKILL.md
+    # rsync --delete / remove.sh 가 dest 에서 절대 지우면 안 되는 대상 서버 사용자 데이터.
+    #   rsync 에는 --exclude 로, remove.sh 에는 skip 패턴으로 전달. dest_rel_home 기준 glob.
+    protect:
+      - "Issue.md"
+      - "projects/"
+      - "_doc_work/"
+      - "_doc_arch/"
+      - "settings.json"
+      - "settings.local.json"
+      - "memory/"
+      - "*.local.*"
+
+# ── 소비 스크립트 계약 (어느 스크립트가 무엇을 읽는가) ────────────────────────
+#   문서화 전용(스크립트가 파싱하지 않음). 상세 계약은 data/scar-manifest.md.
+consumers:
+  - script: sh/install.sh
+    reads: [shell, payloads.plugin]
+    note: 셸 부트스트랩 + 플러그인 설치(멱등). install_manifest.sh(파생) 경유.
+  - script: sh/update.sh
+    reads: [payloads.plugin]
+    note: git pull(셸) + marketplace/plugin update. install_manifest.sh(파생) 경유.
+  - script: sh/uninstall.sh
+    reads: [shell, payloads.plugin]
+    note: 셸 블록 제거 + plugin uninstall. marketplace(shared) 보존.
+  - script: sh/publish-scar.sh
+    reads: [payloads.plugin]
+    note: 소스 → 마켓 발행(rsync --delete). install_manifest.sh(파생) 경유.
+  - script: sh/check.sh
+    reads: [shell, payloads.plugin]
+    note: 설치 검증 + SCAR drift 대조. install_manifest.sh(파생) 경유.
+  - script: remote.sh        # to-be (Issue240 범위 외)
+    reads: [payloads.flat_file]
+    note: 원격 서버 ~/.claude 플랫파일 배포. rsync_delete + protect 적용.
+  - script: remove.sh        # to-be (Issue240 범위 외)
+    reads: [payloads.flat_file]
+    note: 원격/로컬 ~/.claude 에서 flat_file.files 정밀 삭제. protect 보존.

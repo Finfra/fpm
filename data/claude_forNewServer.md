@@ -56,18 +56,29 @@ nPTiR (needs/Plan/Task/issue/Report) + SCAR (Skills/Commands/Agents/Rules) 글�
 
 ## rsync 설치 명령 (jm4 → 원격 서버)
 
+> ⚠️ **`--delete` 필수 (Issue240)**: `--delete` 없이 rsync 하면 소스에서 rename·삭제된
+> SCAR 파일이 원격 `~/.claude/` 에 orphan 으로 **잔존**한다("파일을 지우지 못하는 현상").
+> 반드시 `--delete` + `--exclude`(대상 서버 사용자 데이터 보존) 를 함께 쓴다.
+> 페이로드 파일 목록·보존 패턴의 SSOT 는 [`data/scar-manifest.yml`](scar-manifest.yml)
+> `payloads.flat_file` 이다. (자동화는 `remote.sh`(to-be) 가 본 yml 을 직접 소비)
+
 ```bash
 # 원격 서버 주소 및 사용자명 변수 설정
 TARGET_HOST="user@server.example.com"
 SRC="$HOME/_git/___pm/data/claude_forNewServer/"
 
-# dry-run 먼저 확인
-rsync -avzn --progress \
+# 보존 대상(대상 서버 사용자 데이터) — scar-manifest.yml payloads.flat_file.protect 와 동일
+EXCL=(--exclude 'Issue.md' --exclude 'projects/' --exclude '_doc_work/' \
+      --exclude '_doc_arch/' --exclude 'settings.json' --exclude 'settings.local.json' \
+      --exclude 'memory/' --exclude '*.local.*')
+
+# dry-run 먼저 확인 (--delete 로 지워질 orphan 까지 미리 표시)
+rsync -avzn --delete "${EXCL[@]}" --progress \
   "$SRC" \
   "${TARGET_HOST}:~/.claude/"
 
 # 확인 후 실제 실행
-rsync -avz --progress \
+rsync -avz --delete "${EXCL[@]}" --progress \
   "$SRC" \
   "${TARGET_HOST}:~/.claude/"
 ```
@@ -76,13 +87,16 @@ rsync -avz --progress \
 
 ```bash
 SRC="$HOME/_git/___pm/data/claude_forNewServer/"
-DEST="~/.claude/"
+DEST="$HOME/.claude/"
+EXCL=(--exclude 'Issue.md' --exclude 'projects/' --exclude '_doc_work/' \
+      --exclude '_doc_arch/' --exclude 'settings.json' --exclude 'settings.local.json' \
+      --exclude 'memory/' --exclude '*.local.*')
 
 # dry-run
-rsync -avzn "$SRC" "$DEST"
+rsync -avzn --delete "${EXCL[@]}" "$SRC" "$DEST"
 
 # 실제 실행
-rsync -avz "$SRC" "$DEST"
+rsync -avz --delete "${EXCL[@]}" "$SRC" "$DEST"
 ```
 
 ## 설치 후 확인
