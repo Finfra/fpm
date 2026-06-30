@@ -6792,12 +6792,13 @@ section.sec-collapsed .htm-bar-right { display: none; }
   border: 1px solid var(--border); border-radius: 8px; background: var(--card); }
 .hub-feed.hidden { display: none; }
 .feed-head { display: flex; justify-content: space-between; align-items: center;
-  padding: 0.6rem 0.8rem; border-bottom: 1px solid var(--border);
+  gap: 0.3rem; padding: 0.6rem 0.5rem; border-bottom: 1px solid var(--border);
   position: sticky; top: 0; background: var(--card); z-index: 1; }
-.feed-title-label { font-weight: 600; font-size: 0.95em; white-space: nowrap; }
-.feed-actions { display: flex; gap: 0.3rem; align-items: center; }
+.feed-title-label { font-weight: 600; font-size: 0.95em; white-space: nowrap;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.feed-actions { display: flex; gap: 0.2rem; align-items: center; flex-shrink: 0; }
 #feed-toggle, #feed-collapse-all, #feed-keep, #feed-clear { background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
-  cursor: pointer; padding: 0.2rem 0.55rem; font-size: 0.8em; color: var(--fg); white-space: nowrap; }
+  cursor: pointer; padding: 0.2rem 0.4rem; font-size: 0.8em; color: var(--fg); white-space: nowrap; }
 #feed-toggle:hover, #feed-collapse-all:hover, #feed-keep:hover { background: var(--code-bg); }
 #feed-clear:hover { background: #fee2e2; border-color: #fca5a5; }
 .feed-list { padding: 0.5rem; display: flex; flex-direction: column; gap: 0.4rem; }
