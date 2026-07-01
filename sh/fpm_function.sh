@@ -291,7 +291,9 @@ cdfc() {
 }
 
 # cdfv : 해당 경로를 VS Code로 열기
-#   -n / --new-window : 각 프로젝트를 별도 "새 창"으로 (code -n). ex) cdfv -n 15 25
+#   -n / --new-window : 각 프로젝트를 별도 "독립 창"으로. ex) cdfv -n 15 25
+#     macOS window tabbing=always 환경에선 code -n 새 창이 기존 창의 탭으로 병합됨.
+#     → 열자마자 applescript "Move Tab to New Window" 로 front 탭을 별도 창으로 분리.
 cdfv() {
     local new_window=0
     if [[ "$1" == "-n" || "$1" == "--new-window" ]]; then
@@ -303,7 +305,13 @@ cdfv() {
         if [[ -e "$target" ]]; then
             echo "🚀 Opening: $target"
             if [[ $new_window -eq 1 ]]; then
-                /usr/local/bin/code -n "$target" && sleep 0.1
+                /usr/local/bin/code -n "$target"
+                sleep 0.8   # 새 창(탭) 생성 대기
+                osascript -e 'tell application "System Events" to tell process "Code"' \
+                          -e 'set mi to menu item "Move Tab to New Window" of menu 1 of menu bar item "Window" of menu bar 1' \
+                          -e 'if enabled of mi then click mi' \
+                          -e 'end tell' 2>/dev/null
+                sleep 0.2
             else
                 vscode "$target" && sleep 0.1
             fi
