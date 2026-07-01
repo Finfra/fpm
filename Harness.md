@@ -92,6 +92,10 @@ date: 2026-04-18
   - rule: `~/.claude/rules/graphify-rules.md` (token-savings policy SSOT)
   - arch SSOT: `~/_git/___pm/_doc_arch/graphify-priority-setup.md` (graphify-setup application criteria)
   - tool manual: `~/_doc/3.Resource/_LLM/Claude/_Harness/graphify.md`
+* llmwiki (human wiki layer — companion tool, doc-based projects only)
+  - /wq                (llmwiki query wrapper — human-readable wiki pages)
+  - note: separate independent tool (not a graphify module); peaceful coexistence by folder separation (KISS)
+  - guide SSOT: `~/.claude/_doc_arch/llmWiki_graphify_guide.md` (when to adopt: doc-based projects; code-based → graphify only)
 * pm-do (cross-prj command delegation + synchronous blocking + automatic dependency resolution)
   - /pm-do
   - wrapper: `~/.bin/pm-do` (CLI entry point, for bash invocation)

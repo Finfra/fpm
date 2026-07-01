@@ -96,6 +96,10 @@ date: 2026-04-18
   - rule: `~/.claude/rules/graphify-rules.md` (토큰 절감 정책 SSOT)
   - arch SSOT: `~/_git/___pm/_doc_arch/graphify-priority-setup.md` (graphify-setup 적용 기준)
   - 도구 매뉴얼: `~/_doc/3.Resource/_LLM/Claude/_Harness/graphify.md`
+* llmwiki (사람 위키 계층 — 병용 도구, 문서 기반 프로젝트 전용)
+  - /wq                (llmwiki query 래퍼 — 사람이 읽는 위키 페이지)
+  - 참고: graphify 모듈 아닌 별개 독립 도구. 폴더 분리로 평화적 공존(KISS)
+  - 가이드 SSOT: `~/.claude/_doc_arch/llmWiki_graphify_guide.md` (도입 기준: 문서 기반 프로젝트. 코드 기반 → graphify 만)
 * pm-do (prj간 명령 위임 + 동기 블로킹 + 의존성 자동 해결)
   - /pm-do
   - wrapper: `~/.bin/pm-do` (CLI 진입점, bash 호출용)
