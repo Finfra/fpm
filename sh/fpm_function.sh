@@ -291,13 +291,22 @@ cdfc() {
 }
 
 # cdfv : 해당 경로를 VS Code로 열기
+#   -n / --new-window : 각 프로젝트를 별도 "새 창"으로 (code -n). ex) cdfv -n 15 25
 cdfv() {
+    local new_window=0
+    if [[ "$1" == "-n" || "$1" == "--new-window" ]]; then
+        new_window=1; shift
+    fi
     _cdf_base "$@" || return 0
     _cdf_apply_subfolder
     for target in "${_CDF_TARGETS[@]}"; do
         if [[ -e "$target" ]]; then
             echo "🚀 Opening: $target"
-            vscode "$target" && sleep 0.1
+            if [[ $new_window -eq 1 ]]; then
+                /usr/local/bin/code -n "$target" && sleep 0.1
+            else
+                vscode "$target" && sleep 0.1
+            fi
         else
             echo "Warning: Path '$target' not found."
         fi
@@ -365,7 +374,7 @@ fi
 #       (이름검색: 0개→알림 · 1개→즉시 · 다수→선택창)
 #   필요 시 cdffn(Finder)·cdfcn(클립보드)도 동일 한 줄 패턴으로 추가 가능
 cdfn()  { [[ "$1" == [0-9]* ]] && { cdf  "$@"; return; }; local _id; _id=$(_cdfn_resolve "$1") || return; cdf  "$_id"; }
-cdfvn() { [[ "$1" == [0-9]* ]] && { cdfv "$@"; return; }; local _id; _id=$(_cdfn_resolve "$1") || return; cdfv "$_id"; }
+cdfvn() { local _a="$1"; [[ "$_a" == "-n" || "$_a" == "--new-window" ]] && _a="$2"; [[ "$_a" == [0-9]* ]] && { cdfv "$@"; return; }; local _id; _id=$(_cdfn_resolve "$1") || return; cdfv "$_id"; }
 
 # cdft : tmux pm 세션의 window/pane 생성·관리
 # 사용법:
