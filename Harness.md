@@ -243,7 +243,7 @@ The public distribution that bundle-installs the global `~/.claude` hub/dashboar
     - /issue-closer-g
 * capture
 
-# work-exampleProj
+# work-cti
 ## main
 * dev
 * issue
