@@ -291,9 +291,11 @@ cdfc() {
 }
 
 # cdfv : 해당 경로를 VS Code로 열기
-#   -n / --new-window : 각 프로젝트를 별도 "독립 창"으로. ex) cdfv -n 15 25
-#     macOS window tabbing=always 환경에선 code -n 새 창이 기존 창의 탭으로 병합됨.
-#     → 열자마자 applescript "Move Tab to New Window" 로 front 탭을 별도 창으로 분리.
+#   -n / --new-window : 지정 프로젝트들을 기존 창과 분리된 "새 창(탭 그룹)"으로 함께 열기.
+#     ex) cdfv -n 15 25  → 15·25 가 한 창에 탭으로 같이, 기존 무관한 창과는 분리.
+#     macOS window tabbing=always 환경 대응: 첫 프로젝트를 열고 applescript
+#     "Move Tab to New Window" 로 새 창(W1)으로 분리(1회만). 이후 프로젝트는
+#     frontmost=W1 로 자동 병합 → 지정 프로젝트끼리 한 창에 모임.
 cdfv() {
     local new_window=0
     if [[ "$1" == "-n" || "$1" == "--new-window" ]]; then
@@ -301,17 +303,22 @@ cdfv() {
     fi
     _cdf_base "$@" || return 0
     _cdf_apply_subfolder
+    local nw_detached=0
     for target in "${_CDF_TARGETS[@]}"; do
         if [[ -e "$target" ]]; then
             echo "🚀 Opening: $target"
             if [[ $new_window -eq 1 ]]; then
                 /usr/local/bin/code -n "$target"
                 sleep 0.8   # 새 창(탭) 생성 대기
-                osascript -e 'tell application "System Events" to tell process "Code"' \
-                          -e 'set mi to menu item "Move Tab to New Window" of menu 1 of menu bar item "Window" of menu bar 1' \
-                          -e 'if enabled of mi then click mi' \
-                          -e 'end tell' 2>/dev/null
-                sleep 0.2
+                if [[ $nw_detached -eq 0 ]]; then
+                    # 첫 프로젝트만 별도 창으로 분리 (이후 프로젝트는 이 창에 병합)
+                    osascript -e 'tell application "System Events" to tell process "Code"' \
+                              -e 'set mi to menu item "Move Tab to New Window" of menu 1 of menu bar item "Window" of menu bar 1' \
+                              -e 'if enabled of mi then click mi' \
+                              -e 'end tell' 2>/dev/null
+                    nw_detached=1
+                    sleep 0.2
+                fi
             else
                 vscode "$target" && sleep 0.1
             fi
