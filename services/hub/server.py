@@ -977,8 +977,9 @@ _PRIVATE_PREFIXES = ("10.", "192.168.", "127.", "169.254.") + tuple(
 
 
 def _parse_servers_md(path: str) -> list:
-    """Servers.md 의 Favorite Servers 테이블 파싱 → [{name, host, check}] 리스트.
-    `| id | Name | ssh alias | Host | Port | User | Description | check |` 형식."""
+    """Servers.md 의 Favorite Servers 테이블 파싱 → [{name, host, check, emoji}] 리스트.
+    `| id | Name | ssh alias | Host | Port | User | Description | check | Emoji |` 형식.
+    Emoji 는 Issue242 로 추가된 optional 마지막 컬럼(맨 끝 배치 → 기존 cells[:8] 파싱 무손상)."""
     rows = []
     try:
         with open(path, encoding="utf-8") as f:
@@ -992,10 +993,46 @@ def _parse_servers_md(path: str) -> list:
                 # 헤더·구분선 skip (id 가 숫자가 아닌 행).
                 if not _id.isdigit():
                     continue
-                rows.append({"name": name, "host": host, "check": check})
+                emoji = cells[8] if len(cells) > 8 else ""
+                rows.append({"name": name, "host": host, "check": check, "emoji": emoji})
     except (FileNotFoundError, OSError) as e:
         log(f"[allowlist] Servers.md 읽기 실패: {e}")
     return rows
+
+
+# Issue242: 이모지 → 헤더 그라디언트 hue 큐레이션 맵. 미등록 이모지는 codepoint 해시 fallback.
+#   L(명도)은 렌더 시 42~50% 고정 → 흰 텍스트 대비(명도차) 보장.
+_EMOJI_HUE = {
+    "🐧": 25, "🐳": 200, "🐋": 200, "🎮": 275, "🖥": 210, "🖥️": 210, "💻": 210,
+    "🍎": 355, "🍏": 110, "🐍": 140, "⚡": 48, "🔥": 14, "🌊": 195, "🦾": 285,
+    "🚀": 268, "🧠": 305, "🛰": 255, "☁": 205, "☁️": 205, "🪟": 205, "🌐": 190,
+    "🟢": 130, "🔵": 215, "🟣": 285, "🟠": 30, "🔴": 358, "🟡": 50,
+}
+
+
+def _emoji_hue(emoji: str) -> int:
+    """이모지 → 헤더 hue(0~359). 큐레이션 우선, 없으면 첫 codepoint 해시."""
+    if not emoji:
+        return 220
+    if emoji in _EMOJI_HUE:
+        return _EMOJI_HUE[emoji]
+    return ord(emoji[0]) % 360
+
+
+def _self_server_badge() -> tuple:
+    """이 hub 서버(hostname)가 Servers.md 에 이모지와 함께 등록돼 있으면 (emoji, hue, name) 반환.
+    미등록·이모지 공란이면 (None, None, None). hostname 은 short(첫 `.` 앞) 소문자로 Name 매치."""
+    try:
+        host = socket.gethostname().split(".")[0].strip().lower()
+    except Exception:
+        return None, None, None
+    if not host:
+        return None, None, None
+    for row in _parse_servers_md(SERVERS_MD):
+        if row.get("name", "").strip().lower() == host and row.get("emoji"):
+            emoji = row["emoji"]
+            return emoji, _emoji_hue(emoji), row.get("name", host)
+    return None, None, None
 
 
 def _load_server_allowlist() -> tuple:
@@ -3420,7 +3457,20 @@ __WARN__
             self.send_header("Location", "/hub-shell")
             self.end_headers()
             return
+        # Issue242: 이 서버가 Servers.md 에 이모지 등록돼 있으면 헤더 로고=이모지 + 그라디언트=대응색.
+        #   미등록(jm4 등)이면 fPm 아이콘 + 기본 파랑-보라 그라디언트(canonical).
+        _emoji, _hue, _sname = _self_server_badge()
+        if _emoji:
+            _logo = ('<span class="hub-logo hub-emoji" title="%s">%s</span>'
+                     % (html.escape(_sname or ""), html.escape(_emoji)))
+            _grad = ("linear-gradient(90deg, hsl(%d,60%%,42%%), hsl(%d,62%%,50%%))"
+                     % (_hue, (_hue + 40) % 360))
+        else:
+            _logo = '<img class="hub-logo" src="/fpm-icon.png" alt="fPm">'
+            _grad = "linear-gradient(90deg, hsl(220,60%,45%), hsl(280,60%,45%))"
         html_str = (HUB_HTML
+            .replace("{HUB_LOGO}", _logo)
+            .replace("{HUB_HEADER_GRAD}", _grad)
             .replace("{FEED_DEFAULT_VISIBLE}",
                      "true" if setting.get("feed_default_visible", True) else "false")
             .replace("{FEED_SHOW_PROJECT_EMOJI}",
@@ -6509,9 +6559,12 @@ HUB_HTML = """<!doctype html>
 * { box-sizing: border-box; }
 body { font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
   background: var(--bg); color: var(--fg); margin: 0; padding: 0; line-height: 1.5; }
-header { background: linear-gradient(90deg, hsl(220,60%,45%), hsl(280,60%,45%)); color: white; padding: 1rem 1.5rem;
+header { background: {HUB_HEADER_GRAD}; color: white; padding: 1rem 1.5rem;
   display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
 header .hub-logo { height: 3em; flex: 0 0 auto; }
+/* Issue242: 서버 이모지 로고 — fPm 아이콘(img) 대체. img 3em 높이에 맞춤. */
+header .hub-logo.hub-emoji { height: auto; font-size: 2.5rem; line-height: 1; display: flex; align-items: center;
+  filter: drop-shadow(0 1px 2px rgba(0,0,0,0.3)); }
 header .header-text { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; }
 header h1 { margin: 0; font-size: 1.3rem; }
 header h1 #hub-headline { font-weight: 400; opacity: 0.92; font-size: 0.92em; }
@@ -6832,7 +6885,7 @@ section.sec-collapsed .htm-bar-right { display: none; }
 </head>
 <body>
 <header>
-  <img class="hub-logo" src="/fpm-icon.png" alt="fPm">
+  {HUB_LOGO}
   <div class="header-text">
     <h1>fPm Hub<span id="hub-headline"></span></h1>
     <div class="sub" id="hub-important">{T:common.loading}</div>

@@ -11,15 +11,16 @@ date: 2026-06-06
 > `install.sh` 실행 시 `Servers.md`가 없으면 본 파일이 복사됨. 복사 후 자신의 서버 정보로 교체할 것.
 > Name 컬럼은 `~/.ssh/config`의 `# favorite` 섹션 Host alias와 일치해야 함.
 
-| id   | Name    | ssh alias | Host              | Port | User    | Description           | check |
-| :--- | :------ | :-------- | :---------------- | :--- | :------ | :-------------------- | ----- |
-| 1    | local1  | sl1       | host1.example.com | 22   | youruser | 예시 macOS 서버      | O     |
-| 2    | local2  | sl2       | host2.example.com | 22   | youruser | 예시 macOS 서버      | O     |
-| 3    | gpu1    | sg        | host3.example.com | 9922 | youruser | 예시 GPU Ubuntu      | O     |
-| 4    | web1    | sw        | example.com       | 22   | youruser | 예시 웹 호스팅       | O     |
-| 5    | lanpc   | spc       | 192.168.0.10      | 22   | youruser | 예시 LAN PC          | X     |
+| id   | Name    | ssh alias | Host              | Port | User    | Description           | check | Emoji |
+| :--- | :------ | :-------- | :---------------- | :--- | :------ | :-------------------- | ----- | :---- |
+| 1    | local1  | sl1       | host1.example.com | 22   | youruser | 예시 macOS 서버      | O     | 🍎    |
+| 2    | local2  | sl2       | host2.example.com | 22   | youruser | 예시 macOS 서버      | O     | 🍏    |
+| 3    | gpu1    | sg        | host3.example.com | 9922 | youruser | 예시 GPU Ubuntu      | O     | 🐧    |
+| 4    | web1    | sw        | example.com       | 22   | youruser | 예시 웹 호스팅       | O     | ☁️    |
+| 5    | lanpc   | spc       | 192.168.0.10      | 22   | youruser | 예시 LAN PC          | X     | 🪟    |
 
 > check 컬럼: `O` 인 행만 `/server-check` 점검 대상. 제외하려면 `X`(또는 공란)로 변경.
+> Emoji 컬럼(Issue242): hub 서버가 자기 `hostname` 을 `Name` 컬럼과 매치 → 이모지가 있으면 hub 헤더 로고를 fPm 아이콘 대신 이 이모지로 렌더 + 대응 색 그라디언트. 비워두면 기본 fPm 아이콘 유지(canonical). 어느 서버의 hub 인지 시각 구분용.
 
 ## Reference
 
