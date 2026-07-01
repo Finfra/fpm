@@ -505,6 +505,50 @@ def _inject_before_body_end(body: bytes, snippet: bytes) -> bytes:
     return body[:idx] + snippet + body[idx:] if idx >= 0 else body + snippet
 
 
+# Issue244: hub 문서의 mermaid 다이어그램이 "Syntax error in text (mermaid version
+#   11.16.0)" bomb 로 간헐 깨지는 현상. 근본 원인은 문법 오류가 아니라 **런타임 drift**:
+#   페이지가 제각각(esm@11 / umd@10 / umd@11 / esm@10)으로 mermaid 를 로드하고, 특히
+#   비동기 esm(`mermaid.esm.min.mjs`) + `startOnLoad:true` 조합이 iframe(hub-shell·..ask
+#   `<details>` 임베드) reflow 와 경쟁 → 텍스트 미확정 상태로 파싱되어 bomb 발생(standalone
+#   에선 재현 안 되고 iframe 임베드 시 간헐 발생). 서버가 이미 모든 htm-doc 에 shim 을
+#   주입하므로, mermaid 런타임도 서버가 단일 권위로 강제한다: 페이지가 무엇을 썼든
+#   (1) 기존 mermaid <script> 를 제거하고 (2) pinned UMD(동기 로드) + startOnLoad 대신
+#   명시적 mermaid.run() 을 주입 → race 제거. 페이지 저작 실수와 무관하게 결정적 렌더.
+#   graceful degradation(CDN 실패 시 <pre> 원문 노출)은 그대로 유지.
+_MERMAID_SCRIPT_RE = re.compile(
+    rb"<script\b[^>]*>.*?</script>", re.IGNORECASE | re.DOTALL
+)
+# pinned UMD(동기) + mermaid.run() — startOnLoad race 없는 결정적 렌더.
+MERMAID_RUNTIME = (
+    b'<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>'
+    b"<script>(function(){"
+    # Issue245: 테마는 OS prefers-color-scheme 가 아니라 **실제 페이지 배경 luminance** 로
+    #   결정 → 밝은 hub 페이지에 어두운 다이어그램이 얹히는 mismatch 제거(페이지와 항상 일치).
+    b"function darkBg(){try{var c=getComputedStyle(document.body).backgroundColor||'';"
+    b"var m=c.match(/[0-9.]+/g);if(!m)return false;"
+    b"if(m.length>3&&parseFloat(m[3])===0)return false;"  # 투명 배경 = 밝은 페이지로 간주
+    b"var lum=0.299*+m[0]+0.587*+m[1]+0.114*+m[2];return lum<128;}catch(e){return false;}}"
+    b"function run(){if(!window.mermaid)return;try{"
+    b"window.mermaid.initialize({startOnLoad:false,theme:darkBg()?'dark':'neutral'});"
+    b"window.mermaid.run();}catch(e){console.error('mermaid run failed',e);}}"
+    b"if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',run);}"
+    b"else{run();}})();</script>"
+)
+
+
+def _normalize_mermaid_runtime(body: bytes) -> bytes:
+    """페이지 저작 mermaid <script>(esm/umd·버전 제각각)를 제거하고 서버 표준
+    pinned UMD 런타임으로 치환. `class="mermaid"` 블록이 있을 때만 동작."""
+    if b'class="mermaid"' not in body:
+        return body
+
+    def _drop(m):
+        return b"" if b"mermaid" in m.group(0).lower() else m.group(0)
+
+    body = _MERMAID_SCRIPT_RE.sub(_drop, body)
+    return _inject_before_body_end(body, MERMAID_RUNTIME)
+
+
 pids_lock = threading.Lock()
 pids = {}  # cwd_hash -> set[int]  (Issue16: stop 제어 대상으로 등록된 runner PIDs)
 
@@ -5103,6 +5147,8 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         except FileNotFoundError:
             self._send_json(404, {"error": "file not found"})
             return
+        # Issue244: mermaid 런타임을 서버 표준(pinned UMD + run())으로 정규화 — esm race bomb 제거.
+        body = _normalize_mermaid_runtime(body)
         # Issue216: 닫기 버튼이 쉘 탭을 닫도록 window.close override 쉼 주입.
         body = _inject_before_body_end(body, CLOSE_SHIM)
         # Issue214(재해결): canonical 헤더에 🔗 문서 링크 복사 버튼 주입.
@@ -5182,6 +5228,8 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         #   iframe 안에서 열리므로 닫기 버튼의 window.close() 가 no-op 였다(간헐적 닫기 실패의
         #   원인 — 탭이 /htm-doc 경로로 열리면 닫히고 /view 경로면 안 닫힘). _handle_htm_doc 와
         #   동일하게 CLOSE_SHIM(닫기 정상화) + COPY_LINK_SHIM(🔗 링크 복사) 주입.
+        # Issue244: mermaid 런타임 정규화(esm race bomb 제거) — htm-doc 경로와 동일.
+        body = _normalize_mermaid_runtime(body)
         body = _inject_before_body_end(body, CLOSE_SHIM)
         body = _inject_before_body_end(body, COPY_LINK_SHIM)
         body = _inject_before_body_end(body, HUB_LINK_SHIM)
