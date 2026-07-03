@@ -466,18 +466,31 @@ CLOSE_SHIM = (
 #   버튼이 없어 hub-shell iframe 안에서 주소창이 /hub-shell 만 보일 때 문서 URL 직접 복사가
 #   불가했다(Issue214 의 핵심 목적이 dash 헤더에만 적용되고 메인 렌더 경로엔 누락). dash 헤더
 #   _serve_dash_inline 와 동일한 복사 로직을 serve 시점에 주입해 prj3 템플릿 수정 없이 해소.
-#   주입 스크립트는 nav.header-actions 의 닫기 버튼 직전에 🔗 버튼을 삽입(중복 가드).
+#   주입 스크립트는 nav.header-actions 의 닫기 버튼 직전에 🔗 버튼을 삽입.
+# Issue(2026-07-03 링크 복사 오동작): 생성된 .htm 파일에는 hook 템플릿이 박은 구버전
+#   onclick(무가드 navigator.clipboard.writeText)이 존재 — HTTP 비-localhost(host.local 등
+#   insecure context)에선 navigator.clipboard 가 undefined 라 동기 TypeError 로 침묵 실패.
+#   기존 버튼 발견 시 스킵하지 않고 **재바인딩**(onclick 교체)하여 과거 산출물도 서빙
+#   시점에 교정. 복사 로직은 isSecureContext 가드 + execCommand fallback + prompt 최종 폴백.
 COPY_LINK_SHIM = (
-    b"<script>(function(){function ins(){"
+    b"<script>(function(){"
+    b"function doCopy(b){var u=location.href.replace(/[?&]_shell=1$/,'');"
+    b"function ok(){var o=b.textContent;b.textContent='\xe2\x9c\x93';setTimeout(function(){b.textContent=o;},1200);}"
+    b"function fb(){try{var ta=document.createElement('textarea');ta.value=u;"
+    b"ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);"
+    b"ta.focus();ta.select();var r=document.execCommand('copy');document.body.removeChild(ta);"
+    b"if(r){ok();}else{window.prompt('\xeb\xac\xb8\xec\x84\x9c \xeb\xa7\x81\xed\x81\xac \xeb\xb3\xb5\xec\x82\xac',u);}}"
+    b"catch(e){window.prompt('\xeb\xac\xb8\xec\x84\x9c \xeb\xa7\x81\xed\x81\xac \xeb\xb3\xb5\xec\x82\xac',u);}}"
+    b"if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(u).then(ok).catch(fb);}else{fb();}}"
+    b"function ins(){"
     b"var nav=document.querySelector('header .header-actions');"
-    b"if(!nav||nav.querySelector('.copy-link'))return;"
-    b"var b=document.createElement('button');b.type='button';"
+    b"if(!nav)return;"
+    b"var b=nav.querySelector('.copy-link');"
+    b"if(b){b.removeAttribute('onclick');b.onclick=function(){doCopy(b);};return;}"
+    b"b=document.createElement('button');b.type='button';"
     b"b.className='copy-link';b.title='\xec\x9d\xb4 \xeb\xac\xb8\xec\x84\x9c \xeb\xa7\x81\xed\x81\xac \xeb\xb3\xb5\xec\x82\xac';"
     b"b.textContent='\xf0\x9f\x94\x97';"
-    b"b.onclick=function(){var u=location.href.replace(/[?&]_shell=1$/,'');"
-    b"navigator.clipboard.writeText(u).then(function(){var o=b.textContent;"
-    b"b.textContent='\xe2\x9c\x93';setTimeout(function(){b.textContent=o;},1200);})"
-    b".catch(function(){window.prompt('\xeb\xac\xb8\xec\x84\x9c \xeb\xa7\x81\xed\x81\xac \xeb\xb3\xb5\xec\x82\xac',u);});};"
+    b"b.onclick=function(){doCopy(b);};"
     b"var c=nav.querySelector('button[onclick*=\"window.close\"]')||nav.querySelector('button:last-of-type');"
     b"if(c){nav.insertBefore(b,c);}else{nav.appendChild(b);}}"
     b"if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',ins);}else{ins();}"
@@ -5849,9 +5862,13 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         #   Issue213: hub-link target="_blank" 제거 — 새 OS 창(중복) 차단, 쉘 iframe 안 in-place 합류.
         copy_onclick = (
             "(function(b){var u=location.href.replace(/[?&]_shell=1$/,'');"
-            "navigator.clipboard.writeText(u).then(function(){var o=b.textContent;"
-            "b.textContent='✓';setTimeout(function(){b.textContent=o;},1200);})"
-            ".catch(function(){window.prompt('문서 링크 복사',u);});})(this)"
+            "function ok(){var o=b.textContent;b.textContent='✓';setTimeout(function(){b.textContent=o;},1200);}"
+            "function fb(){try{var ta=document.createElement('textarea');ta.value=u;"
+            "ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);"
+            "ta.focus();ta.select();var r=document.execCommand('copy');document.body.removeChild(ta);"
+            "if(r){ok();}else{window.prompt('문서 링크 복사',u);}}"
+            "catch(e){window.prompt('문서 링크 복사',u);}}"
+            "if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(u).then(ok).catch(fb);}else{fb();}})(this)"
         )
         header_html = (
             '<header class="dash-hdr"><h1>' + esc(title) + '</h1>'
