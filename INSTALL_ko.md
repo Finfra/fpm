@@ -99,10 +99,6 @@ python3 server.py
 # → http://127.0.0.1:9876/hub
 ```
 
-## 4. Keyboard Maestro (선택)
-
-`keyboard-maestro/README.md` 참조 — `.kmmacros` import + Accessibility 권한.
-
 # 제거 / 클린 재설치
 
 `sh/uninstall.sh` 가 설치 흔적을 백업한 뒤 제거합니다 (멱등):

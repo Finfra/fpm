@@ -295,8 +295,6 @@ cat <<EOF
 fpm-core 플러그인(SCAR — hub/dashboard 등): 기본 설치됨
   (생략하려면 bash sh/install.sh --no-scar)
 
-[선택] Keyboard Maestro 매크로:  keyboard-maestro/README.md
-
 제거:  bash sh/uninstall.sh        (셸 흔적 백업 후 제거)
 클린 재설치:  bash sh/install.sh --clean
 ────────────────────────────────────────────

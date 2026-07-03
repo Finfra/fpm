@@ -99,10 +99,6 @@ python3 server.py
 # → http://127.0.0.1:9876/hub
 ```
 
-## 4. Keyboard Maestro (optional)
-
-See `keyboard-maestro/README.md` — `.kmmacros` import + Accessibility permission.
-
 # Uninstall / Clean Reinstall
 
 `sh/uninstall.sh` backs up the install traces and then removes them (idempotent):
