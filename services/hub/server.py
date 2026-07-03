@@ -3885,7 +3885,23 @@ __WARN__
             elif "_c_" in base:
                 ctype = "dashboard"
             import urllib.parse as _u
-            view_url = "/htm-doc?path=" + _u.quote(path)
+            # Issue248 잔여: hub-shell 탭 dedup 은 view_url 문자열 완전일치 기준(프론트 addTab).
+            #   여기서 항상 "/htm-doc?path=..." 로 broadcast 했으나, /boards 폴링 fallback
+            #   (_collect_htm_docs, Issue199)은 프로젝트에 token 이 있으면 "/view?cwd=&token=&path="
+            #   형식을 쓴다 — 같은 문서인데 두 view_url 이 달라 dedup 이 깨져 탭이 2개로 중복됐다.
+            #   /boards 와 동일한 token 유무 분기로 view_url 을 맞춘다.
+            cwd_q = cwd
+            token = ""
+            if cwd_q:
+                h = cwd_hash(cwd_q)
+                with projects_lock:
+                    p = projects.get(h)
+                token = (p or {}).get("token", "")
+            if token:
+                view_url = (f"/view?cwd={_u.quote(cwd_q)}&token={token}"
+                            f"&path={_u.quote(path)}")
+            else:
+                view_url = "/htm-doc?path=" + _u.quote(path)
             sse_broadcast(HUB_SHELL_HASH, "tab-open", {
                 "view_url": view_url,
                 "title": title or base,
