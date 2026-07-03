@@ -96,6 +96,16 @@ hub_lease_lock = threading.Lock()
 # host(source-IP) 단위 단일 창 리스. {ip: {"client_id":str, "granted_at":float, "last_seen":float}}
 hub_lease = {}
 
+
+def _any_hub_shell_alive(ttl=30):
+    """prj3#Issue187 잔여(Issue180 각주) — hub-shell(어느 host든) 이 살아있어
+    register-doc 자동 tab-open 브로드캐스트로 문서를 이미 표시 중인지 판정.
+    localhost curl(/open-simple-browser 호출자)은 hub-shell 의 source-ip 를 모르므로
+    ip 무관 전체 hub_lease 를 스캔한다."""
+    now = time.time()
+    with hub_lease_lock:
+        return any((now - v.get("last_seen", 0)) <= ttl for v in hub_lease.values())
+
 # Issue194: hub 내부 탭 쉘 페이지. __SHORTCUT__(JSON 문자열)·__SINGLE__(true/false) 치환.
 #   home 탭(=/hub 멀티프로젝트 대시보드) 은 content_type "home" → 닫기 단축키 no-op(R3).
 HUB_SHELL_HTML = r"""<!DOCTYPE html>
@@ -4288,6 +4298,17 @@ __WARN__
         path = (body.get("path") or "").strip()
         if not path:
             self._send_json(400, {"error": "path required"})
+            return
+        # prj3#Issue187 잔여(Issue180 각주 — "server.py _hub_holder_alive 판정으로 표면 단일화"):
+        #   render_tab_mode:hub-internal 이면 register-doc 이 이미 살아있는 hub-shell 에
+        #   tab-open SSE 브로드캐스트로 문서를 표시한다(_handle_register_doc). 여기서 또
+        #   VSCode Simple Browser 를 열면 hub-shell 탭 + VSCode 패널 이중 표시가 재발한다.
+        #   hub-shell 이 살아있으면 이 open 을 skip — register-doc 표시가 유일 표면이 된다.
+        if (_load_hub_setting().get("render_tab_mode") == "hub-internal"
+                and _any_hub_shell_alive(int(_load_hub_setting().get("hub_lease_ttl", 30)))):
+            log(f"POST /open-simple-browser SKIP — hub-shell alive + render_tab_mode=hub-internal "
+                f"(register-doc 자동 표시가 이미 처리) path={path}")
+            self._send_json(200, {"status": "skipped-hub-shell-alive", "path": path})
             return
         abs_path = os.path.realpath(os.path.expanduser(path))
         # register-doc 화이트리스트 검증 (htm-doc 동일 패턴)
