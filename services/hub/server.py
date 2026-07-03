@@ -190,6 +190,8 @@ HUB_SHELL_HTML = r"""<!DOCTYPE html>
       }
       bar.appendChild(el);
     });
+    // 탭 1개(home만) 이하 → 탭바 자동 숨김. 2개 이상일 때만 노출.
+    bar.style.display = tabs.length > 1 ? "flex" : "none";
     hint = document.createElement("span"); hint.id = "hint"; bar.appendChild(hint);
     if(tabs.length > 1){
       var ca = document.createElement("button"); ca.id = "closeall"; ca.type = "button";

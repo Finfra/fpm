@@ -40,6 +40,8 @@ fpm update    # pull latest + refresh SCAR plugin
 
 ![fpm demo — number-indexed cdf navigation and the hub HTML dashboard in action](img/fpm-demo.gif)
 
+📊 [Intro slides](https://finfra.github.io/m2slide/fPmIntro/)
+
 ## Key Features
 
 * **cdf** — instantly `cd` by project number; splits iTerm2 when multiple are given. Supports ranges (`11-16`), command forwarding (`--- cmd`), and heredoc
@@ -49,6 +51,8 @@ fpm update    # pull latest + refresh SCAR plugin
 * **SCAR** — Claude Code commands/skills/agents/rules for project management ([SCAR concept definition →](https://finfra.kr/jg/2026/04/20/scar_define/))
 
 ## Requirements
+
+**Supported OS: macOS and Linux.** macOS is the primary target; on Linux the iTerm2 split · Finder · clipboard features degrade to single `cd`/`ssh`. Windows works with some feature limitations — developers who want to port/contribute Windows support: contact us ([finfra.kr/nowage](https://finfra.kr/nowage)) and we'll help with development (dev/contribution support, not end-user support).
 
 Configuration is based on plain text (`projects/<number>`) and Markdown (`Projects.md`/`Servers.md`) rather than YAML, so no separate config parser is needed. However, running it requires the following runtime tools per feature.
 

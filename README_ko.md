@@ -40,6 +40,8 @@ fpm update    # 최신 pull + SCAR 플러그인 갱신
 
 ![fpm 데모 — 번호 인덱스 cdf 이동 + hub HTML 대시보드 동작](img/fpm-demo.gif)
 
+📊 [소개 슬라이드](https://finfra.github.io/m2slide/fPmIntro/)
+
 ## 핵심 기능
 
 * **cdf** — 프로젝트 번호로 즉시 `cd`, 복수 지정 시 iTerm2 분할. 범위(`11-16`)·명령 전달(`--- cmd`)·heredoc 지원
@@ -49,6 +51,8 @@ fpm update    # 최신 pull + SCAR 플러그인 갱신
 * **SCAR** — 프로젝트 관리용 Claude Code 커맨드/스킬/에이전트/룰 ([SCAR 개념 정의 →](https://finfra.kr/jg/2026/04/20/scar_define/))
 
 ## 요구 사항
+
+**지원 OS: macOS·Linux.** macOS 가 주 타깃이며, Linux 에서는 iTerm2 분할·Finder·클립보드 기능이 단일 `cd`/`ssh` 로 축소된다. Windows 는 일부 기능 제한이 있으나 동작한다 — Windows 포팅을 진행하려는 개발자는 연락([finfra.kr/nowage](https://finfra.kr/nowage))주시면 개발을 지원해 드린다(사용 지원이 아닌 개발·기여 지원).
 
 설정은 YAML 이 아닌 평문 텍스트(`projects/<번호>`)·마크다운(`Projects.md`/`Servers.md`) 기반이라 별도 설정 파서가 필요 없다. 다만 구동에는 아래 런타임 도구가 기능별로 필요하다.
 
