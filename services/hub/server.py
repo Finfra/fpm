@@ -2136,7 +2136,23 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         # Issue182: fPm 프로젝트 아이콘 서빙 (favicon + 헤더 브랜딩 공용)
+        # Issue253: 배지 서버(Servers.md 이모지 등록)는 이모지 SVG 서빙 — favicon·문서
+        #   헤더 hub-link 가 전부 이 경로를 참조하므로 단일 지점에서 서버 아이콘으로 전환.
+        #   브라우저는 확장자가 아닌 Content-Type 으로 렌더하므로 .png 경로에 SVG 허용.
         if parsed.path == "/fpm-icon.png":
+            _emoji, _hue, _sname = _self_server_badge()
+            if _emoji:
+                svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
+                       '<text x="50" y="54" font-size="82" text-anchor="middle"'
+                       ' dominant-baseline="central">%s</text></svg>' % _emoji)
+                data = svg.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "image/svg+xml")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "public, max-age=3600")
+                self.end_headers()
+                self.wfile.write(data)
+                return
             icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fpm-icon.png")
             try:
                 with open(icon_path, "rb") as f:
