@@ -48,7 +48,7 @@ fpm update    # 최신 pull + SCAR 플러그인 갱신
 
 > 위 플레이어가 보이지 않으면 여기서 직접 재생: [00-fpm-overview.mp4](https://finfra.kr/mp4/00-fpm-overview.mp4)
 
-📊 [소개 슬라이드](https://finfra.github.io/m2slide/fPmIntro/)
+📊 [소개 슬라이드](https://finfra.github.io/m2slide/fPmIntro/) · [English slides](https://finfra.github.io/m2slide/fPmIntro_en/)
 
 ## 핵심 기능
 

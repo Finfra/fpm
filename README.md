@@ -48,7 +48,7 @@ https://github.com/user-attachments/assets/6b9be22c-3f56-4c9c-a920-a7c8635e10cb
 
 > If the player above does not appear, watch it directly here: [00-fpm-overview.mp4](https://finfra.kr/mp4/00-fpm-overview.mp4)
 
-📊 [Intro slides](https://finfra.github.io/m2slide/fPmIntro/)
+📊 [Intro slides](https://finfra.github.io/m2slide/fPmIntro_en/) · [한국어 슬라이드](https://finfra.github.io/m2slide/fPmIntro/)
 
 ## Key Features
 
