@@ -14,6 +14,8 @@ date: 2026-06-06
 
 번호 인덱스로 프로젝트 디렉토리(`cdf`)와 SSH 서버(`sshf`)에 빠르게 접근하는 zsh 함수군 + 작업을 HTML 로 렌더링하는 **hub** 서버 + Claude Code SCAR(Skills/Commands/Agents/Rules) 모음.
 
+> 💡 fPm의 핵심 아이디어는 **ACP** 입니다 — 자세한 설명: [ACP란?](https://finfra.kr/jg/2026/07/06/acp/)
+
 > 듀얼 라이선스: 개인·비영리 무료 / 기업 유료. [LICENSE](LICENSE) · [COMMERCIAL_ko.md](COMMERCIAL_ko.md)
 
 ## 빠른 시작
@@ -39,6 +41,12 @@ fpm update    # 최신 pull + SCAR 플러그인 갱신
 ## 데모
 
 ![fpm 데모 — 번호 인덱스 cdf 이동 + hub HTML 대시보드 동작](img/fpm-demo.gif)
+
+🎬 **프로젝트 시연 영상** — fpm의 전체 동작을 담은 개요 영상:
+
+<video src="https://finfra.kr/mp4/00-fpm-overview.mp4" controls width="820"></video>
+
+> 위 플레이어가 보이지 않으면 여기서 직접 재생: [00-fpm-overview.mp4](https://finfra.kr/mp4/00-fpm-overview.mp4)
 
 📊 [소개 슬라이드](https://finfra.github.io/m2slide/fPmIntro/)
 

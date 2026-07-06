@@ -14,6 +14,8 @@ date: 2026-06-06
 
 A set of zsh functions for fast number-indexed access to project directories (`cdf`) and SSH servers (`sshf`) + a **hub** server that renders work into HTML + a collection of Claude Code SCAR (Skills/Commands/Agents/Rules).
 
+> 💡 The core idea behind fpm is **ACP** — read more here: [What is ACP?](https://finfra.kr/jg/2026/07/06/acp-en/)
+
 > Dual license: free for personal/non-commercial use / paid for enterprises. [LICENSE](LICENSE) · [Commercial License](COMMERCIAL.md)
 
 ## Quick Start
@@ -39,6 +41,12 @@ fpm update    # pull latest + refresh SCAR plugin
 ## Demo
 
 ![fpm demo — number-indexed cdf navigation and the hub HTML dashboard in action](img/fpm-demo.gif)
+
+🎬 **Project walkthrough video** — a full overview of fpm in action:
+
+<video src="https://finfra.kr/mp4/00-fpm-overview.mp4" controls width="820"></video>
+
+> If the player above does not appear, watch it directly here: [00-fpm-overview.mp4](https://finfra.kr/mp4/00-fpm-overview.mp4)
 
 📊 [Intro slides](https://finfra.github.io/m2slide/fPmIntro/)
 
