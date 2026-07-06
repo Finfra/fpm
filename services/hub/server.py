@@ -22,6 +22,7 @@ import signal
 import subprocess
 import shlex
 import re
+import mimetypes
 import tempfile
 import socket
 import ipaddress
@@ -609,6 +610,9 @@ start_ts = time.time()
 # REPO_ROOT = server.py(.../services/htm-server/) → ___pm 루트 (dirname 3회)
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DATA_HUB_DIR = os.path.join(REPO_ROOT, "data", "hub")
+# Issue255: /htm-res 로 serve 허용하는 이미지 확장자 화이트리스트
+_HTM_RES_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"}
+
 HTM_REGISTRY = os.path.join(DATA_HUB_DIR, "htm-registry.json")
 DASH_REGISTRY = os.path.join(DATA_HUB_DIR, "dash-registry.json")
 # Issue53: clear 버튼으로 명시 제거된 htm path tombstone. autoheal 이 feed 버퍼에서
@@ -2235,6 +2239,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/htm-doc":
             self._handle_htm_doc(parsed)
+            return
+        # Issue255: htm 문서 상대 리소스(이미지) serve
+        if parsed.path == "/htm-res":
+            self._handle_htm_res(parsed)
             return
         if parsed.path == "/boards":
             self._handle_dashboards(parsed)
@@ -5220,6 +5228,67 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         self.send_header("Access-Control-Allow-Origin", self._acao())
         self.end_headers()
         self.wfile.write(body)
+
+    def _handle_htm_res(self, parsed):
+        """Issue255: htm 문서의 상대 리소스(이미지) serve.
+        인증 2모드 — (1) cwd+token(=/view 대칭, cwd-jail) (2) htm-registry
+        exact-match(토큰리스, /htm-doc 대칭). registry 모드의 jail 은 doc 의
+        `_doc_work/` 상위(없으면 doc 디렉토리) — 프로젝트 임의 파일 노출 차단."""
+        qs = parse_qs(parsed.query)
+        doc = (qs.get("doc") or [""])[0]
+        rel = (qs.get("rel") or [""])[0]
+        if not doc or not rel:
+            self._send_json(400, {"error": "missing doc or rel"})
+            return
+        doc_real = os.path.realpath(doc)
+        jail = None
+        cwd = get_cwd_param(parsed)
+        token = get_token_param(parsed)
+        if cwd and token and validate(cwd, token):
+            cwd_real = os.path.realpath(cwd)
+            if path_within_serve_roots(doc_real, cwd_real):
+                jail = cwd_real
+        if jail is None:
+            with registry_lock:
+                reg = load_registry(HTM_REGISTRY)
+            reg_paths = set()
+            for e in reg:
+                p = e.get("path") or ""
+                if p:
+                    reg_paths.add(p)
+                    reg_paths.add(os.path.realpath(p))
+            if doc_real not in reg_paths and doc not in reg_paths:
+                log(f"GET /htm-res — unauthorized doc rejected: {doc_real}")
+                self._send_json(403, {"error": "doc not authorized"})
+                return
+            marker = os.sep + "_doc_work" + os.sep
+            i = doc_real.find(marker)
+            jail = (doc_real[:i + len(marker) - 1] if i >= 0
+                    else os.path.dirname(doc_real))
+        res = os.path.realpath(os.path.join(os.path.dirname(doc_real), rel))
+        if res != jail and not res.startswith(jail + os.sep):
+            log(f"GET /htm-res — rel escapes jail rejected: {res}")
+            self._send_json(403, {"error": "rel outside jail"})
+            return
+        ext = os.path.splitext(res)[1].lower()
+        if ext not in _HTM_RES_EXTS:
+            self._send_json(403, {"error": "extension not allowed"})
+            return
+        try:
+            with open(res, "rb") as f:
+                data = f.read()
+        except OSError:
+            self._send_json(404, {"error": "file not found"})
+            return
+        ctype = mimetypes.guess_type(res)[0] or "application/octet-stream"
+        if ext == ".svg":
+            ctype = "image/svg+xml"
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
 
     def _handle_htm_doc(self, parsed):
         """Issue50: htm-registry 등록 htm html 을 토큰 없이 serve. registry 는

@@ -49,5 +49,89 @@ check("/ 시작 절대경로는 미변경", b'src="/fpm-icon.png"' in out)
 check("extra query 전달 (cwd/token)",
       b"cwd=" in server._rewrite_relative_imgs(body, DOC, extra_query="cwd=%2Fproj&token=t1"))
 
+# --- /htm-res 라우트 (_FakeHandler) ---
+class _FakeWriter:
+    def __init__(self, outer):
+        self.outer = outer
+
+    def write(self, b):
+        self.outer.raw += b
+
+
+class _FakeHandler(server.Handler):
+    def __init__(self):
+        self.client_address = ("127.0.0.1", 0)
+        self.json_responses = []   # [(status, body), ...]
+        self.raw = b""
+        self.raw_headers = {}
+        self._status = None
+
+    def _send_json(self, status, body):
+        self.json_responses.append((status, body))
+
+    def send_response(self, status):
+        self._status = status
+
+    def send_header(self, k, v):
+        self.raw_headers[k] = v
+
+    def end_headers(self):
+        pass
+
+    @property
+    def wfile(self):
+        return _FakeWriter(self)
+
+
+TMP = tempfile.mkdtemp(prefix="htm-res-test-")
+DOCWORK = os.path.join(TMP, "proj", "_doc_work")
+os.makedirs(os.path.join(DOCWORK, "z_htm"))
+os.makedirs(os.path.join(DOCWORK, "capture"))
+DOC2 = os.path.join(DOCWORK, "z_htm", "d.htm")
+open(DOC2, "w").write("<html><body>x</body></html>")
+PNG = os.path.join(DOCWORK, "capture", "img.png")
+open(PNG, "wb").write(b"\x89PNG-fake")
+open(os.path.join(TMP, "proj", "secret.py"), "w").write("top=1")
+
+# registry 픽스처 — HTM_REGISTRY 를 임시 파일로 교체
+server.HTM_REGISTRY = os.path.join(TMP, "htm-registry.json")
+server.save_registry(server.HTM_REGISTRY, [{"path": DOC2}])
+
+
+def _get(url):
+    h = _FakeHandler()
+    h.path = url
+    h._handle_htm_res(urlparse(url))
+    return h
+
+
+r = _get(f"/htm-res?doc={quote(DOC2, safe='')}&rel={quote('../capture/img.png', safe='')}")
+check("등록 doc + 유효 rel → 200 이미지 bytes",
+      r._status == 200 and r.raw == b"\x89PNG-fake")
+check("Content-Type image/png", r.raw_headers.get("Content-Type") == "image/png")
+check("Cache-Control no-store", r.raw_headers.get("Cache-Control") == "no-store")
+
+r = _get(f"/htm-res?doc={quote('/etc/hosts', safe='')}&rel=x.png")
+check("미등록 doc → 403",
+      r.json_responses and r.json_responses[0][0] == 403)
+
+r = _get(f"/htm-res?doc={quote(DOC2, safe='')}&rel={quote('../../secret.py', safe='')}")
+check("jail(_doc_work) 탈출 rel → 403",
+      r.json_responses and r.json_responses[0][0] == 403)
+
+r = _get(f"/htm-res?doc={quote(DOC2, safe='')}&rel={quote('../capture/none.png', safe='')}")
+check("파일 부재 → 404",
+      r.json_responses and r.json_responses[0][0] == 404)
+
+r = _get(f"/htm-res?doc={quote(DOC2, safe='')}&rel=missing-ext")
+check("확장자 비허용 → 403",
+      r.json_responses and r.json_responses[0][0] == 403)
+
+r = _get(f"/htm-res?doc={quote(DOC2, safe='')}")
+check("rel 누락 → 400",
+      r.json_responses and r.json_responses[0][0] == 400)
+
+shutil.rmtree(TMP)
+
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
