@@ -520,6 +520,31 @@ def _inject_before_body_end(body: bytes, snippet: bytes) -> bytes:
     return body[:idx] + snippet + body[idx:] if idx >= 0 else body + snippet
 
 
+# Issue255: /htm-doc·/view 로 serve 되는 문서의 상대 <img src> 는 문서 URL path 가
+#   /htm-doc 고정이라 브라우저가 서버 루트 기준으로 해석해 404. serve 시 상대 src 를
+#   /htm-res?doc=&rel= 절대 URL 로 재작성한다. data:/http(s):/루트(/) src 는 제외.
+_IMG_SRC_RE = re.compile(rb'(<img\b[^>]*?\bsrc=)(["\'])(.*?)\2', re.IGNORECASE | re.DOTALL)
+
+
+def _rewrite_relative_imgs(body: bytes, doc_abs: str, extra_query: str = "") -> bytes:
+    from urllib.parse import quote as _q
+    doc_q = _q(doc_abs, safe="").encode("ascii")
+    extra = ("&" + extra_query).encode("ascii") if extra_query else b""
+
+    def _sub(m):
+        src = m.group(3)
+        low = src.lower()
+        if (low.startswith((b"data:", b"http:", b"https:", b"//", b"/"))
+                or not src.strip()):
+            return m.group(0)
+        rel_q = _q(src.decode("utf-8", "replace"), safe="").encode("ascii")
+        return (m.group(1) + m.group(2)
+                + b"/htm-res?doc=" + doc_q + b"&rel=" + rel_q + extra
+                + m.group(2))
+
+    return _IMG_SRC_RE.sub(_sub, body)
+
+
 # Issue244: hub 문서의 mermaid 다이어그램이 "Syntax error in text (mermaid version
 #   11.16.0)" bomb 로 간헐 깨지는 현상. 근본 원인은 문법 오류가 아니라 **런타임 drift**:
 #   페이지가 제각각(esm@11 / umd@10 / umd@11 / esm@10)으로 mermaid 를 로드하고, 특히
