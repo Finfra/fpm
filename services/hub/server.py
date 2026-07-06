@@ -5338,6 +5338,8 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         except FileNotFoundError:
             self._send_json(404, {"error": "file not found"})
             return
+        # Issue255: 상대 <img src> → /htm-res 재작성 (registry 모드)
+        body = _rewrite_relative_imgs(body, abs_path)
         # Issue244: mermaid 런타임을 서버 표준(pinned UMD + run())으로 정규화 — esm race bomb 제거.
         body = _normalize_mermaid_runtime(body)
         # Issue216: 닫기 버튼이 쉘 탭을 닫도록 window.close override 쉼 주입.
@@ -5419,6 +5421,11 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         #   iframe 안에서 열리므로 닫기 버튼의 window.close() 가 no-op 였다(간헐적 닫기 실패의
         #   원인 — 탭이 /htm-doc 경로로 열리면 닫히고 /view 경로면 안 닫힘). _handle_htm_doc 와
         #   동일하게 CLOSE_SHIM(닫기 정상화) + COPY_LINK_SHIM(🔗 링크 복사) 주입.
+        # Issue255: 상대 <img src> → /htm-res 재작성 (cwd+token 모드)
+        from urllib.parse import quote as _q255
+        body = _rewrite_relative_imgs(
+            body, abs_path,
+            extra_query=f"cwd={_q255(cwd, safe='')}&token={_q255(token, safe='')}")
         # Issue244: mermaid 런타임 정규화(esm race bomb 제거) — htm-doc 경로와 동일.
         body = _normalize_mermaid_runtime(body)
         body = _inject_before_body_end(body, CLOSE_SHIM)
