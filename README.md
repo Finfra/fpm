@@ -44,7 +44,7 @@ fpm update    # pull latest + refresh SCAR plugin
 
 🎬 **Project walkthrough video** — a full overview of fpm in action:
 
-<video src="https://finfra.kr/mp4/00-fpm-overview.mp4" controls width="820"></video>
+https://github.com/user-attachments/assets/6b9be22c-3f56-4c9c-a920-a7c8635e10cb
 
 > If the player above does not appear, watch it directly here: [00-fpm-overview.mp4](https://finfra.kr/mp4/00-fpm-overview.mp4)
 
