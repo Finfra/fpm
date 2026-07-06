@@ -17,7 +17,6 @@ date: 2026-03-26
     - `1` → `~/_git/___pm` (이 저장소 자체)
     - `2` → `~/_doc` (옵시디언 볼트)
     - `3` → `~/.claude`
-    - `11`~`16` → macOS App(fApp) 관리 대상 프로젝트 경로
     - `51`~`57` → CLI / 라이브러리
     - **자동 생성** — `Projects.md`(SSOT) 편집 후 `fpm-projects-sync` 실행으로 재생성 (직접 편집 금지)
 * `sh/` - 셸 도구 (공개 미러 대상, 단일 SSOT 설치 페이로드 — Issue149). 구 `shell/fpm-functions.zsh` 중복 제거. 머신별 생성물 `fpm_aliases_iterm-bg.sh` 만 gitignored. **설치 위치 무관(`$FPM_BASE` 기반) — `~/_git/___pm`·`~/_git/__all/fpm` 등 어디에 두든 동작**
@@ -57,21 +56,14 @@ date: 2026-03-26
 
 # Claude Code 커맨드 (`.claude/commands/`)
 
-fApp(macOS 앱 11~16) 일괄 관리용 커맨드:
+범용 커맨드:
 
 | 커맨드                               | 설명                                          |
 | :----------------------------------- | --------------------------------------------- |
-| `cdf-fapp-ma`                        | ma에서 fApp tmux 세션 생성                   |
-| `fapp-build`                         | fApp 프로젝트 일괄 `/build` 실행              |
-| `fapp-run` / `fapp-run-ma`           | fApp 프로젝트 일괄 실행 (로컬/ma)            |
-| `fapp-kill` / `fapp-kill-ma`         | fApp 프로세스 일괄 종료 (로컬/ma)            |
-| `fapp-pull` / `fapp-pull-ma`         | fApp 프로젝트 일괄 pull (로컬/ma)            |
-| `fapp-push`                          | fApp 프로젝트 일괄 push                       |
-| `fapp-capture` / `fapp-capture-ma`   | fApp 프로젝트 일괄 `/capture` 실행 (로컬/ma) |
-| `fapp-restart`                       | fApp 프로세스 종료 후 재실행                   |
 | `cdf`                                | tmux pm 세션 범용 관리 (window/pane 생성·명령전달) |
-| `cdf-fapp`                           | fApp 기본값 설정 후 `/cdf` 위임                |
-| `sync-jma`                           | jm4 ↔ jma 양방향 rsync 동기화(git 미사용). target(social/data/fapp/public/all) + direction(push/pull). prj 4,9,11~16,25,26 |
+| `sync-jma`                           | jm4 ↔ jma 양방향 rsync 동기화(git 미사용). target + direction(push/pull) |
+
+
 
 프로젝트 관리 커맨드 (글로벌 `~/.claude/commands/`):
 
@@ -87,16 +79,8 @@ fApp(macOS 앱 11~16) 일괄 관리용 커맨드:
 
 | 스킬                    | 설명                                                                          |
 | :---------------------- | :---------------------------------------------------------------------------- |
-| `sync-ma`               | jm4 → ma 동기화 통합 스킬 (인자: `claude`/`pm`/`fapp`/`all`, 기본값: `all`) |
 | `pm`                    | 프로젝트 관리 스킬 (pm-new, pm-del, pm-update, pm-query 공통 로직)            |
 
-# Claude Code 에이전트 (`.claude/agents/`)
-
-서브에이전트를 생성·관리하는 오케스트레이터:
-
-| 에이전트              | 설명                                                        |
-| :-------------------- | :---------------------------------------------------------- |
-| `fapp-parallel`  | fApp 6개 프로젝트에 팀을 구성하여 커맨드를 병렬 실행·리포트 |
 
 # 프로젝트 추가/변경
 
