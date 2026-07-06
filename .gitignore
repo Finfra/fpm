@@ -41,3 +41,8 @@ data/hub/*.json
 
 # Playwright MCP 진단 부산물 (콘솔/스냅샷 캡처)
 .playwright-mcp/
+
+# 에디터·다이어그램 로컬 산출물
+.vscode/
+.excalidraw/
+*.excalidraw
