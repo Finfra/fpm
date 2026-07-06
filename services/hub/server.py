@@ -2465,7 +2465,44 @@ class Handler(BaseHTTPRequestHandler):
         h = cwd_hash(cwd)
         sent = sse_broadcast(h, "reload", body)
         log(f"POST /notify — broadcast (hash={h}, file={body.get('file', body.get('path', '?'))}, clients={sent})")
+        # Issue254: dash 산출물 auto-register — 생산자(runner)가 /register-doc 를 호출하지
+        #   않는 사각(dash 는 htm 과 달리 자동 등록 경로 전무) 보강. notify 는 data 갱신마다
+        #   발화하므로 이미 등록된 path 는 skip(매회 registry 재기록 금지).
+        nfile = (body.get("file") or body.get("path") or "").strip()
+        if nfile.endswith((".dash.yaml", ".dash.yml", ".dash.json")):
+            self._auto_register_dash(cwd, nfile)
         self._send_json(200, {"status": "broadcast", "clients": sent})
+
+    def _auto_register_dash(self, cwd: str, file_path: str):
+        """Issue254: /notify 경유 dash 파일을 dash-registry 에 자동 등록.
+
+        - 이미 등록된 path → no-op (notify heartbeat 마다 registry 재기록 방지)
+        - DASH_CLEARED tombstone path → no-op (Issue54 의미 보존 — 자동 경로는 clear 를
+          부활시키지 않는다. 해제는 생산자의 명시 /register-doc 전용)
+        - serve-root confinement 는 /register-doc dash 분기와 동일 기준 (밖이면 skip —
+          notify 본 기능(broadcast)은 이미 수행됐으므로 fail-soft)"""
+        if not file_path.startswith("/"):
+            file_path = os.path.join(cwd, file_path)
+        path_real = os.path.realpath(os.path.expanduser(file_path))
+        if not os.path.isfile(path_real):
+            return
+        if not path_within_serve_roots(path_real, os.path.realpath(cwd)):
+            log(f"notify dash auto-register skip — outside serve-root: {path_real}")
+            return
+        with registry_lock:
+            entries = load_registry(DASH_REGISTRY)
+            if any(e.get("path") == path_real for e in entries):
+                return
+            if path_real in set(load_registry(DASH_CLEARED)):
+                return
+            meta = self._read_dash_file(path_real) or {}
+            entries.append({
+                "path": path_real, "cwd": cwd,
+                "title": meta.get("title") or "",
+                "registered_at": time.time(),
+            })
+            save_registry(DASH_REGISTRY, entries)
+        log(f"notify dash auto-register — path={path_real} (registry={len(entries)})")
 
     def _read_dash_file(self, abs_path: str):
         """Issue41: 등록된 단일 dash 파일을 읽어 메타(mtime/title/status/progress/pid) 추출.
