@@ -207,6 +207,33 @@ else
     sec "── SCAR 점검 생략 (--no-scar) ──"
 fi
 
+# ── 10b. hook 이중 등록 가드 (Issue241) ───────────────────────────────────────
+#   배경: fpm hook 은 두 경로로 등록됨 — (a) ~/.claude/settings.json 수동 블록(원작자 환경),
+#   (b) fpm-core 플러그인 hooks/hooks.json(배포 표준). Claude Code 는 두 소스를 dedup 없이
+#   합집합 머지하므로 둘 다 활성이면 동일 hook 이 한 이벤트에 2회 실행됨(알림 중복·HTML 2회 렌더).
+#   claude CLI·repo 무관 — 설치 상태 파일(settings.json/installed_plugins.json)을 직독하는 진단.
+sec "── hook 이중 등록 가드 ──"
+SETTINGS_FILE="$HOME/.claude/settings.json"
+INSTALLED_FILE="$HOME/.claude/plugins/installed_plugins.json"
+manual_hooks=0
+if [[ -f "$SETTINGS_FILE" ]]; then
+    manual_hooks="$(grep -cF '.claude/hooks/fpm-' "$SETTINGS_FILE" 2>/dev/null || true)"
+    manual_hooks="${manual_hooks:-0}"
+fi
+plugin_active=0
+if [[ -f "$INSTALLED_FILE" ]] && grep -qF "\"$FPM_PLUGIN_NAME@" "$INSTALLED_FILE" 2>/dev/null; then
+    plugin_active=1
+fi
+if [[ "$manual_hooks" -gt 0 && "$plugin_active" -eq 1 ]]; then
+    fail "hook 이중 등록: settings.json 수동 fpm hook ${manual_hooks}개 + $FPM_PLUGIN_NAME 플러그인 동시 활성 → 동일 hook 2회 실행. 한쪽만 유지 (플러그인 단일화 권장: settings.json 의 fpm hook 블록 삭제)"
+elif [[ "$manual_hooks" -gt 0 ]]; then
+    ok "hook 단일 등록: settings.json 수동 ${manual_hooks}개 (플러그인 미설치 — 이중 등록 없음)"
+elif [[ "$plugin_active" -eq 1 ]]; then
+    ok "hook 단일 등록: $FPM_PLUGIN_NAME 플러그인 (수동 settings 블록 없음 — 이중 등록 없음)"
+else
+    warn "fpm hook 미등록: settings.json 수동 블록·$FPM_PLUGIN_NAME 플러그인 모두 없음 (hub/dashboard hook 비활성)"
+fi
+
 # ── 11. flat_file 페이로드 drift (선언 ↔ 디스크 양방향, Issue240_3) ─────────
 #   원격 ~/.claude 플랫파일 배포 인벤토리(FPM_FLATFILE_FILES) ↔ 실제 소스 디렉토리 대조.
 #   claude CLI 무관·--no-scar 무관(repo 무결성). 소스 디렉토리 부재면 skip.
