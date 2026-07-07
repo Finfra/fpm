@@ -577,9 +577,56 @@ MERMAID_RUNTIME = (
 )
 
 
+# Issue256: a모드 htm 이 mermaid 를 `<div class="mermaid-box"><pre><code>flowchart…`
+#   (코드펜스 산출물)로 저작하면 `class="mermaid"` 게이트를 통과 못 해 런타임이 주입되지
+#   않고 소스 평문으로 노출됨. Issue244 철학(서버가 단일 권위로 결정적 렌더)을 연장하여,
+#   저작 실수와 무관하게 서버가 코드펜스 mermaid 를 `<pre class="mermaid">` 로 재작성한다.
+#   첫 유의미 라인이 mermaid 다이어그램 키워드일 때만 변환(non-mermaid 코드블록 false-positive 억제).
+_MERMAID_KEYWORDS = (
+    "sequenceDiagram", "classDiagram", "stateDiagram-v2", "stateDiagram",
+    "erDiagram", "flowchart", "graph", "journey", "gantt", "pie",
+    "gitGraph", "mindmap", "timeline", "quadrantChart", "requirementDiagram",
+    "C4Context", "sankey-beta", "xychart-beta", "block-beta",
+)
+_CODEBLOCK_RE = re.compile(
+    rb"<pre\b[^>]*>\s*<code\b[^>]*>(.*?)</code>\s*</pre>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _looks_like_mermaid(inner_text: str) -> bool:
+    for line in inner_text.splitlines():
+        t = line.strip()
+        if not t or t.startswith("%%"):  # 공백·directive/comment 스킵
+            continue
+        first = t.split(None, 1)[0]
+        return any(first == k or first.startswith(k) for k in _MERMAID_KEYWORDS)
+    return False
+
+
+def _rewrite_mermaid_codeblocks(body: bytes) -> bytes:
+    r"""`<pre><code>` 로 저작된 mermaid 코드펜스를 `<pre class="mermaid">` 로 재작성.
+    엔티티(`&gt;`·`&lt;`)는 유지 — 브라우저 textContent 가 `-->`·`<` 로 자동 복원해
+    mermaid.run() 이 올바로 파싱함. 단 라벨 줄바꿈 의도의 리터럴 `\n` 은 `&lt;br/&gt;`
+    (textContent = `<br/>`)로 치환해 노드 라벨이 줄바꿈되게 한다."""
+    import html as _html
+
+    def _sub(m):
+        inner = m.group(1)
+        text = _html.unescape(inner.decode("utf-8", "replace"))
+        if not _looks_like_mermaid(text):
+            return m.group(0)
+        rewritten = inner.replace(rb"\n", b"&lt;br/&gt;")
+        return b'<pre class="mermaid">' + rewritten + b"</pre>"
+
+    return _CODEBLOCK_RE.sub(_sub, body)
+
+
 def _normalize_mermaid_runtime(body: bytes) -> bytes:
     """페이지 저작 mermaid <script>(esm/umd·버전 제각각)를 제거하고 서버 표준
-    pinned UMD 런타임으로 치환. `class="mermaid"` 블록이 있을 때만 동작."""
+    pinned UMD 런타임으로 치환. 코드펜스 저작(`<pre><code>`)은 먼저 `class="mermaid"`
+    로 재작성(Issue256) 후 처리. `class="mermaid"` 블록이 있을 때만 런타임 주입."""
+    body = _rewrite_mermaid_codeblocks(body)
     if b'class="mermaid"' not in body:
         return body
 
