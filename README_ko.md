@@ -44,7 +44,7 @@ fpm update    # 최신 pull + SCAR 플러그인 갱신
 
 🎬 **프로젝트 시연 영상** — fpm의 전체 동작을 담은 개요 영상:
 
-<video src="https://finfra.kr/mp4/00-fpm-overview.mp4" controls width="820"></video>
+https://github.com/user-attachments/assets/6b9be22c-3f56-4c9c-a920-a7c8635e10cb
 
 > 위 플레이어가 보이지 않으면 여기서 직접 재생: [00-fpm-overview.mp4](https://finfra.kr/mp4/00-fpm-overview.mp4)
 
