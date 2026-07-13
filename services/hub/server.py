@@ -2223,6 +2223,151 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
+# --- Issue280: 세션 GC (세션·터미널 pane 강제 종료) ---------------------------
+# 가비지 세션(VSCode 터미널·tmux·iTerm 에 잔존)의 수동 GC. 핵심 설계:
+#   - register(live) 시점에 컨테이너 메타(gc_meta)를 캡처 — claude 사후에도
+#     shell/tmux pane 정리 가능 (죽은 뒤엔 ppid·pane 역추적 불가).
+#   - kill 대상은 sessions entry 의 live_pid·gc_meta 만 (body pid 수신 금지, Issue86 패턴).
+#   - kill 직전 comm 대조로 pid 재사용 오살 차단 (_gc_guard).
+
+def _ps_ppid(pid: int):
+    """pid 의 부모 pid. 실패 시 None."""
+    try:
+        r = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)],
+                           capture_output=True, text=True, timeout=3)
+        v = r.stdout.strip()
+        return int(v) if v else None
+    except Exception:
+        return None
+
+
+def _ps_comm(pid: int):
+    """pid 의 실행 커맨드명(comm). 실패 시 None."""
+    try:
+        r = subprocess.run(["ps", "-o", "comm=", "-p", str(pid)],
+                           capture_output=True, text=True, timeout=3)
+        v = r.stdout.strip()
+        return v or None
+    except Exception:
+        return None
+
+
+def _tmux_pane_for_pids(pids_set: set):
+    """후보 pid 집합이 tmux pane 루트 프로세스(pane_pid)와 일치하면 pane_id 반환.
+    tmux 미설치·서버 미가동·비매칭 → None."""
+    try:
+        r = subprocess.run(["tmux", "list-panes", "-a", "-F", "#{pane_pid} #{pane_id}"],
+                           capture_output=True, text=True, timeout=3)
+        if r.returncode != 0:
+            return None
+        for line in r.stdout.splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[0].isdigit() and int(parts[0]) in pids_set:
+                return parts[1]
+    except Exception:
+        pass
+    return None
+
+
+def _capture_gc_meta(pid: int) -> dict:
+    """register(live) 수신 시점(프로세스 생존 중) 컨테이너 메타 캡처.
+    shell_cmd 는 kill 시점 pid 재사용 대조용 스냅샷."""
+    meta = {"for_pid": pid, "captured": time.time(),
+            "shell_pid": None, "shell_cmd": None, "tmux_pane": None}
+    sp = _ps_ppid(pid)
+    if sp and sp > 1:
+        meta["shell_pid"] = sp
+        meta["shell_cmd"] = _ps_comm(sp)
+    cand = {pid}
+    if meta["shell_pid"]:
+        cand.add(meta["shell_pid"])
+    meta["tmux_pane"] = _tmux_pane_for_pids(cand)
+    return meta
+
+
+def _gc_plan(entry: dict) -> list:
+    """GC escalation 단계 계획 (순수 — 실행 없음). 순서 고정:
+    ① tmux pane kill(pane 통째 GC) ② claude pid ③ 부모 shell.
+    ①이 성공하면 ②③은 실행 단계에서 already-dead 로 수렴."""
+    steps = []
+    meta = entry.get("gc_meta") or {}
+    live_pid = entry.get("live_pid")
+    if meta.get("tmux_pane"):
+        steps.append({"kind": "tmux-kill-pane", "target": meta["tmux_pane"]})
+    if live_pid:
+        steps.append({"kind": "kill-claude", "pid": int(live_pid)})
+    if meta.get("shell_pid"):
+        steps.append({"kind": "kill-shell", "pid": int(meta["shell_pid"]),
+                      "expect_cmd": meta.get("shell_cmd")})
+    return steps
+
+
+def _gc_guard(kind: str, pid: int, expect_cmd, comm, server_pid: int):
+    """kill 직전 가드 판정 (순수). 통과 None, 차단 시 사유 문자열.
+    - pid ≤ 1·hub 자신 방어
+    - kill-claude: comm 에 claude 포함 또는 node/bun (pid 재사용 차단)
+    - kill-shell: 캡처 시점 shell_cmd 와 현재 comm 일치 요구"""
+    if not pid or pid <= 1 or pid == server_pid:
+        return "invalid/self pid"
+    if kind == "kill-claude":
+        c = (comm or "").lower()
+        if "claude" not in c and os.path.basename(c) not in ("node", "bun"):
+            return f"comm mismatch: {comm!r}"
+    elif kind == "kill-shell":
+        if expect_cmd and comm != expect_cmd:
+            return f"comm mismatch: {comm!r} != {expect_cmd!r}"
+    return None
+
+
+def _gc_execute(steps: list) -> list:
+    """GC plan 실행. 단계별 결과 리스트 반환 (분석 레코드에 그대로 저장).
+    signal 단계: SIGTERM → 2s poll → SIGKILL → 1s poll."""
+    stages = []
+    server_pid = os.getpid()
+    for st in steps:
+        kind = st["kind"]
+        if kind == "tmux-kill-pane":
+            try:
+                r = subprocess.run(["tmux", "kill-pane", "-t", st["target"]],
+                                   capture_output=True, text=True, timeout=5)
+                ok = r.returncode == 0
+                err = (r.stderr or "").strip() or None
+            except Exception as ex:
+                ok, err = False, str(ex)
+            stages.append({"step": kind, "target": st["target"], "ok": ok, "err": err})
+            if ok:
+                time.sleep(0.3)  # pane 하위 프로세스 사망 대기 → 후속 단계 already-dead 수렴
+            continue
+        pid = int(st.get("pid") or 0)
+        if pid > 1 and not _pid_alive(pid):
+            stages.append({"step": kind, "pid": pid, "ok": True, "note": "already dead"})
+            continue
+        reason = _gc_guard(kind, pid, st.get("expect_cmd"), _ps_comm(pid), server_pid)
+        if reason:
+            stages.append({"step": kind, "pid": pid, "ok": False, "note": "guard skip: " + reason})
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError as ex:
+            stages.append({"step": kind, "pid": pid, "ok": False, "note": f"SIGTERM failed: {ex}"})
+            continue
+        deadline = time.time() + 2.0
+        while time.time() < deadline and _pid_alive(pid):
+            time.sleep(0.2)
+        sig_used = "SIGTERM"
+        if _pid_alive(pid):
+            try:
+                os.kill(pid, signal.SIGKILL)
+                sig_used = "SIGKILL"
+            except OSError:
+                pass
+            deadline = time.time() + 1.0
+            while time.time() < deadline and _pid_alive(pid):
+                time.sleep(0.1)
+        stages.append({"step": kind, "pid": pid, "ok": not _pid_alive(pid), "signal": sig_used})
+    return stages
+
+
 def persist_pids() -> None:
     """Issue63: pids dict(runner PID 등록분)를 pids.json 에 atomic flush.
     종전 sessions 만 영속되고 pids 가 휘발 → 서버 재시작 시 복원 세션의 /control 이
@@ -6701,9 +6846,20 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
                 if reg_ctype == "live":
                     entry["content_type"] = "live"
             # Issue98: live 메타 기록 (pid·label) — register/heartbeat 마다 갱신.
+            need_gc_meta = False
             if reg_ctype == "live":
                 entry["live_pid"] = live_pid
                 entry["live_label"] = live_label
+                # Issue280: 컨테이너 메타는 pid 당 1회 캡처 (heartbeat 마다 ps/tmux 재실행 방지)
+                gm = entry.get("gc_meta")
+                need_gc_meta = not gm or gm.get("for_pid") != live_pid
+        if need_gc_meta:
+            # Issue280: subprocess 호출은 sessions_lock 밖에서 — 캡처 후 재획득 저장
+            gm = _capture_gc_meta(live_pid)
+            with sessions_lock:
+                e2 = sessions.get((h, sid))
+                if e2 is not None:
+                    e2["gc_meta"] = gm
         persist_sessions()
         url = f"http://{HOST}:{PORT}/s/{h}/{sid}?token={token}"
         # Issue21: SSE subscriber 수 회신 → 클라이언트 hook 이 first_open 정확 판정
@@ -6896,12 +7052,16 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
                     content_out = tr
                     ctype_out = "response"
                     mode_out = "A"
+            gm = entry.get("gc_meta") or {}
             self._send_json(200, {
                 "content_type": ctype_out,
                 "content": content_out,
                 "mode": mode_out,
                 "updated": entry.get("updated", 0),
                 "capabilities": entry.get("capabilities", {}),
+                # Issue280: GC 버튼 활성 판정 — kill 대상 정보 보유 여부
+                "can_gc": bool(entry.get("live_pid") or gm.get("shell_pid")
+                               or gm.get("tmux_pane")),
             })
             return
         # SPA shell HTML serve
@@ -7067,8 +7227,12 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             self._send_json(400, {"error": err})
             return
         action_type = body.get("action_type")
-        if action_type not in ("notify", "link", "control"):
+        if action_type not in ("notify", "link", "control", "terminate"):
             self._send_json(400, {"error": f"invalid action_type: {action_type!r}"})
+            return
+        # Issue280: terminate = 세션 GC — 서버가 직접 kill 체인 실행
+        if action_type == "terminate":
+            self._handle_session_terminate(cwd_h, sid, body, p)
             return
         # link/control 은 클라이언트 측에서 처리, server 는 notify 인 경우에만 inbox 저장
         if action_type != "notify":
@@ -7092,6 +7256,62 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             json.dump(record, f, ensure_ascii=False, indent=2)
         log(f"POST /s/{cwd_h}/{sid}/action — saved {out_path}")
         self._send_json(200, {"ok": True, "path": out_path, "ts": ts})
+
+    def _handle_session_terminate(self, cwd_h: str, sid: str, body: dict, proj: dict):
+        """Issue280: 세션 GC — /s/{h}/{sid}/action action_type=terminate.
+        kill 대상은 sessions entry 의 live_pid·gc_meta 만 (body pid 수신 금지).
+        message 는 실전달 없이 레코드로만 저장 (향후 분석용).
+        절차: plan → execute → 분석 로그(JSONL)+inbox 레코드 → tombstone·prune → SSE."""
+        with sessions_lock:
+            entry = sessions.get((cwd_h, sid))
+            snap = dict(entry) if entry else None
+        if not snap:
+            self._send_json(404, {"error": "session not registered"})
+            return
+        steps = _gc_plan(snap)
+        if not steps:
+            self._send_json(409, {"error": "no GC target — live_pid/gc_meta 미등록 세션"})
+            return
+        message = str(body.get("message", "") or "")[:2000]
+        stages = _gc_execute(steps)
+        ok_any = any(s.get("ok") for s in stages)
+        method = ("tmux-pane" if any(s["step"] == "tmux-kill-pane" and s.get("ok")
+                                     for s in stages) else "signal")
+        ts = int(time.time() * 1000)
+        record = {
+            "ts": ts, "cwd_hash": cwd_h, "sid": sid, "cwd": proj.get("cwd", ""),
+            "live_pid": snap.get("live_pid"), "gc_meta": snap.get("gc_meta"),
+            "method": method, "ok": ok_any, "stages": stages, "message": message,
+            "client": self.client_address[0] if self.client_address else None,
+        }
+        # 분석용 GC 로그 (JSONL append — server.log 와 동일 STATE_DIR)
+        try:
+            os.makedirs(STATE_DIR, exist_ok=True)
+            with open(f"{STATE_DIR}/session-gc.jsonl", "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception as ex:
+            log(f"session-gc.jsonl append 실패: {ex}", "WARNING")
+        # inbox terminate 레코드 — 세션이 아직 폴링 중이면 회수 가능 + 분석 원천
+        try:
+            inbox = f"{INBOX_ROOT}/{cwd_h}/{sid}"
+            os.makedirs(inbox, exist_ok=True)
+            with open(f"{inbox}/action-{ts}.json", "w", encoding="utf-8") as f:
+                json.dump({"sid": sid, "ts": ts, "source": "session_action",
+                           "action_type": "terminate", "message": message,
+                           "method": method, "stages": stages},
+                          f, ensure_ascii=False, indent=2)
+        except Exception as ex:
+            log(f"terminate inbox 레코드 실패: {ex}", "WARNING")
+        # tombstone + prune — 활성 카드 즉시 소멸·heartbeat 재등록 부활 차단 (Issue135 재사용)
+        with sessions_lock:
+            pruned = sessions.pop((cwd_h, sid), None) is not None
+        _live_dismiss_add(cwd_h, sid)
+        if pruned:
+            persist_sessions()
+        sse_broadcast(cwd_h, "session_terminated", {"sid": sid, "method": method}, sid=sid)
+        log(f"POST /s/{cwd_h}/{sid}/action terminate — ok={ok_any} method={method} "
+            f"stages={len(stages)}")
+        self._send_json(200, {"ok": ok_any, "method": method, "stages": stages, "ts": ts})
 
     def _handle_session_preview(self, parsed):
         """Issue29 Phase 6: POST /session/preview?cwd=&token= body={content_type, content}.
@@ -9242,6 +9462,12 @@ header.sess { background: {COLOR}; color: #1a1a1a; padding: 0.8rem 1.5rem; displ
 header.sess h1 { margin: 0; font-size: 1rem; }
 header.sess h1 code { color: var(--fg); background: rgba(255,255,255,0.92); padding: 0.05rem 0.35rem; border-radius: 3px; }
 header.sess .meta { font-size: 0.8em; opacity: 0.9; }
+/* Issue280: 세션 GC 버튼 (헤더+푸터 공용) */
+.gc-btn { background: #c33; color: #fff; border: 1px solid #a22; border-radius: 6px; padding: 0.25rem 0.7rem; cursor: pointer; font-size: 0.85rem; white-space: nowrap; }
+.gc-btn:hover { background: #a22; }
+.gc-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+header.sess .hdr-right { display: flex; align-items: center; gap: 0.6rem; }
+footer.sess-foot { padding: 0.8rem 1.5rem 1.4rem; display: flex; justify-content: flex-end; }
 .status { padding: 0.3rem 1.5rem; font-size: 0.8em; color: var(--muted); border-bottom: 1px solid var(--border); }
 .status.connected { color: var(--accent); }
 .status.polling { color: #d80; }
@@ -9373,9 +9599,10 @@ main#content th { background: var(--code-bg); }
 </style>
 </head>
 <body>
-<header class="sess"><h1>📁 {NAME} — session <code>{SID}</code></h1><span class="meta">mode <span id="mode-tag">?</span></span></header>
+<header class="sess"><h1>📁 {NAME} — session <code>{SID}</code></h1><span class="hdr-right"><span class="meta">mode <span id="mode-tag">?</span></span><button class="gc-btn" data-gc title="세션 GC — 세션·터미널 pane 강제 종료">🗑 세션 GC</button></span></header>
 <div class="status" id="status">초기 로드 중...</div>
 <main id="content"><em>대기 중...</em></main>
+<footer class="sess-foot"><button class="gc-btn" data-gc title="세션 GC — 세션·터미널 pane 강제 종료">🗑 세션 GC</button></footer>
 <script>
 const CWD_HASH = "{CWD_HASH}";
 const SID = "{SID}";
@@ -9434,6 +9661,8 @@ async function reload(force) {
       return;
     }
     lastSig = sig;
+    // Issue280: GC 대상 정보(live_pid/gc_meta) 없는 구세션은 버튼 비활성
+    if (typeof d.can_gc !== 'undefined') setGcEnabled(!!d.can_gc);
     modeEl.textContent = d.mode || '?';
     if (d.mode === 'A') {
       contentEl.innerHTML = d.content || '<em>(빈 응답)</em>';
@@ -9496,6 +9725,12 @@ function openSSE() {
     es = new EventSource(SSE_URL);
     es.addEventListener('reload', () => reload(true));
     es.addEventListener('session_update', () => reload(true));
+    // Issue280: 다른 탭/hub 에서 이 세션이 GC 되면 즉시 terminated 표시
+    es.addEventListener('session_terminated', ev => {
+      let m = '';
+      try { m = (JSON.parse(ev.data) || {}).method || ''; } catch (e) {}
+      markTerminated(m);
+    });
     es.onopen = () => { setStatus('connected', 'SSE 연결됨'); stopPolling(); };
     es.onerror = () => { setStatus('error', 'SSE error — reconnect 대기'); startPolling(); };
   } catch (e) {
@@ -9562,6 +9797,46 @@ function tickTimers() {
   });
 }
 setInterval(tickTimers, 1000);
+// Issue280: 세션 GC 버튼 — action_type=terminate POST. GC 주목적(가비지 세션·pane 정리),
+//   memo 는 실전달 없이 서버 레코드(session-gc.jsonl·inbox)로만 저장(향후 분석용).
+let gcDone = false;
+function setGcEnabled(on) {
+  if (gcDone) return;
+  document.querySelectorAll('[data-gc]').forEach(b => {
+    b.disabled = !on;
+    b.title = on ? '세션 GC — 세션·터미널 pane 강제 종료'
+                 : 'GC 대상 정보 없음 (live_pid/gc_meta 미등록 구세션)';
+  });
+}
+function resetGcButtons() {
+  document.querySelectorAll('[data-gc]').forEach(b => { b.disabled = false; b.textContent = '🗑 세션 GC'; });
+}
+function markTerminated(method) {
+  gcDone = true;
+  document.querySelectorAll('[data-gc]').forEach(b => { b.disabled = true; b.textContent = '☠️ terminated'; });
+  setStatus('error', '☠️ 세션 종료됨' + (method ? ' (' + method + ')' : ''));
+  closeSSE(); stopPolling();
+}
+function gcSession() {
+  if (gcDone) return;
+  if (!window.confirm('이 세션과 터미널 pane 을 강제 종료(GC)할까요?\n' + NAME_LABEL)) return;
+  const memo = window.prompt('종료 메모 (선택 — 분석용 기록)', '') || '';
+  document.querySelectorAll('[data-gc]').forEach(b => { b.disabled = true; b.textContent = '⏳ GC 중...'; });
+  fetch(ACTION_URL, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({action_type: 'terminate', message: memo})
+  }).then(r => r.json().then(j => ({httpOk: r.ok, j})))
+    .then(({httpOk, j}) => {
+      if (httpOk && j.ok) { markTerminated(j.method); }
+      else { alert('GC 실패: ' + (j.error || JSON.stringify(j))); resetGcButtons(); }
+    })
+    .catch(e => { alert('GC 요청 실패: ' + e); resetGcButtons(); });
+}
+if (PREVIEW) {
+  document.querySelectorAll('[data-gc]').forEach(b => { b.style.display = 'none'; });
+} else {
+  document.querySelectorAll('[data-gc]').forEach(b => b.addEventListener('click', gcSession));
+}
 </script>
 </body>
 </html>
