@@ -1,11 +1,11 @@
 ---
 title: git
-description: Git 작업(status, add, commit, push) 및 Save Point 검증을 수행합니다.
+description: Git 작업(status, add, commit, push) 및 checkpoint 검증을 수행합니다.
 ---
 
 # Git Skill (Git 작업 스킬)
 
-이 스킬은 Git 워크플로우를 단순화하고 자동화합니다. 단순한 명령어 실행뿐만 아니라, **Save Point(이슈 파일의 최신 커밋 해시 기록)** 검증 로직을 포함하여 안전한 푸시를 보장합니다.
+이 스킬은 Git 워크플로우를 단순화하고 자동화합니다. 단순한 명령어 실행뿐만 아니라, **checkpoint(이슈 파일의 최신 커밋 해시 기록)** 검증 로직을 포함하여 안전한 푸시를 보장합니다.
 
 ## 안전 가드 (Safety Guard)
 
@@ -19,7 +19,7 @@ description: Git 작업(status, add, commit, push) 및 Save Point 검증을 수�
 
 ## 필수 조건 (Prerequisites)
 - `git` 명령어가 설치되어 있어야 함.
-- 프로젝트 루트에 `Issue.md` 파일이 존재해야 함 (Save Point 검증용).
+- 프로젝트 루트에 `Issue.md` 파일이 존재해야 함 (checkpoint 검증용).
 
 ## 사용법 (Usage)
 
@@ -38,7 +38,7 @@ sh ~/.claude/skills/git/scripts/git_wrapper.sh add [파일경로]
 # 3. 커밋
 sh ~/.claude/skills/git/scripts/git_wrapper.sh commit "메시지 내용"
 
-# 4. 푸시 (Save Point 검증 포함)
+# 4. 푸시 (checkpoint 검증 포함)
 sh ~/.claude/skills/git/scripts/git_wrapper.sh push
 
 # 5. 일괄 처리 (Auto: Status -> Add -> Commit -> Push)
@@ -50,6 +50,6 @@ sh ~/.claude/skills/git/scripts/git_wrapper.sh auto "메시지 내용"
 - **Add**: `git add` 실행 (인자 없으면 `.` 사용).
 - **Commit**: `git commit -m` 실행. 메시지 없으면 에러 또는 `-v` 모드 진입.
 - **Push**:
-    - `Issue.md`에 기록된 마지막 Save Point(Commit Hash)가 현재 HEAD와 일치하는지 확인.
+    - `Issue.md`에 기록된 마지막 checkpoint(Commit Hash)가 현재 HEAD와 일치하는지 확인.
     - 일치하지 않으면 경고 메시지 출력 (강제 푸시 옵션 없음, 사용자가 직접 해결 권장).
     - 검증 통과 시 `git push` 실행.

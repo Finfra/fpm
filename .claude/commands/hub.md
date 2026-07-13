@@ -6,7 +6,14 @@ date: 2026-05-19
 
 # 트리거
 
-`/hub <subcmd>` — `<subcmd>`: `start`, `stop`, `restart`, `status`, `disable`, `enable`, `clear`, `reset`
+`/hub <subcmd>` — 서버 lifecycle `<subcmd>`: `start`, `stop`, `restart`, `status`, `disable`, `enable`, `clear`, `reset`
+
+> **⚠️ 토글 vs 서버 구분 (Issue200)**: `/hub on|off [all]` 은 본 커맨드가 아니라 글로벌 hook(`fpm-hub-trigger.sh`)이 처리하는 **자동 렌더 토글**이다 (서버 프로세스와 무관).
+> * `/hub on` / `/hub off` = **프로젝트 단위**(현재 cwd) 자동 렌더 토글
+> * `/hub on all` / `/hub off all` = **시스템 단위**(모든 프로젝트) 토글
+> * `/hub start` / `/hub stop` / `restart` / … = **서버 프로세스**(port 9876) lifecycle — 본 커맨드. 토글 아님.
+>
+> 즉 `on/off` = 렌더 토글, `start/stop` = 서버 제어. 인자가 겹치지 않도록 분리됨.
 
 # 동작 모델
 
@@ -253,7 +260,7 @@ curl -s http://127.0.0.1:9876/healthz
 
 * 글로벌 `/fpm-hub-server` 와 동일 서버 lifecycle 제어 (Issue190 통합). 본 커맨드는 ___pm 컨텍스트 짧은 별칭. **launchd-aware 동작은 글로벌 wrapper 에도 동기화 필요** (별도 이슈)
 * 서버 down 시 dashboard agent (Mode C) + htm 스킬 Q&A 회수 (Issue45) 양쪽 모두 fail-loud
-* `..hub stop`/`..hub off`(트리거 hook) 는 **이 커맨드와 무관** — 그건 폴더/시스템 단위 자동 렌더 토글(상태 파일)일 뿐 서버를 멈추지 않는다. 서버 프로세스 정지는 본 커맨드(`/hub stop`·`/hub disable`)만 수행한다.
+* `..hub off`(프로젝트)/`..hub off all`(시스템)(트리거 hook, Issue200) 는 **이 커맨드와 무관** — 그건 폴더/시스템 단위 자동 렌더 토글(상태 파일)일 뿐 서버를 멈추지 않는다. 서버 프로세스 정지는 본 커맨드(`/hub stop`·`/hub disable`)만 수행한다. (`..hub stop`/`..hub start` 는 `..hub off`/`..hub on` 의 deprecated alias)
 
 ## 서브커맨드 요약
 

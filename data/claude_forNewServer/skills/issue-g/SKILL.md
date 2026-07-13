@@ -20,7 +20,7 @@ date: YYYY-MM-DD
 * Issue HWM: N
 * 이슈 관리 규칙: `.claude/rules/issue-rules.md` (또는 로컬 링크)
 * 오래된 Issue: `[경로]` (필요시)
-* Save Point: [커밋 해시] (YYYY-MM-DD)
+* Checkpoints: [커밋 해시] (YYYY-MM-DD)
 
 # 🤔 결정사항
 # 🌱 이슈후보
@@ -174,11 +174,11 @@ issue_get_current_date()  # 현재 날짜 (YYYY-MM-DD)
 로컬 issue.md → issue-m (macOS) 또는 프로젝트별 중간층 → issue-g (글로벌)
 ```
 
-- **issue-m**: macOS 앱 특화 (Xcode 빌드 카테고리, Python 스크립트 자동화, Save Point 패턴, 코드 서명 관련 이슈 추적)
+- **issue-m**: macOS 앱 특화 (Xcode 빌드 카테고리, Python 스크립트 자동화, checkpoint 패턴, 코드 서명 관련 이슈 추적)
 
 각 프로젝트는 로컬 `issue.md` 스킬에서:
 1. **중간층 스킬 참조** (해당하는 경우):
-   - macOS 앱: `~/.claude/skills/issue-m.md` (Xcode 빌드/배포, Python 스크립트 자동화, Save Point 패턴)
+   - macOS 앱: `~/.claude/skills/issue-m.md` (Xcode 빌드/배포, Python 스크립트 자동화, checkpoint 패턴)
    - 다른 프로젝트: 해당 중간층 스킬 또는 직접 issue-g
 2. **프로젝트 특화 규칙** 정의:
    - Issue.md 파일 위치
@@ -235,7 +235,7 @@ macOS 앱 프로젝트의 `<project>/.claude/skills/issue.md` 상단:
 > **기반**: 이 스킬은 `~/.claude/skills/issue-m.md` (macOS 앱 특화)를 기반으로 합니다.
 > `issue-m` → `issue-g` 순서로 글로벌 패턴을 상속합니다.
 > - Issue.md 구조, HWM, 이슈 형식, 서브이슈 → issue-g 정의
-> - Python 자동화 스크립트, Save Point, Xcode 카테고리 → issue-m 정의
+> - Python 자동화 스크립트, checkpoint, Xcode 카테고리 → issue-m 정의
 > - 이 문서는 **이 프로젝트 특화 내용만** 추가 정의합니다.
 ```
 

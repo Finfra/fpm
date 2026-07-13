@@ -18,24 +18,24 @@ function show_help() {
     echo "  status            Run git status"
     echo "  add [file]        Run git add (default: .)"
     echo "  commit \"msg\"      Run git commit -m \"msg\""
-    echo "  push              Run git push (verifies Save Point in Issue.md)"
+    echo "  push              Run git push (verifies checkpoint in Issue.md)"
     echo "  auto \"msg\"        Run status, add, commit, and push sequence"
     echo "  help              Show this help message"
     echo ""
 }
 
-function check_save_point() {
-    echo -e "${YELLOW}🔍 Verifying Save Point...${NC}"
+function check_checkpoint() {
+    echo -e "${YELLOW}🔍 Verifying checkpoint...${NC}"
 
     # Get current commit hash (short)
     CURRENT_HASH=$(git rev-parse --short HEAD)
 
     # Check if hash exists in Issue.md
     if grep -q "$CURRENT_HASH" "$ISSUE_FILE"; then
-        echo -e "${GREEN}✅ Save Point Verified: Commit $CURRENT_HASH check found in Issue.md${NC}"
+        echo -e "${GREEN}✅ checkpoint Verified: Commit $CURRENT_HASH check found in Issue.md${NC}"
         return 0
     else
-        echo -e "${RED}❌ Save Point Missing!${NC}"
+        echo -e "${RED}❌ checkpoint Missing!${NC}"
         echo -e "Current Commit: $CURRENT_HASH"
         echo -e "This commit hash was NOT found in Issue.md."
         echo -e "Please update Issue.md with the current commit hash before pushing."
@@ -73,11 +73,11 @@ case "$COMMAND" in
         git commit -m "$MSG"
         ;;
     push)
-        if check_save_point; then
+        if check_checkpoint; then
             echo -e "${GREEN}Running git push...${NC}"
             git push
         else
-            echo -e "${RED}Push aborted due to missing Save Point.${NC}"
+            echo -e "${RED}Push aborted due to missing checkpoint.${NC}"
             exit 1
         fi
         ;;
@@ -98,10 +98,10 @@ case "$COMMAND" in
         git commit -m "$MSG"
 
         echo -e "${GREEN}[4/4] Push...${NC}"
-        if check_save_point; then
+        if check_checkpoint; then
             git push
         else
-            echo -e "${RED}Push aborted due to missing Save Point.${NC}"
+            echo -e "${RED}Push aborted due to missing checkpoint.${NC}"
             exit 1
         fi
         ;;

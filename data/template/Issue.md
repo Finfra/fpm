@@ -7,7 +7,7 @@ date: 2026-03-27
 # Issue Management
 * Issue HWM: 0
 * 오래된 Issue: `_doc_work/Issue_OLD.md` (General)
-* Save Point:
+* Checkpoints:
     - {git-hash} {date}
     
 # 🤔 결정사항

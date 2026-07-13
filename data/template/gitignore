@@ -1,8 +1,9 @@
 # Project
 # 주의: 폴더명은 대소문자 구분 (실제 폴더는 소문자 _doc_arch)
-_doc_work
-_doc_arch
-.claude
+_doc_work/
+_doc_arch/
+_doc_base/
+.claude/
 CLAUDE.md
 Harness.md
 Issue.md

@@ -32,7 +32,7 @@ python3 .agent/skills/issue-manager/scripts/issue-manager.py close \
   --hash "a1b2c3d" \
   --file "Issue.md"
 
-# Save Point 업데이트
+# Update checkpoint
 python3 .agent/skills/issue-manager/scripts/issue-manager.py savepoint \
   --hash "a1b2c3d" \
   --msg "Close Issue387" \
