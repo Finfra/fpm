@@ -1,0 +1,16 @@
+# dev-server.yml — 글로벌 dev-server-restart hook(~/.claude/hooks/dev-server-restart.sh) 매니페스트
+# 이관 이력: prj1 자체 구현(rules/hub-dev-rules.md + hooks/hub-py-restart.sh) → Issue229_4(prj3)로
+#   ~/.claude/rules/dev-server-restart-rules.md + ~/.claude/hooks/dev-server-restart.sh 일반화 승격.
+#   글로벌 hook 이 ~/.claude/settings.json PostToolUse 에 이미 등록되어 있어 본 매니페스트만 있으면 자동 적용됨.
+
+watch:
+  - "services/hub/*.py"
+
+# 기존 hub-py-restart.sh 의 kill+respawn 로직을 그대로 이식 (STATE_DIR=/tmp/___pm/claude-htm-server, PID_FILE=.../pid)
+restart_cmd: "PID=$(cat /tmp/___pm/claude-htm-server/pid 2>/dev/null); [ -n \"$PID\" ] && kill \"$PID\" 2>/dev/null; sleep 1; nohup python3 $HOME/_git/___pm/services/hub/server.py >/tmp/___pm/claude-htm-server/stdout.log 2>&1 &"
+
+syntax_check: "python3 -m py_compile {file}"
+
+health_check: "curl -sf localhost:9876/healthz"
+
+debounce_sec: 2

@@ -1,8 +1,9 @@
-# gh-sync.yml — Issue.md ↔ GitHub Issues 옵트인 브리지 설정 (Issue233 T6)
+# gh-sync.yml — Issue.md ↔ GitHub Issues 옵트인 브리지 설정
 #
 # 기본값: 브리지 off. 로컬 Issue.md 가 SSOT 이며 GitHub Issues 는 옵트인 미러.
-# 활성화: enabled: true + repo 지정 후 `/gh-sync push|pull` 수동 실행.
-# 설계 SSOT: _doc_work/plan/gh-issue-bridge_plan.md
+# 활성화: enabled: true + repo 지정 후 gh-issue-sync 스크립트 수동 실행.
+# 이관 이력: prj1 자체 구현(scripts/gh-sync/*) → prj3 Issue229_1 로 글로벌 스킬(~/.claude/skills/gh-issue-sync/) 승격.
+#   guard_before_push(boolean) → guard_cmd(문자열 커맨드) 스펙 변경.
 
 # 마스터 토글 — true 여야 push/pull 동작 (기본 false → no-op)
 enabled: false
@@ -30,5 +31,5 @@ exclude_sections:
   - "⏸️ 보류"
   - "📜 참고"
 
-# push 전 개인정보 가드 (scripts/fpm-guard.sh 재사용). true 권장
-guard_before_push: true
+# push --apply 전 실행할 가드 커맨드(선택). 비우면 가드 skip.
+guard_cmd: "bash scripts/fpm-guard.sh"
