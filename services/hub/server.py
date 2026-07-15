@@ -1580,15 +1580,40 @@ def _projects_list_with_htm() -> list:
     return out
 
 
+def _resolve_project_root(abs_cwd: str) -> dict:
+    """Projects.md 등록 경로 중 abs_cwd 와 exact 또는 prefix(at-or-under) 매칭되는
+    가장 긴 경로의 행을 반환 (없으면 빈 dict). 서브폴더 cwd(ex: videoStudio/_doc_base/contents)를
+    등록된 부모 프로젝트(videoStudio)로 귀속시켜 fpm-hub-trigger.sh 의 prefix 매칭과 정합시킴."""
+    best: dict = {}
+    best_len = -1
+    for row in _load_projects_list():
+        path_cell = row.get("path", "")
+        if not path_cell:
+            continue
+        ph = os.path.expanduser(path_cell).rstrip("/")
+        if not ph:
+            continue
+        if (abs_cwd == ph or abs_cwd.startswith(ph + "/")) and len(ph) > best_len:
+            best = row
+            best_len = len(ph)
+    return best
+
+
 def project_meta(cwd: str) -> dict:
     h = cwd_hash(cwd)
-    name = (os.path.basename(cwd) or cwd).replace(" ", "_")
     # Issue28: Projects.md peacock.color 우선, 없으면 hsl fallback
     abs_cwd = os.path.expanduser(cwd).rstrip("/")
-    colors = _load_projects_colors()
-    color = colors.get(abs_cwd) or f"hsl({int(h[:4], 16) % 360}, 60%, 45%)"
-    # Issue46: Projects.md 이모지 보강 (미등록 시 빈 문자열)
-    emoji = _load_projects_emojis().get(abs_cwd, "")
+    hsl_fallback = f"hsl({int(h[:4], 16) % 360}, 60%, 45%)"
+    matched = _resolve_project_root(abs_cwd)
+    if matched:
+        name = matched.get("name") or os.path.basename(matched.get("path", "")) or abs_cwd
+        color = matched.get("color") or hsl_fallback
+        emoji = matched.get("emoji") or ""
+    else:
+        name = os.path.basename(abs_cwd) or cwd
+        color = hsl_fallback
+        emoji = ""
+    name = (name or cwd).replace(" ", "_")
     return {"cwd_hash": h, "name": name, "color": color, "emoji": emoji}
 
 
@@ -4775,23 +4800,31 @@ __WARN__
         if not os.path.isdir(cwd):
             self._send_json(404, {"error": "cwd not a directory"})
             return
+        # 서브폴더 cwd(ex: unity_base/Examples) 는 등록 프로젝트 루트로 정규화 후 오픈.
+        #   원본 cwd 그대로 `open -a VSCode`에 넘기면 이미 열린 루트 워크스페이스 창을
+        #   "이미 열림"으로 인식 못 하고 별도 새 창을 띄운다 — 다른 프로젝트가 열린 것처럼 보이는
+        #   원인(hub 카드는 _resolve_project_root 로 루트 이름·색을 표시하는데 open 은 원본 cwd 사용).
+        matched_root = _resolve_project_root(cwd)
+        open_cwd = os.path.expanduser(matched_root.get("path", "")).rstrip("/") if matched_root else ""
+        if not open_cwd or not os.path.isdir(open_cwd):
+            open_cwd = cwd
         # Issue237: 비루프백 클라이언트 + alias 설정 시 서버 host-local `open` 대신
         #   vscode-remote:// URI 반환 → 브라우저(같은 머신의 VSCode)가 Remote-SSH 창 재사용해 연다.
         if client_ip not in LOOPBACK_IPS:
             alias = (_load_hub_setting().get("ssh_remote_alias") or "").strip()
             if alias:
-                uri = _ssh_remote_uri(cwd, alias)
+                uri = _ssh_remote_uri(open_cwd, alias)
                 log(f"POST /open-project — remote client={client_ip} → {uri}")
-                self._send_json(200, {"status": "remote", "uri": uri, "cwd": cwd})
+                self._send_json(200, {"status": "remote", "uri": uri, "cwd": open_cwd})
                 return
         try:
-            subprocess.Popen(["open", "-a", "Visual Studio Code", cwd],
+            subprocess.Popen(["open", "-a", "Visual Studio Code", open_cwd],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
             self._send_json(500, {"error": f"spawn failed: {e}"})
             return
-        log(f"POST /open-project — cwd={cwd}")
-        self._send_json(200, {"status": "opened", "cwd": cwd})
+        log(f"POST /open-project — cwd={cwd} open_cwd={open_cwd}")
+        self._send_json(200, {"status": "opened", "cwd": open_cwd})
 
     def _handle_open_session(self, parsed):
         """Issue131: 활성 세션 카드 행 클릭 → VSCode 의 해당 Claude Code 세션 탭으로 포커스.
@@ -4827,6 +4860,15 @@ __WARN__
         if not os.path.isdir(cwd):
             self._send_json(404, {"error": "cwd not a directory"})
             return
+        # 서브폴더 cwd 는 등록 프로젝트 루트로 정규화 후 워크스페이스를 연다 — 세션 URI(uri)는
+        # sid 로 탭을 찾으므로 cwd 무관하지만, 앞단 `open -a VSCode` 는 원본(서브폴더) cwd 를
+        # 쓰면 이미 열린 루트 창을 "이미 열림"으로 인식 못 해 별개 새 창을 띄운다(다른 프로젝트가
+        # 열린 것처럼 보이는 원인 — hub 카드는 _resolve_project_root 로 루트 이름을 표시하는데
+        # open 은 원본 cwd 를 써서 실제로는 다른 폴더가 열림).
+        matched_root = _resolve_project_root(cwd)
+        open_cwd = os.path.expanduser(matched_root.get("path", "")).rstrip("/") if matched_root else ""
+        if not open_cwd or not os.path.isdir(open_cwd):
+            open_cwd = cwd
         uri = f"vscode://anthropic.claude-code/open?session={sid}"
         # Issue237: 원격 클라이언트 + alias 설정 시 클라이언트측 URI 반환.
         #   세션 포커스 URI(uri)는 이미 연결된 워크스페이스 창에서 탭을 포커스한다.
@@ -4835,7 +4877,7 @@ __WARN__
         if client_ip not in LOOPBACK_IPS:
             alias = (_load_hub_setting().get("ssh_remote_alias") or "").strip()
             if alias:
-                folder_uri = _ssh_remote_uri(cwd, alias)
+                folder_uri = _ssh_remote_uri(open_cwd, alias)
                 log(f"POST /open-session — remote client={client_ip} sid={sid}")
                 self._send_json(200, {"status": "remote", "uri": uri,
                                       "folder_uri": folder_uri, "sid": sid})
@@ -4844,13 +4886,13 @@ __WARN__
             # 워크스페이스 창 보장·전면화 후(0.4s) 세션 URI 로 탭 포커스.
             subprocess.Popen(
                 ["bash", "-c",
-                 f'open -a "Visual Studio Code" {shlex.quote(cwd)}; '
+                 f'open -a "Visual Studio Code" {shlex.quote(open_cwd)}; '
                  f'sleep 0.4; open {shlex.quote(uri)}'],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
             self._send_json(500, {"error": f"spawn failed: {e}"})
             return
-        log(f"POST /open-session — cwd={cwd} sid={sid}")
+        log(f"POST /open-session — cwd={cwd} open_cwd={open_cwd} sid={sid}")
         self._send_json(200, {"status": "opened", "sid": sid})
 
     def _handle_open_simple_browser(self, parsed):
@@ -7714,13 +7756,12 @@ main { padding: 1.5rem; max-width: 1600px; margin: 0 auto; display: flex; gap: 1
 .live-origin { flex-shrink: 0; font-size: 0.82em; line-height: 1; opacity: 0.85; cursor: help; position: relative; }
 /* Issue273: 메인 세션 모델 신호등 배지 (🟣 opus / 🔵 sonnet / 🟢 haiku / 🟠 fable) — origin 배지 옆 */
 .live-model { flex-shrink: 0; font-size: 0.78em; line-height: 1; cursor: help; margin-left: -0.25rem; position: relative; }
-/* Issue221: 네이티브 title 툴팁은 브라우저가 지연(~1.5~2.5s) 소유·조정 불가 → data-tip 커스텀 CSS 툴팁으로 즉시 표시(지연 0) */
-.live-origin[data-tip]:hover::after, .live-model[data-tip]:hover::after {
-  content: attr(data-tip);
-  position: absolute; bottom: 135%; left: 50%; transform: translateX(-50%);
-  background: #222; color: #fff; padding: 3px 8px; border-radius: 5px;
-  font-size: 11px; line-height: 1.3; white-space: nowrap; z-index: 300;
-  pointer-events: none; box-shadow: 0 2px 8px rgba(0,0,0,.35); font-weight: 400; }
+/* Issue221: 네이티브 title 툴팁은 브라우저가 지연(~1.5~2.5s) 소유·조정 불가 → data-tip 커스텀 툴팁으로 즉시 표시(지연 0)
+   Issue281: CSS ::after(position:absolute)는 조상 .card{overflow:hidden}에 잘림 → #live-tip(position:fixed, body 직속)로 전환 */
+#live-tip { position: fixed; z-index: 3000; max-width: 270px; background: #222; color: #fff;
+  padding: 3px 8px; border-radius: 5px; font-size: 11px; line-height: 1.3; white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0,0,0,.35); pointer-events: none; font-weight: 400; }
+#live-tip[hidden] { display: none; }
 .live-item[data-origin="terminal"] { cursor: pointer; }
 .live-item[data-origin="terminal"]:hover { background: rgba(127,127,127,.12); }
 .live-acts { display: flex; align-items: center; gap: 0.3rem; flex-shrink: 0; }
@@ -7940,6 +7981,7 @@ section.sec-collapsed .htm-bar-right { display: none; }
   </div>
 </div>
 <div id="set-tip" hidden></div>
+<div id="live-tip" hidden></div>
 <script>
 // Issue169 Stage8: 클라이언트 i18n — 서버가 주입한 사전(window.__i18n)·언어(window.__lang).
 //   t(key, vars): 사전 조회 후 {var} 보간. 누락 키 → key 자체(가시화). vars 값은 그대로 삽입(호출부에서 escape).
@@ -9351,6 +9393,23 @@ function setTipShow(badge) {
 function setTipHide() { setTip.hidden = true; }
 setModal.addEventListener('mouseover', e => { const b = e.target.closest('.set-badge, .set-desc'); if (b) setTipShow(b); });
 setModal.addEventListener('mouseout', e => { if (e.target.closest('.set-badge, .set-desc')) setTipHide(); });
+// Issue281: 활성 세션 카드의 🆚/모델 배지 툴팁 — .card{overflow:hidden}에 안 잘리게 body 직속 #live-tip 사용
+const liveTip = document.getElementById('live-tip');
+function liveTipShow(badge) {
+  const tip = badge.getAttribute('data-tip'); if (!tip) return;
+  liveTip.textContent = tip; liveTip.hidden = false;
+  const br = badge.getBoundingClientRect();
+  const tw = liveTip.offsetWidth, th = liveTip.offsetHeight, gap = 7;
+  let left = br.left + br.width/2 - tw/2;
+  left = Math.max(8, Math.min(left, window.innerWidth - tw - 8));
+  let top = br.top - th - gap;            // 기본: 배지 위쪽
+  if (top < 8) top = br.bottom + gap;     // 위 공간 부족 시에만 아래로
+  liveTip.style.left = left + 'px';
+  liveTip.style.top = top + 'px';
+}
+function liveTipHide() { liveTip.hidden = true; }
+document.addEventListener('mouseover', e => { const b = e.target.closest('.live-origin[data-tip], .live-model[data-tip]'); if (b) liveTipShow(b); });
+document.addEventListener('mouseout', e => { if (e.target.closest('.live-origin[data-tip], .live-model[data-tip]')) liveTipHide(); });
 document.getElementById('btn-settings').addEventListener('click', openSettings);
 document.getElementById('set-lang').addEventListener('click', e => {
   const b = e.target.closest('button[data-lang]'); if (b) switchLang(b.dataset.lang);
