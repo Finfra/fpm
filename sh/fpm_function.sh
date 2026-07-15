@@ -14,6 +14,7 @@
 #   cdff  : Finder 에서 열기 / cdfc : 경로 클립보드 복사 / cdfv : VS Code 로 열기
 #   cdfn/cdfvn : 번호 대신 "문자(이름)" 부분일치 (cdf/cdfv 의 이름검색 변형, _cdfn_resolve 공용)
 #                1개 즉시·다수 choose from list 선택창 — Projects.md 의 프로젝트명·한글명·경로 매칭
+#   cdf-num : cdf 역방향 — 경로($PWD 기본) → 등록 프로젝트 번호 (최장 prefix 일치)
 #   cdft  : tmux pm 세션 window/pane 관리
 # --- SSH by Server ID ($FPM_BASE/Servers.md SSOT) ---
 #   _sshf_file / _sshf_resolve : 공용 내부 헬퍼
@@ -390,6 +391,43 @@ fi
 #   필요 시 cdffn(Finder)·cdfcn(클립보드)도 동일 한 줄 패턴으로 추가 가능
 cdfn()  { [[ "$1" == [0-9]* ]] && { cdf  "$@"; return; }; local _id; _id=$(_cdfn_resolve "$1") || return; cdf  "$_id"; }
 cdfvn() { local _a="$1"; [[ "$_a" == "-n" || "$_a" == "--new-window" ]] && _a="$2"; [[ "$_a" == [0-9]* ]] && { cdfv "$@"; return; }; local _id; _id=$(_cdfn_resolve "$1") || return; cdfv "$_id"; }
+
+# cdf-num : cdf 의 역방향 — 경로(기본 $PWD) → 등록 프로젝트 번호 조회
+#   ex) cdf-num             : 현재 디렉토리 기준 번호 출력
+#       cdf-num /some/path  : 지정 경로 기준
+#       cdf-num -v          : 번호 + 매칭된 등록 경로도 stderr 로 표시
+#   서브폴더에서 실행해도 등록 경로 중 최장 prefix 일치 항목으로 귀속 (hub _resolve_project_root 와 동일 정책)
+cdf-num() {
+    local verbose=0
+    [[ "$1" == "-v" ]] && { verbose=1; shift; }
+    local target="${1:-$PWD}"
+    target="${target/#\~/$HOME}"
+    target="$(cd "$target" 2>/dev/null && pwd)" || { echo "Error: 유효하지 않은 경로: ${1:-$PWD}" >&2; return 1; }
+
+    local base_dir; base_dir=$(_pm_manager) || return 1
+    local best_id="" best_path="" best_len=-1
+    local f p
+    for f in "${base_dir}"/[0-9]*; do
+        [[ -f "$f" ]] || continue
+        p=$(cat "$f")
+        p="${p/#\~/$HOME}"
+        p="${p%/}"
+        [[ -z "$p" ]] && continue
+        if [[ "$target" == "$p" || "$target" == "$p"/* ]] && (( ${#p} > best_len )); then
+            best_len=${#p}
+            best_id=$(basename "$f")
+            best_path="$p"
+        fi
+    done
+
+    if [[ -z "$best_id" ]]; then
+        echo "미등록 경로: $target" >&2
+        return 1
+    fi
+    echo "$best_id"
+    (( verbose )) && echo "  path: $best_path" >&2
+    return 0
+}
 
 # cdft : tmux pm 세션의 window/pane 생성·관리
 # 사용법:
