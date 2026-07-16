@@ -1451,11 +1451,16 @@ def _load_projects_emojis() -> dict:
 
 
 def _project_emoji(cwd: str) -> str:
-    """cwd 경로에 매핑된 Projects.md 이모지. 미등록 시 빈 문자열."""
+    """cwd 경로에 매핑된 Projects.md 이모지. 미등록 시 빈 문자열.
+    Issue282: exact 실패 시 _resolve_project_root prefix fallback —
+    서브폴더 cwd 카드도 name(prefix 매칭)과 동일 기준으로 이모지 유지."""
     if not cwd:
         return ""
     abs_cwd = os.path.expanduser(cwd).rstrip("/")
-    return _load_projects_emojis().get(abs_cwd, "")
+    exact = _load_projects_emojis().get(abs_cwd, "")
+    if exact:
+        return exact
+    return _resolve_project_root(abs_cwd).get("emoji", "")
 
 
 def _classify_model_tier(model_id: str) -> str:
@@ -3704,10 +3709,14 @@ class Handler(BaseHTTPRequestHandler):
         results = []
         terminal_keys = []  # Issue63: TTL prune 대상 (terminal dashboard 세션)
         cleared_keys = []   # Issue95: tombstone 매칭 → 즉시 제거 대상
-        # Issue99: live 세션 dedup — (cwd_hash, live_pid) 동일분은 freshest 1개만 노출.
+        # Issue99: live 세션 dedup — 동일 live_pid 는 freshest 1개만 노출.
         #   훅 중복 fire(동일 프로세스 다중 sid)로 인한 중복 카드 차단. 비-freshest 는
         #   skip set 에 담아 루프에서 제외(+ terminal prune).
-        live_best = {}   # (h, live_pid) -> (updated, sid)
+        # Issue282: dedup 키를 (cwd_hash, live_pid) → live_pid 전역으로 확장.
+        #   세션 중 cd 로 cwd 가 드리프트하면 동일 세션이 다른 hash 아래 재등록돼
+        #   프로젝트 카드 2장으로 중복 노출됐다(hash 가 갈리면 종전 키로는 무력).
+        #   한 OS 프로세스 = 한 세션이므로 pid 전역 dedup 이 안전하다.
+        live_best = {}   # live_pid -> (updated, h, sid)
         for (h, sid), entry in sess_snap:
             if entry.get("content_type") != "live":
                 continue
@@ -3715,9 +3724,9 @@ class Handler(BaseHTTPRequestHandler):
             if lp is None:
                 continue
             u = entry.get("updated", 0) or 0
-            prev = live_best.get((h, lp))
+            prev = live_best.get(lp)
             if prev is None or u > prev[0]:
-                live_best[(h, lp)] = (u, sid)
+                live_best[lp] = (u, h, sid)
         live_dup_skip = set()
         for (h, sid), entry in sess_snap:
             if entry.get("content_type") != "live":
@@ -3725,7 +3734,7 @@ class Handler(BaseHTTPRequestHandler):
             lp = entry.get("live_pid")
             if lp is None:
                 continue
-            if live_best.get((h, lp), (None, None))[1] != sid:
+            if live_best.get(lp, (None, None, None))[1:] != (h, sid):
                 live_dup_skip.add((h, sid))
         for (h, sid), entry in sess_snap:
             if (h, sid) in live_dup_skip:  # Issue99: 중복 live 세션 (비-freshest) 제외
@@ -6844,6 +6853,27 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             self._send_json(400, {"error": "live registration requires integer pid"})
             return
         live_label = str(body.get("label", "")).strip() or None  # tmux window/topic 등 카드 제목
+        # Issue282: sid-sticky — 세션 중 cd 로 cwd 가 드리프트해도 최초 등록 프로젝트에
+        #   고정. hook 이 세션 현재 cwd 를 보내므로 cd 후 heartbeat 가 다른 cwd_hash 로
+        #   재등록돼 카드가 2장으로 갈라졌다. 동일 sid 가 이미 다른 hash 아래 존재하면
+        #   그 프로젝트의 cwd 로 치환해 기존 (h, sid) key 를 재사용한다
+        #   (sid 는 uuid4 — 프로젝트 간 우연 충돌 없음. projects[h] 덮어쓰기도 방지).
+        if reg_ctype == "live":
+            h_new = cwd_hash(cwd)
+            h_prev = None
+            with sessions_lock:
+                for (h_old, s_old) in sessions.keys():
+                    if s_old == sid and h_old != h_new:
+                        h_prev = h_old
+                        break
+            if h_prev:
+                with projects_lock:
+                    p_old = projects.get(h_prev)
+                prev_cwd = (p_old or {}).get("cwd", "")
+                if prev_cwd:
+                    log(f"POST /session/register — sid-sticky remap (Issue282): "
+                        f"sid={sid} cwd {cwd} → {prev_cwd}")
+                    cwd = prev_cwd
         h = cwd_hash(cwd)
         meta = project_meta(cwd)
         # 프로젝트 자동 등록 (기존 /register 동일 로직)
