@@ -30,24 +30,34 @@ def check(name, cond):
         print(f"  FAIL {name}")
 
 
+ISSUE_MD_DEPS = "# Issue Management\n\n## Issue2: b\n* depends: Issue1\n* 목적: x\n"
+ISSUE_MD_NODEPS = "# Issue Management\n\n## Issue1: a\n* 목적: x\n"
+
 TMP = tempfile.mkdtemp(prefix="issue-map-test-")
-# prjA: Issue.md + Issue_map.htm 보유 (하위 폴더 sub/deep 포함)
+# prjA: Issue.md(depends 有) + Issue_map.htm 보유 (하위 폴더 sub/deep 포함)
 PRJ_A = os.path.join(TMP, "prjA")
 os.makedirs(os.path.join(PRJ_A, "sub", "deep"))
-open(os.path.join(PRJ_A, "Issue.md"), "w").write("# Issue Management\n")
+ISSUE_A = os.path.join(PRJ_A, "Issue.md")
+open(ISSUE_A, "w").write(ISSUE_MD_DEPS)
 MAP_A = os.path.join(PRJ_A, server.ISSUE_MAP_NAME)
 open(MAP_A, "w").write("<html><body><h1>map A</h1></body></html>")
 # prjB: Issue.md 만 보유 (맵 없음)
 PRJ_B = os.path.join(TMP, "prjB")
 os.makedirs(PRJ_B)
-open(os.path.join(PRJ_B, "Issue.md"), "w").write("# Issue Management\n")
+open(os.path.join(PRJ_B, "Issue.md"), "w").write(ISSUE_MD_DEPS)
 # prjC: Issue.md 자체가 없음 (nPTiR 루트 아님)
 PRJ_C = os.path.join(TMP, "prjC")
 os.makedirs(PRJ_C)
+# prjD: 맵은 있으나 Issue.md 에 depends 0 (Issue284_1 — 아이콘 미노출 대상)
+PRJ_D = os.path.join(TMP, "prjD")
+os.makedirs(PRJ_D)
+open(os.path.join(PRJ_D, "Issue.md"), "w").write(ISSUE_MD_NODEPS)
+MAP_D = os.path.join(PRJ_D, server.ISSUE_MAP_NAME)
+open(MAP_D, "w").write("<html><body><h1>map D</h1></body></html>")
 # outside: 화이트리스트 밖 — Issue.md + 맵을 가졌어도 serve 되면 안 됨
 OUT = os.path.join(TMP, "outside")
 os.makedirs(OUT)
-open(os.path.join(OUT, "Issue.md"), "w").write("# Issue Management\n")
+open(os.path.join(OUT, "Issue.md"), "w").write(ISSUE_MD_DEPS)
 open(os.path.join(OUT, server.ISSUE_MAP_NAME), "w").write("<html><body>leak</body></html>")
 
 
@@ -69,6 +79,33 @@ _clear_cache()
 check("Issue.md 자체 부재 → None", server._issue_map_path(PRJ_C) is None)
 _clear_cache()
 check("빈 cwd → None", server._issue_map_path("") is None)
+
+# --- Issue284_1: 아이콘 노출 조건 = 맵 존재 AND depends 링크 보유 ---
+_clear_cache()
+check("depends 有 + 맵 有 → 아이콘 노출", server._issue_map_visible(PRJ_A) is True)
+_clear_cache()
+check("depends 無 + 맵 有 → 아이콘 미노출", server._issue_map_visible(PRJ_D) is False)
+_clear_cache()
+check("depends 無라도 serve 경로는 유효 (북마크 보존)",
+      server._issue_map_path(PRJ_D) == os.path.realpath(MAP_D))
+_clear_cache()
+check("맵 無 → 아이콘 미노출", server._issue_map_visible(PRJ_B) is False)
+_clear_cache()
+check("빈 cwd → 아이콘 미노출", server._issue_map_visible("") is False)
+
+check("depends 파서: `* depends: Issue1` 인식", server._issue_md_has_depends(ISSUE_A) is True)
+check("depends 파서: depends 없는 Issue.md → False",
+      server._issue_md_has_depends(os.path.join(PRJ_D, "Issue.md")) is False)
+check("depends 파서: 파일 부재 → False",
+      server._issue_md_has_depends(os.path.join(TMP, "nope.md")) is False)
+_DEP_VAR = os.path.join(TMP, "dep-variants.md")
+open(_DEP_VAR, "w").write("* 목적: x\n    * depends: prj16#Issue42, Issue3\n")
+check("depends 파서: 들여쓴 `* depends: prj16#Issue42` 인식",
+      server._issue_md_has_depends(_DEP_VAR) is True)
+_DEP_EMPTY = os.path.join(TMP, "dep-empty.md")
+open(_DEP_EMPTY, "w").write("* depends:\n* depends:   \n")
+check("depends 파서: 값 없는 `* depends:` 는 미인정",
+      server._issue_md_has_depends(_DEP_EMPTY) is False)
 
 # TTL 캐시 — 첫 조회 후 파일을 지워도 캐시 유효기간 내엔 같은 값
 _clear_cache()
@@ -121,7 +158,7 @@ class _FakeHandler(server.Handler):
 with server.projects_lock:
     _projects_backup = dict(server.projects)
     server.projects.clear()
-    for i, p in enumerate((PRJ_A, PRJ_B, PRJ_C)):
+    for i, p in enumerate((PRJ_A, PRJ_B, PRJ_C, PRJ_D)):
         server.projects[f"test{i}"] = {"cwd": p, "name": os.path.basename(p)}
 
 
@@ -148,6 +185,10 @@ try:
     r = _get(PRJ_B)
     check("등록 프로젝트 + 맵 부재 → 404",
           r.json_responses and r.json_responses[0][0] == 404)
+
+    r = _get(PRJ_D)
+    check("Issue284_1: depends 無(아이콘 미노출) 프로젝트도 직접 URL 은 200",
+          r._status == 200 and b"map D" in r.raw)
 
     r = _get(OUT)
     check("미등록 cwd(맵 보유) → 403 — 화이트리스트 밖 파일 미유출",

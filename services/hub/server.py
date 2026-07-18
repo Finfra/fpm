@@ -1545,27 +1545,46 @@ def _load_projects_list() -> list:
 ISSUE_MAP_NAME = "Issue_map.htm"
 _ISSUE_MAP_MAX_UP = 6
 _ISSUE_MAP_TTL = 30.0            # 탐지 결과 캐시 수명(초) — /hub 폴링 5s 대비 stat 6배 절감
-_issue_map_cache: dict = {}      # cwd(str) -> (expire_ts, path|None)
+_issue_map_cache: dict = {}      # cwd(str) -> (expire_ts, path|None, has_deps: bool)
 _issue_map_lock = threading.Lock()
+# Issue284_1: 카드 아이콘 노출 조건 — `Issue.md` 에 `* depends:` 링크가 하나라도 있을 때만.
+#   의존 간선이 0 이면 관계도가 노드 나열에 그쳐 열 가치가 없다(아이콘만 늘어남).
+#   포맷 SSOT: `~/.claude/rules/issue-g.md` 규칙2 — `* depends: Issue<M>` / `prj<N>#Issue<M>`.
+_ISSUE_DEPENDS_RE = re.compile(r"^\s*\*\s*depends:\s*\S")
 
 
-def _issue_map_path(cwd: str):
-    """cwd 기준 이슈맵 문서 절대경로 반환. 없으면 None. TTL 캐시."""
+def _issue_md_has_depends(issue_md: str) -> bool:
+    """Issue.md 에 유효한 `* depends:` 줄이 1개 이상 있으면 True. 첫 매치에서 조기 종료."""
+    try:
+        with open(issue_md, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if _ISSUE_DEPENDS_RE.match(line):
+                    return True
+    except OSError:
+        return False
+    return False
+
+
+def _issue_map_scan(cwd: str) -> tuple:
+    """cwd 기준 (맵 절대경로|None, depends 보유 여부) 반환. TTL 캐시."""
     if not cwd:
-        return None
+        return None, False
     now = time.time()
     with _issue_map_lock:
         hit = _issue_map_cache.get(cwd)
         if hit and hit[0] > now:
-            return hit[1]
-    found = None
+            return hit[1], hit[2]
+    found, has_deps = None, False
     try:
         d = os.path.realpath(os.path.expanduser(cwd))
         home = os.path.realpath(os.path.expanduser("~"))
         for _ in range(_ISSUE_MAP_MAX_UP):
-            if os.path.isfile(os.path.join(d, "Issue.md")):
+            issue_md = os.path.join(d, "Issue.md")
+            if os.path.isfile(issue_md):
                 cand = os.path.join(d, ISSUE_MAP_NAME)
-                found = cand if os.path.isfile(cand) else None
+                if os.path.isfile(cand):
+                    found = cand
+                    has_deps = _issue_md_has_depends(issue_md)
                 break
             parent = os.path.dirname(d)
             # 루트·홈 도달 시 중단 ($HOME 자체가 nPTiR 루트인 prj0 은 위 분기에서 이미 처리)
@@ -1573,10 +1592,23 @@ def _issue_map_path(cwd: str):
                 break
             d = parent
     except OSError:
-        found = None
+        found, has_deps = None, False
     with _issue_map_lock:
-        _issue_map_cache[cwd] = (now + _ISSUE_MAP_TTL, found)
-    return found
+        _issue_map_cache[cwd] = (now + _ISSUE_MAP_TTL, found, has_deps)
+    return found, has_deps
+
+
+def _issue_map_path(cwd: str):
+    """cwd 기준 이슈맵 문서 절대경로 반환. 없으면 None. (serve 용 — depends 무관)"""
+    return _issue_map_scan(cwd)[0]
+
+
+def _issue_map_visible(cwd: str) -> bool:
+    """카드에 🗺️ 를 렌더할지 여부 — 맵 파일 존재 **AND** depends 링크 보유.
+    serve(`/issue-map`)는 `_issue_map_path` 기준이라, 아이콘이 사라져도 기존 URL 은 살아있다
+    (depends 를 지웠다고 북마크가 404 로 죽지 않음)."""
+    path, has_deps = _issue_map_scan(cwd)
+    return bool(path) and has_deps
 
 
 def _htm_state(path: str) -> tuple:
@@ -3925,9 +3957,10 @@ class Handler(BaseHTTPRequestHandler):
                 "name": p.get("name", ""),
                 "color": p.get("color", "hsl(220,60%,45%)"),
                 "emoji": _project_emoji(p.get("cwd", "")),
-                # Issue284: 이슈맵(Issue_map.htm) 보유 여부 — 카드 헤더 🗺️ 아이콘 조건부 렌더용.
+                # Issue284: 카드 헤더 🗺️ 아이콘 조건부 렌더용. Issue284_1 — 맵 파일 존재만으론
+                #   부족하고 `Issue.md` 에 `* depends:` 간선이 있어야 노출(관계도 가치 有).
                 #   경로는 노출하지 않는다(/issue-map 이 cwd 로 서버측 재계산 — 경로 조작 차단).
-                "issue_map": bool(_issue_map_path(p.get("cwd", ""))),
+                "issue_map": _issue_map_visible(p.get("cwd", "")),
                 "mode": entry.get("mode"),
                 "content_type": entry.get("content_type"),
                 "origin": origin,         # Issue177: "vscode" | "terminal" (카드 배지·클릭 분기)
