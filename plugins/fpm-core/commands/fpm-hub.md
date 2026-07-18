@@ -278,6 +278,8 @@ ex)
         ```
         * `.mermaid` 블록 CSS: `margin: 1.5rem auto; text-align: center` — max-width 820px 컨테이너 내 중앙 정렬
         * `theme: 'neutral'` 고정 — Issue58 흰 배경 정책 호환 (다크 테마 금지)
+        * **⚠️ 이탈 금지 (Issue190)**: mermaid 런타임은 위 UMD 2줄 verbatim 만 허용. 다음 즉흥 구조 금지 — ① `<script type="module">` + `mermaid.esm.min.mjs` 등 ESM CDN import (청크 로드 실패 시 스크립트 전체 중단) ② `<div class="mermaid"><pre class="mermaid-src">` 같은 커스텀 마크업 + JS 로 내용 치환 (mermaid.js 가 `startOnLoad:true` 로 `<pre class="mermaid">` 를 직접 스캔하므로 수동 치환 자체가 불필요) ③ `pre.textContent` 로 원문을 읽는 방식 (`<pre>` 안 `<br>` 이 HTML 로 파싱되어 소멸 → 라벨 줄바꿈 유실) ④ `theme: 'dark'` 분기 (Issue58 흰 배경 정책 위반). 다이어그램은 `<pre class="mermaid">` 안에 mermaid 문법 원문을 그대로 작성만 하면 됨 — 별도 JS 불필요.
+        * **CSP 안전형 (prj3 Issue244)**: 인라인 `<script>` 를 차단하는 뷰어(VSCode HTML preview 확장의 `script-src https:` — `'unsafe-inline'` 없음)에서는 위 2줄 중 **init 줄이 실행되지 않는다**. mermaid UMD 는 `startOnLoad` 기본 true + `window load` 훅을 번들에 내장하므로 **외부 `<script src>` 1줄만으로도 렌더된다**(실측 확인) → init 줄이 죽어도 graceful degradation(기본 테마로 렌더). 반대로 ESM+인라인 모듈은 fallback 이 없어 전면 실패 — ①번 금지의 실효 근거.
     - **프로젝트 식별 헤더 + 닫기 버튼 (Issue22, Issue58 컬러 정책 갱신)**:
         * 최상단 `<header>` 배경에 PROJECT_COLOR 적용. PROJECT_COLOR 결정 규칙 (Issue58):
             1. `~/_git/___pm/Projects.md` 의 `📋 프로젝트` 테이블에서 현재 `cwd` 와 일치하는 행 찾기 (경로 컬럼: `~` 확장 후 비교)
