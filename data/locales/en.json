@@ -72,6 +72,7 @@
   "liveSessions.killRunnerTitle": "Terminate dashboard runner (PID {pid})",
   "liveSessions.dismissTitle": "Hide this session card from the hub list (does not terminate the claude process)",
   "liveSessions.copySidTitle": "Copy session ID to clipboard",
+  "liveSessions.issueMapTitle": "Open the issue dependency map (Issue_map.htm) for this project",
   "liveSessions.copiedSid": "Session ID copied",
   "liveSessions.approveTitle": "Approve waiting item '{item}' to proceed",
   "liveSessions.topicTitle": "{topic} — click: open VSCode session tab",

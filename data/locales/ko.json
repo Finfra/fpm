@@ -72,6 +72,7 @@
   "liveSessions.killRunnerTitle": "dashboard runner 종료 (PID {pid})",
   "liveSessions.dismissTitle": "이 세션 카드를 hub 목록에서 숨김 (claude 프로세스는 종료하지 않음)",
   "liveSessions.copySidTitle": "세션 ID 복사",
+  "liveSessions.issueMapTitle": "이 프로젝트의 이슈 의존 관계도(Issue_map.htm) 열기",
   "liveSessions.copiedSid": "세션 ID 복사됨",
   "liveSessions.approveTitle": "승인 대기 항목 '{item}' 진행 승인",
   "liveSessions.topicTitle": "{topic} — 클릭: VSCode 세션 탭 열기",

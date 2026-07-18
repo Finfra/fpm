@@ -1538,6 +1538,47 @@ def _load_projects_list() -> list:
     return rows
 
 
+# Issue284: 이슈맵 문서(`Issue_map.htm`) 탐지 — issue-map 스킬(prj3 Issue246) 산출물.
+#   위치 규약: `Issue.md` 와 같은 폴더(= nPTiR 루트). 세션 cwd 가 하위 폴더로 드리프트해도
+#   찾도록 상위로 최대 _ISSUE_MAP_MAX_UP 단계 거슬러 올라가며 Issue.md 보유 디렉토리를 찾는다.
+#   파일명은 `Issue_map.htm` 고정 (prj1#Issue286 / prj3#Issue246 합의 — 후보 목록 없음).
+ISSUE_MAP_NAME = "Issue_map.htm"
+_ISSUE_MAP_MAX_UP = 6
+_ISSUE_MAP_TTL = 30.0            # 탐지 결과 캐시 수명(초) — /hub 폴링 5s 대비 stat 6배 절감
+_issue_map_cache: dict = {}      # cwd(str) -> (expire_ts, path|None)
+_issue_map_lock = threading.Lock()
+
+
+def _issue_map_path(cwd: str):
+    """cwd 기준 이슈맵 문서 절대경로 반환. 없으면 None. TTL 캐시."""
+    if not cwd:
+        return None
+    now = time.time()
+    with _issue_map_lock:
+        hit = _issue_map_cache.get(cwd)
+        if hit and hit[0] > now:
+            return hit[1]
+    found = None
+    try:
+        d = os.path.realpath(os.path.expanduser(cwd))
+        home = os.path.realpath(os.path.expanduser("~"))
+        for _ in range(_ISSUE_MAP_MAX_UP):
+            if os.path.isfile(os.path.join(d, "Issue.md")):
+                cand = os.path.join(d, ISSUE_MAP_NAME)
+                found = cand if os.path.isfile(cand) else None
+                break
+            parent = os.path.dirname(d)
+            # 루트·홈 도달 시 중단 ($HOME 자체가 nPTiR 루트인 prj0 은 위 분기에서 이미 처리)
+            if parent == d or d == home:
+                break
+            d = parent
+    except OSError:
+        found = None
+    with _issue_map_lock:
+        _issue_map_cache[cwd] = (now + _ISSUE_MAP_TTL, found)
+    return found
+
+
 def _htm_state(path: str) -> tuple:
     """프로젝트 경로의 htm 자동 모드 effective off 여부 + 사유 계산.
     htm-trigger.sh 판정 우선순위 복제: SYSTEM_OFF_FLAG > per-cwd STATE_FILE > 프로젝트 default(on).
@@ -2701,6 +2742,10 @@ class Handler(BaseHTTPRequestHandler):
         # Issue255: htm 문서 상대 리소스(이미지) serve
         if parsed.path == "/htm-res":
             self._handle_htm_res(parsed)
+            return
+        # Issue284: 프로젝트 이슈맵(Issue_map.htm) serve — cwd 로 서버측 경로 재계산
+        if parsed.path == "/issue-map":
+            self._handle_issue_map(parsed)
             return
         if parsed.path == "/boards":
             self._handle_dashboards(parsed)
@@ -3880,6 +3925,9 @@ class Handler(BaseHTTPRequestHandler):
                 "name": p.get("name", ""),
                 "color": p.get("color", "hsl(220,60%,45%)"),
                 "emoji": _project_emoji(p.get("cwd", "")),
+                # Issue284: 이슈맵(Issue_map.htm) 보유 여부 — 카드 헤더 🗺️ 아이콘 조건부 렌더용.
+                #   경로는 노출하지 않는다(/issue-map 이 cwd 로 서버측 재계산 — 경로 조작 차단).
+                "issue_map": bool(_issue_map_path(p.get("cwd", ""))),
                 "mode": entry.get("mode"),
                 "content_type": entry.get("content_type"),
                 "origin": origin,         # Issue177: "vscode" | "terminal" (카드 배지·클릭 분기)
@@ -5970,7 +6018,14 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         except FileNotFoundError:
             self._send_json(404, {"error": "file not found"})
             return
+        self._send_htm_html(body, abs_path)
+
+    def _send_htm_html(self, body: bytes, abs_path: str):
+        """htm 문서 공통 serve 파이프라인 (정규화 + 쉘 shim 주입 + 200 응답).
+        Issue284: /htm-doc 와 /issue-map 이 동일 표현을 갖도록 추출 — 렌더 규약이 한 곳."""
         # Issue255: 상대 <img src> → /htm-res 재작성 (registry 모드)
+        #   주의: /htm-res 는 registry 등록 doc 만 인증하므로, 미등록 문서(/issue-map 경로)의
+        #   상대 이미지는 403 이 된다. 이슈맵은 자립형(SVG 인라인) 규약이라 해당 없음.
         body = _rewrite_relative_imgs(body, abs_path)
         # Issue244: mermaid 런타임을 서버 표준(pinned UMD + run())으로 정규화 — esm race bomb 제거.
         body = _normalize_mermaid_runtime(body)
@@ -5992,6 +6047,54 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _handle_issue_map(self, parsed):
+        """Issue284: 프로젝트 이슈맵(`Issue_map.htm`) serve.
+
+        보안 모델 (registry 화이트리스트를 쓰지 않는 대신 3중 게이트):
+          1. loopback 전용 — 비-loopback 403 (/htm-res abs·/ob 브리지와 동일 등급)
+          2. cwd 화이트리스트 — hub 등록 프로젝트(projects) ∪ Projects.md 목록의 트리 안쪽만.
+             세션 cwd 가 프로젝트 하위 폴더로 드리프트해도(Issue282) 카드 링크가 살아있어야
+             하므로 exact 가 아닌 prefix 매치. prj0 이 `~` 라 실효 jail 은 $HOME 트리 —
+             단 serve 대상은 아래 3 에 의해 `Issue_map.htm` 한 파일명으로 고정된다.
+          3. 파일명 서버 고정 — 클라이언트는 cwd 만 넘기고 실제 경로는 서버가 재계산
+             (`_issue_map_path`) → path traversal 입력면 자체가 없음
+        """
+        client_ip = self.client_address[0] if self.client_address else ""
+        if client_ip not in LOOPBACK_IPS:
+            self._send_json(403, {"error": "loopback only"})
+            return
+        cwd = get_cwd_param(parsed)
+        if not cwd:
+            self._send_json(400, {"error": "missing cwd"})
+            return
+        cwd_real = os.path.realpath(os.path.expanduser(cwd))
+        allowed = set()
+        with projects_lock:
+            for p in projects.values():
+                c = p.get("cwd") or ""
+                if c:
+                    allowed.add(os.path.realpath(os.path.expanduser(c)))
+        for r in _load_projects_list():
+            p = (r.get("path") or "").strip()
+            if p:
+                allowed.add(os.path.realpath(os.path.expanduser(p)))
+        if not any(cwd_real == root or cwd_real.startswith(root.rstrip(os.sep) + os.sep)
+                   for root in allowed):
+            log(f"GET /issue-map — unknown cwd rejected: {cwd_real}")
+            self._send_json(403, {"error": "cwd not a registered project"})
+            return
+        path = _issue_map_path(cwd_real)
+        if not path:
+            self._send_json(404, {"error": f"{ISSUE_MAP_NAME} not found"})
+            return
+        try:
+            with open(path, "rb") as f:
+                body = f.read()
+        except OSError:
+            self._send_json(404, {"error": "file not found"})
+            return
+        self._send_htm_html(body, path)
 
     def _handle_view(self, parsed):
         """Issue16_2: dashboard·form HTML을 동일 origin(http://127.0.0.1)으로 serve.
@@ -7801,7 +7904,11 @@ main { padding: 1.5rem; max-width: 1600px; margin: 0 auto; display: flex; gap: 1
 .card.live[data-cwd] { transition: box-shadow .12s, transform .12s; }
 .card.live[data-cwd]:hover { box-shadow: 0 2px 10px rgba(0,0,0,.18); transform: translateY(-1px); }
 /* Issue101: 프로젝트별 그룹 카드 — head 에 세션 수 배지, body 는 세션 topic 리스트 */
-.card-head .name .live-badge { background: rgba(0,0,0,0.16); color: #1a1a1a; padding: 0.02rem 0.42rem; border-radius: 10px; font-size: 0.78em; font-weight: 600; margin-left: 0.3rem; }
+/* Issue284: live-badge 를 .name 밖 .head-right 로 이동(🗺️ 와 함께 우측 정렬) — 셀렉터에서 .name 제거 */
+.card-head .live-badge { background: rgba(0,0,0,0.16); color: #1a1a1a; padding: 0.02rem 0.42rem; border-radius: 10px; font-size: 0.78em; font-weight: 600; }
+/* Issue284: 이슈맵(Issue_map.htm) 바로가기 — 숫자 배지 왼쪽 */
+.card-head .issue-map { text-decoration: none; font-size: 0.95em; line-height: 1; opacity: 0.85; }
+.card-head .issue-map:hover { opacity: 1; transform: scale(1.15); }
 .live-list { list-style: none; margin: 0; padding: 0; }
 .live-item { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0; border-top: 1px solid var(--border); }
 .live-item:first-child { border-top: none; }
@@ -8128,8 +8235,11 @@ function renderLiveSessions(list, limit, showCopy) {
   const groups = new Map();
   for (const s of list) {
     const key = s.cwd || s.name;
-    if (!groups.has(key)) groups.set(key, {cwd: s.cwd, name: s.name, color: s.color, emoji: s.emoji, items: []});
-    groups.get(key).items.push(s);
+    if (!groups.has(key)) groups.set(key, {cwd: s.cwd, name: s.name, color: s.color, emoji: s.emoji, issueMap: false, items: []});
+    const g = groups.get(key);
+    g.items.push(s);
+    // Issue284: 그룹 내 한 세션이라도 이슈맵 보유면 카드에 🗺️ 노출
+    if (s.issue_map) g.issueMap = true;
   }
   const rowHtml = (s, extraCls) => {
     // Issue66: 큐 dashboard(supervisor_pid 존재)는 graceful remove, 일반은 stop
@@ -8185,9 +8295,16 @@ function renderLiveSessions(list, limit, showCopy) {
     // Issue104: expandedCards 에 cwd 가 있으면 expanded 클래스로 초과 행 노출 (5초 reload 재렌더 시 상태 유지).
     const expCls = expandedCards.has(g.cwd) ? ' expanded' : '';
     // Issue101: 카드 클릭 → VSCode 열기(cdfv). 리스트 항목 버튼은 위임 핸들러가 closest('button,a') 로 제외.
+    // Issue284: 이슈맵 보유 프로젝트만 🗺️ 렌더(미보유는 아이콘 자체 없음 — 빈 아이콘·404 금지).
+    //   서버가 cwd 로 경로를 재계산하므로 링크는 cwd 만 전달. 카드 클릭(VSCode 열기)은
+    //   위임 핸들러가 closest('button,a') 로 제외하므로 <a> 만으로 충돌 없음.
+    const mapLink = g.issueMap
+      ? `<a class="issue-map" href="/issue-map?cwd=${encodeURIComponent(g.cwd)}" target="_blank" data-title="${escapeHtml(g.name)} — Issue Map" onclick="return fpmOpenInShell(event,this)" title="${escapeHtml(t('liveSessions.issueMapTitle'))}">🗺️</a>`
+      : '';
     return `<div class="card live${expCls}" data-cwd="${escapeHtml(g.cwd)}" title="{T:common.openVscodeTitle}">
       <div class="card-head" style="background:${escapeHtml(g.color)}">
-        <span class="name">${escapeHtml(g.emoji || '📁')} ${escapeHtml(g.name)} <span class="live-badge">${g.items.length}</span></span>
+        <span class="name">${escapeHtml(g.emoji || '📁')} ${escapeHtml(g.name)}</span>
+        <span class="head-right">${mapLink}<span class="live-badge">${g.items.length}</span></span>
       </div>
       <div class="card-body"><ul class="live-list">${rows}</ul></div>
     </div>`;
