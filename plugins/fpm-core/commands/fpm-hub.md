@@ -271,15 +271,28 @@ ex)
     - `line-height: 1.7`, 표 `border-collapse: collapse` + 헤더 배경, 코드블록 배경+패딩, 인용구 좌측 보더
     - **흰색 배경 고정 (Issue58)**: `--bg: #ffffff`, `--fg: #1a1a1a` 고정 사용. `@media (prefers-color-scheme: dark)` override **금지** — OS 다크모드와 무관하게 항상 흰 배경으로 렌더링 (다중 탭 일관성)
     - 표/리스트/코드블록/헤더 계층 적극 활용
-    - **다이어그램 런타임 (Issue82)**: 프로세스·인과·구조 내용을 mermaid 다이어그램으로 렌더하기 위해 `<head>` 에 CDN + init 1회 삽입. 상세 규칙·매핑은 아래 "다이어그램 우선 렌더" 섹션 참조
+    - **다이어그램 런타임 (Issue82 → Issue244 canonical 갱신)**: mermaid 런타임은 **`</body>` 직전에 외부 UMD `<script src>` 1줄만**. 인라인 `<script>` 0줄, `<head>` 배치 아님 (정규화기 배치 기준과 일치시켜야 hook 이 재배치하지 않음). 상세 규칙·매핑은 아래 "다이어그램 우선 렌더" 섹션 참조
         ```html
-        <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
-        <script>mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+</body>
         ```
+        * **들여쓰기 금지 (컬럼 0)**: 정규화기가 삽입 직전 `head.rstrip()` 을 수행하므로 canonical 형태는 `<script>` 줄이 **행 선두**. 2칸이라도 들여쓰면 `--check` 가 이탈(rc=1)로 판정하고 hook 이 재작성함 (실측 확인)
+        * **인라인 init 불필요**: mermaid@11 UMD dist 는 `startOnLoad` 기본 true + `window.addEventListener("load", contentLoaded)` 훅을 번들에 내장 → `<pre class="mermaid">` 를 자동 스캔·렌더 (Issue244 Playwright 실측)
+        * **인라인 금지 사유 (Issue244)**: VSCode HTML preview 확장의 CSP 는 `script-src https: vscode-resource:` — `'unsafe-inline'` 이 없어 인라인 `<script>` 를 통째로 차단함. 인라인 0줄인 이 형태만 `file://` · VSCode preview · hub 서빙 **3경로 전부**에서 렌더됨
+        * `theme: 'neutral'` (Issue58 흰 배경 정책, 다크 테마 금지)은 인라인 JS 대신 **각 다이어그램 소스 선두 frontmatter** 로 지정 — CSP 안전, Issue244 실측 확인(node fill `#eee` = neutral):
+            ```html
+            <pre class="mermaid">
+            ---
+            config:
+              theme: neutral
+            ---
+            flowchart TD
+              A["시작"] --> B["끝"]
+            </pre>
+            ```
         * `.mermaid` 블록 CSS: `margin: 1.5rem auto; text-align: center` — max-width 820px 컨테이너 내 중앙 정렬
-        * `theme: 'neutral'` 고정 — Issue58 흰 배경 정책 호환 (다크 테마 금지)
-        * **⚠️ 이탈 금지 (Issue190)**: mermaid 런타임은 위 UMD 2줄 verbatim 만 허용. 다음 즉흥 구조 금지 — ① `<script type="module">` + `mermaid.esm.min.mjs` 등 ESM CDN import (청크 로드 실패 시 스크립트 전체 중단) ② `<div class="mermaid"><pre class="mermaid-src">` 같은 커스텀 마크업 + JS 로 내용 치환 (mermaid.js 가 `startOnLoad:true` 로 `<pre class="mermaid">` 를 직접 스캔하므로 수동 치환 자체가 불필요) ③ `pre.textContent` 로 원문을 읽는 방식 (`<pre>` 안 `<br>` 이 HTML 로 파싱되어 소멸 → 라벨 줄바꿈 유실) ④ `theme: 'dark'` 분기 (Issue58 흰 배경 정책 위반). 다이어그램은 `<pre class="mermaid">` 안에 mermaid 문법 원문을 그대로 작성만 하면 됨 — 별도 JS 불필요.
-        * **CSP 안전형 (prj3 Issue244)**: 인라인 `<script>` 를 차단하는 뷰어(VSCode HTML preview 확장의 `script-src https:` — `'unsafe-inline'` 없음)에서는 위 2줄 중 **init 줄이 실행되지 않는다**. mermaid UMD 는 `startOnLoad` 기본 true + `window load` 훅을 번들에 내장하므로 **외부 `<script src>` 1줄만으로도 렌더된다**(실측 확인) → init 줄이 죽어도 graceful degradation(기본 테마로 렌더). 반대로 ESM+인라인 모듈은 fallback 이 없어 전면 실패 — ①번 금지의 실효 근거.
+        * **⚠️ 이탈 금지 (Issue190 → Issue244 hook 집행)**: mermaid 런타임은 위 UMD 1줄 verbatim 만 허용. 다음 즉흥 구조 금지 — ① `<script type="module">` + `mermaid.esm.min.mjs` 등 ESM CDN import (CSP 차단 + 청크 로드 실패 시 스크립트 전체 중단) ② 인라인 `<script>mermaid.initialize(...)</script>` (CSP 차단 — 구 Issue82 2줄 형식은 **폐기**) ③ `<div class="mermaid"><pre class="mermaid-src">` 같은 커스텀 마크업 + JS 로 내용 치환 (mermaid.js 가 `<pre class="mermaid">` 를 직접 스캔하므로 수동 치환 자체가 불필요) ④ `pre.textContent` 로 원문을 읽는 방식 (`<pre>` 안 `<br>` 이 HTML 로 파싱되어 소멸 → 라벨 줄바꿈 유실) ⑤ `theme: 'dark'` (Issue58 흰 배경 정책 위반). 다이어그램은 `<pre class="mermaid">` 안에 mermaid 문법 원문을 그대로 작성만 하면 됨 — 별도 JS 불필요.
+        * **집행 (Issue244)**: 본 규정은 산문 경고가 아니라 **쓰기 시점 hook 이 강제**함 — `hooks/hub-htm-mermaid-normalize.sh` (PostToolUse) 가 `*/_doc_work/z_htm/*.htm` 저장 시 이탈 런타임을 canonical 1줄로 치환. 이탈 저작 시 파일은 자동 교정되나 경고가 컨텍스트에 주입되므로, 처음부터 위 1줄로 작성할 것
     - **프로젝트 식별 헤더 + 닫기 버튼 (Issue22, Issue58 컬러 정책 갱신)**:
         * 최상단 `<header>` 배경에 PROJECT_COLOR 적용. PROJECT_COLOR 결정 규칙 (Issue58):
             1. `~/_git/___pm/Projects.md` 의 `📋 프로젝트` 테이블에서 현재 `cwd` 와 일치하는 행 찾기 (경로 컬럼: `~` 확장 후 비교)
