@@ -6084,19 +6084,24 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
     def _handle_issue_map(self, parsed):
         """Issue284: 프로젝트 이슈맵(`Issue_map.htm`) serve.
 
-        보안 모델 (registry 화이트리스트를 쓰지 않는 대신 3중 게이트):
-          1. loopback 전용 — 비-loopback 403 (/htm-res abs·/ob 브리지와 동일 등급)
-          2. cwd 화이트리스트 — hub 등록 프로젝트(projects) ∪ Projects.md 목록의 트리 안쪽만.
-             세션 cwd 가 프로젝트 하위 폴더로 드리프트해도(Issue282) 카드 링크가 살아있어야
-             하므로 exact 가 아닌 prefix 매치. prj0 이 `~` 라 실효 jail 은 $HOME 트리 —
-             단 serve 대상은 아래 3 에 의해 `Issue_map.htm` 한 파일명으로 고정된다.
-          3. 파일명 서버 고정 — 클라이언트는 cwd 만 넘기고 실제 경로는 서버가 재계산
+        보안 모델 — registry 화이트리스트를 쓸 수 없어(프로젝트 루트 파일은 등록 대상이
+        아님) 다음 게이트를 조합한다:
+          1. source-IP — 전역 `_ip_allowed()` (Servers.md allowlist / bind self). 모든
+             요청 진입점에서 이미 적용되므로 본 핸들러에 추가 게이트를 두지 않는다.
+             Issue284_2: 종전의 loopback 전용 게이트는 **오분류**였다. loopback 전용은
+             호스트에서 부수효과를 실행하는 엔드포인트(`/ob`·`/open-session` 의 `open`)와
+             $HOME 전역 jail(`/htm-res` abs) 의 등급이고, 이슈맵은 문서를 읽어 돌려주는
+             `/htm-doc` 등급이다. LAN(`bind_host` 비루프백) 접속에서 403 이 나 기능이
+             통째로 죽었다.
+          2. cwd 화이트리스트 — hub 등록 프로젝트(projects) ∪ Projects.md 목록의 트리
+             안쪽만. 세션 cwd 가 하위 폴더로 드리프트해도(Issue282) 카드 링크가 살아있어야
+             하므로 exact 가 아닌 at-or-under 매치.
+          3. 해석 결과 재검증 — 상향 탐색이 등록 트리 **밖의** 조상 `Issue.md` 로 빠져나가
+             무관한 프로젝트의 맵을 serve 하지 않도록, 찾아낸 맵의 디렉토리에도 2 와 같은
+             at-or-under 판정을 다시 적용한다.
+          4. 파일명 서버 고정 — 클라이언트는 cwd 만 넘기고 실제 경로는 서버가 재계산
              (`_issue_map_path`) → path traversal 입력면 자체가 없음
         """
-        client_ip = self.client_address[0] if self.client_address else ""
-        if client_ip not in LOOPBACK_IPS:
-            self._send_json(403, {"error": "loopback only"})
-            return
         cwd = get_cwd_param(parsed)
         if not cwd:
             self._send_json(400, {"error": "missing cwd"})
@@ -6112,14 +6117,23 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             p = (r.get("path") or "").strip()
             if p:
                 allowed.add(os.path.realpath(os.path.expanduser(p)))
-        if not any(cwd_real == root or cwd_real.startswith(root.rstrip(os.sep) + os.sep)
-                   for root in allowed):
+
+        def _within(target: str) -> bool:
+            return any(target == root or target.startswith(root.rstrip(os.sep) + os.sep)
+                       for root in allowed)
+
+        if not _within(cwd_real):
             log(f"GET /issue-map — unknown cwd rejected: {cwd_real}")
             self._send_json(403, {"error": "cwd not a registered project"})
             return
         path = _issue_map_path(cwd_real)
         if not path:
             self._send_json(404, {"error": f"{ISSUE_MAP_NAME} not found"})
+            return
+        # 게이트 3 — 상향 탐색이 등록 트리 밖으로 빠져나간 경우 차단.
+        if not _within(os.path.dirname(path)):
+            log(f"GET /issue-map — resolved map outside registered tree: {path}")
+            self._send_json(403, {"error": "map outside registered project"})
             return
         try:
             with open(path, "rb") as f:

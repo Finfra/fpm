@@ -195,8 +195,23 @@ try:
           r.json_responses and r.json_responses[0][0] == 403 and b"leak" not in r.raw)
 
     r = _get(PRJ_A, ip="192.168.0.9")
-    check("비-loopback 클라이언트 → 403",
-          r.json_responses and r.json_responses[0][0] == 403)
+    check("Issue284_2: LAN 클라이언트도 200 (loopback 전용 게이트 제거 — /htm-doc 등급)",
+          r._status == 200 and b"map A" in r.raw)
+
+    # Issue284_2 게이트 3 — 등록 트리 안의 폴더지만 자체 Issue.md 가 없어 상향 탐색이
+    # 등록 트리 **밖**(TMP 루트)의 Issue.md 로 빠져나가는 경우. 무관한 프로젝트의 맵을
+    # serve 하면 안 된다.
+    ESCAPE = os.path.join(PRJ_C, "nested")
+    os.makedirs(ESCAPE, exist_ok=True)
+    open(os.path.join(TMP, "Issue.md"), "w").write(ISSUE_MD_DEPS)
+    open(os.path.join(TMP, server.ISSUE_MAP_NAME), "w").write("<html><body>escaped</body></html>")
+    try:
+        r = _get(ESCAPE)
+        check("상향 탐색이 등록 트리 밖 Issue.md 로 탈출 → 403 (무관 프로젝트 맵 미유출)",
+              r.json_responses and r.json_responses[0][0] == 403 and b"escaped" not in r.raw)
+    finally:
+        os.remove(os.path.join(TMP, "Issue.md"))
+        os.remove(os.path.join(TMP, server.ISSUE_MAP_NAME))
 
     h = _FakeHandler()
     h.path = "/issue-map"
