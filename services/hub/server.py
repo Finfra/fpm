@@ -590,11 +590,13 @@ def _inject_before_body_end(body: bytes, snippet: bytes) -> bytes:
 # Issue255: /htm-doc·/view 로 serve 되는 문서의 상대 <img src> 는 문서 URL path 가
 #   /htm-doc 고정이라 브라우저가 서버 루트 기준으로 해석해 404. serve 시 상대 src 를
 #   /htm-res?doc=&rel= 절대 URL 로 재작성한다. data:/http(s):/루트(/) src 는 제외.
+# Issue283: `file://` 절대경로 src 는 (a) 브라우저가 http 페이지에서 file: 로드를 차단하고
+#   (b) 상대 rel 로 재작성돼도 404 → `/htm-res?doc=&abs=` 로 별도 재작성($HOME jail).
 _IMG_SRC_RE = re.compile(rb'(<img\b[^>]*?\bsrc=)(["\'])(.*?)\2', re.IGNORECASE | re.DOTALL)
 
 
 def _rewrite_relative_imgs(body: bytes, doc_abs: str, extra_query: str = "") -> bytes:
-    from urllib.parse import quote as _q
+    from urllib.parse import quote as _q, unquote as _unq, urlparse as _up
     doc_q = _q(doc_abs, safe="").encode("ascii")
     extra = ("&" + extra_query).encode("ascii") if extra_query else b""
 
@@ -604,6 +606,20 @@ def _rewrite_relative_imgs(body: bytes, doc_abs: str, extra_query: str = "") -> 
         if (low.startswith((b"data:", b"http:", b"https:", b"//", b"/"))
                 or not src.strip()):
             return m.group(0)
+        # Issue283: `file:///abs/path` src (프로젝트 밖 절대경로 — ex 이미지 생성
+        #   스킬이 ~/Desktop 에 저장한 파일)는 상대 rel 재작성으로 잡히지 않아
+        #   `rel=file%3A%2F%2F%2F…` → 404. abs 모드로 별도 재작성한다.
+        if low.startswith(b"file:"):
+            p = _up(src.decode("utf-8", "replace"))
+            if (p.netloc or "").lower() not in ("", "localhost"):
+                return m.group(0)          # 원격 file://host/… 는 미변경
+            abs_path = _unq(p.path or "")
+            if not abs_path.startswith("/"):
+                return m.group(0)
+            abs_q = _q(abs_path, safe="").encode("ascii")
+            return (m.group(1) + m.group(2)
+                    + b"/htm-res?doc=" + doc_q + b"&abs=" + abs_q + extra
+                    + m.group(2))
         rel_q = _q(src.decode("utf-8", "replace"), safe="").encode("ascii")
         return (m.group(1) + m.group(2)
                 + b"/htm-res?doc=" + doc_q + b"&rel=" + rel_q + extra
@@ -5786,8 +5802,10 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         qs = parse_qs(parsed.query)
         doc = (qs.get("doc") or [""])[0]
         rel = (qs.get("rel") or [""])[0]
-        if not doc or not rel:
-            self._send_json(400, {"error": "missing doc or rel"})
+        # Issue283: abs= 는 file:// 절대경로 모드 (프로젝트 jail 밖 이미지)
+        abs_p = (qs.get("abs") or [""])[0]
+        if not doc or (not rel and not abs_p):
+            self._send_json(400, {"error": "missing doc or rel/abs"})
             return
         doc_real = os.path.realpath(doc)
         jail = None
@@ -5814,11 +5832,26 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             i = doc_real.find(marker)
             jail = (doc_real[:i + len(marker) - 1] if i >= 0
                     else os.path.dirname(doc_real))
-        res = os.path.realpath(os.path.join(os.path.dirname(doc_real), rel))
-        if res != jail and not res.startswith(jail + os.sep):
-            log(f"GET /htm-res — rel escapes jail rejected: {res}")
-            self._send_json(403, {"error": "rel outside jail"})
-            return
+        if abs_p:
+            # Issue283: file:// 절대경로 모드. jail 이 $HOME 으로 완화되므로
+            # loopback 전용 + (위에서 통과한) doc 등록 인증을 함께 요구한다.
+            # /ob 브리지(Issue266)와 동일한 보안 등급.
+            client_ip = self.client_address[0] if self.client_address else ""
+            if client_ip not in LOOPBACK_IPS:
+                self._send_json(403, {"error": "loopback only"})
+                return
+            res = os.path.realpath(os.path.abspath(os.path.expanduser(abs_p)))
+            home = os.path.realpath(os.path.expanduser("~"))
+            if not res.startswith(home + os.sep):
+                log(f"GET /htm-res — abs outside home rejected: {res}")
+                self._send_json(403, {"error": "abs outside home"})
+                return
+        else:
+            res = os.path.realpath(os.path.join(os.path.dirname(doc_real), rel))
+            if res != jail and not res.startswith(jail + os.sep):
+                log(f"GET /htm-res — rel escapes jail rejected: {res}")
+                self._send_json(403, {"error": "rel outside jail"})
+                return
         ext = os.path.splitext(res)[1].lower()
         if ext not in _HTM_RES_EXTS:
             self._send_json(403, {"error": "extension not allowed"})

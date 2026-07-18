@@ -128,8 +128,46 @@ check("확장자 비허용 → 403",
       r.json_responses and r.json_responses[0][0] == 403)
 
 r = _get(f"/htm-res?doc={quote(DOC2, safe='')}")
-check("rel 누락 → 400",
+check("rel/abs 누락 → 400",
       r.json_responses and r.json_responses[0][0] == 400)
+
+# --- Issue283: file:// 절대경로 (abs 모드) ---
+out2 = server._rewrite_relative_imgs(
+    b'<img src="file:///Users/x/Desktop/cat.png">'
+    b'<img src="file:///Users/x/a%20b.png">'
+    b'<img src="file://otherhost/Users/x/c.png">', DOC)
+check("file:// src → /htm-res abs 재작성",
+      b"abs=%2FUsers%2Fx%2FDesktop%2Fcat.png" in out2)
+check("file:// percent-encoding 디코드 후 재인코딩",
+      b"abs=%2FUsers%2Fx%2Fa%20b.png" in out2)
+check("원격 file://host/… 는 미변경",
+      b'src="file://otherhost/Users/x/c.png"' in out2)
+
+HOME = os.path.realpath(os.path.expanduser("~"))
+HOME_PNG = os.path.join(HOME, ".htm-res-test-abs.png")
+open(HOME_PNG, "wb").write(b"\x89PNG-abs")
+try:
+    r = _get(f"/htm-res?doc={quote(DOC2, safe='')}&abs={quote(HOME_PNG, safe='')}")
+    check("등록 doc + $HOME 하위 abs → 200 이미지 bytes",
+          r._status == 200 and r.raw == b"\x89PNG-abs")
+
+    r = _get(f"/htm-res?doc={quote('/etc/hosts', safe='')}&abs={quote(HOME_PNG, safe='')}")
+    check("미등록 doc + abs → 403",
+          r.json_responses and r.json_responses[0][0] == 403)
+
+    r = _get(f"/htm-res?doc={quote(DOC2, safe='')}&abs={quote('/etc/hosts.png', safe='')}")
+    check("$HOME 밖 abs → 403",
+          r.json_responses and r.json_responses[0][0] == 403)
+
+    h = _FakeHandler()
+    h.client_address = ("192.168.0.9", 0)
+    url = f"/htm-res?doc={quote(DOC2, safe='')}&abs={quote(HOME_PNG, safe='')}"
+    h.path = url
+    h._handle_htm_res(urlparse(url))
+    check("비-loopback 클라이언트 abs → 403",
+          h.json_responses and h.json_responses[0][0] == 403)
+finally:
+    os.remove(HOME_PNG)
 
 shutil.rmtree(TMP)
 
