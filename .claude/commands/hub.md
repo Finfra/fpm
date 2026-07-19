@@ -11,9 +11,10 @@ date: 2026-05-19
 > **⚠️ 토글 vs 서버 구분 (Issue200)**: `/hub on|off [all]` 은 본 커맨드가 아니라 글로벌 hook(`fpm-hub-trigger.sh`)이 처리하는 **자동 렌더 토글**이다 (서버 프로세스와 무관).
 > * `/hub on` / `/hub off` = **프로젝트 단위**(현재 cwd) 자동 렌더 토글
 > * `/hub on all` / `/hub off all` = **시스템 단위**(모든 프로젝트) 토글
+> * `/hub list` = **조회 전용** — 등록 프로젝트 전체의 hub on/off 상태를 표로 즉시 반환 (토글 아님, 글로벌 hook 처리). hub 웹 UI Project List 팝업을 열지 않고 채팅에서 바로 확인 가능
 > * `/hub start` / `/hub stop` / `restart` / … = **서버 프로세스**(port 9876) lifecycle — 본 커맨드. 토글 아님.
 >
-> 즉 `on/off` = 렌더 토글, `start/stop` = 서버 제어. 인자가 겹치지 않도록 분리됨.
+> 즉 `on/off` = 렌더 토글, `list` = 상태 조회, `start/stop` = 서버 제어. 인자가 겹치지 않도록 분리됨.
 
 # 동작 모델
 
