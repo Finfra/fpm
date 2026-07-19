@@ -60,7 +60,19 @@ ALLOW_ALL = False
 
 STATE_DIR = "/tmp/___pm/claude-htm-server"
 INBOX_ROOT = "/tmp/___pm/claude-htm-inbox"
-TMP_OUT_DIR = "/tmp/___pm"  # dashboard agent OUT_DIR fallback (z_htm 부재 시)
+TMP_OUT_DIR = "/tmp/___pm"  # dashboard agent OUT_DIR fallback (htm 폴더 부재 시)
+
+# Issue289: htm 산출물 수명주기 — 쓰기는 활성 폴더 1곳, 읽기는 아래 목록 전체.
+#   활성 `_doc_work/htm/` → 아카이브 `_doc_work/z_done/htm/` → legacy `_doc_work/z_htm/`.
+#   legacy 항목은 전 프로젝트 마이그레이션(P3) 완료 후 P4 에서 제거한다.
+#   설계 SSOT: _doc_arch/htm-lifecycle-design.md
+HTM_ACTIVE_DIR = "htm"
+HTM_DIRS = ["htm", "z_done/htm", "z_htm"]
+
+
+def _htm_dirs_for(cwd: str) -> list:
+    """Issue289: 프로젝트 cwd 하위 htm 읽기 경로 목록(우선순위 순, 존재 여부 무관)."""
+    return [os.path.join(cwd, "_doc_work", *d.split("/")) for d in HTM_DIRS]
 TOKENS_FILE = f"{STATE_DIR}/tokens.json"
 SESSIONS_FILE = f"{STATE_DIR}/sessions.json"  # Issue17 Phase 1
 PIDS_FILE = f"{STATE_DIR}/pids.json"  # Issue63: runner PID 등록분 영속화
@@ -893,27 +905,35 @@ def _live_dismiss_add(h: str, sid: str) -> None:
 
 # Issue51: feed detail 에 등장한 htm html 경로를 htm-registry 에 자가 등록.
 # /register-doc 는 글로벌 SCAR(htm 스킬)가 책임지나 서버 다운·호출 누락 시 영구 미등록 됨.
-# hook 이벤트는 항상 수신되므로 detail 의 z_htm 경로를 디스크 확인 후 보강한다.
+# hook 이벤트는 항상 수신되므로 detail 의 htm 경로를 디스크 확인 후 보강한다.
+# Issue289: 단일 z_htm 고정에서 HTM_DIRS 전체 alternation 으로 확장.
 _HTM_DOC_PATH_RE = re.compile(
-    r"/[^\s`\"'<>]+/_doc_work/z_htm/claude-htm-[^\s`\"'<>]+\.html")
+    r"/[^\s`\"'<>]+/_doc_work/(?:"
+    + "|".join(re.escape(d) for d in HTM_DIRS)
+    + r")/claude-htm-[^\s`\"'<>]+\.html")
 
 
 def _autoheal_htm_registry(feed_items: list) -> None:
-    """feed 항목 detail 에서 z_htm htm html 절대경로를 추출, 디스크에 존재하나
+    """feed 항목 detail 에서 htm html 절대경로를 추출, 디스크에 존재하나
     htm-registry 미등록인 항목을 자동 등록한다 (___pm 서버 단독 읽기 경로 보강).
-    cwd 는 경로의 `/_doc_work/z_htm/` 앞부분으로 유추 — feed cwd 비신뢰.
+    cwd 는 경로의 `/_doc_work/{HTM_DIRS 항목}/` 앞부분으로 유추 — feed cwd 비신뢰.
     Issue53: HTM_CLEARED tombstone 에 든 path 는 부활시키지 않는다."""
     found = {}
     for it in feed_items:
         detail = it.get("detail") or ""
-        if "z_htm" not in detail:
+        if "_doc_work/" not in detail:  # 저비용 prefilter (정밀 판정은 정규식)
             continue
         for raw in _HTM_DOC_PATH_RE.findall(detail):
             # 슬래시 중복 등 비정상 prefix 정규화 (cwd_hash 분기 차단)
             m = os.path.normpath(raw)
             if m not in found and os.path.isfile(m):
-                idx = m.find("/_doc_work/z_htm/")
-                found[m] = m[:idx] if idx > 0 else ""
+                cwd = ""
+                for d in HTM_DIRS:
+                    idx = m.find(f"/_doc_work/{d}/")
+                    if idx > 0:
+                        cwd = m[:idx]
+                        break
+                found[m] = cwd
     if not found:
         return
     with registry_lock:
@@ -2683,7 +2703,7 @@ def get_token_param(parsed) -> str:
 def path_within_serve_roots(abs_path: str, cwd_real: str) -> bool:
     """/view·/data confinement: cwd 하위 또는 서버 소유 TMP_OUT_DIR flat 파일 허용.
 
-    dashboard agent 가 z_htm 부재 시 dash/html 산출물을 TMP_OUT_DIR(/tmp/___pm)
+    dashboard agent 가 htm 폴더 부재 시 dash/html 산출물을 TMP_OUT_DIR(/tmp/___pm)
     평면에 떨굼(Issue39). dash-registry 의 cwd 는 프로젝트 cwd 라 cwd-confinement
     만으로는 'path outside cwd' 403 발생. TMP_OUT_DIR flat 파일은 서버 소유
     namespace 이므로 예외 허용. subdir(claude-htm-server/inbox) 은 제외."""
@@ -3178,21 +3198,28 @@ class Handler(BaseHTTPRequestHandler):
         return entry
 
     def _scan_dashes(self, cwd: str) -> list:
-        """Issue16_7 / Issue31: cwd 하위 _doc_work/z_htm/ 에서 *.dash.{json,yaml,yml} 스캔.
+        """Issue16_7 / Issue31: cwd 하위 htm 폴더에서 *.dash.{json,yaml,yml} 스캔.
         Issue41: 자동 hub 갱신 경로에서 제거됨 — /hub-rescan(수동 부트스트랩) 전용.
+        Issue289: 단일 z_htm 대신 HTM_DIRS 전체를 훑는다(활성→아카이브→legacy).
         yaml 은 stdlib 미지원이므로 dashboard.md 양식 한정 경량 파서 사용 (Issue31 (a))."""
         results = []
-        z_htm = os.path.join(cwd, "_doc_work", "z_htm")
-        if not os.path.isdir(z_htm):
-            return results
-        try:
-            entries = sorted(os.listdir(z_htm))
-        except OSError:
-            return results
-        for name in entries:
+        pairs = []
+        for htm_dir in _htm_dirs_for(cwd):
+            if not os.path.isdir(htm_dir):
+                continue
+            try:
+                names = sorted(os.listdir(htm_dir))
+            except OSError:
+                continue
+            pairs.extend((htm_dir, n) for n in names)
+        seen_names = set()
+        for htm_dir, name in pairs:
             if not (name.endswith(".dash.json") or name.endswith(".dash.yaml") or name.endswith(".dash.yml")):
                 continue
-            abs_path = os.path.join(z_htm, name)
+            if name in seen_names:  # 같은 파일명이 여러 경로에 있으면 우선순위 앞선 것만
+                continue
+            seen_names.add(name)
+            abs_path = os.path.join(htm_dir, name)
             try:
                 st = os.stat(abs_path)
             except OSError:
@@ -3340,7 +3367,7 @@ class Handler(BaseHTTPRequestHandler):
                 continue
             candidates.append((name, abs_path))
         # Issue55: search_limit — 파일명 unixtime 최신 N개만 처리.
-        # z_htm 누적 시 전수 stat + _extract_html_title(파일 열람) 폭주를 차단.
+        # htm 누적 시 전수 stat + _extract_html_title(파일 열람) 폭주를 차단.
         if limit > 0 and len(candidates) > limit:
             def _name_ts(fname):
                 m = re.search(r"(\d+)\.html$", fname)
@@ -3364,16 +3391,24 @@ class Handler(BaseHTTPRequestHandler):
         return results
 
     def _scan_htm_docs(self, cwd: str, skip: set = None, limit: int = 0) -> list:
-        """Issue40: 프로젝트 cwd 하위 _doc_work/z_htm/ 의 htm 단발 출력 스캔."""
-        return self._scan_htm_docs_in(os.path.join(cwd, "_doc_work", "z_htm"),
-                                      skip, limit)
+        """Issue40: 프로젝트 cwd 하위 htm 폴더의 htm 단발 출력 스캔.
+        Issue289: HTM_DIRS 전체(활성→아카이브→legacy)를 훑고 파일명 기준 dedup —
+        같은 문서가 이동 중 두 곳에 보여도 우선순위 앞선 경로 하나만 노출한다."""
+        results, seen = [], set()
+        for htm_dir in _htm_dirs_for(cwd):
+            for item in self._scan_htm_docs_in(htm_dir, skip, limit):
+                if item["name"] in seen:
+                    continue
+                seen.add(item["name"])
+                results.append(item)
+        return results
 
     def _scan_tmp_htm_docs(self, skip: set = None, limit: int = 0) -> list:
-        """Issue40: /tmp/___pm 평면 htm 출력 스캔 (z_htm 부재 시 fallback 경로)."""
+        """Issue40: /tmp/___pm 평면 htm 출력 스캔 (htm 폴더 부재 시 fallback 경로)."""
         return self._scan_htm_docs_in("/tmp/___pm", skip, limit)
 
     def _all_disk_htm_paths(self) -> set:
-        """Issue92: clear tombstone 용 — 등록 프로젝트 z_htm + /tmp/___pm 의
+        """Issue92: clear tombstone 용 — 등록 프로젝트 htm 폴더(Issue289: HTM_DIRS 전체) + /tmp/___pm 의
         claude-htm-*.html 절대경로 전수(set). title 추출 없이 path 만 수집
         (dash 동반 .html 제외). _scan_htm_docs_in 과 동일 후보 규칙이나
         파일 열람·limit 없이 경로만 — clear 가 디스크에 권위적이도록.
@@ -3384,7 +3419,7 @@ class Handler(BaseHTTPRequestHandler):
             for p in projects.values():
                 cwd = p.get("cwd", "")
                 if cwd:
-                    dirs.append(os.path.join(cwd, "_doc_work", "z_htm"))
+                    dirs.extend(_htm_dirs_for(cwd))
         dirs.append(TMP_OUT_DIR)
         out = set()
         for d in dirs:
@@ -3405,7 +3440,7 @@ class Handler(BaseHTTPRequestHandler):
         return out
 
     def _all_disk_dash_paths(self) -> set:
-        """Issue95: clear tombstone용 — 등록 프로젝트 z_htm + /tmp/___pm의
+        """Issue95: clear tombstone용 — 등록 프로젝트 htm 폴더(Issue289: HTM_DIRS 전체) + /tmp/___pm의
         *.dash.{json,yaml,yml} 절대경로 전수(set). path만 수집(파일 열람 없음) —
         clear가 디스크에 권위적이도록. registry 미등록 orphan도 포함하여
         clear 후 rescan 부활을 원천 차단한다."""
@@ -3414,7 +3449,7 @@ class Handler(BaseHTTPRequestHandler):
             for p in projects.values():
                 cwd = p.get("cwd", "")
                 if cwd:
-                    dirs.append(os.path.join(cwd, "_doc_work", "z_htm"))
+                    dirs.extend(_htm_dirs_for(cwd))
         dirs.append(TMP_OUT_DIR)
         out = set()
         for d in dirs:
@@ -4112,17 +4147,19 @@ class Handler(BaseHTTPRequestHandler):
         return results
 
     def _handle_file_stat(self, parsed):
-        """Issue115: dashboard 데이터 파일 폴링 — _doc_work/z_htm/*.dash.yaml 의 mtime 반환"""
+        """Issue115: dashboard 데이터 파일 폴링 — htm 폴더의 *.dash.yaml mtime 반환.
+        Issue289: HTM_DIRS 전체를 우선순위 순으로 훑되 같은 파일명은 앞선 경로가 이긴다."""
         qs = parse_qs(parsed.query)
         cwd = unquote(qs.get("cwd", [""])[0]) or ""
 
         files = {}
         if cwd:
-            z_htm_dir = os.path.join(cwd, "_doc_work", "z_htm")
-            if os.path.isdir(z_htm_dir):
-                for f in os.listdir(z_htm_dir):
-                    if f.endswith(".dash.yaml"):
-                        path = os.path.join(z_htm_dir, f)
+            for htm_dir in _htm_dirs_for(cwd):
+                if not os.path.isdir(htm_dir):
+                    continue
+                for f in os.listdir(htm_dir):
+                    if f.endswith(".dash.yaml") and f not in files:
+                        path = os.path.join(htm_dir, f)
                         try:
                             stat = os.stat(path)
                             files[f] = {"mtime_ts": stat.st_mtime}
@@ -4757,7 +4794,7 @@ __WARN__
         self.wfile.write(body)
 
     def _handle_hub_rescan(self, parsed):
-        """Issue41: 수동 부트스트랩. 등록 프로젝트의 z_htm + /tmp/___pm 를 1회 스캔하여
+        """Issue41: 수동 부트스트랩. 등록 프로젝트의 htm 폴더(Issue289: HTM_DIRS 전체) + /tmp/___pm 를 1회 스캔하여
         registry 에 누락된 htm/dash 산출물을 수거(merge, dedup). 자동 호출 없음 —
         hub 의 명시적 버튼 클릭으로만 트리거되는 사용자 액션. 127.0.0.1 trust.
         Issue55: htm 스캔은 HTM_CLEARED tombstone 을 skip(부활 차단, dash 측 Issue54 대칭),
@@ -6057,8 +6094,9 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
 
     def _send_htm_doc_tmp_hint(self, abs_path: str):
         """/tmp fallback 문서가 미등록 403 일 때, raw JSON 대신 원인·해결 안내 HTML serve.
-        원인: 프로젝트에 `_doc_work/z_htm/` 부재 → 트리거가 /tmp/___pm 로 fallback → register 훅
-        (z_htm 경로만 매칭)이 등록 스킵 → whitelist 403. 해결: 프로젝트에 z_htm 생성 후 재렌더."""
+        원인: 프로젝트에 활성 htm 폴더 부재 → 트리거가 /tmp/___pm 로 fallback → register 훅
+        (htm 경로만 매칭)이 등록 스킵 → whitelist 403. 해결: 프로젝트에 htm 폴더 생성 후 재렌더.
+        Issue289: 안내 폴더를 legacy `z_htm` 에서 활성 `_doc_work/htm/` 으로 교체."""
         base = os.path.basename(abs_path)
         port = self.server.server_address[1]
         reg_cmd = (
@@ -6070,7 +6108,7 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         html = (
             "<!doctype html><html lang=ko><head><meta charset=utf-8>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
-            "<title>미등록 htm — z_htm 폴더 필요</title><style>"
+            "<title>미등록 htm — htm 폴더 필요</title><style>"
             "body{font:15px/1.6 -apple-system,system-ui,sans-serif;max-width:760px;"
             "margin:3rem auto;padding:0 1.2rem;color:#222}"
             "h1{font-size:1.3rem}code{background:#f2f2f5;padding:.15em .4em;border-radius:4px}"
@@ -6079,14 +6117,15 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             "@media(prefers-color-scheme:dark){body{background:#16161a;color:#ddd}"
             "code{background:#2a2a33}.box{background:#2b2410;border-color:#7a5c1e}}"
             "</style></head><body>"
-            "<h1>⚠️ 미등록 htm 문서 — 프로젝트에 <code>_doc_work/z_htm/</code> 필요</h1>"
+            "<h1>⚠️ 미등록 htm 문서 — 프로젝트에 <code>_doc_work/htm/</code> 필요</h1>"
             "<p>이 문서는 <code>/tmp/___pm/</code> fallback 경로에 저장됐습니다. "
-            "프로젝트 루트에 <code>_doc_work/z_htm/</code> 폴더가 <b>없어서</b> hub 렌더가 "
+            "프로젝트 루트에 <code>_doc_work/htm/</code> 폴더가 <b>없어서</b> hub 렌더가 "
             "/tmp 로 회피했고, 등록 훅이 /tmp 경로를 매칭하지 못해 hub registry 에 "
             "등록되지 않았습니다 → <code>/htm-doc</code> 화이트리스트 403.</p>"
-            "<div class=box><b>영구 해결</b> — 프로젝트 루트에서 z_htm 폴더 생성 후 다시 렌더:"
-            "<pre>mkdir -p _doc_work/z_htm</pre>"
-            "이후 hub 렌더는 프로젝트 z_htm 에 저장되어 자동 등록됩니다.</div>"
+            "<div class=box><b>영구 해결</b> — 프로젝트 루트에서 htm 폴더 생성 후 다시 렌더:"
+            "<pre>mkdir -p _doc_work/htm</pre>"
+            "이후 hub 렌더는 프로젝트 <code>_doc_work/htm/</code> 에 저장되어 자동 등록됩니다. "
+            "(legacy <code>_doc_work/z_htm/</code> 도 읽기는 계속 지원 — Issue289)</div>"
             "<p><b>이 문서만 즉시 복구</b> (수동 등록):</p>"
             "<pre>" + reg_cmd + "</pre>"
             "<p style=color:#888>파일: <code>" + abs_path + "</code></p>"
@@ -6098,6 +6137,52 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _htm_resolve_moved(self, abs_path: str, cleared: set) -> str:
+        """Issue289 (축 2 — ENOENT self-heal): 등록 경로가 디스크에 없을 때
+        **같은 프로젝트 루트 하위 HTM_DIRS** 에서 basename 으로 재탐색한다.
+        아카이브 이동(`htm/` → `z_done/htm/`)으로 죽은 URL·북마크를 흡수하는 경로.
+
+        보안 불변식:
+        * 요청/registry 경로에서 취하는 것은 `basename` 뿐이다 — 경로 성분은 전부 폐기하므로
+          `../` 류 traversal 로 화이트리스트 밖 파일에 도달할 수 없다.
+        * 후보가 symlink 등으로 프로젝트 루트 밖을 가리키면 거부한다.
+        * HTM_CLEARED tombstone 에 든 경로는 되살리지 않는다 — clear 무효화 금지.
+
+        찾지 못하면 빈 문자열."""
+        marker = "/_doc_work/"
+        idx = abs_path.find(marker)
+        if idx <= 0:
+            return ""
+        root = abs_path[:idx]
+        base = os.path.basename(abs_path)
+        if not base or base in (".", ".."):
+            return ""
+        for d in HTM_DIRS:
+            cand = os.path.realpath(
+                os.path.join(root, "_doc_work", *d.split("/"), base))
+            if not cand.startswith(root + os.sep):
+                continue  # 프로젝트 밖으로 새는 후보 거부
+            if cand == abs_path or not os.path.isfile(cand):
+                continue
+            if cand in cleared:
+                continue  # clear 된 문서가 fallback 으로 부활하지 않도록
+            return cand
+        return ""
+
+    def _htm_registry_rewrite(self, old_paths: set, new_path: str) -> None:
+        """Issue289: self-heal 성공 시 registry 의 옛 경로를 새 위치로 갱신(1회성 자가 치유).
+        이후 조회는 registry 가 새 경로를 직접 가리키므로 fallback 비용이 없다."""
+        with registry_lock:
+            entries = load_registry(HTM_REGISTRY)
+            changed = False
+            for e in entries:
+                if (e.get("path") or "") in old_paths:
+                    e["path"] = new_path
+                    changed = True
+            if changed:
+                save_registry(HTM_REGISTRY, entries)
+                log(f"htm-doc self-heal — registry rewrite -> {new_path}")
 
     def _handle_htm_doc(self, parsed):
         """Issue50: htm-registry 등록 htm html 을 토큰 없이 serve. registry 는
@@ -6120,9 +6205,9 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
                 reg_paths.add(os.path.realpath(p))
         if abs_path not in reg_paths and rel not in reg_paths:
             log(f"GET /htm-doc — unregistered path rejected: {abs_path}")
-            # Issue: /tmp fallback 경로(=프로젝트에 _doc_work/z_htm/ 부재로 트리거가 /tmp 로 회피)
-            #   는 register 훅(fpm-hub-doc-register, z_htm 경로만 매칭)이 등록을 스킵 → 영구 403.
-            #   이 경우 raw JSON 대신 "z_htm 만들라" 안내 HTML 을 serve (사용자가 원인·해결을 즉시 인지).
+            # Issue: /tmp fallback 경로(=프로젝트에 htm 폴더 부재로 트리거가 /tmp 로 회피)
+            #   는 register 훅(fpm-hub-doc-register, htm 경로만 매칭)이 등록을 스킵 → 영구 403.
+            #   이 경우 raw JSON 대신 "htm 폴더 만들라" 안내 HTML 을 serve (원인·해결 즉시 인지).
             if os.path.dirname(abs_path) == os.path.realpath(TMP_OUT_DIR):
                 self._send_htm_doc_tmp_hint(abs_path)
                 return
@@ -6151,8 +6236,23 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             with open(abs_path, "rb") as f:
                 body = f.read()
         except FileNotFoundError:
-            self._send_json(404, {"error": "file not found"})
-            return
+            # Issue289: 아카이브 이동 등으로 등록 경로가 비었을 때 basename 재탐색(자가 치유).
+            #   whitelist 는 이미 위에서 통과했고(=등록된 문서), tombstone 은 아래에서 재적용한다.
+            with registry_lock:
+                cleared = set(load_registry(HTM_CLEARED))
+            moved = self._htm_resolve_moved(abs_path, cleared)
+            if not moved:
+                self._send_json(404, {"error": "file not found"})
+                return
+            try:
+                with open(moved, "rb") as f:
+                    body = f.read()
+            except OSError:
+                self._send_json(404, {"error": "file not found"})
+                return
+            log(f"GET /htm-doc — self-heal {abs_path} -> {moved}")
+            self._htm_registry_rewrite({abs_path, rel}, moved)
+            abs_path = moved
         self._send_htm_html(body, abs_path)
 
     def _send_htm_html(self, body: bytes, abs_path: str):
@@ -8503,7 +8603,7 @@ function fpmOpenInShell(ev, a) {
 
 // Issue40: htm 스킬 단발 출력 문서 노출 (별도 섹션)
 function _htmCardHtml(d) {
-  // Issue69: z_htm 기본 경로는 생략, 파일명만 열기 버튼 옆에 표시
+  // Issue69: htm 폴더 기본 경로는 생략, 파일명만 열기 버튼 옆에 표시
   const fname = (d.path || '').split('/').pop();
   // Issue169: '열기' 텍스트 → 열기 이모지(↗)만. title 로 의미 보강.
   // Issue194: 임베드(/hub-shell) 시 onclick 으로 부모 쉘 내부 탭 라우팅.
