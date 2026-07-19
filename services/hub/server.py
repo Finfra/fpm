@@ -1574,24 +1574,41 @@ _ISSUE_DEPENDS_RE = re.compile(r"^\s*\*\s*depends:\s*\S")
 # Issue284_3: 이슈 헤더(`## Issue1: …` / `### Issue1_2: …`) 줄이 `✅` 로 끝나면 완료 —
 #   issue-map 스킬(build_issue_map.py)의 done 판정과 동일 신호(섹션명 하드코딩 없음).
 _ISSUE_HEADER_RE = re.compile(r"^#{2,3}\s+Issue")
+# Issue290: 섹션 헤딩(`# 📙 일반` 등) 인식 — 정규식은 build_issue_map.py parse_issue_md() 미러.
+_ISSUE_SECTION_RE = re.compile(r"^#\s+(.+?)\s*$")
+# Issue290: issue-map 이 관계도에서 통째로 빼는 섹션(build_issue_map.py `EXCLUDED_SECTIONS` 미러).
+#   화이트리스트가 아닌 블랙리스트인 이유 — 완료 섹션명은 프로젝트마다 다를 수 있어
+#   (ex: `🏁 완료-해결순`, issue-g.md 참고) 포함 섹션을 열거하면 그런 프로젝트에서 판정이 죽는다.
+_ISSUE_EXCLUDED_SECTIONS = {"⏸️ 보류", "🚫 취소"}
 
 
 def _issue_md_has_depends(issue_md: str) -> bool:
-    """Issue.md 에 **미완료** 이슈가 선언한 유효한 `* depends:` 줄이 1개 이상 있으면 True.
+    """Issue.md 에 **맵에 실제로 그려질** 이슈가 선언한 `* depends:` 줄이 1개 이상 있으면 True.
 
-    완료 이슈(헤더 줄이 `✅` 로 끝남)만 선언한 depends 는 세지 않는다 — issue-map 스킬은
-    "자신+후행 모두 완료"인 이슈를 관계도에서 제외하므로, 그런 depends 만 있는 프로젝트는
-    실제 맵이 빈 관계도(생략 안내문)를 렌더하면서도 카드엔 🗺️ 가 뜨는 불일치가 있었다
-    (Issue284_3). 첫 매치에서 조기 종료.
+    두 축을 모두 제외해야 맵과 판정이 일치한다 — 어느 한쪽만 보면 카드엔 🗺️ 가 뜨는데
+    맵은 빈 관계도(생략 안내문)를 렌더하는 불일치가 난다.
+
+    * 완료 이슈(헤더 줄이 `✅` 로 끝남) — issue-map 은 "자신+후행 모두 완료"를 관계도에서
+      제외하므로, 그런 depends 만 있는 프로젝트는 그래프가 비어 있다 (Issue284_3)
+    * ⏸️ 보류 · 🚫 취소 섹션 이슈 — issue-map 이 노드 자체를 빼므로 그 depends 도 그려지지
+      않는다 (prj3#Issue259 반영. 헤더가 `✅` 가 아니라 완료 축만으로는 못 걸러짐)
+
+    첫 매치에서 조기 종료.
     """
     try:
         current_done = False
+        excluded_section = False
         with open(issue_md, encoding="utf-8", errors="replace") as f:
             for line in f:
+                m_sec = _ISSUE_SECTION_RE.match(line)
+                if m_sec:
+                    excluded_section = m_sec.group(1) in _ISSUE_EXCLUDED_SECTIONS
+                    current_done = False
+                    continue
                 if _ISSUE_HEADER_RE.match(line):
                     current_done = line.rstrip().endswith("✅")
                     continue
-                if not current_done and _ISSUE_DEPENDS_RE.match(line):
+                if not current_done and not excluded_section and _ISSUE_DEPENDS_RE.match(line):
                     return True
     except OSError:
         return False
