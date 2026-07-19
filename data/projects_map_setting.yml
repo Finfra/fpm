@@ -1,0 +1,2 @@
+# Projects_map 생성기 설정. 상세: _doc_arch/projects-map-design.md
+enabled: true   # false 면 생성기가 즉시 종료(no-op) — 기존 Projects_map.htm 보존, 로그만 남김
