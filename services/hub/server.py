@@ -5077,12 +5077,21 @@ __WARN__
         # Issue232: `open <uri>` 는 macOS 가 frontmost VSCode 창으로 라우팅 →
         #   직전 포커스한 다른 프로젝트 창에 패널이 열리는 문제. owner cwd 가
         #   등록 프로젝트면 그 폴더를 먼저 전면화 후 URI 호출(open-session 동일 패턴).
+        # Issue287: owner_cwd 가 프로젝트 루트의 하위 폴더(ex: m2slide/Projects/aTest)일 때
+        #   과거엔 `allowed` 정확 일치만 검사해 실패 → target_cwd="" → else 분기로 빠져
+        #   frontmost 창(이미 열린 루트 창과 다른 폴더)에 URI 가 라우팅 → 새 창 발생.
+        #   open-project/open-session 과 동일하게 _resolve_project_root() 로 등록 루트 정규화.
         target_cwd = ""
         if owner_cwd and os.path.isdir(owner_cwd):
+            matched_root = _resolve_project_root(owner_cwd)
+            resolved_cwd = (os.path.expanduser(matched_root.get("path", "")).rstrip("/")
+                            if matched_root else "")
             allowed = set(_load_projects_colors().keys())
             with projects_lock:
                 allowed.update((p.get("cwd", "") or "").rstrip("/") for p in projects.values())
-            if owner_cwd in allowed:
+            if resolved_cwd and os.path.isdir(resolved_cwd):
+                target_cwd = resolved_cwd
+            elif owner_cwd in allowed:
                 target_cwd = owner_cwd
         try:
             if target_cwd:
