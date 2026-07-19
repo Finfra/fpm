@@ -193,7 +193,7 @@ curl -s http://127.0.0.1:"$PORT"/healthz
 
 ## clear
 
-**재정의**: 등록된 모든 프로젝트의 `_doc_work/z_htm/*.dash.{json,yaml,yml}` + `/tmp/*.dash.*` 중 **`status: done` 또는 `status: stopped`** 인 항목과 동반 `.html` 파일을 삭제. 서버 PID/메모리 상태(tokens, sessions)는 보존.
+**재정의**: 등록된 모든 프로젝트의 `_doc_work/{htm,z_done/htm,z_htm}/*.dash.{json,yaml,yml}` + `/tmp/*.dash.*` 중 **`status: done` 또는 `status: stopped`** 인 항목과 동반 `.html` 파일을 삭제. 서버 PID/메모리 상태(tokens, sessions)는 보존.
 
 * `done` 변형 매칭: `done`, `ALL-DONE`, `all_done`, `done(2/3)` 등 (단어 경계 검사 — `undone` 등은 비매칭)
 * `stopped` 매칭: `stopped`, `stop`
