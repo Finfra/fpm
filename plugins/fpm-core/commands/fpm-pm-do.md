@@ -51,7 +51,7 @@ skill: "fpm-pm-do"
   → pm:fapp 윈도우 capture 출력
 ```
 
-# Opus 4.7 실행 제약
+# Opus 4.8 실행 제약
 
 * 재귀 위임 depth 상한 3
 * 폴링 횟수 = 타임아웃/간격 (기본 30회)

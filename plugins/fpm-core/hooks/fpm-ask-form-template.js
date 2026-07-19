@@ -9,7 +9,8 @@
 //   - hooks/fpm-ask-marker-detect.sh   (Mode D — <!-- htm-form:auto --> 마커)
 //   - commands/fpm-hub.md              (hub 스킬 본문)
 // 주입 placeholder:
-//   {ANSWER_URL}        → ___pm htm-server answer 엔드포인트 절대 URL
+//   {ANSWER_URL}        → ___pm htm-server answer 엔드포인트 상대경로 (Issue208 — /answer?cwd=..&token=..&sid=..)
+//   {LOOPBACK_BASE}     → file:// 직접 열람 시 loopback fallback base (Issue208 — http://127.0.0.1:{port})
 //   {OPEN_PROJECT_URL}  → ___pm htm-server /open-project 엔드포인트 (Issue132 — VSCode focus)
 //   {PROJECT_CWD_JSON}  → 프로젝트 cwd 의 JSON 문자열(따옴표 포함). open-project body 임베드용
 // 구조 차이 흡수:
@@ -68,11 +69,15 @@ function renderStatus(st, payload, msg, ok) {
   st.appendChild(copyBtn);
 }
 
+// Issue208: same-origin 상대경로 — 페이지를 연 host 로 POST 회귀 (외부 기기/tailnet 대응).
+// file:// 직접 열람만 origin 이 없어 loopback base fallback.
+const AB = location.protocol === 'file:' ? '{LOOPBACK_BASE}' : '';
+
 // Issue55/57: 공통 함수 — 전송·전송 후 닫기 버튼 양쪽 재사용
 async function submitAnswers() {
   const payload = collectAnswers();
   try {
-    const r = await fetch('{ANSWER_URL}', {
+    const r = await fetch(AB + '{ANSWER_URL}', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(payload)
@@ -87,7 +92,7 @@ async function submitAnswers() {
     return r.ok;
   } catch (e) {
     renderStatus(document.getElementById('status'), payload,
-      '❌ 전송 실패: ' + e.message + ' — `/fpm-hub-server status` 확인 후 재전송', false);
+      '❌ 전송 실패: ' + e.message + ' — `/dashboard-server status` 확인 후 재전송', false);
     return false;
   }
 }

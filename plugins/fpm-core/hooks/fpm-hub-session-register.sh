@@ -34,23 +34,10 @@ except Exception:
 
 [ -z "$SID" ] && exit 0
 
-# live_pid: 세션 카드 liveness anchor. stdin JSON pid·$PPID 는 훅 실행용 transient
-#   프로세스(턴 종료 시 사망)일 수 있어 부적합 — 그 pid 가 죽으면 서버가 세션을 즉시
-#   prune 해 "0 live session" 이 된다. → 조상 체인에서 영속 claude 프로세스(comm=claude)
-#   를 탐색해 권위 pid 로 사용. 실패 시 JSON pid → $PPID fallback (하위호환).
-PID=""
-_p=$PPID; _d=0
-while [ "${_p:-0}" -gt 1 ] && [ "$_d" -lt 12 ]; do
-  _c=$(ps -o comm= -p "$_p" 2>/dev/null | awk -F/ '{print $NF}')
-  case "$_c" in *claude*) PID=$_p; break ;; esac
-  _p=$(ps -o ppid= -p "$_p" 2>/dev/null | tr -d ' ')
-  _d=$((_d+1))
-done
-if [ -z "$PID" ]; then
-  PID="$PID_JSON"
-  case "$PID" in ''|*[!0-9]*) PID="$PPID" ;; esac
-fi
-[ -z "$CWD" ] && CWD="$PWD"
+# pid: JSON 값이 있고 정수면 사용, 아니면 훅 부모 pid(=claude 세션) fallback
+PID="$PID_JSON"
+case "$PID" in ''|*[!0-9]*) PID="$PPID" ;; esac
+[ -z "$CWD" ] && exit 0   # Issue179: PWD fallback 제거 — hook 컨텍스트 PWD 는 frontmost 반영 위험(세션 오귀속), doc-register.sh:43 표준 정합
 case "$CWD" in /*) ;; *) exit 0 ;; esac   # 절대경로만
 
 SERVER_PORT="${HTM_SERVER_PORT:-9876}"
@@ -71,19 +58,47 @@ REG_URL="http://127.0.0.1:${SERVER_PORT}/session/register?cwd=${CWD_ENC}"
 #   서버가 capabilities.entrypoint 로 hub 카드 출처 배지(🆚/⌨️)를 분기.
 ENTRY="${CLAUDE_CODE_ENTRYPOINT:-}"
 
+# Issue221(보너스): resume 세션 model 선탐색 — SessionStart(source=resume/compact) 시점엔
+#   transcript 에 이미 assistant .message.model 존재 → dot 을 첫 응답 前 즉시 표시.
+#   신규(source=startup) 세션은 transcript 비어 MODEL='' → 무해(기존 동작 유지, Stop 훅이 채움).
+TRANSCRIPT=$(printf '%s' "$input" | python3 -c "
+import sys, json
+try:
+    print(json.load(sys.stdin).get('transcript_path', '') or '')
+except Exception:
+    print('')
+")
+MODEL=""
+if [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ]; then
+  MODEL=$(tail -n 400 "$TRANSCRIPT" 2>/dev/null | python3 -c "
+import sys, json
+last = ''
+for line in sys.stdin:
+    try:
+        m = (json.loads(line).get('message') or {}).get('model')
+        if m:
+            last = m
+    except Exception:
+        pass
+print(last)
+" 2>/dev/null)
+fi
+
 BODY=$(python3 -c "
 import json, sys
-sid, src, win, pid, entry = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+sid, src, win, pid, entry, model = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6]
 caps = {'tmux_window': win, 'source': src, 'kind': 'live'}
 if entry:
     caps['entrypoint'] = entry   # Issue177: 출처 배지용 (claude-vscode|cli|...)
+if model:
+    caps['model'] = model        # Issue221: resume 세션 모델 신호등 즉시 표시
 body = {'sid': sid, 'content_type': 'live', 'capabilities': caps}
 try:
     body['pid'] = int(pid)   # Issue122: 서버 계약 pid(int) 필수
 except (ValueError, TypeError):
     pass
 print(json.dumps(body))
-" "$SID" "$SRC" "$TMUX_WIN" "$PID" "$ENTRY")
+" "$SID" "$SRC" "$TMUX_WIN" "$PID" "$ENTRY" "$MODEL")
 
 curl -s --max-time 2 \
   -X POST "$REG_URL" \

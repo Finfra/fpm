@@ -273,18 +273,25 @@ print(name.replace(' ', '_'), color.replace(' ', ''))
 PYEOF
 )"
 
-# OUT_DIR
-if [ -n "$cwd" ] && [ -d "$cwd/_doc_work/z_htm" ]; then
-  OUT_DIR="$cwd/_doc_work/z_htm"
-elif [ -n "$cwd" ]; then
-  sub_found=$(find "$cwd" -mindepth 3 -maxdepth 3 -type d -path "*/_doc_work/z_htm" 2>/dev/null | head -1)
+# OUT_DIR (Issue289/Issue258: 활성 htm/ → legacy z_htm/ → htm/ 신규. fpm-hub-trigger.sh 와 동일 규칙)
+_htm_dir_of() {  # $1=프로젝트 루트 → htm 출력 폴더 경로(없으면 빈 문자열)
+  [ -d "$1/_doc_work/htm" ] && { printf '%s' "$1/_doc_work/htm"; return; }
+  [ -d "$1/_doc_work/z_htm" ] && { printf '%s' "$1/_doc_work/z_htm"; return; }
+  [ -d "$1/_doc_work" ] && { mkdir -p "$1/_doc_work/htm" && printf '%s' "$1/_doc_work/htm"; return; }
+  printf ''
+}
+
+OUT_DIR=""
+if [ -n "$cwd" ] && [ -d "$cwd/_doc_work" ]; then
+  OUT_DIR=$(_htm_dir_of "$cwd")
+fi
+if [ -z "$OUT_DIR" ] && [ -n "$cwd" ]; then
+  sub_found=$(find "$cwd" -mindepth 2 -maxdepth 2 -type d -name _doc_work 2>/dev/null | head -1)
   if [ -n "$sub_found" ]; then
-    OUT_DIR="$sub_found"
-  else
-    OUT_DIR="/tmp/___pm"
-    mkdir -p "$OUT_DIR"
+    OUT_DIR=$(_htm_dir_of "$(dirname "$sub_found")")
   fi
-else
+fi
+if [ -z "$OUT_DIR" ]; then
   OUT_DIR="/tmp/___pm"
   mkdir -p "$OUT_DIR"
 fi
@@ -320,7 +327,7 @@ reason = (
     "## htm-form:auto 마커 감지됨 — server 미가용\n\n"
     f"healthz={'$health'} / register 실패. form 자동 회수 단일 경로 (Issue45) 라 fallback 없음.\n\n"
     "### 조치 (사용자 선택)\n"
-    "1. `/fpm-hub-server start` 실행 후 응답 재작성 → 마커 재처리\n"
+    "1. `/dashboard-server start` 실행 후 응답 재작성 → 마커 재처리\n"
     "2. `..hub stop` 입력 → hub 모드 해제, 일반 채팅으로 회답 받기"
 )
 print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=False))
@@ -346,27 +353,13 @@ case "$_db" in
   chrome|Chrome)      _app="Google Chrome" ;;
   edge|Edge)          _app="Microsoft Edge" ;;
   safari|Safari)      _app="Safari" ;;
-  none|None|NONE|off) _app="" ;;   # 브라우저 미존재 환경(서버) — open 생략
   *)                  _app="$_db" ;;
 esac
-if [ -z "$_app" ]; then
-  # default_browser: none — 브라우저 미설치 서버. open 명령 미생성 → hub URL 로 폼 접속.
-  _focus="false"; HTM_OPEN_CMD=""
+# browser_focus: false(기본)=백그라운드 open(-g, 포커스 미탈취), true=foreground
+if grep -qE '^[[:space:]]*browser_focus:[[:space:]]*true' "$HUB_SETTING_FILE" 2>/dev/null; then
+  HTM_OPEN_CMD="open -a \"$_app\""
 else
-  # browser_focus: false(기본)=백그라운드 open(-g, 포커스 미탈취), true=foreground
-  if grep -qE '^[[:space:]]*browser_focus:[[:space:]]*true' "$HUB_SETTING_FILE" 2>/dev/null; then
-    _focus="true"; HTM_OPEN_CMD="open -a \"$_app\""
-  else
-    _focus="false"; HTM_OPEN_CMD="open -g -a \"$_app\""
-  fi
-  # Issue162: browser_tab_reuse=true & 재사용 가능 브라우저(chrome/edge/safari) → 탭 재사용 helper 로 치환.
-  #   match=:9876 origin → /hub 대시보드 + htm-doc?path=… 모든 hub URL 단일 탭. file:// 등 미매칭은 새 탭(폴백 동등).
-  _reuse=$(grep -E '^[[:space:]]*browser_tab_reuse:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//')
-  _helper="$HOME/_git/___pm/plugins/fpm-core/hooks/fpm-browser-open.sh"
-  case "$_app" in "Google Chrome"|"Microsoft Edge"|"Safari") _reusable=1 ;; *) _reusable=0 ;; esac
-  if [ "$_reuse" = "true" ] && [ "$_reusable" = "1" ] && [ -f "$_helper" ]; then
-    HTM_OPEN_CMD="bash \"$_helper\" -a \"$_app\" -f \"$_focus\" -r true -m http://127.0.0.1:9876"
-  fi
+  HTM_OPEN_CMD="bash \"$HOME/_git/___pm/plugins/fpm-core/hooks/fpm-browser-open.sh\" -a \"$_app\" -f false -r false"  # Issue173: helper 경유(focus 복원). Chrome open -g self-activate 방지. -r false=폼 새 탭(Issue153)
 fi
 
 QUESTIONS_JSON="$MARKER_DATA" \
@@ -394,20 +387,16 @@ cwd_hash = os.environ.get('CWD_HASH', '')
 inbox_dir = os.environ.get('INBOX_DIR', '')
 cwd = os.environ.get('PROJECT_CWD', '')
 open_cmd = os.environ.get('HTM_OPEN_CMD', 'open -g -a Firefox')
-# default_browser: none → open_cmd 빈값. open 생략하고 hub URL 로 폼 접속 안내.
-if open_cmd:
-    open_heading = "**2. 저장 + Firefox open**:"
-    open_line = f"   {open_cmd} \"file://<절대경로>\"\n"
-else:
-    open_heading = "**2. 저장 (default_browser: none — open 생략)**:"
-    open_line = "   # 브라우저 미존재(서버). open 금지. Write 시 register-doc 자동 → http://127.0.0.1:{}/htm-doc?path=<절대경로> 로 폼 접속\n".format(server_port)
 cwd_q = urllib.parse.quote(cwd) if cwd else ''
 # Issue157: 헤더 버튼(open-project/open-session)용 프로젝트 루트 — cwd 가 _doc_work/z_htm 하위면 보정
 project_root = cwd.split('/_doc_work/')[0] if cwd and '/_doc_work/' in cwd else cwd
 
 ask_path = f"{out_dir}/hub_htm_<YYYYMMDD_HHMMSS>_c_<주제>.htm"  # 날짜시간=`date +%Y%m%d_%H%M%S`, 주제=핵심 10자 내외 kebab, mode c=auto 폼(Mode D, doc-register 제외)
 path_note = "프로젝트 로컬 (_doc_work/z_htm/)" if not out_dir.startswith('/tmp') else "/tmp/___pm fallback"
-answer_url = f"http://127.0.0.1:{server_port}/answer?cwd={cwd_q}&token={server_token}&sid={sid}"
+# Issue208: same-origin 상대경로 — 외부 기기(tailnet)에서 폼 열어도 POST 가 페이지 host 로 회귀.
+# file:// 직접 열람만 폼 JS 의 AB(={LOOPBACK_BASE}) fallback 사용.
+answer_url = f"/answer?cwd={cwd_q}&token={server_token}&sid={sid}"
+loopback_base = f"http://127.0.0.1:{server_port}"
 
 # Issue90 — inbox 세션 격리. 같은 cwd 두 세션이 같은 inbox 를 공유해 poll 이 다른 세션
 # 폼 응답을 회수하던 결함의 수정. 2중 방어:
@@ -432,8 +421,9 @@ sid_quoted = shlex.quote(sid) if sid else "''"
 # Issue68: 폼 JS 템플릿 SSOT — hooks/fpm-ask-form-template.js 단일 출처에서 읽어 placeholder 치환
 # Issue132: {OPEN_PROJECT_URL}+{PROJECT_CWD_JSON} 치환 (Mode D 는 submit-session-btn 없음 → dead code, literal leak 방지용)
 open_project_url = f"http://127.0.0.1:{server_port}/open-project"
-form_js = (open(os.path.join(os.environ.get('CLAUDE_PLUGIN_ROOT', os.path.expanduser('~/.claude')), 'hooks/fpm-ask-form-template.js'), encoding='utf-8').read()
+form_js = (open(os.path.expanduser('~/.claude/hooks/fpm-ask-form-template.js'), encoding='utf-8').read()
            .replace('{ANSWER_URL}', answer_url)
+           .replace('{LOOPBACK_BASE}', loopback_base)
            .replace('{OPEN_PROJECT_URL}', open_project_url)
            .replace('{PROJECT_CWD_JSON}', json.dumps(cwd)))
 
@@ -459,7 +449,7 @@ project_header_guide = (
     "header { position: sticky; top: 0; z-index: 100; display: flex; align-items: center;\n"
     "  justify-content: space-between; gap: 1rem; flex-wrap: wrap; padding: 0.9rem 1.4rem;\n"
     "  background: __PCOLOR__; color: #1a1a1a; }\n"
-    "header h1 { margin: 0; font-size: 1.15rem; flex: 1 1 auto; min-width: 0; }\n"
+    "header h1 { margin: 0; font-size: 1.15rem; flex: 1 1 auto; min-width: 0; text-align: center; }\n"
     "header .header-actions { display: flex; align-items: center; gap: 0.5rem; flex: 0 0 auto; }\n"
     "header .proj-badge, header .sess-link, header .hub-link, header button { color: #1a1a1a; text-decoration: none;\n"
     "  cursor: pointer; white-space: nowrap; background: rgba(0,0,0,0.08);\n"
@@ -486,10 +476,10 @@ reason = (
     "   - `<div id=\"status\">` 전송 결과 표시\n"
     "   - JavaScript (SSOT: `hooks/fpm-ask-form-template.js`, Issue68 — `{ANSWER_URL}` 치환 완료본. 아래 블록을 그대로 `<script>` 에 삽입. Mode D 는 submit-close-btn 없음 → 템플릿이 null-safe 처리):\n"
     "```js\n" + form_js + "```\n\n"
-    f"{open_heading}\n"
+    "**2. 저장 + Firefox open**:\n"
     "   ```bash\n"
     f"  # path: {ask_path} ({path_note})\n"
-    f"{open_line}"
+    f"   {open_cmd} \"file://<절대경로>\"\n"
     "   ```\n\n"
     "**3. 채팅 안내** (caveman 압축, 다음 모두 포함):\n"
     "   1. 한 줄 헤드라인: '마커 감지. 자동 폼 열림. \"전송\" 클릭 → 회수 대기.'\n"

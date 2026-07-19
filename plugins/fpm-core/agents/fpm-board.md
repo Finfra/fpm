@@ -10,7 +10,7 @@ date: 2026-05-31
 
 Mode C(Live Dashboard) 운영을 main turn에서 분리. tmux pane을 띄워 그 안에서 runner.sh가 data 파일을 주기 갱신. main turn은 즉시 자유.
 
-본 문서는 agent **운영 명세**(입력·절차·종료)만 담는다. 설계 정본(배경·결정·이력): `~/_git/___pm/_doc_arch/hub_board_tmux_design.md`. 글로벌 `_doc_arch/dashboard.md`는 클라이언트측 운영 참조.
+본 문서는 agent **운영 명세**(입력·절차·종료)만 담는다. 설계 정본(배경·결정·이력): `~/_git/___pm/_doc_arch/hub_board_tmux_design.md`. 글로벌 `_doc_arch/board.md`는 클라이언트측 운영 참조.
 
 # 모드
 
@@ -81,9 +81,15 @@ while [ "$D" != "/" ] && [ "$IN_VAULT" -eq 0 ]; do
   D=$(dirname "$D")
 done
 
-if [ -d "$CWD/_doc_work/z_htm" ] && [ "$IN_VAULT" -eq 0 ]; then
-  OUT_DIR="$CWD/_doc_work/z_htm"
-else
+# Issue258/Issue289: 활성 htm/ → legacy z_htm/ → htm/ 신규. hooks/fpm-hub-trigger.sh 와 동일 규칙
+OUT_DIR=""
+if [ "$IN_VAULT" -eq 0 ]; then
+  if [ -d "$CWD/_doc_work/htm" ]; then OUT_DIR="$CWD/_doc_work/htm"
+  elif [ -d "$CWD/_doc_work/z_htm" ]; then OUT_DIR="$CWD/_doc_work/z_htm"
+  elif [ -d "$CWD/_doc_work" ]; then OUT_DIR="$CWD/_doc_work/htm"; mkdir -p "$OUT_DIR"
+  fi
+fi
+if [ -z "$OUT_DIR" ]; then
   OUT_DIR="/tmp/___pm"
   mkdir -p "$OUT_DIR"
 fi
@@ -271,14 +277,14 @@ SPA 우상단 헤더에 `data.status` 기반 자동 표시:
 * `dynamic_eval` 없는 위젯은 정적 — Claude main turn 이 직접 Edit 으로 갱신
 * `commands` 비어있어도 `dynamic_eval` 가진 위젯은 runner 가 매 iter 갱신
 * badge type 은 SPA renderer 미지원 → `type: text` + `dynamic_eval` 로 상태 문자열 출력 (ex: `"🟢 alive"`)
-* **시계열 차트 (`type: chart`/`sparkline`/`line`)** — 인라인 `/view` 가 SVG 라인+area 곡선 렌더 (`_render_chart_svg`). dict value `{points,ymax,ymin,unit,label}` 권장(고정축, 0 기준). **단 dynamic_eval 두지 말 것** — runner 가 value 를 문자열로 덮어써 dict 파괴. 대신 별도 인젝터 스크립트(`${지표}_injector.sh`)가 history 파일 → dict 를 atomic write(tmp→rename) 로 주입, runner pid 사망 시 자가 종료. chart 위젯은 dynamic_eval 없어 runner 사이클서 원형 보존(race 없음). 텍스트 fallback 으로 유니코드 스파크라인 `text` 위젯 병행 권장. 계약 상세: `_doc_arch/dashboard.md` "## 위젯 → ### 시계열 차트"
-* **노드 그래프 (`type: graph`/`dag`/`tree`)** — **시계열 chart 와 별개**(2026-06-02 alias 분리). top-level `nodes:[{id,label,status}]` + `edges:[{from,to}]` → 인라인 `/view` 가 레이어드 DAG SVG 렌더 (`_render_nodegraph_svg`, 노드=상태색 rect, 엣지=line). 시나리오 2·3·5 이슈 DAG·의존성 트리·마일스톤. 계약: `_doc_arch/dashboard.md` "### 노드 그래프"
+* **시계열 차트 (`type: chart`/`sparkline`/`line`)** — 인라인 `/view` 가 SVG 라인+area 곡선 렌더 (`_render_chart_svg`). dict value `{points,ymax,ymin,unit,label}` 권장(고정축, 0 기준). **단 dynamic_eval 두지 말 것** — runner 가 value 를 문자열로 덮어써 dict 파괴. 대신 별도 인젝터 스크립트(`${지표}_injector.sh`)가 history 파일 → dict 를 atomic write(tmp→rename) 로 주입, runner pid 사망 시 자가 종료. chart 위젯은 dynamic_eval 없어 runner 사이클서 원형 보존(race 없음). 텍스트 fallback 으로 유니코드 스파크라인 `text` 위젯 병행 권장. 계약 상세: `_doc_arch/board.md` "## 위젯 → ### 시계열 차트"
+* **노드 그래프 (`type: graph`/`dag`/`tree`)** — **시계열 chart 와 별개**(2026-06-02 alias 분리). top-level `nodes:[{id,label,status}]` + `edges:[{from,to}]` → 인라인 `/view` 가 레이어드 DAG SVG 렌더 (`_render_nodegraph_svg`, 노드=상태색 rect, 엣지=line). 시나리오 2·3·5 이슈 DAG·의존성 트리·마일스톤. 계약: `_doc_arch/board.md` "### 노드 그래프"
     - **노드 진행 강화 (Issue147/139)** — 노드에 optional 필드 추가 시 `..show` 모드만큼 진행 상태 표현. 전부 하위호환(미지정 노드는 라벨+상태색 테두리 그대로):
         - `progress`: number 0~100 또는 `{value,max,label?}` → 노드 하단 이슈별 progress 바 + % 라벨
         - `sub`/`note`: str → 라벨 아래 회색 보조줄(선행/후행 요약·원인, 30자 초과 말줄임)
         - `current`: bool → 굵은 테두리(3px)+글로우, "현재 진행 중" 노드 강조
         - `status` 아이콘: done=✅녹 / running·active=🟢청 / error·unresolved·open=🔴적 / waiting=⏳주황 / blocked=🚫회 / pending=⬜연회
-    - **scenario 3(이슈 의존성 트리) 작성 가이드**: flat checklist 로 떨어뜨리지 말 것 — `type: tree`(또는 `graph`) 위젯 + 노드별 `status`·`progress`·`sub` + 진행 노드 `current:true` 로 구성하면 해결 순서·진척이 풍부히 보임. 스키마 SSOT: ___pm `_doc_arch/hub_board_detail.md §11`, fixture: `~/_git/___pm/_doc_work/z_htm/issue-tree-sample.dash.yaml`
+    - **scenario 3(이슈 의존성 트리) 작성 가이드**: flat checklist 로 떨어뜨리지 말 것 — `type: tree`(또는 `graph`) 위젯 + 노드별 `status`·`progress`·`sub` + 진행 노드 `current:true` 로 구성하면 해결 순서·진척이 풍부히 보임. 스키마 SSOT: ___pm `_doc_arch/hub_board_detail.md §11`, fixture: `~/_git/___pm/_doc_work/z_done/htm/issue-tree-sample.dash.yaml`
 * **log/diff** — `_render_log_widget`(monospace pre, 다행)·`_render_diff_widget`(+/- 컬러). `text`/`log` 위젯은 `content` 필드도 읽음(value 비면 content fallback). supervisor 로그를 `type: log` 로 선언하면 monospace 박스 렌더(현 fixture 다수는 `type: text` 로도 정상)
 
 ### 위젯 너비 힌트
@@ -308,6 +314,7 @@ widgets:
 
 **핵심 동작**:
 * 자신의 PID를 data 파일 `pid:` 에 기록
+* **기동 시 dash hub 등록 1회 (Issue197)**: `POST http://127.0.0.1:9876/register-doc` `{"type":"dash","path":DATA_FILE,"cwd":$PWD,"title":TOPIC}` — dash-registry 미등록으로 hub 목록에 영구 미노출되는 사각 차단 + `DASH_CLEARED` tombstone 해제(recover). 서버 down 시 무시(fail-soft). queue-runner 도 동일 (title 은 DATA_FILE basename 유도). 서버측 `/notify` auto-register(prj1#Issue254)와 병행 이중 방어
 * `trap TERM INT HUP` — cleanup → `status: stopped` 마킹 후 exit
 * loop: 1) data read 2) commands 실행 3) widgets 갱신 4) data write 5) sleep interval
 * widget `dynamic_eval` 주기 실행 (모니터링 스크립트 호출)
@@ -337,24 +344,6 @@ chmod +x "$SHIM_FILE"
 tmux new-window -t pm -n "$WIN_NAME" -c "$CWD"
 tmux send-keys -t "pm:$WIN_NAME" "bash $SHIM_FILE 2>&1 | tee -a $LOG_FILE" Enter
 ```
-
-### dash-registry 자동 등록 (Issue192) — 필수
-
-runner 는 순수 파일 기반(서버 호출 0)이라, 생성한 `.dash.yaml` 카드를 hub `/boards` 에 노출시키려면 **생산자(agent)** 가 `/register-doc` 를 1회 호출해야 한다(Issue41 생산자 등록 원칙). 미호출 시 카드는 사용자가 hub `rescan` 을 눌러야만 노출됨. window 시작 직후 아래 블록 실행 — healthz 게이트 + fail-soft(서버 down 이면 silent skip, dashboard 본기능 비차단).
-
-```bash
-SERVER_PORT="${HTM_SERVER_PORT:-9876}"
-if [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 \
-     "http://127.0.0.1:${SERVER_PORT}/healthz" 2>/dev/null)" = "200" ]; then
-  curl -s --max-time 3 -X POST \
-    "http://127.0.0.1:${SERVER_PORT}/register-doc" \
-    -H 'Content-Type: application/json' \
-    -d "$(python3 -c "import json,sys; print(json.dumps({'type':'dash','path':sys.argv[1],'cwd':sys.argv[2],'title':sys.argv[3]}))" \
-         "$DATA_FILE" "$CWD" "$TOPIC")" >/dev/null 2>&1
-fi
-```
-
-`path` 는 serve-root(`CWD` 하위 `_doc_work/z_htm` 또는 `/tmp/___pm`) 안이라 등록 거부 없음. 재등록 시 dedup(동일 path 갱신).
 
 ### Worker 프로세스 spawn 시 의무
 
@@ -395,8 +384,10 @@ runner `cleanup()` 가 SIGTERM/INT 수신 시 `worker_pid` alive 면 SIGTERM →
 
 ## 7. 채팅 응답 (caveman)
 
+* **브라우저 open 규칙 (Issue193)**: 브라우저·오픈 방식은 `~/_git/___pm/data/hub_setting.yml` 의 `default_browser`·`browser_open` 이 결정. 특정 브라우저명 하드코딩 금지. hook 미경유 실행(agent 직접 dispatch·inline 테스트)이라 주입된 open 명령이 없으면 위 yml 을 직접 읽어 `open -g -a <resolved>` 를 구성할 것
+
 표시 의무 (실제 ACTUAL_WIN 사용):
-* 한 줄 요약 (ex: "dashboard `${TOPIC}` 시작. pane `pm:${WIN_NAME}` 가동. Firefox 열림.")
+* 한 줄 요약 (ex: "dashboard `${TOPIC}` 시작. pane `pm:${WIN_NAME}` 가동. 브라우저 열림(hub_setting.yml 설정).")
 * stable URL raw 표기 (Issue104): `🌐 ${STABLE_URL}` — token 포함 전체 URL 노출 (클릭 시 즉시 브라우저 open). 마크다운 링크 형식 금지
 * pane 모니터링 명령: `cdft capture :${WIN_NAME}`
 * 중단·갱신: SPA ⏹ stop / ✕ kill pane / 🔄 refresh 버튼. CLI 종료 `cdft kill :${WIN_NAME}`, CLI 갱신 `kill -USR1 $(yq '.pid' ${DATA_FILE})`
@@ -419,7 +410,7 @@ dashboard agent 는 tmux pane 에서 호출 main 세션과 분리 실행 → 완
 
 `fpm-hub-trigger.sh` board 분기가 컨텍스트로 주입. agent 는 위 "완료 폴러 메타"를 반환하여 폴러 변수를 채운다.
 
-* 폴 주기 **30s**, 기본 만료 **6h** (ETA 알면 `ETA_SEC×2` 우선). SCAR 전역 스케줄링 정책 준수 — crontab 금지, 네이티브 폴링 허용 (`_doc_arch/dashboard.md`)
+* 폴 주기 **30s**, 기본 만료 **6h** (ETA 알면 `ETA_SEC×2` 우선). SCAR 전역 스케줄링 정책 준수 — crontab 금지, 네이티브 폴링 허용 (`_doc_arch/board.md`)
 * 감시 신호: `status` ∈ `{done, stopped, halted}` 또는 timeout
 * 폴러 stdout → harness 재호출 → main 이 alert 출력
 
@@ -447,7 +438,7 @@ dashboard agent 는 tmux pane 에서 호출 main 세션과 분리 실행 → 완
 
 순수 모니터링 모드와 별개. 트리거 `..dashboard queue <items>@<conc>` / `/dashboard --queue <items>@<conc>`. 여러 이슈를 DAG 큐로 등록해 supervisor 가 위상 순서·동시성에 따라 일괄 처리.
 
-* 설계 SSOT: `_doc_arch/dashboard.md` "큐 모드 — DAG 오케스트레이션" (N+2 프로세스·queue.yaml 스키마·시그널 맵)
+* 설계 SSOT: `_doc_arch/board.md` "큐 모드 — DAG 오케스트레이션" (N+2 프로세스·queue.yaml 스키마·시그널 맵)
 * 정본 설계: `~/_git/___pm/_doc_arch/hub_board_detail.md`
 * daemon: `agents/fpm-board-supervisor.sh` (DAG 구동) · `agents/fpm-board-queue-runner.sh` (시각화). queue.yaml 스키마: `agents/fpm-board-queue.sample.yaml`
 
@@ -483,7 +474,7 @@ dashboard agent 는 tmux pane 에서 호출 main 세션과 분리 실행 → 완
 4. **사이클 사전 검증** — Kahn 위상정렬로 순환 검출. 사이클 발견 시 큐 등록 거부 + 사용자 보고 후 종료
 5. `OUT_DIR/<topic>.queue.yaml` 작성 — 스키마는 `agents/fpm-board-queue.sample.yaml` 준수. 초기 `state: running`, item `status: blocked`(depends 있음) 또는 `ready`(없음)
 6. **승인 게이트 (선택)** — 사용자가 특정 item 사전 승인 요구 시 `approval: true` 추가. supervisor 가 ready 도달 시 `waiting_approval` 정지 → 승인 마커 `<OUT_DIR>/.dash-approvals/<topic>__<id>` 생성 시 디스패치
-7. **Q&A 재개 (런타임)** — worker 가 작업 도중 입력 필요 시 `.waiting` sentinel 에 질문 기록. supervisor 가 `waiting_input` 으로 두고 `queue-qa` 위젯에 노출. 사용자가 답변 마커 `<OUT_DIR>/.dash-answers/<topic>__<id>`(내용=답변) 생성 시 supervisor 가 답변+재개 프롬프트 재주입. 상세: `_doc_arch/dashboard.md` `## 백그라운드 Q&A`
+7. **Q&A 재개 (런타임)** — worker 가 작업 도중 입력 필요 시 `.waiting` sentinel 에 질문 기록. supervisor 가 `waiting_input` 으로 두고 `queue-qa` 위젯에 노출. 사용자가 답변 마커 `<OUT_DIR>/.dash-answers/<topic>__<id>`(내용=답변) 생성 시 supervisor 가 답변+재개 프롬프트 재주입. 상세: `_doc_arch/board.md` `## 백그라운드 Q&A`
 
 ### Q2. daemon env 결정
 
@@ -503,7 +494,7 @@ supervisor·queue-runner 는 글로벌 템플릿. env 변수로 인스턴스 파
 
 1. 30초 대기 후 tmux pane 출력 확인: `tmux capture-pane -t "pm:_<topic>" -p | tail -5` → supervisor/queue-runner 시작 메시지 확인
 2. queue-runner log 확인: `$OUT_DIR/<topic>.queue-runner.log` (stderr redirect 있으면)
-3. **dash-registry 자동 등록 (Issue192)**: queue-runner 가 `<topic>.dash.yaml` 을 생성하면 `## 5` "dash-registry 자동 등록" 블록을 동일 실행(`DATA_FILE=$OUT_DIR/<topic>.dash.yaml`, `CWD`, `TOPIC` 주입) → `/boards` 즉시 노출. fail-soft.
+3. (선택) dash hub 등록 확인 (Issue197): `~/_git/___pm/data/hub/dash-registry.json` 에 `DATA_FILE` 경로 존재 — 없으면 서버 down 이었던 것 (runner 재기동 시 재등록됨)
 
 ### Q5. 채팅 응답 (caveman)
 
@@ -547,17 +538,17 @@ kill $(yq '.worker_pid' ${DATA_FILE})
 `fpm-board-notify.sh`(PostToolUse) 매칭 패턴:
 - `*.htm.{yaml,yml,json}`
 - `*.dash.{yaml,yml,json}`
-- `_doc_work/z_htm/*.{yaml,yml,json}`
+- `_doc_work/{htm,z_htm}/*.{yaml,yml,json}`
 
 # 위젯 type
 
-위젯 type 표(기본 `progress`/`table`/`checklist`/`text`/`badge` + 확장 `chart`/`pie`, `dynamic_eval` 치환 위치 포함)·인라인 `/view` 전용 렌더(type별 HTML — chart SVG 라인, pie 도넛, checklist ✅/⬜, table HTML, progress bar, badge pill; JSON 원문 덤프 금지)·시계열 차트(0 기준 기본·인젝터 주의)·`width` 힌트(`full`/정수 span)는 영속 설계 SSOT 로 일원화 — `_doc_arch/dashboard.md` `## 위젯`(`### type`, `### 인라인 /view 전용 렌더`, `### 시계열 차트`, `### 너비 힌트`) 참조. 본 문서 `## 4` 의 "위젯 선택 원칙"·"동적 위젯"·"위젯 너비 힌트" 는 운영 절차로 잔존.
+위젯 type 표(기본 `progress`/`table`/`checklist`/`text`/`badge` + 확장 `chart`/`pie`, `dynamic_eval` 치환 위치 포함)·인라인 `/view` 전용 렌더(type별 HTML — chart SVG 라인, pie 도넛, checklist ✅/⬜, table HTML, progress bar, badge pill; JSON 원문 덤프 금지)·시계열 차트(0 기준 기본·인젝터 주의)·`width` 힌트(`full`/정수 span)는 영속 설계 SSOT 로 일원화 — `_doc_arch/board.md` `## 위젯`(`### type`, `### 인라인 /view 전용 렌더`, `### 시계열 차트`, `### 너비 힌트`) 참조. 본 문서 `## 4` 의 "위젯 선택 원칙"·"동적 위젯"·"위젯 너비 힌트" 는 운영 절차로 잔존.
 
 그래프 선택 요지(SSOT 상세): 단조 증가는 시계열 line 1개, 순간값은 `pie` 도넛(1셀), 파일 복사 등 **개수**는 파일 갯수 시계열 line chart, 모든 시계열 0 기준 시작.
 
 # 채팅 fallback 의무
 
-브라우저 미관측 대비 채팅 응답 필수 포함 항목(한 줄 요약·stable URL·pane 명령·핵심 데이터 bullet·SPA 컨트롤 안내)은 영속 설계 SSOT 로 일원화 — `_doc_arch/dashboard.md` "# 채팅 fallback 의무" 참조. 순수 모니터링 `## 9`, 큐 모드 `## Q5` 채팅 응답 절차가 집행한다.
+브라우저 미관측 대비 채팅 응답 필수 포함 항목(한 줄 요약·stable URL·pane 명령·핵심 데이터 bullet·SPA 컨트롤 안내)은 영속 설계 SSOT 로 일원화 — `_doc_arch/board.md` "# 채팅 fallback 의무" 참조. 순수 모니터링 `## 9`, 큐 모드 `## Q5` 채팅 응답 절차가 집행한다.
 
 # 보안
 
@@ -574,11 +565,11 @@ tmux 기반(Tier 2)에선 HTTP /control 불필요. 파일 기반 상태 전달�
 # 산출물 SSOT
 
 * 설계 정본 SSOT: `~/_git/___pm/_doc_arch/hub_board_tmux_design.md`
-* 클라이언트 운영 참조: `~/.claude/_doc_arch/dashboard.md`
+* 클라이언트 운영 참조: `~/.claude/_doc_arch/board.md`
 * 본 agent: `~/.claude/agents/fpm-board.md`
 * runner 템플릿: `~/.claude/agents/fpm-board-runner.sh`
 * 큐 모드 daemon: `~/.claude/agents/fpm-board-supervisor.sh`, `~/.claude/agents/fpm-board-queue-runner.sh`
 * wrapper command: `~/.claude/commands/fpm-board.md`
-* 서버 lifecycle command: `~/.claude/commands/fpm-hub-server.md`
+* 서버 lifecycle command: `~/.claude/commands/fpm-board-server.md`
 * hook: `~/.claude/hooks/fpm-board-notify.sh` (PostToolUse data 매칭)
 * hook: `~/.claude/hooks/fpm-hub-trigger.sh` (UserPromptSubmit 트리거)

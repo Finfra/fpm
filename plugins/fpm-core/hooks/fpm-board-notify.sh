@@ -11,7 +11,7 @@
 #
 # 동작:
 #   1. tool_input.file_path + cwd 추출
-#   2. dashboard data 패턴 매칭 (*.htm.yaml, *.htm.json, _doc_work/z_htm/*.yaml|json, *.dash.yaml|json)
+#   2. dashboard data 패턴 매칭 (*.htm.yaml, *.htm.json, _doc_work/{htm,z_htm}/*.yaml|json, *.dash.yaml|json)
 #   3. healthz 200 → /register?cwd=...로 token 회수 → /notify POST
 #   4. 비매칭/서버 미실행 → silent exit 0
 
@@ -32,6 +32,8 @@ case "$FP" in
   # Issue28 Phase 4: Mode C dashboard data 파일만 매칭. 세션 응답 본문은 /session/update 직접 호출 (별도 hook 불필요)
   *.htm.yaml|*.htm.yml|*.htm.json) ;;
   *.dash.yaml|*.dash.yml|*.dash.json) ;;
+  # Issue258: 쓰기 경로가 활성 htm/ 로 전환됨. z_htm 단독 매칭이면 board data 변경 알림이 끊김
+  */_doc_work/htm/*.yaml|*/_doc_work/htm/*.yml|*/_doc_work/htm/*.json) ;;
   */_doc_work/z_htm/*.yaml|*/_doc_work/z_htm/*.yml|*/_doc_work/z_htm/*.json) ;;
   *) exit 0 ;;
 esac

@@ -22,7 +22,7 @@ except Exception:
 ")"
 
 [ -z "$SID" ] && exit 0
-[ -z "$CWD" ] && CWD="$PWD"
+[ -z "$CWD" ] && exit 0   # Issue179: PWD fallback 제거 — hook 컨텍스트 PWD 는 frontmost 반영 위험(세션 오귀속), doc-register.sh:43 표준 정합
 case "$CWD" in /*) ;; *) exit 0 ;; esac
 
 SERVER_PORT="${HTM_SERVER_PORT:-9876}"

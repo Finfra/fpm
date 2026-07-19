@@ -1,6 +1,6 @@
 ---
 name: fpm-hub
-description: 요청을 HTML 문서로 렌더링하여 Firefox에 표시. Q&A 폼은 ___pm htm-server 로 자동 회수 (Issue45 단일 경로).
+description: 요청을 HTML 문서로 렌더링하여 설정 브라우저(hub_setting.yml)에 표시. Q&A 폼은 ___pm htm-server 로 자동 회수 (Issue45 단일 경로).
 date: 2026-05-19
 ---
 
@@ -10,17 +10,18 @@ date: 2026-05-19
 
 > **Issue133**: a모드 render 트리거가 `..hub`/`/hub` → **`..show`/`/show`** 로 rename 됨 (우산명 `hub` 와 충돌 해소). `/hub <요청>`·`..hub <요청>` 는 한시적 deprecated alias (동작 동일 + `..show` 안내 첨부). 우산 토글 `/hub on|off|start|stop`·`..hub …` 는 `hub` 유지. 본 커맨드 문서는 `/show` 슬래시(`commands/fpm-show.md`)가 참조하는 렌더 절차 SSOT.
 
-요청을 처리한 결과를 완전한 HTML 문서로 작성하여 Firefox 로 자동 표시함. 본문 HTML 은 `file://` 직접 open. Q&A 폼은 ___pm htm-server (port 9876) 로 fetch POST → inbox → bash polling 자동 회수.
+요청을 처리한 결과를 완전한 HTML 문서로 작성하여 설정 브라우저(hub_setting.yml `default_browser`)로 자동 표시함. 본문 HTML 은 `file://` 직접 open. Q&A 폼은 ___pm htm-server (port 9876) 로 fetch POST → inbox → bash polling 자동 회수.
 
 * **전제**: ___pm htm-server 상시 운영 (___pm 프로젝트가 lifecycle 책임)
-* **서버 down 시**: intercept hook 이 fail-loud — 사용자에게 `/fpm-hub-server start` 후 재시도 또는 `..hub stop` 안내. paste-back fallback 없음 (Issue45 제거)
+* **서버 down 시**: intercept hook 이 fail-loud — 사용자에게 `/board-server start` 후 재시도 또는 `..hub stop` 안내. paste-back fallback 없음 (Issue45 제거)
 
-Chrome 은 일반 브라우저로 유지, Firefox 는 hub·dashboard 전용으로 분리 운영.
+브라우저·오픈 방식은 `~/_git/___pm/data/hub_setting.yml` 의 `default_browser`·`browser_open` 이 결정 (Issue193 — 특정 브라우저명 하드코딩 금지). 기본 권장: 일반 브라우징용과 hub·dashboard 전용 브라우저 분리 운영.
 
 **저장 경로 결정 (Issue21)**:
-* 프로젝트 루트(`cwd`)에 `_doc_work/z_htm/` 폴더 존재 → `{cwd}/_doc_work/z_htm/hub_htm_{YYYYMMDD_HHMMSS}_a_{주제}.htm` (영속화)
+* 프로젝트 루트(`cwd`)에 `_doc_work/htm/` 폴더 존재 → `{cwd}/_doc_work/htm/hub_htm_{YYYYMMDD_HHMMSS}_a_{주제}.htm` (영속화). legacy `z_htm/` 은 읽기만 지원 — 신규 Write 금지 (Issue289)
 * 폴더 없음 → `/tmp/___pm/hub_htm_{YYYYMMDD_HHMMSS}_a_{주제}.htm` (휘발 fallback, Issue64 — `/tmp` 평면 흩어짐 방지)
 * 파일명 규약 (Issue123): `hub_htm_{YYYYMMDD_HHMMSS}_{mode}_{주제}.htm` — 날짜시간=`date +%Y%m%d_%H%M%S`, mode `a`=메인 렌더·`b`=ask 폼·`c`=auto 폼(Mode D), 주제=핵심 10자 내외 kebab-case
+* **⚠️ 금지 규약 (Issue158)**: dotted/하이픈-날짜 파일명(ex `{주제}-2026.06.18.14.30.22.htm`, `{주제}_%Y.%m.%d.htm`) **절대 금지**. 반드시 `hub_htm_` 접두 + `date +%Y%m%d_%H%M%S`(언더스코어 구분, `%M`=분) 사용. `.06.` 등 분(`%M`) 자리에 월(`%m`) 오용 주의 — dotted 산출물은 등록 훅(`fpm-hub-doc-register.sh`)이 매칭 못해 `/htm-doc` 403 dead link 유발
 
 자연어 트리거 `..show` 와 동일한 동작 (Issue133 — 구 `..hub` 는 deprecated alias). 명시적 슬래시(`/show`) 사용 시 더 안정적.
 
@@ -28,18 +29,19 @@ Chrome 은 일반 브라우저로 유지, Firefox 는 hub·dashboard 전용으�
 
 `/hub on` / `/hub off` (또는 자연어 `..hub on` / `..hub off`)는 **렌더링 명령이 아니라 폴더별 hub 자동 모드(Issue83) 토글**.
 
-* `ARGUMENTS` 가 `on` 또는 `off` 면 — `fpm-hub-trigger.sh` (UserPromptSubmit hook)가 이미 `~/.claude/.hub-state/<hash>` 상태 파일을 전환함. 본 커맨드는 **렌더·폼·Firefox open 절차 전부 skip**. 한 줄로 상태 확인만 출력하고 종료.
+* `ARGUMENTS` 가 `on` 또는 `off` 면 — `fpm-hub-trigger.sh` (UserPromptSubmit hook)가 이미 `~/.claude/.hub-state/<hash>` 상태 파일을 전환함. 본 커맨드는 **렌더·폼·브라우저 open 절차 전부 skip**. 한 줄로 상태 확인만 출력하고 종료.
 * `on` → 다음 턴부터 매 응답 자동 HTML 렌더 (trivial 응답은 Issue85 로 skip)
 * `off` → 프로젝트 폴더라도 자동 렌더 안 함 (`..hub stop` 과 동일 효과)
 * 인자 없는 `/show` 또는 `/show <요청>` 은 HTML 렌더 (아래 절차). `/hub <요청>` 도 deprecated alias 로 동일 동작
 * bare `..show <요청>` 은 render-only(워크플로우 차단) 모드 — 우산 토글 `..hub on`/`..hub start` 와 구분됨 (Issue133)
+* **단발 render-off (Issue159 신설·Issue163 구현)**: `..text` / `/text` / `..txt` / `/txt` → **이번 turn 한정** 자동 hub 렌더 skip(평문 채팅 응답). `..show`(단발 render-on)의 대칭. `fpm-hub-trigger.sh` 가 자동 모드 분기 평가 전에 감지 → suppress 컨텍스트 주입 후 exit. **state/flag 파일 무변경**(영속 토글 `..hub stop`/`off` 와 구분) → 다음 turn 자동 복귀. 작업은 정상 수행(HTML 미작성·브라우저 미open). ⚠️ 매처 regex `(\.\.te?xt|/te?xt)` 4종 동시 커버. Issue159 는 문서만 신설·매처 미구현이었고 Issue163 에서 본체 구현 + `..txt`/`/txt` alias 추가
 
 ## Mode 분리 (Issue45, 2026-05-19)
 
 | 영역             | 본 커맨드 (`/hub`, Mode B)                 | dashboard agent (`..hub dash`, Mode C) | Mode D 자동 폼 (Issue43)              |
 | :--------------- | :----------------------------------------- | :------------------------------------- | :------------------------------------ |
 | 진입             | `..hub` + AskUserQuestion intercept        | `..hub dash <topic>` agent dispatch    | Stop hook 마커 자동 감지              |
-| 본문 HTML        | Firefox `file://` 직접 open                | Firefox stable URL (서버 SPA shell)    | Firefox `file://` 직접 open           |
+| 본문 HTML        | 설정 브라우저 `file://` 직접 open          | 설정 브라우저 stable URL (서버 SPA shell) | 설정 브라우저 `file://` 직접 open  |
 | Q&A 회수         | form fetch POST → server inbox → polling   | SSE 단방향 push                        | form fetch POST → server inbox → polling |
 | ___pm htm-server | **필수** (실패 시 fail-loud)               | **필수** (실패 시 1회 안내 후 중단)    | **필수** (실패 시 fail-loud)          |
 | 적합 시나리오     | 단발 응답, 1~5 다단계 질문                 | 장시간 모니터링, 실시간 갱신           | AskUserQuestion 미호출 자유 응답 N개  |
@@ -53,7 +55,7 @@ Chrome 은 일반 브라우저로 유지, Firefox 는 hub·dashboard 전용으�
 
 * info-filler 등 agent 가 자유 텍스트 N개 응답을 요구하는 경우
 * `AskUserQuestion` 도구는 옵션 `minItems: 2` 강제라 free-text only 미지원
-* 응답 본문에 v1 sentinel 쌍 마커 1회 삽입 → `fpm-ask-marker-detect.sh` (Stop hook) 가 자동 감지 → form HTML 생성·Firefox open·polling 지시 주입
+* 응답 본문에 v1 sentinel 쌍 마커 1회 삽입 → `fpm-ask-marker-detect.sh` (Stop hook) 가 자동 감지 → form HTML 생성·브라우저 open·polling 지시 주입
 
 ### sentinel 토큰 (v1)
 
@@ -117,8 +119,8 @@ Chrome 은 일반 브라우저로 유지, Firefox 는 hub·dashboard 전용으�
     - 플래그 있음 + BEGIN/END 매칭 → JSON 파싱·schema 검증 → server healthz/register → reason 주입 (`decision: "block"`)
 3. Claude 다음 turn:
     - reason 의 지시대로 form HTML 작성 (각 카드: freetext/select 분기)
-    - Write → `_doc_work/z_htm/hub_htm_<YYYYMMDD_HHMMSS>_c_<주제>.htm` (mode c=auto 폼)
-    - Bash → `open -g -a Firefox`
+    - Write → `_doc_work/htm/hub_htm_<YYYYMMDD_HHMMSS>_c_<주제>.htm` (mode c=auto 폼)
+    - Bash → `open -g -a <설정 브라우저>` (hub_setting.yml `default_browser` 해석값)
     - 채팅 안내 + inbox polling
 4. 사용자 폼 작성 → "전송" → server inbox → Claude 회수 → 흐름 재개
 
@@ -134,7 +136,7 @@ Chrome 은 일반 브라우저로 유지, Firefox 는 hub·dashboard 전용으�
 | :--- | :--- |
 | 마커 JSON syntax error | hook reason 에 에러 메시지·schema 안내 |
 | schema 위반 (questions 누락 등) | hook reason 에 위반 필드 명시 |
-| 서버 down (healthz ≠ 200) | hook reason 에 `/fpm-hub-server start` 또는 `..hub stop` 안내 |
+| 서버 down (healthz ≠ 200) | hook reason 에 `/board-server start` 또는 `..hub stop` 안내 |
 | `.hub-mode-active` 없음 | hook 즉시 exit 0 |
 | 단일 BEGIN 또는 단일 END 만 | 미매칭 (정규식 쌍 매칭 강제) → hook exit 0 |
 
@@ -150,20 +152,20 @@ Chrome 은 일반 브라우저로 유지, Firefox 는 hub·dashboard 전용으�
 
 ## 채팅 응답 표시 규칙 (Phase 8 / Issue40 / Issue60 — 채팅이 1차 채널)
 
-> **Issue60 핵심 원칙**: Firefox 표시 실패(종료·hidden·미설치·SSE 끊김·다른 데스크톱·원격 SSH) 가능성을 항상 가정. **채팅 텍스트가 1차 채널**, 브라우저는 보조 채널. 채팅만 읽어도 결과 파악·재오픈 가능해야 함.
+> **Issue60 핵심 원칙**: 브라우저 표시 실패(종료·hidden·미설치·SSE 끊김·다른 데스크톱·원격 SSH) 가능성을 항상 가정. **채팅 텍스트가 1차 채널**, 브라우저는 보조 채널. 채팅만 읽어도 결과 파악·재오픈 가능해야 함.
 
 `..show` 처리(구 `..hub`) 후 사용자에게 보내는 **모든** 채팅 응답에는 **반드시 다음 세 요소를 포함**할 것:
 
 1. **한 줄 헤드라인** — 이번 turn 에 무엇이 표시되었는지 (mode A/B, 본질 요지)
-2. **내용 핵심 요약 (3줄 이내, Issue60 의무)** — 표·코드 dump 금지. caveman 압축된 핵심 사실 bullet 2~3개. Firefox 부재 가정 하에 채팅만으로 결과 파악 가능해야 함
+2. **내용 핵심 요약 (3줄 이내, Issue60 의무)** — 표·코드 dump 금지. caveman 압축된 핵심 사실 bullet 2~3개. 브라우저 부재 가정 하에 채팅만으로 결과 파악 가능해야 함
 3. **저장 경로 / stable URL — raw URL 형식 (Issue104)** — 형식: `📁 file://{abs_path}` (Mode A) / `🌐 http://{stable_url}` (Mode B/C). raw URL 그대로 노출 — 사용자가 클릭 시 즉시 브라우저 open (VSCode·IDE·iTerm 모두 file://·http:// 자동 링크화). 마크다운 링크 `[basename](url)` 형식 금지 (path 가시성 손실). bare 절대경로(`📁 /Users/...`) 단독 노출도 금지 (`file://` prefix 없으면 클릭 불가). Mode B/C stable URL 은 token 포함 전체 유지 (임의 제거 금지)
 
-**사유 (Issue60)**: Firefox 표시 실패 패턴이 빈번함 — (a) 사용자가 다른 작업·창에 집중해 변화 인지 못 함, (b) Firefox 강제 종료·hidden·미설치, (c) 원격 SSH·다른 데스크톱·다른 모니터, (d) SSE 끊김. 채팅에 명시적 요약·경로/URL 이 있어야 (1) 무슨 일이 일어났는지 즉시 파악, (2) 창 닫혔으면 경로·URL 로 직접 재오픈, (3) GUI 단절 환경에서도 텍스트만으로 결과 도달.
+**사유 (Issue60)**: 브라우저 표시 실패 패턴이 빈번함 — (a) 사용자가 다른 작업·창에 집중해 변화 인지 못 함, (b) 브라우저 강제 종료·hidden·미설치, (c) 원격 SSH·다른 데스크톱·다른 모니터, (d) SSE 끊김. 채팅에 명시적 요약·경로/URL 이 있어야 (1) 무슨 일이 일어났는지 즉시 파악, (2) 창 닫혔으면 경로·URL 로 직접 재오픈, (3) GUI 단절 환경에서도 텍스트만으로 결과 도달.
 
 **표시 형식 (단방향 응답, caveman 호환 권장 패턴)**:
 
 ```
-HTML 저장. Firefox 열림.
+HTML 저장. 브라우저 열림.
 
 - {핵심 사실 1}
 - {핵심 사실 2}
@@ -175,18 +177,18 @@ HTML 저장. Firefox 열림.
 ex)
 
 ```
-부동산 5대 트렌드 표 렌더. Firefox 열림.
+부동산 5대 트렌드 표 렌더. 브라우저 열림.
 
 - 표 5행 + 다크모드 적용
 - 헤더 색상 = 프로젝트 컬러
 - 닫기 버튼 우측 상단
 
-📁 file:///Users/.../proj/_doc_work/z_htm/hub_htm_20260531_143022_a_realestate.htm
+📁 file:///Users/.../proj/_doc_work/htm/hub_htm_20260531_143022_a_realestate.htm
 ```
 
 ### Q&A intercept 시 추가 fallback 의무 (Issue40)
 
-AskUserQuestion intercept (form 자동 회수) 시점에는 위 3요소에 **다음 항목을 추가 의무로** 포함하여 Firefox 부재·실패 환경에서도 사용자가 채팅만으로 답할 수 있도록 함:
+AskUserQuestion intercept (form 자동 회수) 시점에는 위 3요소에 **다음 항목을 추가 의무로** 포함하여 브라우저 부재·실패 환경에서도 사용자가 채팅만으로 답할 수 있도록 함:
 
 4. **질문 텍스트** — `question` 전체 (압축 금지)
 5. **옵션 라벨 + 1줄 desc** — `options[].label : description` 형식
@@ -207,7 +209,7 @@ AskUserQuestion intercept (form 자동 회수) 시점에는 위 3요소에 **다
 
 📁 file:///Users/.../hub_htm_{YYYYMMDD_HHMMSS}_b_{주제}.htm
 
-답변: Firefox 폼 사용. 브라우저 안 떠 있으면 채팅에 "A" / "B" / 자유 텍스트 입력해도 됨.
+답변: 브라우저 폼 사용. 브라우저 안 떠 있으면 채팅에 "A" / "B" / 자유 텍스트 입력해도 됨.
 ```
 
 옵션 5+ 시:
@@ -224,7 +226,7 @@ AskUserQuestion intercept (form 자동 회수) 시점에는 위 3요소에 **다
 답변: 폼 사용 또는 채팅에 라벨/번호 입력.
 ```
 
-**사유**: Firefox 강제 종료, 다른 데스크톱, 원격 SSH 세션, 사용자가 브라우저 변화 미인지 등 GUI 단절 상황 빈번. 채팅 fallback 이 옵션 정보까지 포함해야 사용자가 답을 채팅에 직접 paste 하는 우회 동선 가능.
+**사유**: 브라우저 강제 종료, 다른 데스크톱, 원격 SSH 세션, 사용자가 브라우저 변화 미인지 등 GUI 단절 상황 빈번. 채팅 fallback 이 옵션 정보까지 포함해야 사용자가 답을 채팅에 직접 paste 하는 우회 동선 가능.
 
 7. **Polling timeout 후 안내 (Issue61)** — `timeout 600` 회수 명령이 만료된 후에는 Claude turn 이 이미 종료. 이 시점에 사용자가 폼 "전송" 을 누르면 server inbox 에는 적재되지만 Claude 는 회수 불가 → silent loss. 타임아웃 만료를 채팅에 알릴 때 다음 양식을 함께 표시:
 
@@ -273,10 +275,9 @@ ex)
     - 표/리스트/코드블록/헤더 계층 적극 활용
     - **다이어그램 런타임 (Issue82 → Issue244 canonical 갱신)**: mermaid 런타임은 **`</body>` 직전에 외부 UMD `<script src>` 1줄만**. 인라인 `<script>` 0줄, `<head>` 배치 아님 (정규화기 배치 기준과 일치시켜야 hook 이 재배치하지 않음). 상세 규칙·매핑은 아래 "다이어그램 우선 렌더" 섹션 참조
         ```html
-<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
-</body>
+          <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+        </body>
         ```
-        * **들여쓰기 금지 (컬럼 0)**: 정규화기가 삽입 직전 `head.rstrip()` 을 수행하므로 canonical 형태는 `<script>` 줄이 **행 선두**. 2칸이라도 들여쓰면 `--check` 가 이탈(rc=1)로 판정하고 hook 이 재작성함 (실측 확인)
         * **인라인 init 불필요**: mermaid@11 UMD dist 는 `startOnLoad` 기본 true + `window.addEventListener("load", contentLoaded)` 훅을 번들에 내장 → `<pre class="mermaid">` 를 자동 스캔·렌더 (Issue244 Playwright 실측)
         * **인라인 금지 사유 (Issue244)**: VSCode HTML preview 확장의 CSP 는 `script-src https: vscode-resource:` — `'unsafe-inline'` 이 없어 인라인 `<script>` 를 통째로 차단함. 인라인 0줄인 이 형태만 `file://` · VSCode preview · hub 서빙 **3경로 전부**에서 렌더됨
         * `theme: 'neutral'` (Issue58 흰 배경 정책, 다크 테마 금지)은 인라인 JS 대신 **각 다이어그램 소스 선두 frontmatter** 로 지정 — CSP 안전, Issue244 실측 확인(node fill `#eee` = neutral):
@@ -292,25 +293,27 @@ ex)
             ```
         * `.mermaid` 블록 CSS: `margin: 1.5rem auto; text-align: center` — max-width 820px 컨테이너 내 중앙 정렬
         * **⚠️ 이탈 금지 (Issue190 → Issue244 hook 집행)**: mermaid 런타임은 위 UMD 1줄 verbatim 만 허용. 다음 즉흥 구조 금지 — ① `<script type="module">` + `mermaid.esm.min.mjs` 등 ESM CDN import (CSP 차단 + 청크 로드 실패 시 스크립트 전체 중단) ② 인라인 `<script>mermaid.initialize(...)</script>` (CSP 차단 — 구 Issue82 2줄 형식은 **폐기**) ③ `<div class="mermaid"><pre class="mermaid-src">` 같은 커스텀 마크업 + JS 로 내용 치환 (mermaid.js 가 `<pre class="mermaid">` 를 직접 스캔하므로 수동 치환 자체가 불필요) ④ `pre.textContent` 로 원문을 읽는 방식 (`<pre>` 안 `<br>` 이 HTML 로 파싱되어 소멸 → 라벨 줄바꿈 유실) ⑤ `theme: 'dark'` (Issue58 흰 배경 정책 위반). 다이어그램은 `<pre class="mermaid">` 안에 mermaid 문법 원문을 그대로 작성만 하면 됨 — 별도 JS 불필요.
-        * **집행 (Issue244)**: 본 규정은 산문 경고가 아니라 **쓰기 시점 hook 이 강제**함 — `hooks/hub-htm-mermaid-normalize.sh` (PostToolUse) 가 `*/_doc_work/z_htm/*.htm` 저장 시 이탈 런타임을 canonical 1줄로 치환. 이탈 저작 시 파일은 자동 교정되나 경고가 컨텍스트에 주입되므로, 처음부터 위 1줄로 작성할 것
+        * **집행 (Issue244)**: 본 규정은 산문 경고가 아니라 **쓰기 시점 hook 이 강제**함 — `hooks/hub-htm-mermaid-normalize.sh` (PostToolUse) 가 `*/_doc_work/{htm,z_done/htm,z_htm}/*.htm` 저장 시 이탈 런타임을 canonical 1줄로 치환. 이탈 저작 시 파일은 자동 교정되나 경고가 컨텍스트에 주입되므로, 처음부터 위 1줄로 작성할 것
     - **프로젝트 식별 헤더 + 닫기 버튼 (Issue22, Issue58 컬러 정책 갱신)**:
         * 최상단 `<header>` 배경에 PROJECT_COLOR 적용. PROJECT_COLOR 결정 규칙 (Issue58):
             1. `~/_git/___pm/Projects.md` 의 `📋 프로젝트` 테이블에서 현재 `cwd` 와 일치하는 행 찾기 (경로 컬럼: `~` 확장 후 비교)
             2. 일치 행의 `peacock.color` 컬럼 hex 값 사용 (ex: `#f0d5cc` for `~/.claude`)
             3. 일치 행이 없으면 fallback `hsl(hue, 60%, 45%)` (hue = cwd md5 hash 앞 4자 % 360)
         * peacock.color 는 파스텔 톤이므로 헤더 텍스트 색은 `#1a1a1a` (어두운 글자) 사용. 닫기 버튼도 `background: rgba(0,0,0,0.08); color: #1a1a1a; border: 1px solid rgba(0,0,0,0.15)` 등 어두운 글자 대비로 설정
-        * **⚠️ CANONICAL 헤더 블록 (Issue132) — 아래 HTML·CSS 를 verbatim 복붙하고 placeholder 2개만 치환**. 즉흥 재작성 금지 (정적 `<span>`·순서 뒤바뀜·헤더 밖 overflow 재발 원인). 치환: `{프로젝트명}`(ex `.claude`) · `{cwd 절대경로}`(ex `$HOME/.claude`, Projects.md 등록 경로와 정확히 일치해야 서버 화이트리스트 통과) · `{session_id}`(🆚 세션 버튼 — 현재 세션 ID. hook 경유 시 자동 임베드, 수동 작성 시 hook 입력 `session_id`. 부재 시 cwd_hash fallback → 워크스페이스만 open). `{제목}` 만 콘텐츠별로 채움. 색은 아래 `:root --project-color` (위 PROJECT_COLOR 규칙) 가 결정.
+        * **⚠️ CANONICAL 헤더 블록 (Issue132) — 아래 HTML·CSS 를 verbatim 복붙하고 placeholder 2개만 치환**. 즉흥 재작성 금지 (정적 `<span>`·순서 뒤바뀜·헤더 밖 overflow 재발 원인). 치환: `{프로젝트명}`(ex `.claude`) · `{cwd 절대경로}`(ex `$HOME/.claude`, Projects.md 등록 경로와 정확히 일치해야 서버 화이트리스트 통과) · `{session_id}`(🆚 세션 버튼 — 현재 세션 ID. hook 경유 시 자동 임베드, 수동 작성 시 hook 입력 `session_id`. 부재 시 cwd_hash fallback → 워크스페이스만 open) · `{hub_target}`(🎯📊 Hub 링크 탭 동작 — Issue153. `hub_setting.yml` `browser_tab_reuse: true` → `fpm-hub`(브라우저 네이티브 명명 탭 재사용 → `/hub` 단일탭 유지) / 그 외 → `_blank`(새 탭). hook 경유 시 자동 임베드, 수동 작성 시 기본 `_blank`). `{제목}` 만 콘텐츠별로 채움. 색은 아래 `:root --project-color` (위 PROJECT_COLOR 규칙) 가 결정.
+
+            > **렌더 vs /hub 탭 정책 (Issue153)**: 렌더(`..show`·자동 hub)는 `browser_tab_reuse` 와 무관하게 **항상 새 탭**(`open`/`open -g`) — 하나씩 닫으며 검토 가능. `browser_tab_reuse` 는 위 `{hub_target}` 을 통해 **`/hub` 대시보드 링크에만** 적용(단일탭 재사용). 구 Issue162(reuse helper 가 :9876 origin 매칭으로 모든 hub URL 을 한 탭에 collapse)는 폐기.
             ```html
             <header>
+              <a class="hub-link" href="/hub" target="{hub_target}" title="통합 모니터링 Hub"><img src="/fpm-icon.png" alt="Hub" style="height:1.2em;vertical-align:-0.25em;"></a>
               <h1>{제목}</h1>
               <nav class="header-actions">
                 <a class="proj-badge" href="#" title="클릭 → VSCode 로 {프로젝트명} 열기"
-                   onclick="event.preventDefault();fetch('http://127.0.0.1:9876/open-project',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'{cwd 절대경로}'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('VSCode 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — VSCode 열기 실패');});">📁 {프로젝트명}</a>
+                   onclick="event.preventDefault();fetch('/open-project',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'{cwd 절대경로}'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('VSCode 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — VSCode 열기 실패');});">📁 {프로젝트명}</a>
                 <a class="sess-link" href="#" title="클릭 → 이 문서를 만든 세션 탭으로 포커스"
-                   onclick="event.preventDefault();fetch('http://127.0.0.1:9876/open-session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'{cwd 절대경로}',sid:'{session_id}'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('세션 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — 세션 열기 실패');});">🆚 세션</a>
+                   onclick="event.preventDefault();fetch('/open-session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'{cwd 절대경로}',sid:'{session_id}'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('세션 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — 세션 열기 실패');});">🆚</a>
                 <button type="button" class="copy-link" title="이 문서 링크 복사"
                    onclick="(function(b){var u=location.href.replace(/[?&]_shell=1$/,'');navigator.clipboard.writeText(u).then(function(){var o=b.textContent;b.textContent='✓';setTimeout(function(){b.textContent=o;},1200);}).catch(function(){window.prompt('문서 링크 복사',u);});})(this)">🔗</button>
-                <a class="hub-link" href="http://127.0.0.1:9876/hub" target="_blank" title="통합 모니터링 Hub"><img src="/fpm-icon.png" alt="Hub" style="height:1.2em;vertical-align:-0.25em;"></a>
                 <button type="button" class="close-btn" title="이 문서 탭 닫기" onclick="window.close()">✕</button>
               </nav>
             </header>
@@ -321,10 +324,12 @@ ex)
               display: flex; align-items: center; justify-content: space-between;
               gap: 1rem; flex-wrap: wrap;        /* 좁은 폭: 헤더 밖 overflow 대신 줄바꿈 */
               padding: 0.9rem 1.4rem;
+              margin-inline: calc(50% - 50vw);    /* Issue172: body max-width 무관 full-bleed 바 (제목바 전체 너비) */
               background: var(--project-color);   /* 불투명 필수 — sticky 시 본문 비침 방지 */
               color: #1a1a1a;                     /* peacock 파스텔 → 어두운 글자 (Issue58) */
             }
-            header h1 { margin: 0; font-size: 1.15rem; flex: 1 1 auto; min-width: 0; }
+            header > .hub-link { flex: 0 0 auto; } /* Issue172: 🗂 Hub 제목 좌측 맨 앞 고정(축소 금지) */
+            header h1 { margin: 0; font-size: 1.15rem; flex: 1 1 auto; min-width: 0; text-align: center; }
             header .header-actions {
               display: flex; align-items: center; gap: 0.5rem; flex: 0 0 auto;
             }
@@ -342,7 +347,7 @@ ex)
             header .close-btn { margin-left: 0.6rem; }
             header .close-btn:hover { background: rgba(200,0,0,0.18); }
             ```
-            * **블록 불변식 (재발 차단)**: (1) 배지 = `<a class="proj-badge" onclick=...POST /open-project...>` — 정적 `<span>` 금지(Issue103, 클릭 시 VSCode 프로젝트 열기). 세션 = `<a class="sess-link" onclick=...POST /open-session {cwd,sid}...>`(Issue137, 클릭 시 이 문서를 만든 세션 탭 포커스 — `sid` 미치환 시 워크스페이스만 graceful degrade). (2) 순서 = `📁 배지` → `🆚 세션` → `🔗 복사` → `🗂 Hub` → `✕ 닫기` (Issue214: 🔗=`<button class="copy-link">` 문서 링크 clipboard 복사, ✕=`<button class="close-btn">` 닫기 아이콘화 + `margin-left` 로 맨 오른쪽 분리. Hub=fPm 로고 `<img src="/fpm-icon.png">`·세션=🆚, Issue157·Issue182 — 🎯📊 이모지 아님). (3) 배지·세션·복사·Hub·닫기 다섯 모두 `<header>` 바 **안** `.header-actions` 동일 행 — 헤더 **밖** `.proj-name` div 금지(Issue88, sticky 단일 블록 고정). (4) `display:flex; justify-content:space-between` + `flex-wrap` → 우측 overflow 방지. (5) `<header>` 자체가 `position:sticky; top:0`(Issue74).
+            * **블록 불변식 (재발 차단)**: (1) 배지 = `<a class="proj-badge" onclick=...POST /open-project...>` — 정적 `<span>` 금지(Issue103, 클릭 시 VSCode 프로젝트 열기). 세션 = `<a class="sess-link" onclick=...POST /open-session {cwd,sid}...>`(Issue137, 클릭 시 이 문서를 만든 세션 탭 포커스 — `sid` 미치환 시 워크스페이스만 graceful degrade). (2) 순서 (Issue172) = `🗂 Hub`(hub-link)가 `<h1>` 제목 **좌측** 맨 앞 (header 직속 자식) → 제목 → 우측 `.header-actions`[`📁 배지` → `🆚 세션`(아이콘만, 텍스트 제거) → `🔗 복사` → `✕ 닫기`(아이콘만)] (Issue214: 🔗=`<button class="copy-link">` 문서 링크 clipboard 복사, ✕=`<button class="close-btn">` 닫기 아이콘 + `margin-left` 맨 오른쪽 분리. Hub=fPm 실제 로고 `<img src="/fpm-icon.png">`(Issue174 — canonical 은 짧은 host-relative 참조 유지[프롬프트 bloat 0], `fpm-hub-doc-register.sh` 가 저장 .htm 의 `/fpm-icon.png` 를 인라인 data-URL[`hooks/assets/fpm-icon.dataurl`, 작은 webp]로 치환 → Simple Browser webview CSP 가 http img 를 차단해도[Issue173] 자기완결 data-URL 로 렌더)·세션=🆚, Issue157·Issue182 — 🎯📊 이모지 아님). (3) 배지·세션·복사·닫기는 `.header-actions` 동일 행, Hub·제목은 `<header>` 직속 — 모두 `<header>` 바 **안**, 헤더 **밖** `.proj-name` div 금지(Issue88, sticky 단일 블록 고정). (4) `display:flex; justify-content:space-between` + `flex-wrap` → 우측 overflow 방지. (5) `<header>` 자체가 `position:sticky; top:0`(Issue74). (6) `margin-inline: calc(50% - 50vw)` → body `max-width` 무관 full-bleed 제목바(Issue172).
             * **sticky 무효화 방지**: 조상 요소(`html`, `body`, 본문 컨테이너)에 `overflow: hidden` / `overflow: clip` 금지 — sticky 컨텍스트를 깨뜨려 헤더가 다시 스크롤됨.
             * 서버가 `Access-Control-Allow-Origin: null` 을 보내므로 file://(origin null) htm 에서도 fetch 허용. 성공 시 무음(VSCode 가시적 open), 실패(서버 미가동·비등록 경로) 시 `alert` fail-loud. endpoint = `/hub` 활성 세션 카드와 동일(Issue101/Issue42).
     - **컬러 영역 자식 인라인 요소 contrast (Issue16_4, Issue58 갱신)**:
@@ -371,19 +376,27 @@ ex)
             header h1 a, header h1 strong, header h1 em { color: #1a1a1a; }
             ```
         * 자가 검증: 컬러 배경 박스 추가 시 자식 `code`/`a`/`strong`/`em` 색 명시 누락 여부 확인
-5. Write 도구로 `{OUT_DIR}/hub_htm_{YYYYMMDD_HHMMSS}_a_{주제}.htm` 저장 (날짜시간=`date +%Y%m%d_%H%M%S`, 주제=핵심 10자 내외 kebab, mode a=메인 렌더) — `OUT_DIR` 은 `_doc_work/z_htm/` 존재 시 그 경로, 아니면 `/tmp/___pm` (Issue64 — `/tmp` 평면 흩어짐 방지)
-6. Bash 로 Firefox 표시 (**Firefox 강제, Chrome 금지**):
+5. Write 도구로 `{OUT_DIR}/hub_htm_{YYYYMMDD_HHMMSS}_a_{주제}.htm` 저장 (날짜시간=`date +%Y%m%d_%H%M%S`, 주제=핵심 10자 내외 kebab, mode a=메인 렌더) — `OUT_DIR` 은 `_doc_work/htm/` 우선, 부재 시 legacy `_doc_work/z_htm/`, 둘 다 없고 `_doc_work/` 만 있으면 `htm/` 신규 생성, 아니면 `/tmp/___pm` (Issue64/Issue289 — `/tmp` 평면 흩어짐 방지). **⚠️ Issue158**: 파일명은 반드시 `hub_htm_` 접두 + 언더스코어 날짜. dotted/하이픈-날짜(`-2026.06.18.htm`) 절대 금지 — 등록 훅 미매칭 403 유발
+6. Bash 로 설정 브라우저 표시 (**hub_setting.yml `default_browser` 강제 — 임의 브라우저 선택·특정 브라우저명 하드코딩 금지, Issue193**):
    ```bash
-   open -g -a "Firefox" "file://<절대경로>"
+   open -g -a "<resolved 브라우저>" "file://<절대경로>"
    ```
-   - **브라우저·포커스는 `~/_git/___pm/data/hub_setting.yml` 의 `default_browser`·`browser_focus` 가 결정 (Issue130)** — hook 이 grep 하여 실제 명령을 주입. 위는 기본값(`default_browser: firefox`, `browser_focus: false`) 예시
-   - `default_browser`: firefox(기본)/chrome/edge/safari 또는 .app 절대 경로. 매핑 — firefox→`Firefox`, chrome→`Google Chrome`, edge→`Microsoft Edge`, safari→`Safari`
+   - **브라우저·open 동작은 `~/_git/___pm/data/hub_setting.yml` 의 `default_browser`·`browser_open` 이 결정 (Issue152/Issue130)** — hook 이 grep 하여 실제 명령을 주입. hook 미경유 시 yml 을 직접 읽어 `<resolved 브라우저>` 를 구성 (기본값: `default_browser: firefox`, `browser_open: background`)
+   - `default_browser`: firefox(기본)/chrome/edge/safari 또는 .app 절대 경로. 키→macOS 앱 이름 매핑은 hook(`hooks/fpm-hub-trigger.sh` L512~544)이 해석 — 매핑 SSOT 는 hook 스크립트
    - **`-a "<브라우저>"` 명시 필수**. `open "file://..."` 단독 호출 금지 — macOS 기본 브라우저로 폴백되어 설정 무시됨
-   - **`-g` 플래그 (Issue128)**: `browser_focus: false`(기본) 시 백그라운드 open — **포커스 탈취 안 함**. 다른 앱 입력 중 hub 렌더가 끼어들어 입력이 끊기는 문제 방지. `true` 면 `-g` 제거(foreground)
+   - **`browser_open` 3-way (Issue152)**: `off`=자동 open 생략(채팅 URL 만 emit) / `background`(기본)=`open -g`(백그라운드, **포커스 탈취 안 함** — 다른 앱 입력 중 hub 렌더 끼어듦 방지) / `foreground`=`open`(`-g` 제거, 포커스 탈취). 구 `browser_focus`(false/true)+`render_target:hub`(open-skip) 조합을 단일 키로 통합 — 키 미설정 시 역산 폴백(하위호환)
+   - **`render_target: hub` → VSCode Simple Browser (Issue170)**: hub 타겟에서는 외부 브라우저 `file://`·`open` 을 쓰지 않고, Write 후 아래 1줄로 문서를 VSCode 내부 Simple Browser 패널에 렌더한다.
+     ```bash
+     curl -s -X POST http://127.0.0.1:9876/open-simple-browser -H 'Content-Type: application/json' -d '{"path":"<절대경로>"}'
+     ```
+     - 서버(`services/hub/server.py` `_handle_open_simple_browser`)가 register-doc 화이트리스트 exact-match 검증(미등록=403) 후 `open "vscode://finfra.fpm-simple-browser/open?url=<htm-doc URL+_shell=1>"` 로 전용 확장(`finfra.fpm-simple-browser`)을 트리거 → 확장이 `simpleBrowser.show` 실행. 정상 응답 `{"status":"opened"}`
+     - 첫 페이지 진입 후 in-page `http` 링크는 Simple Browser 패널 내 네비게이션으로 VSCode 안에 유지(type2 추가 작업 불요)
+     - fallback: 채팅에 raw URL `http://127.0.0.1:9876/htm-doc?path=<절대경로>` 병행 명시(원격·타기기·확장 미설치 대비). ⚠️ `open`(file://·외부 브라우저) 실행 금지
+     - 브리지 신설 = prj1#Issue216, hook 전환 = 본 이슈(글로벌 Issue170). 확장 source: `~/_git/___pm/plugins/fpm-core/vscode-ext/fpm-simple-browser`
    - `xdg-open`, `python -m webbrowser` 등 우회 호출 금지 (설정 무시)
    - `open -g -a "<브라우저>"` 는 기존 인스턴스 재사용 + 새 탭 추가 (포커스는 현재 앱 유지)
-   - 운영 모델: Chrome=일반 / Firefox=hub·dashboard 전용 분리가 기본 권장 (사용자 설정 SSOT — `_doc_arch/hub-mode-arch.md`)
-   - Firefox 미설치 환경에서만 예외 — 이 경우 사용자에게 보고 후 대안 합의
+   - 운영 모델: 일반 브라우징용 / hub·dashboard 전용 브라우저 분리가 기본 권장 (사용자 설정 SSOT — `_doc_arch/hub-mode-arch.md`)
+   - 설정 브라우저 미설치 환경에서만 예외 — 이 경우 사용자에게 보고 후 대안 합의
 7. **hub registry 등록 (Issue69)** — 본문 HTML 을 ___pm htm-server hub 에 등록 (___pm Issue41 로 hub 가 디렉토리 스캔을 폐기 → 생산자 등록 필수):
    ```bash
    curl -s --max-time 3 -X POST http://127.0.0.1:9876/register-doc \
@@ -394,7 +407,7 @@ ex)
    - 서버 미가동 시 curl 실패 → 무시 (**fail-soft** — hub 본 기능 차단 금지). 등록 누락분은 hub `🔄 디스크 재스캔` 버튼으로 수거 가능
    - 등록 대상은 본문 HTML(mode a) + B모드 질문 폼(mode b, `hub_htm_*_b_*.htm`, Issue80). Mode D 폼(mode c, `hub_htm_*_c_*.htm`)만 transient 산출물이므로 등록 제외
    - 엔드포인트 SSOT: `~/_git/___pm/_doc_arch/hub_htm.md` `POST /register-doc` 섹션
-   - **Issue73/Issue80**: PostToolUse hook `~/.claude/hooks/fpm-hub-doc-register.sh` 가 `*/_doc_work/z_htm/hub_htm_*_*.htm`(`_c_` auto 제외) Write 시 동일 등록을 자동 수행. 본 step 의 수동 curl 은 hook 미작동 환경(서버 down·hook 미설치) 대비 fallback. 중복 등록은 server 측 동일 path dedup 처리
+   - **Issue73/Issue80**: PostToolUse hook `~/.claude/hooks/fpm-hub-doc-register.sh` 가 `*/_doc_work/{htm,z_done/htm,z_htm}/hub_htm_*_*.htm`(`_c_` auto 제외) Write 시 동일 등록을 자동 수행. 본 step 의 수동 curl 은 hook 미작동 환경(서버 down·hook 미설치) 대비 fallback. 중복 등록은 server 측 동일 path dedup 처리
 8. 채팅 응답(caveman 형식)에는 한 줄 헤드라인 + 핵심 bullet 2~3개 + 저장 경로 표기 (위 "채팅 응답 표시 규칙" 참조)
 
 ## 다이어그램 우선 렌더 (Issue82)
@@ -418,7 +431,7 @@ flowchart TD
     A[요청 수신] --> B{hub 모드 활성?}
     B -->|예| C[HTML 본문 작성]
     B -->|아니오| D[평소 응답]
-    C --> E[Firefox open]
+    C --> E[브라우저 open]
 </pre>
 ```
 
@@ -448,6 +461,10 @@ flowchart TD
 
 ### 작성 규칙
 
+* **⚠️ 라벨 선두 markdown 마커 금지 (Issue204/Issue242 — 인라인 필수)**: 노드·subgraph·edge 라벨이 `숫자.` · `- ` · `* ` · `+ ` · `# ` 로 시작하면 mermaid 11+ 이 markdown list/heading 으로 오파싱 → 라벨 자리에 `Unsupported markdown: list` 렌더됨. 넘버링은 **마침표 없는 형식**(`1단계 ·` / `1)` / `단계1:`) 사용
+    - ❌ `P1["1. AI 프로젝트화"]` · `subgraph S1["2. 조합"]` · `N1["- 항목"]`
+    - ✅ `P1["1단계 · AI 프로젝트화"]` · `subgraph S1["2) 조합"]` · `N1["항목"]`
+    - hub 자동 렌더는 `mermaid-diagram` 스킬을 호출하지 않아 룰이 컨텍스트에 없음 → 링크 참조로 불충분(Issue242 재발 근거). 본 인라인 규칙이 렌더 경로의 1차 가드
 * mermaid 문법·다이어그램 유형 선택 기준은 [`~/.claude/skills/mermaid-diagram/mermaid-rules.md`](../skills/mermaid-diagram/mermaid-rules.md) 참조
 * 노드 라벨 한국어 허용. 특수문자(`()`, `[]`, `:`, `"` 등) 포함 시 라벨을 `"..."` 로 감쌈
 * 다이어그램 1개당 노드 **3~12개 권장**. 초과 시 다이어그램을 의미 단위로 분할
@@ -502,7 +519,7 @@ flowchart TD
 ## Caveman 모드 상호작용
 
 - HTML 본문 = 코드/문서 컨텐츠로 취급. caveman 압축 규칙 "Code blocks unchanged" 적용
-- 채팅 응답(보고)은 caveman 유지: `HTML 저장. Firefox 열림.` + 요약 bullet
+- 채팅 응답(보고)은 caveman 유지: `HTML 저장. 브라우저 열림.` + 요약 bullet
 - caveman OFF 상태면 채팅도 일반 문체
 
 ## Mode C: Live Dashboard — 별도 agent 로 분리됨
@@ -516,7 +533,7 @@ Mode C(Live Dashboard) 본문은 dashboard agent 로 분리됨. 본 커맨드(`/
 | `/dashboard <topic>`  | 명시적 wrapper 커맨드 (`~/.claude/commands/fpm-board.md`)             |
 
 dashboard agent 본문 SSOT: [`~/.claude/agents/fpm-board.md`](../agents/fpm-board.md)
-hub 서버 lifecycle wrapper: [`~/.claude/commands/fpm-hub-server.md`](fpm-hub-server.md) (구 `fpm-board-server`, Issue190 통합)
+dashboard 서버 lifecycle wrapper: [`~/.claude/commands/fpm-board-server.md`](fpm-board-server.md)
 
 서버 (`htm-server` daemon, ___pm 소유) 는 dashboard agent 단독 클라이언트. hub 스킬 (본 커맨드) 은 서버 미사용.
 
@@ -551,14 +568,14 @@ hub 서버 lifecycle wrapper: [`~/.claude/commands/fpm-hub-server.md`](fpm-hub-s
 
 1. **단방향 응답**: 첫 응답 본문은 위 절차대로 HTML 문서로 렌더링
 2. **AskUserQuestion 가로채기**: intercept hook 이 healthz + `/register` 판정 → **deny + form 자동 회수 지시 주입**
-3. **Form HTML 생성**: deny reason 에 포함된 질문 JSON + answer_url + cwd_hash 로 Claude 가 form HTML 생성·저장·Firefox open
+3. **Form HTML 생성**: deny reason 에 포함된 질문 JSON + answer_url + cwd_hash 로 Claude 가 form HTML 생성·저장·브라우저 open
 4. **자동 회수**: 사용자 폼 작성 → "전송" 버튼 → JS fetch POST → server inbox → Claude bash polling → 답변 파일 Read → answers 추출 → 흐름 재개
-5. **서버 실패 시**: deny + fail-loud 안내 (`/fpm-hub-server start` 후 재시도 또는 `..hub stop`). paste-back fallback 없음 (Issue45 제거)
+5. **서버 실패 시**: deny + fail-loud 안내 (`/board-server start` 후 재시도 또는 `..hub stop`). paste-back fallback 없음 (Issue45 제거)
 6. **해제**: `..hub stop` 또는 `..hub off` 입력 시 플래그 삭제, AskUserQuestion 정상 복귀
 
 ### 선택지 자동 승격 (Issue16_3) — form 자동 전환
 
-**원칙**: hub 모드(`..show`) 활성 상태에서 사용자에게 객관식 선택지를 제시하여 결정 입력을 받아야 하는 경우, 텍스트 bullet 리스트 dump 대신 **반드시 `AskUserQuestion` 도구를 호출**한다. intercept hook 이 자동으로 form 으로 분기하여 Firefox 폼 표시 + 서버 자동 회수까지 무인 진행.
+**원칙**: hub 모드(`..show`) 활성 상태에서 사용자에게 객관식 선택지를 제시하여 결정 입력을 받아야 하는 경우, 텍스트 bullet 리스트 dump 대신 **반드시 `AskUserQuestion` 도구를 호출**한다. intercept hook 이 자동으로 form 으로 분기하여 브라우저 폼 표시 + 서버 자동 회수까지 무인 진행.
 
 #### 트리거 (3 조건 모두 충족 시 발동)
 
@@ -595,7 +612,7 @@ AskUserQuestion(questions=[{
 }])
 ```
 
-intercept hook 이 deny + form 자동 회수 reason 주입 → Claude 가 form HTML 생성·Firefox open → 사용자 폼 작성·전송 → server inbox → Claude bash polling → 흐름 재개.
+intercept hook 이 deny + form 자동 회수 reason 주입 → Claude 가 form HTML 생성·브라우저 open → 사용자 폼 작성·전송 → server inbox → Claude bash polling → 흐름 재개.
 
 #### 예외 (트리거 미발동, 텍스트 응답 그대로 유지)
 
@@ -639,12 +656,22 @@ hub 모드 미활성(`.hub-mode-active` 없음) → 본 규칙 적용 안 함. A
    - hub 모드 활성 시: ask-intercept hook 이 reason 에 `{ANSWER_URL}` 치환 완료본 JS 를
      직접 주입함 → hook 이 준 JS 를 그대로 이 위치에 삽입 (htm.md 별도 참조 불필요).
    - hook 미경유로 직접 폼을 작성하는 경우: 위 SSOT 파일을 Read 하여 `{ANSWER_URL}` 를
-     실제 answer 엔드포인트(`http://127.0.0.1:9876/answer?cwd=<enc>&token=<token>`)로,
+     answer 상대경로(`/answer?cwd=<enc>&token=<token>&sid=<sid>`)로 (Issue208 — same-origin,
+     외부 기기에서도 페이지 host 로 POST 회귀),
+     `{LOOPBACK_BASE}` 를 `http://127.0.0.1:9876` 으로 (file:// 직접 열람 전용 fallback),
      `{OPEN_PROJECT_URL}` 를 `http://127.0.0.1:9876/open-project` 로,
      `{PROJECT_CWD_JSON}` 를 cwd 의 JSON 문자열(따옴표 포함)로 치환 후 이 위치에 삽입 (Issue132 — 전송 후 해당 세션으로 버튼).
    collectAnswers/submitAnswers/이벤트 바인딩은 SSOT 파일이 단일 출처 — 여기 인라인 복제 금지. */
 </script>
 ```
+
+### 다른 htm 문서 임베드·링크 (iframe / a href) — http hub URL 필수
+
+hub 가 생성한 htm 문서 안에서 **다른 htm 문서를 iframe·링크로 참조**할 때(ex 관련 `..show` 페이지 페어 임베드)는 반드시 hub http URL 을 쓴다. `file://` 금지.
+
+* 형식: `http://127.0.0.1:9876/htm-doc?path=<참조 htm 절대경로>`
+* 이유: 해당 문서가 hub stable URL(`http://127.0.0.1:9876/htm-doc?...`)로 열리면 부모 origin 이 `http://` 가 됨. 브라우저는 `http://` 페이지의 `file://` 하위리소스(iframe·img)·링크를 차단 → iframe 빈 박스, 링크 무반응. `file://` 직접 open 일 때만 우연히 동작하므로 양쪽 경로에서 깨지지 않으려면 http URL 로 통일.
+* 적용 대상: `<iframe src>`, 문서 간 `<a href>` (헤더 CANONICAL 블록의 `/open-project`·`/open-session` fetch 는 무관 — 그대로 유지).
 
 ### 활성 조건 (Issue45)
 
@@ -659,14 +686,14 @@ hub 모드 미활성(`.hub-mode-active` 없음) → 본 규칙 적용 안 함. A
 ```
 사용자: "..show <요청>"   (구 "..hub <요청>" deprecated alias)
    ↓
-[Claude] 본문 HTML 작성 → file:// Firefox open
+[Claude] 본문 HTML 작성 → file:// 브라우저 open
    ↓
 [Claude] AskUserQuestion 도구 호출
    ↓
 [intercept hook] healthz 200 + /register 성공 → form 자동 회수 지시 주입
                  healthz 실패         → fail-loud 안내 + 사용자 선택 대기
    ↓
-[Claude] form HTML 생성 (전송 버튼) → file:// Firefox open
+[Claude] form HTML 생성 (전송 버튼) → file:// 브라우저 open
    ↓
 [사용자] 폼 작성 → "전송" 클릭 → JS fetch POST
    ↓
@@ -681,7 +708,7 @@ hub 모드 미활성(`.hub-mode-active` 없음) → 본 규칙 적용 안 함. A
 - 질문 폼 HTML (mode b): `{OUT_DIR}/hub_htm_{YYYYMMDD_HHMMSS}_b_{주제}.htm`
 - auto 폼 HTML (mode c, Mode D): `{OUT_DIR}/hub_htm_{YYYYMMDD_HHMMSS}_c_{주제}.htm`
 - 날짜시간=`date +%Y%m%d_%H%M%S`, 주제=핵심 10자 내외 kebab-case (공백·특수문자 `-` 치환)
-- `OUT_DIR` 결정: `cwd/_doc_work/z_htm/` 존재 시 거기, 없으면 `/tmp/___pm` (Issue64 — `/tmp` 평면 흩어짐 방지. hook 이 자동 판정 후 reason 에 주입)
+- `OUT_DIR` 결정: `cwd/_doc_work/htm/` 우선 → legacy `z_htm/` → `htm/` 신규 생성 → else `/tmp/___pm` (Issue64/Issue289 — `/tmp` 평면 흩어짐 방지. hook 이 자동 판정 후 reason 에 주입)
 
 ### CORS / 보안
 
@@ -696,9 +723,9 @@ hub 모드 미활성(`.hub-mode-active` 없음) → 본 규칙 적용 안 함. A
 - `~/.claude/hooks/fpm-hub-trigger.sh` (UserPromptSubmit, `..show` 감지[구 `..hub` deprecated] + 플래그 touch + 본문 HTML 지시 주입)
 - `~/.claude/hooks/fpm-ask-intercept.sh` (PreToolUse matcher=AskUserQuestion, healthz 판정 + form 자동 회수 지시 또는 fail-loud)
 - `~/.claude/.hub-mode-active` (플래그 파일, 빈 파일이면 활성)
-- `${CLAUDE_PLUGIN_ROOT}/services/hub/server.py` — `/healthz`, `/register`, `/answer` endpoint (플러그인 번들, `/fpm-hub-server` 가 lifecycle 관리)
+- `~/_git/___pm/services/hub/server.py` — `/healthz`, `/register`, `/answer` endpoint (___pm 소유, 상시 운영)
 - `/tmp/___pm/claude-htm-inbox/{cwd_hash}/{sid}/{ts}.json` — 답변 파일 (Issue90 sid 서브폴더 세션 격리, Claude Read 후 삭제)
-- `/fpm-hub-server start|stop|status|restart` — 서버 lifecycle wrapper
+- `/board-server start|stop|status|restart` — 서버 lifecycle wrapper
 
 ## 분리 이력
 
@@ -707,6 +734,6 @@ hub 모드 미활성(`.hub-mode-active` 없음) → 본 규칙 적용 안 함. A
 * Issue27/28 (2026-05-18): Stable URL POST 모델로 Mode A/B 통합
 * Issue36 (2026-05-19): Mode C(dashboard) 별도 스킬·커맨드로 분리
 * Issue37 (2026-05-19): hub 스킬 ___pm 서버 **필수** 의존 제거. Mode A only 로 단순화
-* Issue38 (2026-05-19): Mode B 자동 회수 부활 (board-server 옵셔널 공유 클라이언트). 서버 미실행 시 Mode A fallback 보장
+* Issue38 (2026-05-19): Mode B 자동 회수 부활 (dashboard-server 옵셔널 공유 클라이언트). 서버 미실행 시 Mode A fallback 보장
 * **Issue45 (2026-05-19, 본 변경)**: ___pm 프로젝트가 htm-server 상시 운영을 책임지는 환경 전제 → Mode A paste-back fallback 제거. form 자동 회수 단일 경로 + 서버 down 시 fail-loud 안내로 단순화
 * **Issue58 (2026-05-19)**: hub/dashboard 배경 흰색 고정. `@media (prefers-color-scheme: dark)` override 금지. 프로젝트 헤더 컬러는 `~/_git/___pm/Projects.md` `peacock.color` 컬럼 참조 (cwd 경로 매칭, fallback `hsl(hue, 60%, 45%)`)

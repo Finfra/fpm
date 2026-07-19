@@ -85,7 +85,7 @@ normalize_path() {
 | 1-7  | `Harness.md`            | 템플릿: `___pm/data/template/Harness.md` + 타입별 global layer 자동 채움  |
 | 1-8  | `.vscode/settings.json` | 기존 파일 있으면 기존 peacock 색 존중 (양방향 동기화). 없으면 신규 색 지정. `/peacock-sync` dry-run 검증 권장 |
 | 1-9  | `.claude/`              | `settings.json` 기본 구조 생성 (미존재 시)                                |
-| 1-10 | `_doc_work/`            | 서브폴더 포함 생성: `tasks/`, `report/`, `plan/`, `history/`, `z_done/` (미존재 시) |
+| 1-10 | `_doc_work/`            | 서브폴더 포함 생성: `tasks/`, `report/`, `plan/`, `history/`, `z_done/` (미존재 시). **`htm/` 은 fpm 설치 or `~/_git/___pm` 존재 시에만 추가** (hub 렌더 산출물 저장·자동등록 폴더 — 부재 시 hub `/htm-doc` 403. `[ -d ~/_git/___pm ] \|\| command -v fpm >/dev/null` 가드) |
 | 1-11 | `_doc_arch/`            | 서브폴더 포함 생성: `z_old/` (미존재 시)                                  |
 | 1-12 | `projects/{번호}` 등록  | **정규화 후** `___pm/projects/{번호}` 파일에 경로 기록 (`$HOME` → `~` 치환 필수. 0-2 참조). 기존 pm에 이미 등록된 번호 중복 금지 |
 | 1-13 | `Projects.md` 업데이트  | 테이블 행 + setting Script echo 라인 추가                                 |
@@ -173,9 +173,9 @@ Usage:
 
 ---
 
-# Opus 4.7 실행 제약
+# Opus 4.8 실행 제약
 
-공통 제약은 [`~/.claude/rules/opus-4-7-execution-rules.md`](../rules/opus-4-7-execution-rules.md) 참조.
+공통 제약은 [`~/.claude/rules/opus-4-8-execution-rules.md`](../rules/opus-4-8-execution-rules.md) 참조.
 
 요지:
 * 단계별 종료 조건을 명시, 무한 루프 금지

@@ -52,7 +52,7 @@ skill: "pm" (action: update)
 
 | #   | 항목             | 동작                                                    |
 | :-- | :--------------- | :------------------------------------------------------ |
-| 3-8 | 공통 폴더        | `_doc_work/{tasks,report,plan,history,z_done}`, `_doc_arch/z_old`, `.claude/` — 없는 것만 생성 |
+| 3-8 | 공통 폴더        | `_doc_work/{tasks,report,plan,history,z_done}`, `_doc_arch/z_old`, `.claude/` — 없는 것만 생성. **`_doc_work/htm/` 은 fpm 설치 or `~/_git/___pm` 존재 시에만** (hub 403 예방 — `[ -d ~/_git/___pm ] \|\| command -v fpm >/dev/null` 가드) |
 | 3-9 | 타입별 추가 폴더 | pm-new 기준 타입별 폴더 목록과 비교하여 없는 것만 생성 (mac: `_doc_work/_release/`, `_doc_arch/define/`) |
 
 ### scar 업데이트 (대상: `scar` 또는 `all`)
@@ -104,9 +104,9 @@ Usage: /pm-update <프로젝트번호> [대상]
 
 ---
 
-# Opus 4.7 실행 제약
+# Opus 4.8 실행 제약
 
-공통 제약은 [`~/.claude/rules/opus-4-7-execution-rules.md`](../rules/opus-4-7-execution-rules.md) 참조.
+공통 제약은 [`~/.claude/rules/opus-4-8-execution-rules.md`](../rules/opus-4-8-execution-rules.md) 참조.
 
 요지:
 * 단계별 종료 조건을 명시, 무한 루프 금지

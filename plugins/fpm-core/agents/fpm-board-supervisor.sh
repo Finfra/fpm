@@ -3,7 +3,7 @@
 #
 # ⚠️ 글로벌 SCAR 변경 가드 (Issue46): 본 daemon 은 모든 프로젝트가 공유. cwd ≠ ~/.claude
 #   면 즉시 수정 금지 → ~/.claude/Issue.md 이슈 등록 후 처리. 설계 SSOT:
-#   ~/.claude/_doc_arch/dashboard.md. 절차: ~/.claude/rules/global-scar-change-rules.md
+#   ~/.claude/_doc_arch/board.md. 절차: ~/.claude/rules/global-scar-change-rules.md
 #
 # tmux window 의 supervisor pane 에서 실행됨. queue.yaml(런타임 SSOT)을 위상 스케줄로 구동:
 # blocked→ready 승격 → send-keys 로 worker 명령 주입 → capture-pane + sentinel 파일로 완료 감지 → cursor 진행.
@@ -34,7 +34,7 @@
 #   - 큐 전부 terminal → state=done 후 exit
 #
 # 설계: ~/_git/___pm/_doc_arch/hub_board_tmux_design.md (tmux 파일 기반)
-# 클라이언트: ~/.claude/_doc_arch/dashboard.md
+# 클라이언트: ~/.claude/_doc_arch/board.md
 
 set -uo pipefail
 

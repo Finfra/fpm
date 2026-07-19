@@ -1,5 +1,5 @@
 ---
-title: fpm-pm
+title: pm
 description: 프로젝트 관리 스킬 (생성·삭제·업데이트·조회). pm-new, pm-del, pm-update, pm-query 커맨드의 공통 로직.
 date: 2026-04-11
 ---
@@ -41,6 +41,7 @@ ___pm/
 ├── _doc_work/
 │   └── pm_history/        # 실행 이력 (실행당 파일 1개)
 └── data/template/         # 프로젝트 초기화 템플릿
+    ├── CLAUDE.md
     ├── gitignore
     ├── Harness.md
     ├── Issue.md
@@ -48,6 +49,17 @@ ___pm/
     ├── PROMPTS.md
     └── vscode.json
 ```
+
+## CLAUDE.md 템플릿 토큰 치환 (필수)
+
+`data/template/CLAUDE.md` 복사 시 아래 토큰을 `Projects.md` 행 값으로 치환한다. 프로젝트 시작 컨텍스트(목적·구조)를 담아 첫 세션이 곧바로 작업 가능하게 함.
+
+| 토큰            | 치환 값 (Projects.md 컬럼)      |
+| :-------------- | :------------------------------ |
+| `{{프로젝트명}}` | `프로젝트명` (영문 id name)     |
+| `{{설명}}`       | `설명` 컬럼 전문                |
+
+* 프로젝트 성격이 파악되면 `## 목적`·`## 폴더 구조`·`## 불변식` 섹션을 실제 내용으로 보강 (generic stub 방치 금지).
 
 # 타입별 폴백 기본값 (Harness.md global layer)
 
@@ -77,6 +89,8 @@ Commands: /issue-reg-m, /issue-fix-m, /issue-closer-m
 * **기존 fApp 보강**: `pm-update` 실행 시 VERSION 파일이 없으면 현재 `MARKETING_VERSION` 또는 `0.0.1` 값으로 생성
 
 # .gitignore 케이스 무결성 검증 (필수)
+
+> 적용/skip 판정·표준 블록 정책 SSOT: [`_doc_arch/gitignore-policy.md`](../../../_doc_arch/gitignore-policy.md). 요지 — docs(`.claude/`·`CLAUDE.md`·`Issue.md`·`_doc_arch/`·`_doc_work/`·`noteForHuman.md`)는 **미추적 프로젝트만** 로컬전용 ignore, **이미 git 추적 중이면 special reason 으로 skip**.
 
 `.gitignore` 템플릿(`data/template/gitignore`)에 적힌 폴더 패턴은 실제 생성 폴더명과 **대소문자 완전 일치**해야 함. macOS HFS+ 기본은 case-insensitive지만 APFS·Linux·git 인덱스는 case-sensitive — 한쪽이 다르면 `.gitignore` 매칭이 조용히 실패함.
 
@@ -262,11 +276,12 @@ status: {success|partial|failed|cancelled}
 | `noteForHuman.md`       | 보존                                                | 템플릿 생성                      |
 | `PROMPTS.md`            | 보존                                                | 템플릿 생성                      |
 | `Harness.md`            | 보존                                                | 템플릿 + global layer 자동 채움  |
-| `_doc_work/{plan,tasks,report,z_done}`, `_doc_arch` | 없는 서브폴더만 생성   | 전체 생성                        |
+| `_doc_work/{plan,tasks,report,z_done,z_done/htm,htm}`, `_doc_arch` | 없는 서브폴더만 생성   | 전체 생성                        |
 | `.vscode/settings.json` | **peacock 동기화** (아래 절차)                      | 템플릿 컬러·이모지 자동 선택     |
 | initial commit          | **스킵**. 변경분만 별도 커밋(사용자 컨펌)           | initial commit                   |
 
 * nPTiR 산출물·로컬 문서가 `.gitignore` 정책상 ignore 대상이면 `.gitkeep` 불필요 — 폴더만 생성
+* **`htm` 필수 사유 (Issue289 — 구 `z_htm`)**: hub 렌더(`..show`/`..ask` 등)는 `$cwd/_doc_work/htm/` 존재 시 거기 저장하고, 그때만 register 훅(`fpm-hub-doc-register`)이 hub registry 에 자동 등록한다. 부재 시 `/tmp/___pm` fallback → 등록 스킵 → `/htm-doc` 403 dead link. 따라서 신규·adopt 프로젝트는 `htm` 을 함께 생성한다 (pm 스킬은 fpm 컨텍스트 전용이라 가드 자동 충족 — 글로벌 wrapper·nptir-rules 는 `[ -d ~/_git/___pm ] || command -v fpm` 가드로 비-fpm 환경 제외). 아카이브 대상은 `z_done/htm/` 이며 legacy `z_htm/` 은 읽기만 지원. 수명주기 SSOT: `_doc_arch/htm-lifecycle-design.md`
 
 ## .vscode/settings.json peacock 동기화 (필수 — 누락 빈발 지점)
 

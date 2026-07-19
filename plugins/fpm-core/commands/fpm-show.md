@@ -1,6 +1,6 @@
 ---
 name: fpm-show
-description: 요청 결과를 HTML 문서로 렌더링하여 Firefox에 표시 (hub a모드 render 트리거). Issue133 — 구 `/hub`/`..hub` render 의 새 이름. 우산 토글·Q&A 회수 동작은 commands/fpm-hub.md SSOT.
+description: 요청 결과를 HTML 문서로 렌더링하여 설정 브라우저(hub_setting.yml)에 표시 (hub a모드 render 트리거). Issue133 — 구 `/hub`/`..hub` render 의 새 이름. 우산 토글·Q&A 회수 동작은 commands/fpm-hub.md SSOT.
 date: 2026-06-03
 ---
 
@@ -8,7 +8,7 @@ date: 2026-06-03
 
 # /show — HTML 결과 렌더 (hub a모드, Issue133)
 
-요청을 처리한 결과를 완전한 HTML 문서로 작성하여 Firefox 로 자동 표시함. hub 우산 기능의 **a모드(단방향 렌더)** 명시 트리거.
+요청을 처리한 결과를 완전한 HTML 문서로 작성하여 설정 브라우저(hub_setting.yml `default_browser`)로 자동 표시함. hub 우산 기능의 **a모드(단방향 렌더)** 명시 트리거.
 
 * **이름 분리 배경 (Issue133)**: a모드 render 트리거가 우산명 `hub`(시스템·기능 전체, 토글 `..hub on|off|start|stop`)와 같은 단어라 충돌·혼동 → render 액션을 `..show`/`/show` 로 분리. b=`..ask`·c=`..board` 와 운율 통일.
 * **하위호환**: 구 `/hub <요청>`·`..hub <요청>`(단독, 렌더 의도)는 한시적 deprecated alias — 동작은 동일하되 채팅 응답 끝에 `..show` 안내 1줄 첨부.

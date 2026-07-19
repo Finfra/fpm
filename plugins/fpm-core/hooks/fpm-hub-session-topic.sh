@@ -69,23 +69,10 @@ print(line)
 [ -z "$SID" ] && exit 0
 [ -z "$LABEL" ] && exit 0   # 빈 프롬프트(첨부만 등) → 갱신 생략, 기존 label 보존
 
-# live_pid: 세션 카드 liveness anchor. stdin JSON pid·$PPID 는 훅 실행용 transient
-#   프로세스(턴 종료 시 사망)일 수 있어 부적합 — 그 pid 가 죽으면 서버가 세션을 즉시
-#   prune 해 "0 live session" 이 된다. → 조상 체인에서 영속 claude 프로세스(comm=claude)
-#   를 탐색해 권위 pid 로 사용. 실패 시 JSON pid → $PPID fallback (하위호환).
-PID=""
-_p=$PPID; _d=0
-while [ "${_p:-0}" -gt 1 ] && [ "$_d" -lt 12 ]; do
-  _c=$(ps -o comm= -p "$_p" 2>/dev/null | awk -F/ '{print $NF}')
-  case "$_c" in *claude*) PID=$_p; break ;; esac
-  _p=$(ps -o ppid= -p "$_p" 2>/dev/null | tr -d ' ')
-  _d=$((_d+1))
-done
-if [ -z "$PID" ]; then
-  PID="$PID_JSON"
-  case "$PID" in ''|*[!0-9]*) PID="$PPID" ;; esac
-fi
-[ -z "$CWD" ] && CWD="$PWD"
+# pid: JSON 값이 있고 정수면 사용, 아니면 훅 부모 pid(=claude 세션) fallback
+PID="$PID_JSON"
+case "$PID" in ''|*[!0-9]*) PID="$PPID" ;; esac
+[ -z "$CWD" ] && exit 0   # Issue179: PWD fallback 제거 — hook 컨텍스트 PWD 는 frontmost 반영 위험(세션 오귀속), doc-register.sh:43 표준 정합
 case "$CWD" in /*) ;; *) exit 0 ;; esac   # 절대경로만
 
 SERVER_PORT="${HTM_SERVER_PORT:-9876}"
@@ -102,19 +89,47 @@ REG_URL="http://127.0.0.1:${SERVER_PORT}/session/register?cwd=${CWD_ENC}"
 #   (caps or 기존)에서 매 턴 덮어써 origin 이 항상 terminal 로 회귀하던 버그(Issue177 회귀) 차단.
 ENTRY="${CLAUDE_CODE_ENTRYPOINT:-}"
 
+# Issue217(prj1#Issue273): 현재 세션 모델 — transcript jsonl 마지막 assistant .message.model.
+#   hub 활성세션 카드 신호등 이모지(🟣opus/🔵sonnet/🟢haiku/🟠fable) producer.
+#   SessionStart(register.sh)는 첫 응답 전이라 model 미상 → 매 프롬프트 이 훅이 갱신.
+TRANSCRIPT=$(printf '%s' "$input" | python3 -c "
+import sys, json
+try:
+    print(json.load(sys.stdin).get('transcript_path', '') or '')
+except Exception:
+    print('')
+")
+MODEL=""
+if [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ]; then
+  MODEL=$(tail -n 400 "$TRANSCRIPT" 2>/dev/null | python3 -c "
+import sys, json
+last = ''
+for line in sys.stdin:
+    try:
+        m = (json.loads(line).get('message') or {}).get('model')
+        if m:
+            last = m
+    except Exception:
+        pass
+print(last)
+" 2>/dev/null)
+fi
+
 BODY=$(python3 -c "
 import json, sys
-sid, label, pid, entry = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+sid, label, pid, entry, model = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
 caps = {'source': 'prompt', 'kind': 'live'}
 if entry:
     caps['entrypoint'] = entry   # Issue179: 출처 배지용 (claude-vscode|cli|...)
+if model:
+    caps['model'] = model        # Issue217: 카드 모델 신호등 이모지 (prj1#Issue273)
 body = {'sid': sid, 'content_type': 'live', 'label': label, 'capabilities': caps}
 try:
     body['pid'] = int(pid)   # Issue122: 서버 계약 pid(int) — live 카드 dedup·liveness
 except (ValueError, TypeError):
     pass
 print(json.dumps(body))
-" "$SID" "$LABEL" "$PID" "$ENTRY")
+" "$SID" "$LABEL" "$PID" "$ENTRY" "$MODEL")
 
 curl -s --max-time 2 \
   -X POST "$REG_URL" \

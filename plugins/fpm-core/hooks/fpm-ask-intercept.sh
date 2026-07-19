@@ -59,7 +59,7 @@ fi
 SID=$(printf '%s' "$SID" | tr -c 'A-Za-z0-9-' '-' | cut -c1-32)
 
 # Issue157: 색 = peacock.color 실색 (.vscode/settings.json walk-up → Projects.md → hsl 해시 fallback)
-# name = peacock 찾은 프로젝트 루트 basename (z_htm 등 하위폴더 보정)
+# name = peacock 찾은 프로젝트 루트 basename (htm/z_htm 등 하위폴더 보정)
 read -r PROJECT_NAME PROJECT_COLOR <<< "$(CWD_VAL="$cwd" python3 <<'PYEOF'
 import hashlib, os, re
 cwd = os.environ.get('CWD_VAL', '')
@@ -120,18 +120,22 @@ print(name.replace(' ', '_'), color.replace(' ', ''))
 PYEOF
 )"
 
-# OUT_DIR
-if [ -n "$cwd" ] && [ -d "$cwd/_doc_work/z_htm" ]; then
-  OUT_DIR="$cwd/_doc_work/z_htm"
+# OUT_DIR (Issue289: 활성 htm/ → legacy z_htm/ → htm/ 신규. fpm-hub-trigger.sh 와 동일 규칙)
+_htm_dir_of() {  # $1=프로젝트 루트 → htm 출력 폴더 경로(없으면 빈 문자열)
+  [ -d "$1/_doc_work/htm" ] && { printf '%s' "$1/_doc_work/htm"; return; }
+  [ -d "$1/_doc_work/z_htm" ] && { printf '%s' "$1/_doc_work/z_htm"; return; }
+  [ -d "$1/_doc_work" ] && { mkdir -p "$1/_doc_work/htm" && printf '%s' "$1/_doc_work/htm"; return; }
+  printf ''
+}
+
+OUT_DIR=""
+if [ -n "$cwd" ] && [ -d "$cwd/_doc_work" ]; then
+  OUT_DIR=$(_htm_dir_of "$cwd")
 elif [ -n "$cwd" ]; then
-  sub_found=$(find "$cwd" -mindepth 3 -maxdepth 3 -type d -path "*/_doc_work/z_htm" 2>/dev/null | head -1)
-  if [ -n "$sub_found" ]; then
-    OUT_DIR="$sub_found"
-  else
-    OUT_DIR="/tmp/___pm"
-    mkdir -p "$OUT_DIR"
-  fi
-else
+  sub_found=$(find "$cwd" -mindepth 2 -maxdepth 2 -type d -name "_doc_work" 2>/dev/null | head -1)
+  [ -n "$sub_found" ] && OUT_DIR=$(_htm_dir_of "$(dirname "$sub_found")")
+fi
+if [ -z "$OUT_DIR" ]; then
   OUT_DIR="/tmp/___pm"
   mkdir -p "$OUT_DIR"
 fi
@@ -185,7 +189,7 @@ reason = (
     "Mode A paste-back fallback 은 Issue45(2026-05-19) 에서 제거됨. "
     "form 자동 회수 단일 경로만 지원.\n\n"
     "### 조치 (사용자 선택)\n"
-    "1. **서버 시작 후 재시도**: \`/fpm-hub-server start\` 실행 → 본 질문 재호출\n"
+    "1. **서버 시작 후 재시도**: \`/dashboard-server start\` 실행 → 본 질문 재호출\n"
     "2. **hub 모드 해제**: \`..hub stop\` 입력 → AskUserQuestion 채팅 UI 로 정상 복귀\n\n"
     "### 채팅 응답 의무\n"
     "Claude 는 본 deny 를 받으면 사용자에게 위 두 옵션을 명확히 제시하고 입력 대기. "
@@ -209,28 +213,36 @@ case "$_db" in
   chrome|Chrome)      _app="Google Chrome" ;;
   edge|Edge)          _app="Microsoft Edge" ;;
   safari|Safari)      _app="Safari" ;;
-  none|None|NONE|off) _app="" ;;   # 브라우저 미존재 환경(서버) — open 생략
   *)                  _app="$_db" ;;
 esac
-if [ -z "$_app" ]; then
-  # default_browser: none — 브라우저 미설치 서버. open 명령 미생성 → hub URL 로 폼 접속.
-  _focus="false"; HTM_OPEN_CMD=""
+# browser_focus: false(기본)=백그라운드 open(-g, 포커스 미탈취), true=foreground
+if grep -qE '^[[:space:]]*browser_focus:[[:space:]]*true' "$HUB_SETTING_FILE" 2>/dev/null; then
+  HTM_OPEN_CMD="open -a \"$_app\""; _focus="true"
 else
-  # browser_focus: false(기본)=백그라운드 open(-g, 포커스 미탈취), true=foreground
-  if grep -qE '^[[:space:]]*browser_focus:[[:space:]]*true' "$HUB_SETTING_FILE" 2>/dev/null; then
-    _focus="true"; HTM_OPEN_CMD="open -a \"$_app\""
-  else
-    _focus="false"; HTM_OPEN_CMD="open -g -a \"$_app\""
-  fi
-  # Issue162: browser_tab_reuse=true & 재사용 가능 브라우저(chrome/edge/safari) → 탭 재사용 helper 로 치환.
-  #   match=:9876 origin → /hub 대시보드 + htm-doc?path=… 모든 hub URL 단일 탭. file:// 등 미매칭은 새 탭(폴백 동등).
-  _reuse=$(grep -E '^[[:space:]]*browser_tab_reuse:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//')
-  _helper="$HOME/_git/___pm/plugins/fpm-core/hooks/fpm-browser-open.sh"
-  case "$_app" in "Google Chrome"|"Microsoft Edge"|"Safari") _reusable=1 ;; *) _reusable=0 ;; esac
-  if [ "$_reuse" = "true" ] && [ "$_reusable" = "1" ] && [ -f "$_helper" ]; then
-    HTM_OPEN_CMD="bash \"$_helper\" -a \"$_app\" -f \"$_focus\" -r true -m http://127.0.0.1:9876"
-  fi
+  HTM_OPEN_CMD="bash \"$HOME/_git/___pm/plugins/fpm-core/hooks/fpm-browser-open.sh\" -a \"$_app\" -f false -r false"; _focus="false"  # Issue173: helper 경유(focus 복원). Chrome open -g self-activate 방지. -r false=폼 새 탭(Issue153)
 fi
+
+# Issue172: b모드 폼도 hub 서버 경유(:9876)로 open — file:// 직접 open 폐기.
+#   원인(이미지1): file:// 은 register-doc 미경유 → 원격/타기기 단절 + /tmp 경로.
+#   폼 Write 시 fpm-hub-doc-register(Issue80) 가 mode b 도 자동 register-doc → /htm-doc?path= 즉시 유효.
+#   → 폼을 :9876 /htm-doc URL 로 open (아래 hub_doc_url).
+# Issue153/171 정합: 렌더(..show·..ask)는 항상 새 탭 — reuse helper 미사용(렌더 plain open/open -g).
+#   browser_tab_reuse 는 hub-link target 분기에만 사용 (true→fpm-hub 명명탭 재사용 / false→_blank 새 탭).
+#   (구 Issue172 reuse helper 경로 제거: /hub + 모든 htm-doc 폼을 한 탭에 collapse 했음 — hub-trigger Issue153 와 동일 폐기.)
+_reuse=$(grep -E '^[[:space:]]*browser_tab_reuse:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//')
+if [ "$_reuse" = "true" ]; then HUB_LINK_TARGET="fpm-hub"; else HUB_LINK_TARGET="_blank"; fi
+# render URL host = advertise_host ?? bind_host(≠0.0.0.0) ?? 127.0.0.1 (hub-trigger 와 동일 산출)
+_adv=$(grep -E '^[[:space:]]*advertise_host:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//; s/^"//; s/"$//')
+_bind=$(grep -E '^[[:space:]]*bind_host:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//; s/^"//; s/"$//')
+if [ -n "$_adv" ]; then RENDER_HOST="$_adv"
+elif [ -n "$_bind" ] && [ "$_bind" != "0.0.0.0" ]; then RENDER_HOST="$_bind"
+else RENDER_HOST="127.0.0.1"; fi
+
+# Issue180: render_target 인지 — 폼(b모드)도 본문(fpm-hub-trigger.sh a모드)과 동일 표면 사용.
+#   hub → POST /open-simple-browser (VSCode 패널, 외부 open 금지) / local-open|both → 외부 open 유지.
+#   과거엔 폼이 render_target 무관 항상 외부 `open` 지시 → 본문(Simple Browser 패널)과 표면 불일치(이중 지시).
+RENDER_TARGET=$(grep -E '^[[:space:]]*render_target:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//; s/^"//; s/"$//')
+[ -z "$RENDER_TARGET" ] && RENDER_TARGET="local-open"
 
 QUESTIONS_JSON="$questions_json" \
   OUT_DIR="$OUT_DIR" \
@@ -243,6 +255,9 @@ QUESTIONS_JSON="$questions_json" \
   CWD_HASH="$CWD_HASH" \
   INBOX_DIR="$INBOX_DIR" \
   PROJECT_CWD="$cwd" \
+  RENDER_HOST="$RENDER_HOST" \
+  RENDER_TARGET="$RENDER_TARGET" \
+  HUB_LINK_TARGET="$HUB_LINK_TARGET" \
   python3 <<'PYEOF'
 import json, os, urllib.parse, shlex
 
@@ -257,20 +272,46 @@ cwd_hash = os.environ.get('CWD_HASH', '')
 inbox_dir = os.environ.get('INBOX_DIR', '')
 cwd = os.environ.get('PROJECT_CWD', '')
 open_cmd = os.environ.get('HTM_OPEN_CMD', 'open -g -a Firefox')
-# default_browser: none → open_cmd 빈값. open 생략하고 hub URL 로 폼 접속 안내.
-if open_cmd:
-    open_heading = "**2. 저장 + Firefox open**:"
-    open_line = f"   {open_cmd} \"file://<절대경로>\"\n"
-else:
-    open_heading = "**2. 저장 (default_browser: none — open 생략)**:"
-    open_line = "   # 브라우저 미존재(서버). open 금지. Write 시 register-doc 자동 → http://127.0.0.1:{}/htm-doc?path=<절대경로> 로 폼 접속\n".format(server_port)
 cwd_q = urllib.parse.quote(cwd) if cwd else ''
-# Issue157: 헤더 버튼(open-project/open-session)용 프로젝트 루트 — cwd 가 _doc_work/z_htm 하위면 보정
+# Issue157: 헤더 버튼(open-project/open-session)용 프로젝트 루트 — cwd 가 _doc_work/* 하위면 보정
 project_root = cwd.split('/_doc_work/')[0] if cwd and '/_doc_work/' in cwd else cwd
 
 ask_path = f"{out_dir}/hub_htm_<YYYYMMDD_HHMMSS>_b_<주제>.htm"  # 날짜시간=`date +%Y%m%d_%H%M%S`, 주제=질문 핵심 10자 내외 kebab, mode b=ask 폼
-path_note = "프로젝트 로컬 (_doc_work/z_htm/)" if not out_dir.startswith('/tmp') else "/tmp/___pm fallback"
-answer_url = f"http://127.0.0.1:{server_port}/answer?cwd={cwd_q}&token={server_token}&sid={sid}"
+path_note = (f"프로젝트 로컬 (_doc_work/{out_dir.split('_doc_work/')[-1]}/)" if '_doc_work/' in out_dir else f"프로젝트 로컬 ({out_dir})") if not out_dir.startswith('/tmp') else "/tmp/___pm fallback"
+# Issue172: 폼 open URL = hub 서버 /htm-doc?path=<절대경로> (:9876 register-doc 경유). file:// 폐기.
+render_host = os.environ.get('RENDER_HOST', '127.0.0.1')
+hub_doc_url = f"http://{render_host}:{server_port}/htm-doc?path=<절대경로>"
+# Issue180: 폼 표면 지시를 render_target 에 맞춰 본문(fpm-hub-trigger.sh)과 통일 (이중 지시 제거).
+#   hub → POST /open-simple-browser (VSCode 패널, 외부 open 금지) / local-open|both → 외부 open 유지.
+render_target = os.environ.get('RENDER_TARGET', 'local-open')
+if render_target == 'hub':
+    open_step_2 = (
+        "**2. 저장 + VSCode Simple Browser 표시 (render_target: hub, Issue170/180)** — `file://`·외부 브라우저 open **금지**:\n"
+        "   - 먼저 `Write` 로 폼 저장 → `fpm-hub-doc-register` PostToolUse hook 이 자동 `register-doc` (mode b 포함, Issue80) → `/htm-doc?path=` 즉시 유효.\n"
+        "   - 그 다음 아래 1줄 실행 (`<절대경로>`=저장한 폼 .htm). 본문 렌더와 동일 단일 표면(VSCode 패널)로 통일 — 외부 브라우저 open 금지 (Issue180 이중 표면 제거):\n"
+        "   ```bash\n"
+        f"  # path: {ask_path} ({path_note})\n"
+        f"   curl -s -X POST http://{render_host}:{server_port}/open-simple-browser -H 'Content-Type: application/json' -d '{{\"path\":\"<절대경로>\"}}'\n"
+        "   ```\n"
+        f"   - 채팅에 fallback raw URL 병행 명시: `{hub_doc_url}`. ⚠️ `open` 실행 금지 (외부 브라우저 표면 이중 방지).\n\n"
+    )
+else:
+    open_step_2 = (
+        "**2. 저장 + hub 서버 경유 open (Issue172 — file:// 폐기 / Issue153 — 렌더 새 탭)**:\n"
+        "   - 먼저 `Write` 로 폼 저장 → `fpm-hub-doc-register` PostToolUse hook 이 자동 `register-doc` (mode b 포함, Issue80) → `/htm-doc?path=` 즉시 유효.\n"
+        "   - 그 다음 **hub URL** 로 open (file:// 금지 — :9876 register-doc 경유로 원격/타기기 표시 가능). 렌더 폼은 매번 새 탭(Issue153 — 하나씩 닫으며 검토). `/hub` 모니터링만 헤더 hub-link 명명탭(fpm-hub) 재사용:\n"
+        "   ```bash\n"
+        f"  # path: {ask_path} ({path_note})\n"
+        f"   {open_cmd} \"{hub_doc_url}\"\n"
+        "   ```\n"
+        f"   - `<절대경로>` 를 실제 저장 경로로 치환. 최종 open 대상은 `{hub_doc_url}` (file:// 아님).\n\n"
+    )
+# Issue153/171: hub-link target — browser_tab_reuse=true → fpm-hub 명명탭 재사용 / false → _blank
+hub_link_target = os.environ.get('HUB_LINK_TARGET', '_blank')
+# Issue208: same-origin 상대경로 — 외부 기기(tailnet)에서 폼 열어도 POST 가 페이지 host 로 회귀.
+# file:// 직접 열람만 폼 JS 의 AB(={LOOPBACK_BASE}) fallback 사용.
+answer_url = f"/answer?cwd={cwd_q}&token={server_token}&sid={sid}"
+loopback_base = f"http://127.0.0.1:{server_port}"
 
 # Issue90 — inbox 세션 격리. 같은 cwd 두 세션이 같은 inbox 를 공유해 poll 이 다른 세션
 # 폼 응답을 회수하던 결함의 수정. 2중 방어:
@@ -294,17 +335,20 @@ sid_quoted = shlex.quote(sid) if sid else "''"
 # Issue68: 폼 JS 템플릿 SSOT — hooks/fpm-ask-form-template.js 단일 출처에서 읽어 placeholder 치환
 # Issue132: {OPEN_PROJECT_URL} + {PROJECT_CWD_JSON} 치환 (전송 후 해당 세션으로 버튼)
 open_project_url = f"http://127.0.0.1:{server_port}/open-project"
-form_js = (open(os.path.join(os.environ.get('CLAUDE_PLUGIN_ROOT', os.path.expanduser('~/.claude')), 'hooks/fpm-ask-form-template.js'), encoding='utf-8').read()
+form_js = (open(os.path.expanduser('~/.claude/hooks/fpm-ask-form-template.js'), encoding='utf-8').read()
            .replace('{ANSWER_URL}', answer_url)
+           .replace('{LOOPBACK_BASE}', loopback_base)
            .replace('{OPEN_PROJECT_URL}', open_project_url)
            .replace('{PROJECT_CWD_JSON}', json.dumps(cwd)))
 
 # Issue143: 짝 a모드(..show 렌더) 페이지 탐색 → b 폼에 iframe+링크 임베드.
-# a(Claude Write, cwd z_htm)와 b(hook, OUT_DIR fallback /tmp)가 서로 다른 폴더일 수 있어
-# 후보 폴더(OUT_DIR + cwd z_htm + /tmp/___pm) 합집합에서 hub_htm_*_a_*.htm 중 mtime 최신 1개를 페어로 본다.
+# a(Claude Write, cwd htm 폴더)와 b(hook, OUT_DIR fallback /tmp)가 서로 다른 폴더일 수 있어
+# 후보 폴더(OUT_DIR + cwd 의 HTM_DIRS + /tmp/___pm) 합집합에서 hub_htm_*_a_*.htm 중 mtime 최신 1개를 페어로 본다.
+# Issue289: 단일 z_htm 대신 활성 htm/ · 아카이브 z_done/htm/ · legacy z_htm/ 전부를 후보로.
 import glob as _glob, re as _re, html as _htmlmod
 _cand_dirs = []
-for _d in (out_dir, (os.path.join(cwd, '_doc_work', 'z_htm') if cwd else ''), '/tmp/___pm'):
+_htm_subdirs = (('htm',), ('z_done', 'htm'), ('z_htm',))
+for _d in [out_dir] + ([os.path.join(cwd, '_doc_work', *_s) for _s in _htm_subdirs] if cwd else []) + ['/tmp/___pm']:
     if _d and os.path.isdir(_d) and _d not in _cand_dirs:
         _cand_dirs.append(_d)
 _a_files = []
@@ -324,7 +368,7 @@ if a_pair:
     except Exception:
         pass
     _t = _htmlmod.escape(a_title)
-    _p = _htmlmod.escape(f'http://127.0.0.1:{server_port}/htm-doc?path=' + a_pair)  # Issue: http origin 폼에서 file:// iframe 차단 회귀 → hub 서버 경유
+    _p = _htmlmod.escape(f'http://{render_host}:{server_port}/htm-doc?path=' + a_pair)  # Issue: http origin 폼에서 file:// iframe 차단 회귀 → hub 서버 경유
     _snippet = (
         '<details class="show-pair" open style="margin:1rem 1.5rem;border:1px solid #c9b8e0;border-radius:10px;overflow:hidden;">\n'
         '  <summary style="cursor:pointer;padding:0.6rem 1rem;background:hsl(273,30%,92%);color:#4a2d6b;font-weight:600;">'
@@ -359,7 +403,7 @@ project_header_guide = (
     "       onclick=\"event.preventDefault();fetch('http://127.0.0.1:__SPORT__/open-project',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'__ROOT__'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('VSCode 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — VSCode 열기 실패');});\">📁 __PNAME__</a>\n"
     "    <a class=\"sess-link\" href=\"#\" title=\"클릭 → 이 문서를 만든 세션 탭으로 포커스\"\n"
     "       onclick=\"event.preventDefault();fetch('http://127.0.0.1:__SPORT__/open-session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'__ROOT__',sid:'__SID__'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('세션 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — 세션 열기 실패');});\">🆚 세션</a>\n"
-    "    <a class=\"hub-link\" href=\"http://127.0.0.1:__SPORT__/hub\" onclick=\"if(location.protocol!=='file:'){event.preventDefault();window.open('/hub','_blank');}\" target=\"_blank\" title=\"통합 모니터링 Hub\"><img src=\"http://127.0.0.1:__SPORT__/fpm-icon.png\" alt=\"Hub\" style=\"height:1.2em;vertical-align:-0.25em;\"></a>\n"
+    "    <a class=\"hub-link\" href=\"http://127.0.0.1:__SPORT__/hub\" onclick=\"if(location.protocol!=='file:'){event.preventDefault();window.open('/hub','_blank');}\" target=\"__HUBTARGET__\" title=\"통합 모니터링 Hub\"><img src=\"http://127.0.0.1:__SPORT__/fpm-icon.png\" alt=\"Hub\" style=\"height:1.2em;vertical-align:-0.25em;\"></a>\n"
     "    <button type=\"button\" onclick=\"window.close()\">닫기 ✕</button>\n"
     "  </nav>\n"
     "</header>\n"
@@ -368,7 +412,7 @@ project_header_guide = (
     "header { position: sticky; top: 0; z-index: 100; display: flex; align-items: center;\n"
     "  justify-content: space-between; gap: 1rem; flex-wrap: wrap; padding: 0.9rem 1.4rem;\n"
     "  background: __PCOLOR__; color: #1a1a1a; }\n"
-    "header h1 { margin: 0; font-size: 1.15rem; flex: 1 1 auto; min-width: 0; }\n"
+    "header h1 { margin: 0; font-size: 1.15rem; flex: 1 1 auto; min-width: 0; text-align: center; }\n"
     "header .header-actions { display: flex; align-items: center; gap: 0.5rem; flex: 0 0 auto; }\n"
     "header .proj-badge, header .sess-link, header .hub-link, header button { color: #1a1a1a; text-decoration: none;\n"
     "  cursor: pointer; white-space: nowrap; background: rgba(0,0,0,0.08);\n"
@@ -378,7 +422,7 @@ project_header_guide = (
     "```\n"
     "- `<title>` 도 `\"__PNAME__ — <질문제목>\"` 형식으로 prefix. 색=peacock 실색(Issue58/157), 글자 #1a1a1a — 흰 글자(#fff) 금지(파스텔 배경 위 invisible).\n"
     "- 불변식: 배지 정적 `<span>` 금지(Issue103) → 순서 `📁`→`🖥`→`🎯`→`닫기 ✕` → 넷 모두 헤더 안 동일 행 → flex+space-between+wrap.\n"
-).replace("__PNAME__", project_name).replace("__PCOLOR__", project_color).replace("__ROOT__", project_root).replace("__SID__", sid).replace("__SPORT__", server_port)
+).replace("__PNAME__", project_name).replace("__PCOLOR__", project_color).replace("__ROOT__", project_root).replace("__SID__", sid).replace("__SPORT__", server_port).replace("__HUBTARGET__", hub_link_target)
 
 reason = (
     "## AskUserQuestion 가로채기 — HTML form 자동 회수 (Issue45 단일 경로)\n\n"
@@ -389,7 +433,7 @@ reason = (
     + show_embed_section
     + f"\n### form 자동 회수 (___pm htm-server port {server_port}, cwd_hash `{cwd_hash}`)\n\n"
     "폼 \"전송\" 클릭 → 서버 inbox 로 직접 POST → Claude bash polling 회수. 사용자 paste 액션 불필요.\n\n"
-    "**1. HTML form 생성** (file:// 으로 띄움):\n"
+    "**1. HTML form 생성** (:9876 hub URL 로 띄움 — Issue172):\n"
     "   - 각 question 을 `<fieldset class=\"q-card\" data-question=\"...\">` 카드로 표시\n"
     "   - `multiSelect: false` → radio, `multiSelect: true` → checkbox\n"
     "   - '기타 (직접 입력)' `<input type=\"text\" class=\"q-other\">` 추가\n"
@@ -401,11 +445,7 @@ reason = (
     "   - `<div id=\"status\">` (전송 결과 표시 영역)\n"
     "   - JavaScript (SSOT: `hooks/fpm-ask-form-template.js`, Issue68 — `{ANSWER_URL}` 치환 완료본. 아래 블록을 그대로 `<script>` 에 삽입):\n"
     "```js\n" + form_js + "```\n\n"
-    f"{open_heading}\n"
-    "   ```bash\n"
-    f"  # path: {ask_path} ({path_note})\n"
-    f"{open_line}"
-    "   ```\n\n"
+    + open_step_2 +
     "**3. 채팅 안내** (Issue40/Issue60 fallback 의무 — caveman 압축이되 다음 모두 포함):\n"
     "   1. 한 줄 헤드라인: '질문 폼 열림. \"전송\" 클릭 → 자동 회수 대기.'\n"
     "   2. 질문 텍스트 (압축 금지)\n"

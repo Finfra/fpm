@@ -22,11 +22,14 @@ import signal
 import subprocess
 import shlex
 import re
+import mimetypes
+import tempfile
 import socket
+import ipaddress
 import threading
 from collections import deque
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import urlparse, parse_qs, unquote, quote
 
 # Issue30: SPA JS 모듈 분리 (SESSION_SHELL_HTML 조립용 string export)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -34,22 +37,42 @@ from validators import validate_dashboard, DASH_WIDGET_TYPES  # noqa: E402
 from spa_form import FORM_JS  # noqa: E402
 from spa_widgets import WIDGET_JS  # noqa: E402
 from spa_board import DASHBOARD_JS  # noqa: E402
+import i18n  # noqa: E402  # Issue169: hub UI 다국어 catalog + t(key, lang)
 
 # Issue141: 기본 127.0.0.1(루프백 전용=외부 차단). 옵트인 개방 우선순위:
 #   env HTM_SERVER_HOST > hub_setting.yml bind_host > 기본 "127.0.0.1".
 #   env 미설정 시 yml 값을 main() 에서 적용(설정 로더가 정의된 뒤). 예: bind_host: 0.0.0.0
 _HOST_ENV = os.environ.get("HTM_SERVER_HOST")  # 미설정이면 None
 HOST = _HOST_ENV or "127.0.0.1"  # 잠정값 — main() 에서 yml override
+BIND_HOSTS = [HOST]  # 실제 bind 주소 리스트 — main() 에서 yml(스칼라|리스트) override
 PORT = int(os.environ.get("HTM_SERVER_PORT", "9876"))
 
 # Issue141: source-IP allowlist. LOOPBACK 은 무조건 허용. HOST 가 루프백이 아닐 때
 # (옵트인 개방) startup 에서 Servers.md(check=O) 호스트를 resolve 하여 채운다.
 LOOPBACK_IPS = frozenset(("127.0.0.1", "::1"))
 ALLOWED_IPS = set()  # startup 에서 populate (개방 모드일 때만). 평소엔 빈 set.
+ALLOWED_NETS = []    # Issue175: CIDR 서브넷 allowlist (ip_network 리스트). 평소엔 빈 리스트.
+# allow_server_list 분리: bind_host 와 source-IP 게이트 디커플링.
+# bind 가 비루프백이고 allow_server_list=false 면 ALLOWED_IPS=self 만 적재 → bind_host(self)
+# 전용(외부 source IP 전부 차단). true 면 Servers.md(check=O)+self 적재.
+# ALLOW_ALL 은 더 이상 토글되지 않음(항상 False) — _ip_allowed 호환용 잔존.
+ALLOW_ALL = False
 
 STATE_DIR = "/tmp/___pm/claude-htm-server"
 INBOX_ROOT = "/tmp/___pm/claude-htm-inbox"
-TMP_OUT_DIR = "/tmp/___pm"  # dashboard agent OUT_DIR fallback (z_htm 부재 시)
+TMP_OUT_DIR = "/tmp/___pm"  # dashboard agent OUT_DIR fallback (htm 폴더 부재 시)
+
+# Issue289: htm 산출물 수명주기 — 쓰기는 활성 폴더 1곳, 읽기는 아래 목록 전체.
+#   활성 `_doc_work/htm/` → 아카이브 `_doc_work/z_done/htm/` → legacy `_doc_work/z_htm/`.
+#   legacy 항목은 전 프로젝트 마이그레이션(P3) 완료 후 P4 에서 제거한다.
+#   설계 SSOT: _doc_arch/htm-lifecycle-design.md
+HTM_ACTIVE_DIR = "htm"
+HTM_DIRS = ["htm", "z_done/htm", "z_htm"]
+
+
+def _htm_dirs_for(cwd: str) -> list:
+    """Issue289: 프로젝트 cwd 하위 htm 읽기 경로 목록(우선순위 순, 존재 여부 무관)."""
+    return [os.path.join(cwd, "_doc_work", *d.split("/")) for d in HTM_DIRS]
 TOKENS_FILE = f"{STATE_DIR}/tokens.json"
 SESSIONS_FILE = f"{STATE_DIR}/sessions.json"  # Issue17 Phase 1
 PIDS_FILE = f"{STATE_DIR}/pids.json"  # Issue63: runner PID 등록분 영속화
@@ -78,6 +101,705 @@ sse_lock = threading.Lock()
 # sid="" 는 기존 /events?cwd=&token= 호출자 (backward-compat 채널)
 sse_subscribers = {}  # (cwd_hash, sid) -> [wfile, wfile, ...]
 
+# Issue194: hub 내부 탭 모드. hub 쉘(/hub-shell)은 cross-project·host 단위라
+# cwd+token 채널을 못 쓴다 → 예약 hash 의 sse_subscribers 채널을 재사용한다.
+#   key = (HUB_SHELL_HASH, client_id). sse_broadcast(HUB_SHELL_HASH, ...) 로 전 shell push.
+HUB_SHELL_HASH = "__hub_shell__"
+hub_lease_lock = threading.Lock()
+# host(source-IP) 단위 단일 창 리스. {ip: {"client_id":str, "granted_at":float, "last_seen":float}}
+hub_lease = {}
+
+# Issue194: hub 내부 탭 쉘 페이지. __SHORTCUT__(JSON 문자열)·__SINGLE__(true/false) 치환.
+#   home 탭(=/hub 멀티프로젝트 대시보드) 은 content_type "home" → 닫기 단축키 no-op(R3).
+HUB_SHELL_HTML = r"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="/fpm-icon.png">
+<title>fPm Hub — 내부 탭</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  body { display: flex; flex-direction: column; }
+  #tabbar { display: flex; align-items: stretch; gap: 2px; background: hsl(60,30%,88%);
+    padding: 4px 6px 0; overflow-x: auto; flex: 0 0 auto; }
+  .tab { display: flex; align-items: center; gap: 6px; max-width: 240px; padding: 6px 10px;
+    background: rgba(0,0,0,0.06); border: 1px solid rgba(0,0,0,0.12); border-bottom: none;
+    border-radius: 8px 8px 0 0; cursor: pointer; white-space: nowrap; font-size: 0.85rem; color: #1a1a1a; }
+  .tab.active { background: #fff; font-weight: 600; }
+  .tab .ttl { overflow: hidden; text-overflow: ellipsis; }
+  .tab .x { border: none; background: transparent; cursor: pointer; font-size: 0.9rem; padding: 0 2px; color: #555; }
+  .tab .x:hover { color: #c00; }
+  #hint { margin-left: auto; align-self: center; font-size: 0.72rem; color: #555; padding: 0 8px; white-space: nowrap; }
+  #closeall { align-self: center; margin: 0 4px; border: 1px solid rgba(0,0,0,0.18); background: rgba(0,0,0,0.04);
+    border-radius: 6px; cursor: pointer; font-size: 0.75rem; color: #333; padding: 4px 8px; white-space: nowrap; }
+  #closeall:hover { background: #f7d6d6; color: #c00; border-color: #c00; }
+  #view { flex: 1 1 auto; border: none; width: 100%; }
+  #overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.78); color: #fff; z-index: 999;
+    display: none; flex-direction: column; align-items: center; justify-content: center; gap: 1rem; text-align: center; padding: 2rem; }
+  #overlay.show { display: flex; }
+  #overlay button { font-size: 1rem; padding: 0.6rem 1.4rem; border-radius: 8px; border: none; cursor: pointer;
+    background: hsl(60,72%,70%); color: #1a1a1a; font-weight: 600; }
+  @media (prefers-color-scheme: dark) {
+    #tabbar { background: #26261f; }
+    .tab { background: rgba(255,255,255,0.06); border-color: #444; color: #ddd; }
+    .tab.active { background: #1a1a1a; }
+    #hint { color: #aaa; }
+    #closeall { background: rgba(255,255,255,0.06); border-color: #555; color: #ccc; }
+    #closeall:hover { background: #5a1f1f; color: #fbb; border-color: #c00; }
+  }
+</style>
+</head>
+<body>
+<div id="tabbar"></div>
+<iframe id="view" src="/hub?_shell=1"></iframe>
+<div id="overlay">
+  <div id="ovmsg"></div>
+  <button id="ovbtn" type="button">여기서 인계</button>
+</div>
+<script>
+(function(){
+  // Issue203: 중첩 쉘 차단. /hub-shell 이 iframe 안에서 로드되면(절대 URL 탭 등으로
+  //   _shell 마커 누락 → /htm-doc 가 top-level 로 오인 → 302 /hub-shell 재진입) 탭바가
+  //   2중으로 렌더되는 "탭 세로 적층" 버그가 생긴다. 자신이 top 프레임이 아니면 쉘로
+  //   동작하지 않고(탭바·iframe 미초기화) 빈 본문으로 대체하여 재귀를 끊는다.
+  if (window.self !== window.top) {
+    document.documentElement.innerHTML = "<head><meta charset='utf-8'></head><body style='margin:0'></body>";
+    return;
+  }
+  var SHORTCUT = __SHORTCUT__;          // ex) "alt+w"
+  var SINGLE = __SINGLE__;              // 단일 창 강제 여부
+  var RENDER_CT = {response:1, form:1, dashboard:1};  // R3: 단축키 노출 대상 content_type
+
+  // client_id: sessionStorage 유지(새로고침 생존), 없으면 난수
+  var cid = sessionStorage.getItem("hubShellCid");
+  if(!cid){ cid = "c" + Math.random().toString(36).slice(2) + Date.now().toString(36); sessionStorage.setItem("hubShellCid", cid); }
+
+  // Issue199: 탭 상태 sessionStorage 영속 — 페이지 reload·서버 재시작에도 열린 탭 보존.
+  var TABKEY = "hubShellState";
+  var _saved = (function(){ try{ return JSON.parse(sessionStorage.getItem(TABKEY)||"null"); }catch(_){ return null; } })();
+  var tabs = (_saved && _saved.tabs && _saved.tabs.length) ? _saved.tabs
+             : [{id:"home", view_url:"/hub", title:"🗂 Hub", sid:"", content_type:"home"}];
+  var activeId = (_saved && _saved.activeId && tabs.some(function(t){return t.id===_saved.activeId;})) ? _saved.activeId : "home";
+  function saveTabs(){ try{ sessionStorage.setItem(TABKEY, JSON.stringify({tabs:tabs, activeId:activeId})); }catch(_){} }
+  var bar = document.getElementById("tabbar");
+  var view = document.getElementById("view");
+  var hint = null;
+
+  function render(){
+    bar.innerHTML = "";
+    tabs.forEach(function(t){
+      var el = document.createElement("div");
+      el.className = "tab" + (t.id===activeId ? " active" : "");
+      el.onclick = function(){ activate(t.id); };
+      var ttl = document.createElement("span"); ttl.className = "ttl"; ttl.textContent = t.title || "(문서)";
+      el.appendChild(ttl);
+      if(t.id !== "home"){
+        var x = document.createElement("button"); x.className = "x"; x.textContent = "✕";
+        x.onclick = function(ev){ ev.stopPropagation(); closeTab(t.id); };
+        el.appendChild(x);
+      }
+      bar.appendChild(el);
+    });
+    // 탭 1개(home만) 이하 → 탭바 자동 숨김. 2개 이상일 때만 노출.
+    bar.style.display = tabs.length > 1 ? "flex" : "none";
+    hint = document.createElement("span"); hint.id = "hint"; bar.appendChild(hint);
+    if(tabs.length > 1){
+      var ca = document.createElement("button"); ca.id = "closeall"; ca.type = "button";
+      ca.textContent = "🗑️ 모든 탭 닫기";
+      ca.onclick = function(ev){ ev.stopPropagation(); closeAllTabs(); };
+      bar.appendChild(ca);
+    }
+    updateHint();
+    saveTabs();
+  }
+  function active(){ return tabs.filter(function(t){return t.id===activeId;})[0]; }
+  function updateHint(){
+    var a = active();
+    var parts = [];
+    if(a && RENDER_CT[a.content_type]) parts.push("탭 닫기: " + SHORTCUT);
+    if(tabs.length > 1) parts.push("탭 전환: alt+Tab");
+    parts.push("Hub: alt+h");   // fpm 로고 버튼 단축키 (홈 탭 = 통합 Hub)
+    hint.textContent = parts.join("  ·  ");
+  }
+  // Issue202: iframe 로드는 _shell=1 마커를 붙여 결정적으로 "쉘 임베드"임을 표시.
+  //   서버 _handle_htm_doc 는 _shell 마커 없는 /htm-doc(=최상위 직접 열람)만 /hub-shell 로 302.
+  //   Sec-Fetch-Dest 헤더 의존 제거(일부 네비에서 헤더 누락 → standalone 누출 차단).
+  function embedUrl(u){
+    if(!u) return u;
+    // Issue203: 상대 경로(/...) + 동일 origin 절대 URL 모두 _shell 마커 부여. 절대 URL 에
+    //   마커 누락 시 /htm-doc 가 top-level 로 오인 → 302 /hub-shell 중첩(탭 세로 적층).
+    var isRel = u.charAt(0) === "/";
+    var isSameOrigin = u.indexOf(location.origin + "/") === 0;
+    if(!isRel && !isSameOrigin) return u;  // 외부 URL 은 그대로
+    return u + (u.indexOf("?")>=0 ? "&" : "?") + "_shell=1";
+  }
+  // Issue223: iframe 재네비 디바운스 — 탭을 빠르게 연속으로 닫으면 closeTab→activate 가
+  //   매번 view.src 를 재할당해 iframe 을 버스트 재네비게이트했다. 각 문서가 자기 SSE
+  //   EventSource 를 생성/고아화 → Chrome 호스트당 연결 6개 상한 포화 → 렌더러 크래시.
+  //   navTo 는 60ms 윈도로 버스트를 코얼레싱(최종 목표 1회만 네비) + 현재 로드 URL 과
+  //   동일하면 skip(멱등 가드). 탭바 하이라이트(render)는 동기 유지 — 시각 지연 없음.
+  var _navTimer = null, _navTarget = null, _curSrc = null;
+  // Issue258(재수정): iframe `src` 재할당 대신 노드 자체를 교체(swap)한다.
+  //   [이전 오판] commit 4022897 은 "내부 탭 여러 개 → SSE 호스트당 6연결 상한 포화 →
+  //     크래시" 로 진단했으나, hub-shell 은 iframe 1개를 공유(내부 탭 전환/닫기 = 그 iframe
+  //     하나만 재네비) → doc SSE 항상 ≤1 → hub-shell(1)+doc(1)=최대 2연결. 6상한 도달 불가.
+  //     크래시 덤프(EXC_BREAKPOINT, Google Chrome Framework)는 연결 블록이 아니라 렌더러
+  //     불변식 abort 였다. SSE 게이팅은 존재하지 않는 문제를 겨냥 → 재발.
+  //   [실제 원인] alt+w 반복 닫기 → `view.src` 반복 재할당이 구 document 를 같은 frame
+  //     슬롯에서 재사용. doc 페이지에 unload 정리가 없어 detached document·SSE 가 누적 →
+  //     Chrome 렌더러 CHECK/PartitionAlloc abort. Issue223 60ms 디바운스는 동기 재진입만
+  //     코얼레싱 → 느린 반복 닫기의 full 재네비 누수는 미커버였다.
+  //   [수정] 매 네비마다 iframe 노드를 폐기·신규 생성 → 구 document/SSE 완전 teardown,
+  //     detached 누수 사슬 절단 + frame 재사용 CHECK 클래스 제거.
+  function onViewLoad(){
+    try {
+      var d = view.contentDocument;
+      if(d){ d.removeEventListener("keydown", onKeydown); d.addEventListener("keydown", onKeydown); }
+    } catch(_){ /* cross-origin 문서: 접근 불가 → 무시 */ }
+  }
+  function swapView(u){
+    var fresh = document.createElement("iframe");
+    fresh.id = "view";
+    fresh.addEventListener("load", onViewLoad);
+    var old = view;
+    view = fresh;                          // 전역 참조 갱신(이후 navTo·onViewLoad 가 신규 노드 사용)
+    old.replaceWith(fresh);               // 구 iframe DOM 제거 → 구 document 렌더러 frame 폐기
+    fresh.src = u;
+    _curSrc = u;
+  }
+  function navTo(url){
+    _navTarget = url;
+    if(_navTimer) return;                 // 이미 예약됨 → 최종 _navTarget 만 반영
+    _navTimer = setTimeout(function(){
+      _navTimer = null;
+      var u = _navTarget; _navTarget = null;
+      if(u == null) return;
+      try{
+        var abs = new URL(u, location.href).href;
+        var cur = _curSrc ? new URL(_curSrc, location.href).href : null;
+        if(abs === cur) return;           // 멱등 가드: 같은 문서 재로딩 차단(불필요 swap 방지)
+      }catch(_){}
+      swapView(u);
+    }, 60);
+  }
+  function activate(id){
+    var t = tabs.filter(function(x){return x.id===id;})[0]; if(!t) return;
+    activeId = id; navTo(embedUrl(t.view_url)); render();
+  }
+  function closeTab(id){
+    if(id === "home") return;
+    var idx = tabs.findIndex(function(t){return t.id===id;}); if(idx<0) return;
+    tabs.splice(idx,1);
+    if(activeId === id){ activate(tabs[Math.max(0,idx-1)].id); } else { render(); }
+  }
+  // home 제외 전체 닫기 → home 활성화
+  function closeAllTabs(){
+    tabs = tabs.filter(function(t){return t.id==="home";});
+    activate("home");
+  }
+  // focus=true → 명시적 열기(카드 ↗ 클릭·신규 렌더 SSE). 이미 열린 탭이면 그 탭으로
+  //   포커스 전환. focus=false → 백그라운드 폴 폴백(조용히 메타만 갱신, 사용자 시야 방해 금지).
+  function addTab(d, focus){
+    if(!d || !d.view_url) return;
+    // dedup: 문서 식별자(view_url=path 내포) 기준. 폴링 재발견·SSE 중복은 같은 view_url →
+    //   기존 탭 재사용, 서로 다른 문서는 다른 view_url → 새 탭 추가. (이전: sid 기준 →
+    //   같은 세션의 별개 문서가 한 탭으로 replace 되던 버그. 세션당 1탭 정책 폐기.)
+    var ex = tabs.filter(function(t){return t.view_url===d.view_url;})[0];
+    if(ex){
+      // 같은 문서 재발견 — 메타 갱신. 명시적 열기(focus)이고 비활성 탭이면 그 탭으로 전환
+      //   (Issue: 이미 열린 탭 카드 재클릭 시 포커스 미이동 버그 수정). 폴 폴백(focus=false)
+      //   이나 이미 활성 탭이면 reload 없이 render 만(폴 루프 iframe reload 폭주 방지).
+      ex.title = d.title || ex.title; ex.content_type = d.content_type; ex.sid = d.sid || ex.sid;
+      if(focus && ex.id !== activeId){ activate(ex.id); } else { render(); }
+      return;
+    }
+    var id = "t" + Math.random().toString(36).slice(2);
+    tabs.push({id:id, view_url:d.view_url, title:d.title, sid:d.sid, content_type:d.content_type});
+    activate(id);
+  }
+
+  // 탭 닫기 단축키 (R2/R3) — 렌더 탭(content_type response/form/dashboard) 활성 시에만
+  // macOS: Option+letter 는 e.key 가 특수문자(∑ 등)로 바뀜 → 물리 키 e.code 로 비교(레이아웃·Option 무관)
+  function codeOf(key){
+    if(key.length===1 && key>="a" && key<="z") return "Key" + key.toUpperCase();
+    if(key.length===1 && key>="0" && key<="9") return "Digit" + key;
+    if(key==="tab") return "Tab";
+    return "";
+  }
+  function matchShortcut(e){
+    var parts = String(SHORTCUT).toLowerCase().split("+");
+    var key = parts[parts.length-1];
+    var need = {ctrl: parts.indexOf("ctrl")>=0, alt: parts.indexOf("alt")>=0,
+                shift: parts.indexOf("shift")>=0, meta: parts.indexOf("meta")>=0 || parts.indexOf("cmd")>=0};
+    if(!(e.ctrlKey===need.ctrl && e.altKey===need.alt && e.shiftKey===need.shift && e.metaKey===need.meta)) return false;
+    var code = codeOf(key);
+    return code ? e.code===code : e.key.toLowerCase()===key;
+  }
+  // alt+Tab(다음) / alt+shift+Tab(이전) — 모든 탭 순환(content_type 무관).
+  // macOS: option+Tab 은 OS 미점유 → 정상 동작. ⚠️ Windows: Alt+Tab 은 OS 앱 전환기가
+  // 전역 선점 → keydown 이 페이지에 도달 못 함 → 무동작(에러 아님). mac 전용 수용(결정 2026-06-23).
+  function cycleTab(dir){
+    if(tabs.length < 2) return;
+    var i = tabs.findIndex(function(t){return t.id===activeId;}); if(i<0) i=0;
+    activate(tabs[(i + dir + tabs.length) % tabs.length].id);
+  }
+  function onKeydown(e){
+    // Hub(홈 탭)로 이동 — alt+h. fpm 로고(.hub-link) 버튼 단축키.
+    // macOS Option+h 는 e.key 가 특수문자(˙)로 바뀜 → 물리 키 e.code 로 비교.
+    if(e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && e.code==="KeyH"){
+      e.preventDefault(); activate("home"); return;
+    }
+    // 탭 순환 (e.code==="Tab" — Option 무관 물리 키)
+    if(e.altKey && !e.ctrlKey && !e.metaKey && e.code==="Tab"){
+      e.preventDefault(); cycleTab(e.shiftKey ? -1 : 1); return;
+    }
+    // 탭 닫기
+    if(matchShortcut(e)){
+      var a = active();
+      if(a && RENDER_CT[a.content_type]){ e.preventDefault(); closeTab(a.id); }
+    }
+  }
+  window.addEventListener("keydown", onKeydown);
+  // iframe(same-origin) 내부 포커스 시 단축키 수신 — onViewLoad 가 매 swap 마다 재바인딩
+  //   (Issue258: 노드 교체로 이전됨. 정적 초기 iframe 은 첫 activate 의 swapView 로 교체되며
+  //    그때 onViewLoad 가 부착된다).
+
+  // 단일 창 리스 오버레이
+  var overlay = document.getElementById("overlay");
+  var ovmsg = document.getElementById("ovmsg");
+  var ovbtn = document.getElementById("ovbtn");
+  function showOverlay(msg, showBtn){
+    ovmsg.textContent = msg; ovbtn.style.display = showBtn ? "" : "none"; overlay.classList.add("show");
+  }
+  function hideOverlay(){ overlay.classList.remove("show"); }
+  ovbtn.onclick = function(){
+    fetch("/hub-claim", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({cid:cid})})
+      .then(function(r){return r.json();}).then(function(){ hideOverlay(); connect(); })
+      .catch(function(){ ovmsg.textContent = "인계 실패 — hub 서버 미응답"; });
+  };
+
+  // SSE 연결
+  var es = null;
+  function connect(){
+    if(es){ try{es.close();}catch(_){}}
+    es = new EventSource("/hub-events?cid=" + encodeURIComponent(cid));
+    es.addEventListener("granted", function(){ hideOverlay(); });
+    es.addEventListener("denied", function(ev){
+      var d = {}; try{ d = JSON.parse(ev.data||"{}"); }catch(_){}
+      try{es.close();}catch(_){}
+      showOverlay("이 호스트에는 이미 hub 창이 열려 있습니다 (" + (d.age||0) + "초 전 시작).\n기존 창을 닫거나 아래에서 인계하세요.", true);
+    });
+    es.addEventListener("evicted", function(){
+      try{es.close();}catch(_){}
+      showOverlay("다른 창이 이 호스트의 hub 를 인계했습니다. 이 창은 비활성화됩니다.", false);
+    });
+    es.addEventListener("tab-open", function(ev){
+      try{ addTab(JSON.parse(ev.data), true); }catch(_){}   // 신규 렌더 → 포커스
+    });
+  }
+
+  // Issue194: iframe(/hub 홈 탭 등) 카드 열기(↗) → 내부 탭. 동일 origin postMessage.
+  window.addEventListener("message", function(ev){
+    var d = ev.data;
+    if(d && d.type === "fpm-open-tab" && d.view_url){
+      addTab({view_url:d.view_url, title:d.title, sid:d.sid, content_type:d.content_type}, true);  // 카드 ↗ 클릭 → 포커스
+    }
+    // Issue216: 문서 헤더의 닫기 버튼(window.close())은 iframe 안에선 no-op →
+    //   serve 시 주입된 close 쉼(CLOSE_SHIM)이 이 메시지를 부모 쉘로 보낸다.
+    //   활성 탭(=메시지를 보낸 iframe)을 닫는다. home 탭은 닫지 않음.
+    if(d && d.type === "fpm-close-tab"){
+      var a = active();
+      if(a && a.id !== "home"){ closeTab(a.id); }
+    }
+    // Issue220: 문서 헤더 🗂 Hub 링크 클릭(HUB_LINK_SHIM) → home 탭 전환 (iframe in-place 네비 대신).
+    if(d && d.type === "fpm-goto-home"){ activate("home"); }
+  });
+
+  // Issue199: 폴링 fallback — SSE 끊김(서버 재시작) 구간에 누락된 신규 렌더 문서를
+  //   레지스트리(/boards)에서 수거. 탭 목록 SOT 를 SSE 단독 → 레지스트리로 보강.
+  //   첫 폴은 baseline(현재 최신 mtime_ts)만 잡고 기존 문서 폭주 방지 → 이후 baseline 초과분만 추가.
+  var pollBaseline = 0, pollInit = false;
+  function ctOf(u){ u = u || ""; return /_b_/.test(u) ? "form" : (/_c_/.test(u) ? "dashboard" : "response"); }
+  function pollDocs(){
+    fetch("/boards?_=" + Date.now(), {cache:"no-store"}).then(function(r){return r.json();}).then(function(j){
+      var docs = (j && j.htm_docs) || [];
+      if(!pollInit){
+        docs.forEach(function(d){ if(d.mtime_ts > pollBaseline) pollBaseline = d.mtime_ts; });
+        pollInit = true; return;
+      }
+      docs.filter(function(d){ return d.view_url && !d.missing && d.mtime_ts > pollBaseline; })
+          .sort(function(a,b){ return a.mtime_ts - b.mtime_ts; })
+          .forEach(function(d){
+            pollBaseline = Math.max(pollBaseline, d.mtime_ts);
+            addTab({view_url:d.view_url, title:d.title, sid:d.sid || "", content_type:ctOf(d.path || d.view_url)}, false);  // 백그라운드 폴 → 포커스 미탈취
+          });
+    }).catch(function(){});
+  }
+
+  activate(activeId);            // 복원된 활성 탭 iframe 로드(+render)
+  connect();
+  pollDocs(); setInterval(pollDocs, 30000);
+})();
+</script>
+</body>
+</html>
+"""
+
+# Issue209: 외부(VSCode 등) 링크 클릭으로 열린 OS 새 탭에 serve 하는 경량 확인 페이지.
+#   살아있는 hub-shell lease 보유자가 있을 때 302 /hub-shell(2번째 쉘 → takeover 오버레이)
+#   대신 이 페이지를 보내고, 문서는 tab-open SSE 로 기존 쉘에 합류시킨다. __TITLE__ 치환.
+HUB_OPENED_HTML = r"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>___pm — 기존 hub 창에 열림</title>
+<link rel="icon" href="/fpm-icon.png">
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    display: flex; min-height: 100vh; margin: 0; align-items: center;
+    justify-content: center; background: #faf9f0; color: #1a1a1a; }
+  .card { max-width: 460px; text-align: center; padding: 2rem; }
+  .card h1 { font-size: 1.2rem; margin: 0 0 0.6rem; }
+  .card p { line-height: 1.6; opacity: 0.85; }
+  .doc { font-weight: 600; }
+  button { margin-top: 1.2rem; font-size: 0.95rem; padding: 0.5rem 1.2rem;
+    border-radius: 8px; border: 1px solid rgba(0,0,0,0.2);
+    background: hsl(60,72%,80%); color: #1a1a1a; cursor: pointer; }
+  button:hover { background: hsl(60,72%,72%); }
+  @media (prefers-color-scheme: dark) {
+    body { background: #1a1a1a; color: #e0e0e0; }
+    button { background: #3a3a28; color: #eee; border-color: #555; }
+    button:hover { background: #4a4a30; }
+  }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>✅ 기존 hub 창에 열었습니다</h1>
+  <p><span class="doc">__TITLE__</span> 문서를 이미 열려 있는 hub 창에 새 탭으로 추가했습니다.<br>이 탭은 닫아도 됩니다.</p>
+  <button type="button" onclick="window.close()">이 탭 닫기 ✕</button>
+</div>
+</body>
+</html>
+"""
+
+# Issue216: hub-shell iframe 안에서 문서 헤더의 닫기 버튼은 window.close() 를 호출하나,
+#   iframe 은 자신이 속한 탭(부모 쉘이 관리)을 닫을 수 없어 no-op 였다(Issue214 ✕ 닫기·
+#   canonical 렌더 헤더 닫기 공통 결함). serve 시 window.close 를 override 하는 쉼을 주입해
+#   임베드(_shell)면 부모 쉘로 fpm-close-tab postMessage(쉘이 활성 탭 닫음), 최상위
+#   standalone 이면 네이티브 close 를 시도한다. 헤더 템플릿(prj3 자산) 수정 불요.
+# Issue257: standalone(top-level 직접 열람 — 외부 브라우저 새 탭·주소창 입력)에서 native
+#   window.close() 는 브라우저 보안상 script(window.open)로 연 창만 닫히므로 no-op(침묵 실패).
+#   유저가 직접 연 탭·hub 가 `open -a` 로 연 탭은 안 닫힌다("닫기 안 됨"의 원인). native close
+#   시도 후 80ms 뒤에도 창이 살아 있으면(=차단됨) /hub 로 funnel — 죽은 버튼 대신 쉘로 착지.
+CLOSE_SHIM = (
+    b"<script>(function(){var _c=window.close;window.close=function(){"
+    b"if(window.parent&&window.parent!==window){"
+    b"try{window.parent.postMessage({type:'fpm-close-tab'},'*');}catch(e){}"
+    b"}else{try{_c.call(window);}catch(e){}"
+    b"setTimeout(function(){try{location.href='/hub';}catch(e){}},80);}"
+    b"};})();</script>"
+)
+
+# Issue214(재해결): canonical pink 헤더(prj3 자산, hook 템플릿)에는 🔗 "문서 링크 복사"
+#   버튼이 없어 hub-shell iframe 안에서 주소창이 /hub-shell 만 보일 때 문서 URL 직접 복사가
+#   불가했다(Issue214 의 핵심 목적이 dash 헤더에만 적용되고 메인 렌더 경로엔 누락). dash 헤더
+#   _serve_dash_inline 와 동일한 복사 로직을 serve 시점에 주입해 prj3 템플릿 수정 없이 해소.
+#   주입 스크립트는 nav.header-actions 의 닫기 버튼 직전에 🔗 버튼을 삽입.
+# Issue(2026-07-03 링크 복사 오동작): 생성된 .htm 파일에는 hook 템플릿이 박은 구버전
+#   onclick(무가드 navigator.clipboard.writeText)이 존재 — HTTP 비-localhost(host.local 등
+#   insecure context)에선 navigator.clipboard 가 undefined 라 동기 TypeError 로 침묵 실패.
+#   기존 버튼 발견 시 스킵하지 않고 **재바인딩**(onclick 교체)하여 과거 산출물도 서빙
+#   시점에 교정. 복사 로직은 isSecureContext 가드 + execCommand fallback + prompt 최종 폴백.
+COPY_LINK_SHIM = (
+    b"<script>(function(){"
+    b"function doCopy(b){var u=location.href.replace(/[?&]_shell=1$/,'');"
+    b"function ok(){var o=b.textContent;b.textContent='\xe2\x9c\x93';setTimeout(function(){b.textContent=o;},1200);}"
+    b"function fb(){try{var ta=document.createElement('textarea');ta.value=u;"
+    b"ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);"
+    b"ta.focus();ta.select();var r=document.execCommand('copy');document.body.removeChild(ta);"
+    b"if(r){ok();}else{window.prompt('\xeb\xac\xb8\xec\x84\x9c \xeb\xa7\x81\xed\x81\xac \xeb\xb3\xb5\xec\x82\xac',u);}}"
+    b"catch(e){window.prompt('\xeb\xac\xb8\xec\x84\x9c \xeb\xa7\x81\xed\x81\xac \xeb\xb3\xb5\xec\x82\xac',u);}}"
+    b"if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(u).then(ok).catch(fb);}else{fb();}}"
+    b"function ins(){"
+    b"var nav=document.querySelector('header .header-actions');"
+    b"if(!nav)return;"
+    b"var b=nav.querySelector('.copy-link');"
+    b"if(b){b.removeAttribute('onclick');b.onclick=function(){doCopy(b);};return;}"
+    b"b=document.createElement('button');b.type='button';"
+    b"b.className='copy-link';b.title='\xec\x9d\xb4 \xeb\xac\xb8\xec\x84\x9c \xeb\xa7\x81\xed\x81\xac \xeb\xb3\xb5\xec\x82\xac';"
+    b"b.textContent='\xf0\x9f\x94\x97';"
+    b"b.onclick=function(){doCopy(b);};"
+    b"var c=nav.querySelector('button[onclick*=\"window.close\"]')||nav.querySelector('button:last-of-type');"
+    b"if(c){nav.insertBefore(b,c);}else{nav.appendChild(b);}}"
+    b"if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',ins);}else{ins();}"
+    b"})();</script>"
+)
+
+# Issue278: 문서 헤더(.header-actions)에 📋 "세션 ID 복사" 버튼을 serve 시점에 주입.
+#   Issue276/277 은 hub 메인 패널의 활성세션 목록 행에만 복사 버튼을 달았다. 문서를 만든
+#   세션 sid 는 이미 헤더의 🆚 세션 버튼(.sess-link)이 onclick 에 `sid:'<UUID>'` 로 물고
+#   있으므로, prj3 템플릿 수정 없이 그 sid 를 읽어 📋 버튼(🆚 뒤·🔗 앞)을 삽입한다.
+#   COPY_LINK_SHIM 과 동형(isSecureContext 가드 + execCommand fallback + prompt 최종 폴백).
+#   ⚠️ 반드시 COPY_LINK_SHIM **뒤에** 주입할 것 — COPY_LINK_SHIM 이 `.copy-link` 를
+#   querySelector 로 잡아 rebind 하므로, 본 버튼은 `.copy-link` 클래스를 재사용하지 않는다.
+#   표시 여부는 live_session_copy_button 옵션(Issue277)을 공유 — false 면 서버가 미주입.
+#   (serve-time 주입 → 이미 열린 탭은 새로고침해야 반영, COPY_LINK_SHIM 과 동일.)
+SID_COPY_SHIM = (
+    "<script>(function(){"
+    "function ins(){"
+    "var nav=document.querySelector('header .header-actions');if(!nav)return;"
+    "if(nav.querySelector('.copy-sid'))return;"
+    "var sl=nav.querySelector('.sess-link');if(!sl)return;"
+    "var oc=sl.getAttribute('onclick')||'';var m=oc.match(/sid:'([^']+)'/);"
+    "if(!m||!m[1])return;var sid=m[1];"
+    "function ok(b){var o=b.textContent;b.textContent='✓';setTimeout(function(){b.textContent=o;},1200);}"
+    "function doCopy(b){function good(){ok(b);}"
+    "function fb(){try{var ta=document.createElement('textarea');ta.value=sid;"
+    "ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);"
+    "ta.focus();ta.select();var r=document.execCommand('copy');document.body.removeChild(ta);"
+    "if(r){good();}else{window.prompt('세션 ID 복사',sid);}}"
+    "catch(e){window.prompt('세션 ID 복사',sid);}}"
+    "if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(sid).then(good).catch(fb);}else{fb();}}"
+    "var b=document.createElement('button');b.type='button';b.className='copy-sid';"
+    "b.title='이 세션 ID 복사';b.setAttribute('aria-label','copy session id');"
+    "b.style.justifyContent='center';b.style.padding='0.2rem 0.5rem';"
+    "b.textContent='\U0001F4CB';"
+    "b.onclick=function(){doCopy(b);};"
+    "var c=nav.querySelector('.copy-link')||nav.querySelector('button[onclick*=\"window.close\"]')||nav.querySelector('.close-btn');"
+    "if(c){nav.insertBefore(b,c);}else{nav.appendChild(b);}}"
+    "if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',ins);}else{ins();}"
+    "})();</script>"
+).encode("utf-8")
+
+# Issue220: 문서 헤더의 🗂 Hub 링크(.hub-link, href="/hub")는 hub-shell iframe 안에서
+#   클릭 시 iframe 을 in-place 로 /hub 로 네비게이트 → 현재 문서 탭이 /hub 로 바뀌어
+#   "새로고침"처럼 보이고, 정작 쉘의 기존 home(🗂 Hub) 탭으로는 전환되지 않았다(alt+h 와
+#   동작 불일치). serve 시 .hub-link 클릭을 가로채는 쉼을 주입해 임베드(_shell)면 부모
+#   쉘로 fpm-goto-home postMessage(쉘이 home 탭 활성화), 최상위 standalone 이면 native
+#   href 동작을 유지한다. 헤더 템플릿(prj3 자산) 수정 불요 — CLOSE_SHIM 패턴과 동형.
+HUB_LINK_SHIM = (
+    b"<script>(function(){"
+    b"if(!(window.parent&&window.parent!==window))return;"
+    b"document.addEventListener('click',function(e){"
+    b"var a=e.target&&e.target.closest&&e.target.closest('a.hub-link');"
+    b"if(!a)return;e.preventDefault();"
+    b"try{window.parent.postMessage({type:'fpm-goto-home'},'*');}catch(_){}"
+    b"},true);})();</script>"
+)
+
+
+def _inject_before_body_end(body: bytes, snippet: bytes) -> bytes:
+    """snippet 을 </body> 직전에 삽입(없으면 끝에 append)."""
+    idx = body.lower().rfind(b"</body>")
+    return body[:idx] + snippet + body[idx:] if idx >= 0 else body + snippet
+
+
+# Issue255: /htm-doc·/view 로 serve 되는 문서의 상대 <img src> 는 문서 URL path 가
+#   /htm-doc 고정이라 브라우저가 서버 루트 기준으로 해석해 404. serve 시 상대 src 를
+#   /htm-res?doc=&rel= 절대 URL 로 재작성한다. data:/http(s):/루트(/) src 는 제외.
+# Issue283: `file://` 절대경로 src 는 (a) 브라우저가 http 페이지에서 file: 로드를 차단하고
+#   (b) 상대 rel 로 재작성돼도 404 → `/htm-res?doc=&abs=` 로 별도 재작성($HOME jail).
+_IMG_SRC_RE = re.compile(rb'(<img\b[^>]*?\bsrc=)(["\'])(.*?)\2', re.IGNORECASE | re.DOTALL)
+
+
+def _rewrite_relative_imgs(body: bytes, doc_abs: str, extra_query: str = "") -> bytes:
+    from urllib.parse import quote as _q, unquote as _unq, urlparse as _up
+    doc_q = _q(doc_abs, safe="").encode("ascii")
+    extra = ("&" + extra_query).encode("ascii") if extra_query else b""
+
+    def _sub(m):
+        src = m.group(3)
+        low = src.lower()
+        if (low.startswith((b"data:", b"http:", b"https:", b"//", b"/"))
+                or not src.strip()):
+            return m.group(0)
+        # Issue283: `file:///abs/path` src (프로젝트 밖 절대경로 — ex 이미지 생성
+        #   스킬이 ~/Desktop 에 저장한 파일)는 상대 rel 재작성으로 잡히지 않아
+        #   `rel=file%3A%2F%2F%2F…` → 404. abs 모드로 별도 재작성한다.
+        if low.startswith(b"file:"):
+            p = _up(src.decode("utf-8", "replace"))
+            if (p.netloc or "").lower() not in ("", "localhost"):
+                return m.group(0)          # 원격 file://host/… 는 미변경
+            abs_path = _unq(p.path or "")
+            if not abs_path.startswith("/"):
+                return m.group(0)
+            abs_q = _q(abs_path, safe="").encode("ascii")
+            return (m.group(1) + m.group(2)
+                    + b"/htm-res?doc=" + doc_q + b"&abs=" + abs_q + extra
+                    + m.group(2))
+        rel_q = _q(src.decode("utf-8", "replace"), safe="").encode("ascii")
+        return (m.group(1) + m.group(2)
+                + b"/htm-res?doc=" + doc_q + b"&rel=" + rel_q + extra
+                + m.group(2))
+
+    return _IMG_SRC_RE.sub(_sub, body)
+
+
+# Issue244: hub 문서의 mermaid 다이어그램이 "Syntax error in text (mermaid version
+#   11.16.0)" bomb 로 간헐 깨지는 현상. 근본 원인은 문법 오류가 아니라 **런타임 drift**:
+#   페이지가 제각각(esm@11 / umd@10 / umd@11 / esm@10)으로 mermaid 를 로드하고, 특히
+#   비동기 esm(`mermaid.esm.min.mjs`) + `startOnLoad:true` 조합이 iframe(hub-shell·..ask
+#   `<details>` 임베드) reflow 와 경쟁 → 텍스트 미확정 상태로 파싱되어 bomb 발생(standalone
+#   에선 재현 안 되고 iframe 임베드 시 간헐 발생). 서버가 이미 모든 htm-doc 에 shim 을
+#   주입하므로, mermaid 런타임도 서버가 단일 권위로 강제한다: 페이지가 무엇을 썼든
+#   (1) 기존 mermaid <script> 를 제거하고 (2) pinned UMD(동기 로드) + startOnLoad 대신
+#   명시적 mermaid.run() 을 주입 → race 제거. 페이지 저작 실수와 무관하게 결정적 렌더.
+#   graceful degradation(CDN 실패 시 <pre> 원문 노출)은 그대로 유지.
+_MERMAID_SCRIPT_RE = re.compile(
+    rb"<script\b[^>]*>.*?</script>", re.IGNORECASE | re.DOTALL
+)
+# pinned UMD(동기) + mermaid.run() — startOnLoad race 없는 결정적 렌더.
+MERMAID_RUNTIME = (
+    b'<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>'
+    b"<script>(function(){"
+    # Issue245: 테마는 OS prefers-color-scheme 가 아니라 **실제 페이지 배경 luminance** 로
+    #   결정 → 밝은 hub 페이지에 어두운 다이어그램이 얹히는 mismatch 제거(페이지와 항상 일치).
+    b"function darkBg(){try{var c=getComputedStyle(document.body).backgroundColor||'';"
+    b"var m=c.match(/[0-9.]+/g);if(!m)return false;"
+    b"if(m.length>3&&parseFloat(m[3])===0)return false;"  # 투명 배경 = 밝은 페이지로 간주
+    b"var lum=0.299*+m[0]+0.587*+m[1]+0.114*+m[2];return lum<128;}catch(e){return false;}}"
+    b"function run(){if(!window.mermaid)return;try{"
+    b"window.mermaid.initialize({startOnLoad:false,theme:darkBg()?'dark':'neutral'});"
+    b"window.mermaid.run();}catch(e){console.error('mermaid run failed',e);}}"
+    b"if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',run);}"
+    b"else{run();}})();</script>"
+)
+
+
+# Issue256: a모드 htm 이 mermaid 를 `<div class="mermaid-box"><pre><code>flowchart…`
+#   (코드펜스 산출물)로 저작하면 `class="mermaid"` 게이트를 통과 못 해 런타임이 주입되지
+#   않고 소스 평문으로 노출됨. Issue244 철학(서버가 단일 권위로 결정적 렌더)을 연장하여,
+#   저작 실수와 무관하게 서버가 코드펜스 mermaid 를 `<pre class="mermaid">` 로 재작성한다.
+#   첫 유의미 라인이 mermaid 다이어그램 키워드일 때만 변환(non-mermaid 코드블록 false-positive 억제).
+_MERMAID_KEYWORDS = (
+    "sequenceDiagram", "classDiagram", "stateDiagram-v2", "stateDiagram",
+    "erDiagram", "flowchart", "graph", "journey", "gantt", "pie",
+    "gitGraph", "mindmap", "timeline", "quadrantChart", "requirementDiagram",
+    "C4Context", "sankey-beta", "xychart-beta", "block-beta",
+)
+_CODEBLOCK_RE = re.compile(
+    rb"<pre\b[^>]*>\s*<code\b[^>]*>(.*?)</code>\s*</pre>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _looks_like_mermaid(inner_text: str) -> bool:
+    for line in inner_text.splitlines():
+        t = line.strip()
+        if not t or t.startswith("%%"):  # 공백·directive/comment 스킵
+            continue
+        first = t.split(None, 1)[0]
+        return any(first == k or first.startswith(k) for k in _MERMAID_KEYWORDS)
+    return False
+
+
+def _rewrite_mermaid_codeblocks(body: bytes) -> bytes:
+    r"""`<pre><code>` 로 저작된 mermaid 코드펜스를 `<pre class="mermaid">` 로 재작성.
+    엔티티(`&gt;`·`&lt;`)는 유지 — 브라우저 textContent 가 `-->`·`<` 로 자동 복원해
+    mermaid.run() 이 올바로 파싱함. 단 라벨 줄바꿈 의도의 리터럴 `\n` 은 `&lt;br/&gt;`
+    (textContent = `<br/>`)로 치환해 노드 라벨이 줄바꿈되게 한다."""
+    import html as _html
+
+    def _sub(m):
+        inner = m.group(1)
+        text = _html.unescape(inner.decode("utf-8", "replace"))
+        if not _looks_like_mermaid(text):
+            return m.group(0)
+        rewritten = inner.replace(rb"\n", b"&lt;br/&gt;")
+        return b'<pre class="mermaid">' + rewritten + b"</pre>"
+
+    return _CODEBLOCK_RE.sub(_sub, body)
+
+
+def _normalize_mermaid_runtime(body: bytes) -> bytes:
+    """페이지 저작 mermaid <script>(esm/umd·버전 제각각)를 제거하고 서버 표준
+    pinned UMD 런타임으로 치환. 코드펜스 저작(`<pre><code>`)은 먼저 `class="mermaid"`
+    로 재작성(Issue256) 후 처리. `class="mermaid"` 블록이 있을 때만 런타임 주입."""
+    body = _rewrite_mermaid_codeblocks(body)
+    if b'class="mermaid"' not in body:
+        return body
+
+    def _drop(m):
+        return b"" if b"mermaid" in m.group(0).lower() else m.group(0)
+
+    body = _MERMAID_SCRIPT_RE.sub(_drop, body)
+    return _inject_before_body_end(body, MERMAID_RUNTIME)
+
+
+# Issue: a모드(`..show`) htm 은 Claude 가 매 렌더 `<style>` 전체를 손으로 재작성하므로
+#   canonical 헤더 CSS(`header { position:sticky; background:hsl(238,45%,80%) … }`)를
+#   일관되게 재현하지 못한다(관측: 5개 중 3개가 `header{}` 규칙 누락 → `<header>` 가
+#   무스타일 body flow 로 흘러 보라 바·중앙 제목·버튼 chip 이 사라짐). Issue244(mermaid)
+#   와 동일 철학으로 서버가 단일 권위로 강제한다: `<header>` 엘리먼트는 있는데 그것을
+#   스타일하는 `header{` 규칙이 없으면 canonical 헤더 CSS 를 `<head>` 에 주입한다.
+#   (이미 `header{` 규칙이 있으면 저작본을 존중하고 no-op.)
+_HEADER_EL_RE = re.compile(rb"<header\b", re.IGNORECASE)
+_HEADER_CSS_RE = re.compile(rb"header\s*\{", re.IGNORECASE)
+HUB_HEADER_CSS = (
+    b'<style id="hub-header-normalized">'
+    b"header { position: sticky; top: 0; z-index: 100; display: flex; align-items: center;"
+    b"  justify-content: space-between; gap: 1rem; flex-wrap: wrap; padding: 0.9rem 1.4rem;"
+    b"  margin-inline: calc(50% - 50vw); background: hsl(238,45%,80%); color: #1a1a1a; }"
+    b"header > .hub-link { flex: 0 0 auto; }"
+    b"header h1 { margin: 0; font-size: 1.15rem; flex: 1 1 auto; min-width: 0; text-align: center; }"
+    b"header .header-actions { display: flex; align-items: center; gap: 0.5rem; flex: 0 0 auto; }"
+    b"header .proj-badge, header .sess-link, header .hub-link, header button {"
+    b"  display: inline-flex; align-items: center; line-height: 1; color: #1a1a1a;"
+    b"  text-decoration: none; cursor: pointer; white-space: nowrap; background: rgba(0,0,0,0.08);"
+    b"  border: 1px solid rgba(0,0,0,0.15); padding: 0.2rem 0.6rem; border-radius: 6px; font-size: 0.85rem; }"
+    b"header .copy-link, header .close-btn { justify-content: center; padding: 0.2rem 0.5rem; }"
+    b"header .close-btn { margin-left: 0.6rem; }"
+    b"header .close-btn:hover { background: rgba(200,0,0,0.18); }"
+    b"header .proj-badge:hover, header .sess-link:hover, header .hub-link:hover, header button:hover {"
+    b"  background: rgba(0,0,0,0.16); text-decoration: underline; }"
+    b"</style>"
+)
+
+
+# 본문 폭·표 정규화 (Issue: 문서 body max-width 중앙정렬로 헤더(full-bleed)와 폭 불일치 +
+#   표 셀 넘침 잘림). 저작본 body{max-width} 를 무시하고 창 전체 폭 사용 + 표/코드/이미지가
+#   컨테이너를 넘지 않게 강제. 항상 주입(header CSS 와 달리 저작본 유무 무관), <body> 직전에
+#   넣어 <head> 저작 스타일보다 뒤 → 동일 특이도 tie 를 이기고 !important 로 확실히 override.
+HUB_BODY_CSS = (
+    b'<style id="hub-body-normalized">'
+    b"body { max-width: none !important; margin: 0 !important;"
+    b"  padding: 0 1.4rem 3rem !important; box-sizing: border-box; }"
+    b"table { width: 100% !important; table-layout: auto; }"
+    b"th, td { overflow-wrap: anywhere; word-break: break-word; }"
+    b"pre, code { max-width: 100%; overflow-x: auto; }"
+    b"img { max-width: 100%; height: auto; }"
+    b"</style>"
+)
+
+
+def _normalize_hub_body_css(body: bytes) -> bytes:
+    """저작 문서의 body max-width 중앙정렬을 무력화하고 창 전체 폭으로 렌더,
+    표·코드·이미지가 뷰포트를 넘지 않게 강제(셀 텍스트는 wrap). 항상 주입."""
+    return _inject_before_body_end(body, HUB_BODY_CSS)
+
+
+def _normalize_hub_header_css(body: bytes) -> bytes:
+    """`<header>` 엘리먼트가 있는데 그것을 스타일하는 `header{` CSS 규칙이 없으면
+    canonical 헤더 CSS 를 `<head>` 에 주입(없으면 <body> 직전, 그것도 없으면 prepend).
+    이미 `header{` 규칙이 있으면 저작본 존중 no-op."""
+    if not _HEADER_EL_RE.search(body):
+        return body
+    if _HEADER_CSS_RE.search(body):
+        return body
+    low = body.lower()
+    idx = low.rfind(b"</head>")
+    if idx < 0:
+        idx = low.find(b"<body")
+    if idx < 0:
+        return HUB_HEADER_CSS + body
+    return body[:idx] + HUB_HEADER_CSS + body[idx:]
+
+
 pids_lock = threading.Lock()
 pids = {}  # cwd_hash -> set[int]  (Issue16: stop 제어 대상으로 등록된 runner PIDs)
 
@@ -98,6 +820,9 @@ start_ts = time.time()
 # REPO_ROOT = server.py(.../services/htm-server/) → ___pm 루트 (dirname 3회)
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DATA_HUB_DIR = os.path.join(REPO_ROOT, "data", "hub")
+# Issue255: /htm-res 로 serve 허용하는 이미지 확장자 화이트리스트
+_HTM_RES_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"}
+
 HTM_REGISTRY = os.path.join(DATA_HUB_DIR, "htm-registry.json")
 DASH_REGISTRY = os.path.join(DATA_HUB_DIR, "dash-registry.json")
 # Issue53: clear 버튼으로 명시 제거된 htm path tombstone. autoheal 이 feed 버퍼에서
@@ -180,27 +905,35 @@ def _live_dismiss_add(h: str, sid: str) -> None:
 
 # Issue51: feed detail 에 등장한 htm html 경로를 htm-registry 에 자가 등록.
 # /register-doc 는 글로벌 SCAR(htm 스킬)가 책임지나 서버 다운·호출 누락 시 영구 미등록 됨.
-# hook 이벤트는 항상 수신되므로 detail 의 z_htm 경로를 디스크 확인 후 보강한다.
+# hook 이벤트는 항상 수신되므로 detail 의 htm 경로를 디스크 확인 후 보강한다.
+# Issue289: 단일 z_htm 고정에서 HTM_DIRS 전체 alternation 으로 확장.
 _HTM_DOC_PATH_RE = re.compile(
-    r"/[^\s`\"'<>]+/_doc_work/z_htm/claude-htm-[^\s`\"'<>]+\.html")
+    r"/[^\s`\"'<>]+/_doc_work/(?:"
+    + "|".join(re.escape(d) for d in HTM_DIRS)
+    + r")/claude-htm-[^\s`\"'<>]+\.html")
 
 
 def _autoheal_htm_registry(feed_items: list) -> None:
-    """feed 항목 detail 에서 z_htm htm html 절대경로를 추출, 디스크에 존재하나
+    """feed 항목 detail 에서 htm html 절대경로를 추출, 디스크에 존재하나
     htm-registry 미등록인 항목을 자동 등록한다 (___pm 서버 단독 읽기 경로 보강).
-    cwd 는 경로의 `/_doc_work/z_htm/` 앞부분으로 유추 — feed cwd 비신뢰.
+    cwd 는 경로의 `/_doc_work/{HTM_DIRS 항목}/` 앞부분으로 유추 — feed cwd 비신뢰.
     Issue53: HTM_CLEARED tombstone 에 든 path 는 부활시키지 않는다."""
     found = {}
     for it in feed_items:
         detail = it.get("detail") or ""
-        if "z_htm" not in detail:
+        if "_doc_work/" not in detail:  # 저비용 prefilter (정밀 판정은 정규식)
             continue
         for raw in _HTM_DOC_PATH_RE.findall(detail):
             # 슬래시 중복 등 비정상 prefix 정규화 (cwd_hash 분기 차단)
             m = os.path.normpath(raw)
             if m not in found and os.path.isfile(m):
-                idx = m.find("/_doc_work/z_htm/")
-                found[m] = m[:idx] if idx > 0 else ""
+                cwd = ""
+                for d in HTM_DIRS:
+                    idx = m.find(f"/_doc_work/{d}/")
+                    if idx > 0:
+                        cwd = m[:idx]
+                        break
+                found[m] = cwd
     if not found:
         return
     with registry_lock:
@@ -328,9 +1061,21 @@ def doc_cache_put(path: str, mtime_ts: float, data) -> None:
         _doc_parse_cache[path] = {"mtime_ts": mtime_ts, "data": data}
 
 
-def log(msg: str) -> None:
+# Issue258: 레벨 로깅 (prj15 fSnippet Logger 모델). hub_setting.yml `log_level` 이 임계값 결정.
+#   config 값 미만 레벨은 파일·stderr 양쪽 억제. 기본 INFO — VERBOSE/DEBUG 는 필요 시 config 로 개방.
+#   Chrome AX 크래시(Issue237/258)처럼 hub 코드로 못 잡는 크래시의 "직전 이벤트 타임라인"을
+#   서버측에서 상관 분석하기 위한 진단 인프라. crank log_level→VERBOSE 하면 렌더·SSE·탭 브레드크럼 노출.
+LOG_LEVELS = {"VERBOSE": 0, "DEBUG": 1, "INFO": 2, "WARNING": 3, "ERROR": 4, "CRITICAL": 5}
+LOG_EMOJI = {"VERBOSE": "💬", "DEBUG": "🐛", "INFO": "ℹ️", "WARNING": "⚠️", "ERROR": "❌", "CRITICAL": "🚨"}
+_LOG_THRESHOLD = 2  # INFO 기본. _load_hub_setting() 이 log_level 파싱 시 갱신(_apply_log_level).
+
+
+def log(msg: str, level: str = "INFO") -> None:
+    lv = LOG_LEVELS.get(level.upper(), 2)
+    if lv < _LOG_THRESHOLD:
+        return
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
-    line = f"[{ts}] {msg}\n"
+    line = f"[{ts}] {LOG_EMOJI.get(level.upper(), '')} [{level.upper()}] {msg}\n"
     sys.stderr.write(line)
     try:
         with open(LOG_FILE, "a") as f:
@@ -424,8 +1169,120 @@ def _session_ai_title(cwd: str, sid: str):
     return title
 
 
+def _html_escape(s):
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;").replace("'", "&#39;"))
+
+
+def _transcript_block_text(content):
+    """JSONL message.content (str|list[block]) → 표시용 (텍스트, [도구라벨]) 추출.
+    thinking 블록은 접어두기 위해 별도 수집, tool_use/tool_result 는 한 줄 요약."""
+    texts, tools, thinks = [], [], []
+    if isinstance(content, str):
+        if content.strip():
+            texts.append(content.strip())
+        return texts, tools, thinks
+    if isinstance(content, list):
+        for b in content:
+            if not isinstance(b, dict):
+                continue
+            bt = b.get("type")
+            if bt == "text":
+                t = b.get("text", "")
+                if t and t.strip():
+                    texts.append(t.strip())
+            elif bt == "thinking":
+                t = b.get("thinking", "")
+                if t and t.strip():
+                    thinks.append(t.strip())
+            elif bt == "tool_use":
+                tools.append("🔧 " + str(b.get("name", "tool")))
+            elif bt == "tool_result":
+                # 결과는 길어 한 줄 요약(앞 120자)만
+                c = b.get("content", "")
+                if isinstance(c, list):
+                    c = " ".join(x.get("text", "") for x in c if isinstance(x, dict))
+                c = (str(c) or "").strip().replace("\n", " ")
+                tools.append("↩ 결과: " + (c[:120] + ("…" if len(c) > 120 else "")))
+    return texts, tools, thinks
+
+
+_TRANSCRIPT_TURN_LIMIT = 60       # 최근 N개 user/assistant 턴만 렌더
+_TRANSCRIPT_TEXT_CHARS = 4000     # 텍스트 블록 1개 최대 길이
+
+
+def _session_transcript_html(cwd, sid):
+    """세션 JSONL → 대화 transcript HTML. content(푸시된 렌더)가 비어 있는
+    터미널(CLI) 세션 등에서 '대화 내용 보기' 용도. 최근 N턴만, 긴 텍스트는 절단."""
+    path = _resolve_session_jsonl(cwd, sid)
+    if not path:
+        return None
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    ck = f"transcript:{path}"
+    cached = doc_cache_get(ck, st.st_mtime)
+    if cached is not None:
+        return cached or None
+    turns = []
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as f:
+            for ln in f:
+                ln = ln.strip()
+                if not ln or '"message"' not in ln:
+                    continue
+                try:
+                    d = json.loads(ln)
+                except ValueError:
+                    continue
+                t = d.get("type")
+                if t not in ("user", "assistant"):
+                    continue
+                msg = d.get("message")
+                if not isinstance(msg, dict):
+                    continue
+                texts, tools, thinks = _transcript_block_text(msg.get("content"))
+                if not texts and not tools and not thinks:
+                    continue
+                turns.append((t, texts, tools, thinks))
+    except OSError:
+        return None
+    if not turns:
+        doc_cache_put(ck, st.st_mtime, "")
+        return None
+    turns = turns[-_TRANSCRIPT_TURN_LIMIT:]
+    parts = ['<div class="transcript">']
+    parts.append('<p class="ts-note">⌨️ 터미널(CLI) 세션 — JSONL 대화 transcript '
+                 f'(최근 {len(turns)}턴). 실시간 렌더가 아닌 기록 보기.</p>')
+    for role, texts, tools, thinks in turns:
+        label = "🧑 User" if role == "user" else "🤖 Assistant"
+        cls = "ts-user" if role == "user" else "ts-asst"
+        parts.append(f'<div class="ts-turn {cls}"><div class="ts-role">{label}</div>')
+        for tx in texts:
+            tx = tx[:_TRANSCRIPT_TEXT_CHARS] + ("…" if len(tx) > _TRANSCRIPT_TEXT_CHARS else "")
+            parts.append(f'<pre class="ts-text">{_html_escape(tx)}</pre>')
+        if thinks:
+            joined = _html_escape("\n\n".join(th[:_TRANSCRIPT_TEXT_CHARS] for th in thinks))
+            parts.append(f'<details class="ts-think"><summary>💭 thinking</summary>'
+                         f'<pre>{joined}</pre></details>')
+        for tl in tools:
+            parts.append(f'<div class="ts-tool">{_html_escape(tl)}</div>')
+        parts.append('</div>')
+    parts.append('</div>')
+    html = "".join(parts)
+    doc_cache_put(ck, st.st_mtime, html)
+    return html
+
+
 # Issue28: Projects.md peacock.color 매핑 (cwd 경로 → hex 컬러). mtime 기반 캐시.
-PROJECTS_MD = os.environ.get("FPM_PROJECTS_MD", os.path.expanduser("~/_git/___pm/Projects.md"))
+# 설치 위치 무관 ($FPM_BASE 기반). env 우선, 없으면 self-detect:
+#   server.py = <FPM_BASE>/services/hub/server.py → 3단계 상위가 FPM_BASE.
+# (구: ~/_git/___pm 하드코딩 → fg1 등 fpm 설치 머신에서 Projects.md 미발견 → 빈 목록 버그)
+FPM_BASE = os.environ.get("FPM_BASE") or os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
+PROJECTS_MD = os.path.join(FPM_BASE, "Projects.md")
 _projects_color_cache: dict = {}
 _projects_color_cache_mtime: float = 0.0
 
@@ -438,8 +1295,9 @@ _PRIVATE_PREFIXES = ("10.", "192.168.", "127.", "169.254.") + tuple(
 
 
 def _parse_servers_md(path: str) -> list:
-    """Servers.md 의 Favorite Servers 테이블 파싱 → [{name, host, check}] 리스트.
-    `| id | Name | ssh alias | Host | Port | User | Description | check |` 형식."""
+    """Servers.md 의 Favorite Servers 테이블 파싱 → [{name, host, check, emoji}] 리스트.
+    `| id | Name | ssh alias | Host | Port | User | Description | check | Emoji |` 형식.
+    Emoji 는 Issue242 로 추가된 optional 마지막 컬럼(맨 끝 배치 → 기존 cells[:8] 파싱 무손상)."""
     rows = []
     try:
         with open(path, encoding="utf-8") as f:
@@ -453,21 +1311,71 @@ def _parse_servers_md(path: str) -> list:
                 # 헤더·구분선 skip (id 가 숫자가 아닌 행).
                 if not _id.isdigit():
                     continue
-                rows.append({"name": name, "host": host, "check": check})
+                emoji = cells[8] if len(cells) > 8 else ""
+                rows.append({"name": name, "host": host, "check": check, "emoji": emoji})
     except (FileNotFoundError, OSError) as e:
         log(f"[allowlist] Servers.md 읽기 실패: {e}")
     return rows
 
 
-def _load_server_allowlist() -> set:
-    """Servers.md 의 check=O 호스트를 IP 로 resolve 하여 allowlist set 반환.
-    resolve 실패 호스트는 skip+log. 공개 호스트(사설망 외)는 경고 log 로 가시화.
+# Issue242: 이모지 → 헤더 그라디언트 hue 큐레이션 맵. 미등록 이모지는 codepoint 해시 fallback.
+#   L(명도)은 렌더 시 42~50% 고정 → 흰 텍스트 대비(명도차) 보장.
+_EMOJI_HUE = {
+    "🐧": 25, "🐳": 200, "🐋": 200, "🎮": 275, "🖥": 210, "🖥️": 210, "💻": 210,
+    "🍎": 355, "🍏": 110, "🐍": 140, "⚡": 48, "🔥": 14, "🌊": 195, "🦾": 285,
+    "🚀": 268, "🧠": 305, "🛰": 255, "☁": 205, "☁️": 205, "🪟": 205, "🌐": 190,
+    "🟢": 130, "🔵": 215, "🟣": 285, "🟠": 30, "🔴": 358, "🟡": 50,
+}
+
+
+def _emoji_hue(emoji: str) -> int:
+    """이모지 → 헤더 hue(0~359). 큐레이션 우선, 없으면 첫 codepoint 해시."""
+    if not emoji:
+        return 220
+    if emoji in _EMOJI_HUE:
+        return _EMOJI_HUE[emoji]
+    return ord(emoji[0]) % 360
+
+
+def _self_server_badge() -> tuple:
+    """이 hub 서버(hostname)가 Servers.md 에 이모지와 함께 등록돼 있으면 (emoji, hue, name) 반환.
+    미등록·이모지 공란이면 (None, None, None). hostname 은 short(첫 `.` 앞) 소문자로 Name 매치."""
+    try:
+        host = socket.gethostname().split(".")[0].strip().lower()
+    except Exception:
+        return None, None, None
+    if not host:
+        return None, None, None
+    for row in _parse_servers_md(SERVERS_MD):
+        if row.get("name", "").strip().lower() == host and row.get("emoji"):
+            emoji = row["emoji"]
+            return emoji, _emoji_hue(emoji), row.get("name", host)
+    return None, None, None
+
+
+def _load_server_allowlist() -> tuple:
+    """Servers.md 의 check=O 호스트를 allowlist 로 적재 → (exact_ips set, networks list) 반환.
+    Host 값에 `/` 가 있으면 CIDR(ip_network)로 해석(Issue175), 아니면 IP 로 resolve.
+    resolve/파싱 실패 호스트는 skip+log. 공개 호스트(사설망 외)는 경고 log 로 가시화.
     HOST 가 루프백이 아닐 때(옵트인 개방)만 startup 에서 호출된다."""
     allowed = set()
+    nets = []
     for row in _parse_servers_md(SERVERS_MD):
         if row["check"].upper() != "O":
             continue
         host = row["host"]
+        # Issue175: CIDR 표기(`host/prefix`) → 서브넷 단위 허용.
+        if "/" in host:
+            try:
+                net = ipaddress.ip_network(host, strict=False)
+            except ValueError as e:
+                log(f"[allowlist] CIDR 파싱 실패 skip — {row['name']}({host}): {e}")
+                continue
+            nets.append(net)
+            public = not net.is_private
+            warn = "  ⚠️ 공개 서브넷 — 노출 위험" if public else ""
+            log(f"[allowlist] 허용(CIDR) — {row['name']} → {net}{warn}")
+            continue
         try:
             ip = socket.gethostbyname(host)
         except (socket.gaierror, OSError) as e:
@@ -477,12 +1385,27 @@ def _load_server_allowlist() -> set:
         public = not any(ip.startswith(p) for p in _PRIVATE_PREFIXES)
         warn = "  ⚠️ 공개 IP — 노출 위험" if public else ""
         log(f"[allowlist] 허용 — {row['name']}({host}) → {ip}{warn}")
-    return allowed
+    return allowed, nets
 
 
 def _ip_allowed(client_ip: str) -> bool:
-    """source IP 가 접근 허용 대상인지. 루프백은 무조건 허용, 그 외는 ALLOWED_IPS."""
-    return client_ip in LOOPBACK_IPS or client_ip in ALLOWED_IPS
+    """source IP 가 접근 허용 대상인지. ALLOW_ALL(전체 개방 모드)이면 무조건 허용.
+    아니면 루프백은 무조건 허용, 그 외는 ALLOWED_IPS(정확 일치) 또는
+    ALLOWED_NETS(CIDR 서브넷 멤버십, Issue175)."""
+    if ALLOW_ALL:
+        return True
+    if client_ip in LOOPBACK_IPS or client_ip in ALLOWED_IPS:
+        return True
+    if ALLOWED_NETS:
+        try:
+            addr = ipaddress.ip_address(client_ip)
+        except ValueError:
+            log(f"[allowlist] DENY(parse) — src={client_ip!r}")
+            return False
+        if any(addr in net for net in ALLOWED_NETS):
+            return True
+    log(f"[allowlist] DENY — src={client_ip!r} IPs={sorted(ALLOWED_IPS)} NETS={[str(n) for n in ALLOWED_NETS]}")
+    return False
 
 
 def _load_projects_colors() -> dict:
@@ -564,11 +1487,27 @@ def _load_projects_emojis() -> dict:
 
 
 def _project_emoji(cwd: str) -> str:
-    """cwd 경로에 매핑된 Projects.md 이모지. 미등록 시 빈 문자열."""
+    """cwd 경로에 매핑된 Projects.md 이모지. 미등록 시 빈 문자열.
+    Issue282: exact 실패 시 _resolve_project_root prefix fallback —
+    서브폴더 cwd 카드도 name(prefix 매칭)과 동일 기준으로 이모지 유지."""
     if not cwd:
         return ""
     abs_cwd = os.path.expanduser(cwd).rstrip("/")
-    return _load_projects_emojis().get(abs_cwd, "")
+    exact = _load_projects_emojis().get(abs_cwd, "")
+    if exact:
+        return exact
+    return _resolve_project_root(abs_cwd).get("emoji", "")
+
+
+def _classify_model_tier(model_id: str) -> str:
+    """Issue273: model_id → tier 문자열 (hub 활성세션 카드 신호등 이모지용).
+    소문자 substring 매칭 → 버전 접미·`[1m]` 등 무관하게 안정. 미상 → "" (카드 무표시).
+    tier↔이모지 매핑은 client(HUB_HTML): 🟣 opus / 🔵 sonnet / 🟢 haiku / 🟠 fable."""
+    m = (model_id or "").lower()
+    for tier in ("opus", "sonnet", "haiku", "fable"):
+        if tier in m:
+            return tier
+    return ""
 
 
 # Issue: Project List 팝업용 — Projects.md 📋 프로젝트 테이블 전체 행 추출. mtime 기반 캐시.
@@ -617,6 +1556,109 @@ def _load_projects_list() -> list:
     _projects_list_cache = rows
     _projects_list_cache_mtime = st.st_mtime
     return rows
+
+
+# Issue284: 이슈맵 문서(`Issue_map.htm`) 탐지 — issue-map 스킬(prj3 Issue246) 산출물.
+#   위치 규약: `Issue.md` 와 같은 폴더(= nPTiR 루트). 세션 cwd 가 하위 폴더로 드리프트해도
+#   찾도록 상위로 최대 _ISSUE_MAP_MAX_UP 단계 거슬러 올라가며 Issue.md 보유 디렉토리를 찾는다.
+#   파일명은 `Issue_map.htm` 고정 (prj1#Issue286 / prj3#Issue246 합의 — 후보 목록 없음).
+ISSUE_MAP_NAME = "Issue_map.htm"
+_ISSUE_MAP_MAX_UP = 6
+_ISSUE_MAP_TTL = 30.0            # 탐지 결과 캐시 수명(초) — /hub 폴링 5s 대비 stat 6배 절감
+_issue_map_cache: dict = {}      # cwd(str) -> (expire_ts, path|None, has_deps: bool)
+_issue_map_lock = threading.Lock()
+# Issue284_1: 카드 아이콘 노출 조건 — `Issue.md` 에 `* depends:` 링크가 하나라도 있을 때만.
+#   의존 간선이 0 이면 관계도가 노드 나열에 그쳐 열 가치가 없다(아이콘만 늘어남).
+#   포맷 SSOT: `~/.claude/rules/issue-g.md` 규칙2 — `* depends: Issue<M>` / `prj<N>#Issue<M>`.
+_ISSUE_DEPENDS_RE = re.compile(r"^\s*\*\s*depends:\s*\S")
+# Issue284_3: 이슈 헤더(`## Issue1: …` / `### Issue1_2: …`) 줄이 `✅` 로 끝나면 완료 —
+#   issue-map 스킬(build_issue_map.py)의 done 판정과 동일 신호(섹션명 하드코딩 없음).
+_ISSUE_HEADER_RE = re.compile(r"^#{2,3}\s+Issue")
+# Issue290: 섹션 헤딩(`# 📙 일반` 등) 인식 — 정규식은 build_issue_map.py parse_issue_md() 미러.
+_ISSUE_SECTION_RE = re.compile(r"^#\s+(.+?)\s*$")
+# Issue290: issue-map 이 관계도에서 통째로 빼는 섹션(build_issue_map.py `EXCLUDED_SECTIONS` 미러).
+#   화이트리스트가 아닌 블랙리스트인 이유 — 완료 섹션명은 프로젝트마다 다를 수 있어
+#   (ex: `🏁 완료-해결순`, issue-g.md 참고) 포함 섹션을 열거하면 그런 프로젝트에서 판정이 죽는다.
+_ISSUE_EXCLUDED_SECTIONS = {"⏸️ 보류", "🚫 취소"}
+
+
+def _issue_md_has_depends(issue_md: str) -> bool:
+    """Issue.md 에 **맵에 실제로 그려질** 이슈가 선언한 `* depends:` 줄이 1개 이상 있으면 True.
+
+    두 축을 모두 제외해야 맵과 판정이 일치한다 — 어느 한쪽만 보면 카드엔 🗺️ 가 뜨는데
+    맵은 빈 관계도(생략 안내문)를 렌더하는 불일치가 난다.
+
+    * 완료 이슈(헤더 줄이 `✅` 로 끝남) — issue-map 은 "자신+후행 모두 완료"를 관계도에서
+      제외하므로, 그런 depends 만 있는 프로젝트는 그래프가 비어 있다 (Issue284_3)
+    * ⏸️ 보류 · 🚫 취소 섹션 이슈 — issue-map 이 노드 자체를 빼므로 그 depends 도 그려지지
+      않는다 (prj3#Issue259 반영. 헤더가 `✅` 가 아니라 완료 축만으로는 못 걸러짐)
+
+    첫 매치에서 조기 종료.
+    """
+    try:
+        current_done = False
+        excluded_section = False
+        with open(issue_md, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                m_sec = _ISSUE_SECTION_RE.match(line)
+                if m_sec:
+                    excluded_section = m_sec.group(1) in _ISSUE_EXCLUDED_SECTIONS
+                    current_done = False
+                    continue
+                if _ISSUE_HEADER_RE.match(line):
+                    current_done = line.rstrip().endswith("✅")
+                    continue
+                if not current_done and not excluded_section and _ISSUE_DEPENDS_RE.match(line):
+                    return True
+    except OSError:
+        return False
+    return False
+
+
+def _issue_map_scan(cwd: str) -> tuple:
+    """cwd 기준 (맵 절대경로|None, depends 보유 여부) 반환. TTL 캐시."""
+    if not cwd:
+        return None, False
+    now = time.time()
+    with _issue_map_lock:
+        hit = _issue_map_cache.get(cwd)
+        if hit and hit[0] > now:
+            return hit[1], hit[2]
+    found, has_deps = None, False
+    try:
+        d = os.path.realpath(os.path.expanduser(cwd))
+        home = os.path.realpath(os.path.expanduser("~"))
+        for _ in range(_ISSUE_MAP_MAX_UP):
+            issue_md = os.path.join(d, "Issue.md")
+            if os.path.isfile(issue_md):
+                cand = os.path.join(d, ISSUE_MAP_NAME)
+                if os.path.isfile(cand):
+                    found = cand
+                    has_deps = _issue_md_has_depends(issue_md)
+                break
+            parent = os.path.dirname(d)
+            # 루트·홈 도달 시 중단 ($HOME 자체가 nPTiR 루트인 prj0 은 위 분기에서 이미 처리)
+            if parent == d or d == home:
+                break
+            d = parent
+    except OSError:
+        found, has_deps = None, False
+    with _issue_map_lock:
+        _issue_map_cache[cwd] = (now + _ISSUE_MAP_TTL, found, has_deps)
+    return found, has_deps
+
+
+def _issue_map_path(cwd: str):
+    """cwd 기준 이슈맵 문서 절대경로 반환. 없으면 None. (serve 용 — depends 무관)"""
+    return _issue_map_scan(cwd)[0]
+
+
+def _issue_map_visible(cwd: str) -> bool:
+    """카드에 🗺️ 를 렌더할지 여부 — 맵 파일 존재 **AND** depends 링크 보유.
+    serve(`/issue-map`)는 `_issue_map_path` 기준이라, 아이콘이 사라져도 기존 URL 은 살아있다
+    (depends 를 지웠다고 북마크가 404 로 죽지 않음)."""
+    path, has_deps = _issue_map_scan(cwd)
+    return bool(path) and has_deps
 
 
 def _htm_state(path: str) -> tuple:
@@ -682,31 +1724,161 @@ def _projects_list_with_htm() -> list:
     return out
 
 
+def _resolve_project_root(abs_cwd: str) -> dict:
+    """Projects.md 등록 경로 중 abs_cwd 와 exact 또는 prefix(at-or-under) 매칭되는
+    가장 긴 경로의 행을 반환 (없으면 빈 dict). 서브폴더 cwd(ex: videoStudio/_doc_base/contents)를
+    등록된 부모 프로젝트(videoStudio)로 귀속시켜 fpm-hub-trigger.sh 의 prefix 매칭과 정합시킴."""
+    best: dict = {}
+    best_len = -1
+    for row in _load_projects_list():
+        path_cell = row.get("path", "")
+        if not path_cell:
+            continue
+        ph = os.path.expanduser(path_cell).rstrip("/")
+        if not ph:
+            continue
+        if (abs_cwd == ph or abs_cwd.startswith(ph + "/")) and len(ph) > best_len:
+            best = row
+            best_len = len(ph)
+    return best
+
+
+def _frontmost_app_window() -> tuple:
+    """macOS 최전면 프로세스명 + 그 프로세스의 front window 제목 (Issue288).
+
+    반환 ("Code", "Issue.md — ___pm") 형태. 실패(비-macOS·접근성 권한 부재·osascript
+    오류·timeout)면 ("", "") — 호출자는 **fail-open**(기존 동작 유지) 할 것. 조용히
+    기능을 무력화하지 않기 위해 실패는 WARNING 으로 남긴다."""
+    script = ('tell application "System Events"\n'
+              '  set pname to name of first process whose frontmost is true\n'
+              '  try\n'
+              '    set wname to name of front window of process pname\n'
+              '  on error\n'
+              '    set wname to ""\n'
+              '  end try\n'
+              '  return pname & tab & wname\n'
+              'end tell')
+    try:
+        r = subprocess.run(["osascript", "-e", script], capture_output=True,
+                           text=True, timeout=3)
+    except Exception as e:
+        log(f"_frontmost_app_window failed: {e}", "WARNING")
+        return ("", "")
+    if r.returncode != 0:
+        log(f"_frontmost_app_window osascript rc={r.returncode}: "
+            f"{(r.stderr or '').strip()[:200]}", "WARNING")
+        return ("", "")
+    parts = (r.stdout or "").strip().split("\t", 1)
+    return (parts[0].strip(), parts[1].strip() if len(parts) > 1 else "")
+
+
+def _simple_browser_focus_skip(mode: str, front_proc: str, front_win: str,
+                               target_cwd: str) -> str:
+    """Issue288 포커스 게이트 판정 (순수 함수 — 부수효과 없음, 단위검증용).
+
+    반환: skip 사유 문자열, 빈 문자열이면 진행(=open 실행).
+      - never       → 항상 skip
+      - always/미지 → 항상 진행 (구 동작)
+      - gate        → VSCode 가 전면이고 그 창이 owner 프로젝트가 아니면 skip.
+                      VSCode 가 전면이 아니면(iTerm 등) 진행 — 그 세션과 상호작용
+                      중일 가능성이 높다. 판정 실패(front_proc="")도 fail-open."""
+    if mode == "never":
+        return "focus-never"
+    if mode != "gate":
+        return ""
+    if front_proc not in ("Code", "Electron"):
+        return ""
+    owner_base = os.path.basename(target_cwd) if target_cwd else ""
+    if owner_base and owner_base in front_win:
+        return ""
+    return "not-frontmost"
+
+
 def project_meta(cwd: str) -> dict:
     h = cwd_hash(cwd)
-    name = (os.path.basename(cwd) or cwd).replace(" ", "_")
     # Issue28: Projects.md peacock.color 우선, 없으면 hsl fallback
     abs_cwd = os.path.expanduser(cwd).rstrip("/")
-    colors = _load_projects_colors()
-    color = colors.get(abs_cwd) or f"hsl({int(h[:4], 16) % 360}, 60%, 45%)"
-    # Issue46: Projects.md 이모지 보강 (미등록 시 빈 문자열)
-    emoji = _load_projects_emojis().get(abs_cwd, "")
+    hsl_fallback = f"hsl({int(h[:4], 16) % 360}, 60%, 45%)"
+    matched = _resolve_project_root(abs_cwd)
+    if matched:
+        name = matched.get("name") or os.path.basename(matched.get("path", "")) or abs_cwd
+        color = matched.get("color") or hsl_fallback
+        emoji = matched.get("emoji") or ""
+    else:
+        name = os.path.basename(abs_cwd) or cwd
+        color = hsl_fallback
+        emoji = ""
+    name = (name or cwd).replace(" ", "_")
     return {"cwd_hash": h, "name": name, "color": color, "emoji": emoji}
 
 
 # Issue42: hub 활동 피드 — hub_setting.yml 설정 + hook 이벤트 버퍼.
 # data/hub_setting.yml 은 사용자 설정(git 추적), data/hub/hook-feed.json 은 런타임 상태(gitignore).
 HUB_SETTING_FILE = os.path.join(REPO_ROOT, "data", "hub_setting.yml")
+# 설정 기본값 SSOT 템플릿 — 설정창 연필(✏️ 기본값 대비 변경) 판정의 1차 기준.
+# hub_setting.yml 에서 키가 지워졌을 때의 복원 참조본이기도 함.
+HUB_SETTING_ORG_FILE = os.path.join(REPO_ROOT, "data", "hub_setting_org.yml")
 HUB_SETTING_DEFAULTS = {"feed_limit": 100, "feed_default_visible": True, "feed_poll_interval": 5,
                         "feed_show_project_emoji": True, "feed_show_project_name": True,
                         "card_limit": 40, "search_limit": 200, "live_session_limit": 6,
                         # Issue141: bind 주소 (문자열). env HTM_SERVER_HOST 미설정 시 사용.
                         "bind_host": "127.0.0.1",
+                        # Issue267: 외부 통지 URL host (QR·hook 렌더). 빈 문자열=미설정(소비처 fallback).
+                        #   과거 DEFAULTS 누락으로 _load_hub_setting 가 스킵 → _handle_qr 이 advertise_host 를
+                        #   못 읽고 LAN IP 로 폴백하던 잠복 버그. 등재하여 정상 파싱. 권장값=MagicDNS hostname.
+                        "advertise_host": "",
+                        # allow_server_list: source-IP allowlist 게이트 토글 (bind_host 와 분리).
+                        #   true(기본)=비루프백 bind 시 Servers.md(check=O)+self allowlist 적재.
+                        #   false=bind_host(self)만 허용 → 외부 source IP 전부 차단. 변경 시 restart.
+                        "allow_server_list": True,
+                        # allow_list: hub_setting.yml inline source-IP allowlist (IP/CIDR 리스트).
+                        #   Servers.md 와 additive(병합) — 추가 grant. 호스트명 미지원(IP/CIDR 만, DNS 비의존).
+                        #   yml 표기: allow_list: [192.168.0.5, 192.168.0.0/24]. yml 전용(UI 미편집). 변경 시 restart.
+                        "allow_list": [],
                         # Issue159: 활성세션 정렬 — updated(최근갱신순) / created(세션 시작순 고정)
                         #   / project(Projects.md 번호순, 미등록 cwd 는 끝)
-                        "live_session_order": "updated"}
+                        "live_session_order": "updated",
+                        # Issue166: 명령(프롬프트) 전 빈 live 세션 표시 여부.
+                        #   false(기본)=전체 숨김 / true=프로젝트당 최신 1개 표시(Issue136 dedup)
+                        "live_session_show_empty": False,
+                        # Issue277: 활성세션 행 세션 ID 복사 버튼(📋) 표시 여부. true(기본)=표시.
+                        "live_session_copy_button": True,
+                        # Issue279: 새 피드 도착 시 헤더 토글 아이콘 깜빡임(🙉↔🙈). true(기본)=on.
+                        "feed_blink_on_new": True,
+                        # Issue169: hub UI 언어 — en(영어, 기본) / ko(한국어). 설계: _doc_arch/localization.md
+                        "language": "en",
+                        # Issue194: hub 내부 탭 렌더 모드. 설계: _doc_arch/hub_internal_tabs.md
+                        #   render_tab_mode: browser-tab(OS 탭) / hub-internal(기본·/hub-shell iframe 탭, Issue201)
+                        "render_tab_mode": "hub-internal",
+                        "tab_close_shortcut": "alt+w",
+                        "hub_single_window": True,
+                        "hub_lease_ttl": 30,
+                        # Issue237: 원격 브라우저 → Remote-SSH 연결 VSCode 에디터 열기.
+                        #   비루프백 source IP 의 open-project/open-session 요청에 한해 서버 `open` 대신
+                        #   vscode-remote://ssh-remote+<alias><path> URI 를 반환 → 브라우저가
+                        #   window.location 으로 발사, 클라이언트측(브라우저 머신) VSCode 가 이미 연결된
+                        #   Remote-SSH 창을 재사용해 연다. 빈 문자열(기본)=원격 분기 비활성(host-local open 폴백).
+                        #   값=클라이언트 ~/.ssh/config 의 이 서버 Host alias (예: gl).
+                        "ssh_remote_alias": "",
+                        # Issue288: 자동 렌더(hook 경로)의 Simple Browser 전면화 가드.
+                        #   gate(기본)=다른 프로젝트 VSCode 창이 전면이면 open skip(포커스 탈취 방지)
+                        #   / always=구 동작(항상 전면화) / never=자동 오픈 안 함(등록·채팅 URL 만).
+                        #   hub 페이지 클릭 경로(/open-project·/open-session)는 이 설정과 무관.
+                        "simple_browser_focus": "gate",
+                        # Issue258: 서버 로그 상세도 — VERBOSE/DEBUG/INFO(기본)/WARNING/ERROR/CRITICAL.
+                        #   값 미만 레벨 로그 억제. Chrome AX 크래시 직전 이벤트 타임라인 수집 시 VERBOSE 로 상향.
+                        "log_level": "INFO"}
 _hub_setting_cache: dict = {}
 _hub_setting_cache_mtime: float = 0.0
+
+
+def _parse_yml_list(val: str) -> list:
+    """경량 인라인 리스트 파서 — `[a, b, c]` 또는 `a, b, c` → ['a','b','c'].
+    각 항목 따옴표·공백 제거, 빈 항목 drop. stdlib-only(외부 yaml 비의존)."""
+    s = val.strip()
+    if s.startswith("[") and s.endswith("]"):
+        s = s[1:-1]
+    return [x.strip().strip('"').strip("'") for x in s.split(",") if x.strip()]
 
 
 def _load_hub_setting() -> dict:
@@ -733,8 +1905,14 @@ def _load_hub_setting() -> dict:
                     continue
                 if isinstance(HUB_SETTING_DEFAULTS[key], bool):
                     setting[key] = (val.lower() == "true")
+                elif isinstance(HUB_SETTING_DEFAULTS[key], list):
+                    setting[key] = _parse_yml_list(val)  # allow_list 등 리스트 키
                 elif isinstance(HUB_SETTING_DEFAULTS[key], str):
-                    setting[key] = val  # Issue141: 문자열 키(bind_host 등) 그대로
+                    # bind_host 는 스칼라 또는 `[a, b]` 리스트 허용(멀티 bind).
+                    if key == "bind_host" and val.strip().startswith("["):
+                        setting[key] = _parse_yml_list(val)
+                    else:
+                        setting[key] = val  # Issue141: 문자열 키(bind_host 등) 그대로
                 else:
                     try:
                         setting[key] = int(val)
@@ -745,7 +1923,310 @@ def _load_hub_setting() -> dict:
         return _hub_setting_cache or dict(HUB_SETTING_DEFAULTS)
     _hub_setting_cache = setting
     _hub_setting_cache_mtime = st.st_mtime
+    _apply_log_level(setting)  # Issue258: log_level → _LOG_THRESHOLD 갱신
     return setting
+
+
+def _apply_log_level(setting: dict) -> None:
+    """Issue258: hub_setting.yml log_level → 모듈 전역 _LOG_THRESHOLD 반영.
+    log() 가 _load_hub_setting() 을 직접 호출하면 재귀(로더 실패 시 log() 호출)라
+    로더가 임계값을 전역에 push 하는 단방향 구조."""
+    global _LOG_THRESHOLD
+    _LOG_THRESHOLD = LOG_LEVELS.get(str(setting.get("log_level", "INFO")).upper(), 2)
+
+
+def _ssh_remote_uri(cwd: str, alias: str) -> str:
+    """Issue237: Remote-SSH 워크스페이스 열기 URI.
+    클라이언트(브라우저) OS 의 vscode-remote:// 핸들러가 alias 로 이미 연결된
+    창을 재사용해 cwd 를 연다. alias 는 클라이언트 ~/.ssh/config 기준 Host 이름이며
+    절대경로 cwd 를 변환 없이 그대로 사용(Remote-SSH 는 서버 파일시스템 경로 그대로)."""
+    return f"vscode-remote://ssh-remote+{alias}{cwd}"
+
+
+# Issue168: 설정 모달 UI 스키마 — ⚙️ 버튼이 여는 인앱 3탭 설정창의 분류·위젯·유효값·적용방식.
+#   탭(tab): basic(기본)/session(세션관리)/advanced(고급)
+#   위젯(widget): toggle(bool)/select/number/text
+#   적용(apply): auto(server.py mtime 재로드) / hook(글로벌 hook grep, 다음 렌더 turn) / restart(서버 재시작 필요)
+#   분류 SSOT: _doc_arch/hub_settings_ui.md (본 상수는 그 미러)
+HUB_SETTING_SCHEMA = [
+    # 탭 1: 기본 — 브라우저·언어 + 탭 동작 (Issue197: render·tab 키 advanced 이동 → Issue268:
+    #   browser_tab_reuse 와의 혼동 해소를 위해 render_tab_mode 만 basic 복귀)
+    {"key": "default_browser", "tab": "basic", "widget": "select",
+     "options": ["firefox", "chrome", "edge", "safari"], "allow_custom": True,
+     "apply": "hook", "comment": "Claude Code(렌더 hook)가 렌더 결과·hub 페이지를 열 때 사용할 브라우저 — firefox/chrome/edge/safari 또는 .app 절대경로"},
+    # Issue170: 3-way 브라우저 자동 open 동작 (구 browser_focus 대체, off/background/foreground).
+    {"key": "browser_open", "tab": "basic", "widget": "select",
+     "options": ["off", "background", "foreground"],
+     "apply": "hook", "comment": "Claude Code(렌더 hook)가 렌더 후 브라우저를 자동으로 열지 — off=열지 않고 채팅에 URL만 표시 / background=열되 포커스 미탈취(open -g) / foreground=열고 포커스 이동"},
+    {"key": "browser_tab_reuse", "tab": "basic", "widget": "toggle",
+     "apply": "hook", "comment": "Claude Code(렌더 hook)가 /hub 페이지를 열 때 OS 브라우저의 기존 fpm-hub 명명 탭을 재사용할지 — on=기존 탭 재사용 / off=매번 새 탭. ⚠️ Chrome/Edge/Safari 전용(AppleScript 탭 제어) — Firefox·커스텀 앱은 탭 제어 미지원이라 비활성 (Issue272). OS 브라우저 탭 전용 — hub 내부 탭바('렌더 표시 방식')와 무관. 렌더(..show/..ask) 결과는 값과 무관하게 항상 새 탭"},
+    # Issue194: 렌더 표시 방식 — OS 브라우저 탭 vs hub 쉘 내부 iframe 탭 (Issue268: advanced→basic 복귀)
+    {"key": "render_tab_mode", "tab": "basic", "widget": "select",
+     "options": ["browser-tab", "hub-internal"],
+     "apply": "hook", "comment": "Claude Code 렌더 결과를 여는 위치 — browser-tab=OS 브라우저 새 탭/창(기본) / hub-internal=hub 화면(/hub-shell) 상단 내부 탭바에 iframe 으로 열림(OS 새 탭 미생성). 내부 탭을 쓰려면 hub-internal 선택. 세부 옵션(탭 닫기 단축키·단일 창 강제·리스 TTL)은 고급 탭"},
+    # Issue169: hub UI 언어 (en/ko). 저장 후 hub 페이지 reload 시 반영. 설계: _doc_arch/localization.md
+    {"key": "language", "tab": "basic", "widget": "select",
+     "options": ["en", "ko"],
+     "apply": "auto", "comment": "hub 서버가 hub UI 를 그릴 때 쓰는 언어 — en(영어, 기본)/ko(한국어). 저장 후 페이지 reload 시 반영"},
+    # 탭 2: 세션관리(표시) — 세션·피드·카드 표시 (전부 server.py 소비 → auto). Issue197: 피드 키 일원화
+    {"key": "live_session_limit", "tab": "session", "widget": "number", "min": 0,
+     "apply": "auto", "comment": "hub 화면 활성 세션 카드 1장에 표시할 최대 행 수 (0=무제한)"},
+    {"key": "live_session_order", "tab": "session", "widget": "select",
+     "options": ["updated", "created", "project"],
+     "apply": "auto", "comment": "hub 화면 활성 세션 카드 정렬 기준 — updated(최근 갱신순)/created(생성순)/project(프로젝트순)"},
+    {"key": "live_session_show_empty", "tab": "session", "widget": "toggle",
+     "apply": "auto", "comment": "hub 화면에 아직 명령이 없는 빈 live 세션도 표시할지 (false=숨김)"},
+    {"key": "card_limit", "tab": "session", "widget": "number", "min": 0,
+     "apply": "auto", "comment": "hub 화면에 표시할 htm 렌더 카드 최대 수 (0=무제한)"},
+    {"key": "search_limit", "tab": "session", "widget": "number", "min": 0,
+     "apply": "auto", "comment": "hub 서버가 디스크 재스캔 시 디렉토리당 읽는 파일 상한 (0=무제한)"},
+    # 피드 키 묶음 (Issue197: feed_default_visible basic→session, feed_poll_interval advanced→session)
+    {"key": "feed_default_visible", "tab": "session", "widget": "toggle",
+     "apply": "auto", "comment": "hub 화면 첫 접속 시 피드 사이드바를 펼쳐 보일지"},
+    {"key": "feed_limit", "tab": "session", "widget": "number", "min": 1,
+     "apply": "auto", "comment": "hub 서버가 피드에 보관·표시하는 최대 항목 수"},
+    {"key": "feed_poll_interval", "tab": "session", "widget": "number", "min": 1,
+     "apply": "auto", "comment": "브라우저(hub 화면)가 피드를 다시 가져오는 폴링 주기(초, 참고값)"},
+    {"key": "feed_show_project_emoji", "tab": "session", "widget": "toggle",
+     "apply": "auto", "comment": "hub 화면 피드 항목에 프로젝트 이모지를 표시할지"},
+    {"key": "feed_show_project_name", "tab": "session", "widget": "toggle",
+     "apply": "auto", "comment": "hub 화면 피드 항목에 프로젝트명을 표시할지"},
+    # 탭 3: 고급 — 렌더·탭 + 네트워크 (Issue197: render·tab 키 basic→advanced 이동,
+    #   Issue268: render_tab_mode 는 basic 복귀 — 나머지 탭 세부 키는 잔류)
+    # 렌더·탭 동작
+    {"key": "render_target", "tab": "advanced", "widget": "select",
+     "options": ["local-open", "hub", "both"],
+     "apply": "hook", "comment": "Claude Code(렌더 hook)가 ..show 렌더 결과를 표시하는 경로 — local-open=로컬 file:// 로 직접 열기 / hub=hub 서버 URL 로 열기 / both=둘 다"},
+    # Issue288: 자동 렌더의 VSCode 전면화 가드 (클릭 경로 /open-project·/open-session 은 무관)
+    {"key": "simple_browser_focus", "tab": "advanced", "widget": "select",
+     "options": ["gate", "always", "never"],
+     "apply": "auto", "comment": "Claude Code 자동 렌더가 Simple Browser 패널을 열며 VSCode 창을 전면화할지 — gate(기본)=사용자가 다른 프로젝트 VSCode 창에서 작업 중이면 열지 않음(타이핑 중 포커스 탈취 방지) / always=항상 전면화(구 동작) / never=자동 오픈 안 함(문서 등록·채팅 URL 만). hub 페이지 버튼 클릭으로 여는 경로는 이 설정과 무관하게 항상 열림"},
+    {"key": "tab_close_shortcut", "tab": "advanced", "widget": "text",
+     "apply": "auto", "comment": "hub 화면 내부 탭을 닫는 단축키 ([ctrl+][alt+][shift+][meta+]<key>). ⚠️ ctrl+w/meta+w 는 브라우저가 선점할 수 있음"},
+    # Issue194: hub 내부 탭 모드(render_tab_mode=hub-internal) 단일 창 강제
+    {"key": "hub_single_window", "tab": "advanced", "widget": "toggle",
+     "apply": "auto", "comment": "hub 서버가 호스트(source-IP)당 hub 쉘 창을 1개로 강제할지 — true=2번째 창에 takeover 안내 / false=다중 창 허용"},
+    {"key": "hub_lease_ttl", "tab": "advanced", "widget": "number", "min": 5,
+     "apply": "auto", "comment": "hub 서버가 hub 쉘 리스를 회수하기까지의 heartbeat 만료(초). 브라우저의 SSE keepalive 가 이 시간 이상 끊기면 회수"},
+    # 네트워크
+    {"key": "bind_host", "tab": "advanced", "widget": "text",
+     "apply": "restart", "comment": "hub 서버가 listen 할 네트워크 인터페이스 (127.0.0.1/0.0.0.0/IP). 변경 시 서버 restart 필요"},
+    {"key": "advertise_host", "tab": "advanced", "widget": "text", "optional": True,
+     "apply": "hook", "comment": "Claude Code(렌더 hook)가 채팅에 표시하는 hub|both URL 의 host (생략 시 bind_host fallback). bind_host=0.0.0.0 이면 생략 금지"},
+    {"key": "allow_server_list", "tab": "advanced", "widget": "toggle",
+     "apply": "restart", "comment": "hub 서버 접속 허용 게이트 (source-IP 기준) — true=Servers.md 화이트리스트+자기 자신 허용 / false=자기 자신(bind_host)만 허용, 외부 전부 차단. 변경 시 서버 restart 필요"},
+    {"key": "ssh_remote_alias", "tab": "advanced", "widget": "text", "optional": True,
+     "apply": "auto", "comment": "hub 서버가 원격 브라우저의 open-project/open-session 요청에 vscode-remote://ssh-remote+<alias> 링크로 응답할 때 쓰는 SSH alias (클라이언트 ~/.ssh/config 의 Host 이름, ex: gl). 빈 값=비활성"},
+    # Issue277: 활성세션 행 세션 ID 복사 버튼(📋) 표시 여부
+    {"key": "live_session_copy_button", "tab": "advanced", "widget": "toggle",
+     "apply": "auto", "comment": "hub 화면 활성 세션 행 X(닫기) 왼쪽에 세션 ID 복사 버튼(📋)을 표시할지 — true(기본)=표시 / false=숨김. /cc-session id 없이 hub 에서 바로 sid 복사"},
+    # Issue279: 새 피드 도착 시 헤더 활동피드 토글 아이콘 깜빡임
+    {"key": "feed_blink_on_new", "tab": "advanced", "widget": "toggle",
+     "apply": "auto", "comment": "새 활동피드 항목이 도착하면 헤더 토글 아이콘(🙉↔🙈)을 잠깐 깜빡여 알림 — true(기본)=on / false=off"},
+]
+HUB_SETTING_SCHEMA_BY_KEY = {s["key"]: s for s in HUB_SETTING_SCHEMA}
+# advertise_host 는 yml 에서 기본 주석 처리(`# advertise_host: ...`)된 optional 키.
+_HOST_RE = re.compile(r"^[A-Za-z0-9._\-]*$")
+
+
+def _cast_setting_value(schema: dict, val: str):
+    """raw 문자열 val 을 schema widget 기준 타입으로 캐스팅."""
+    w = schema["widget"]
+    if w == "toggle":
+        return val.lower() == "true"
+    if w == "number":
+        try:
+            return int(val)
+        except ValueError:
+            return 0
+    return val  # select / text → 문자열 그대로
+
+
+def _load_hub_setting_raw() -> dict:
+    """Issue168: hub_setting.yml 의 **모든** 스키마 키 현재값을 반환 (HUB_SETTING_DEFAULTS
+    화이트리스트 제한 없이 — browser_*·render_target·advertise_host 등 hook 소비 키 포함).
+    주석 처리된 optional 키(advertise_host)는 미설정(빈 문자열)으로 반환. server.py 의
+    _load_hub_setting 캐시와 독립 — 파일 직독."""
+    values = {}
+    # 스키마 기본값(파일에 라인 없을 때 폴백): toggle→False, number→0, str→""
+    for s in HUB_SETTING_SCHEMA:
+        if s["widget"] == "toggle":
+            values[s["key"]] = bool(HUB_SETTING_DEFAULTS.get(s["key"], False))
+        elif s["widget"] == "number":
+            values[s["key"]] = int(HUB_SETTING_DEFAULTS.get(s["key"], 0))
+        else:
+            values[s["key"]] = str(HUB_SETTING_DEFAULTS.get(s["key"], ""))
+    try:
+        with open(HUB_SETTING_FILE, encoding="utf-8") as f:
+            for line in f:
+                # 주석 전용 라인은 무시 (optional 키 주석은 미설정 의미 → 폴백 유지)
+                stripped = line.lstrip()
+                if stripped.startswith("#") or ":" not in stripped:
+                    continue
+                body = line.split("#", 1)[0].strip()  # inline 주석 제거
+                if ":" not in body:
+                    continue
+                key, _, val = body.partition(":")
+                key, val = key.strip(), val.strip()
+                if key in HUB_SETTING_SCHEMA_BY_KEY:
+                    values[key] = _cast_setting_value(HUB_SETTING_SCHEMA_BY_KEY[key], val)
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        log(f"_load_hub_setting_raw failed: {e}")
+    return values
+
+
+def _load_hub_setting_org() -> dict:
+    """data/hub_setting_org.yml(기본값 SSOT 템플릿)의 스키마 키 값을 반환.
+    설정창 연필(기본값 대비 변경) 판정의 1차 기준. 파일 부재·파싱 실패 시 빈 dict
+    반환 → 호출측이 HUB_SETTING_DEFAULTS/위젯 자연기본으로 fallback."""
+    values = {}
+    try:
+        with open(HUB_SETTING_ORG_FILE, encoding="utf-8") as f:
+            for line in f:
+                stripped = line.lstrip()
+                if stripped.startswith("#") or ":" not in stripped:
+                    continue
+                body = line.split("#", 1)[0].strip()
+                if ":" not in body:
+                    continue
+                key, _, val = body.partition(":")
+                key, val = key.strip(), val.strip()
+                if key in HUB_SETTING_SCHEMA_BY_KEY:
+                    values[key] = _cast_setting_value(HUB_SETTING_SCHEMA_BY_KEY[key], val)
+    except FileNotFoundError:
+        log(f"_load_hub_setting_org: {HUB_SETTING_ORG_FILE} 부재 — 내장 기본값 fallback")
+    except Exception as e:
+        log(f"_load_hub_setting_org failed: {e}")
+    return values
+
+
+def _validate_setting(schema: dict, val) -> str:
+    """단일 키 값 검증. 통과 시 None, 실패 시 에러 문자열."""
+    w = schema["widget"]
+    if w == "toggle":
+        if not isinstance(val, bool):
+            return f"{schema['key']}: bool required"
+    elif w == "number":
+        if not isinstance(val, int) or isinstance(val, bool):
+            return f"{schema['key']}: integer required"
+        if val < schema.get("min", 0):
+            return f"{schema['key']}: must be >= {schema.get('min', 0)}"
+    elif w == "select":
+        if val in schema["options"]:
+            return None
+        if schema.get("allow_custom") and isinstance(val, str) and val.startswith("/") and val.endswith(".app"):
+            return None
+        return f"{schema['key']}: must be one of {schema['options']} (or .app path)"
+    elif w == "text":
+        if not isinstance(val, str):
+            return f"{schema['key']}: string required"
+        if not schema.get("optional") and not val:
+            return f"{schema['key']}: required"
+        if not _HOST_RE.match(val):
+            return f"{schema['key']}: invalid host chars"
+    return None
+
+
+def _setting_to_yml_value(schema: dict, val) -> str:
+    """파이썬 값 → yml 표기 문자열."""
+    if schema["widget"] == "toggle":
+        return "true" if val else "false"
+    return str(val)
+
+
+def _write_hub_setting(payload: dict, client_mtime: float = None):
+    """Issue168: payload(변경 diff)를 hub_setting.yml 에 주석 보존하며 기록.
+    라인 in-place 치환(inline 주석 보존) + temp→os.replace 원자적 쓰기.
+    반환 (ok, restart_required, status_code, err)."""
+    if not isinstance(payload, dict) or not payload:
+        return False, [], 400, "empty payload"
+    # 1. 키 화이트리스트 + 값 검증
+    for key, val in payload.items():
+        sc = HUB_SETTING_SCHEMA_BY_KEY.get(key)
+        if sc is None:
+            return False, [], 400, f"unknown key: {key}"
+        err = _validate_setting(sc, val)
+        if err:
+            return False, [], 400, err
+    # 2. 위험 조합 차단: 결과 bind_host=0.0.0.0 + advertise_host 빈값
+    cur = _load_hub_setting_raw()
+    merged = dict(cur)
+    merged.update(payload)
+    if merged.get("bind_host") == "0.0.0.0" and not (merged.get("advertise_host") or "").strip():
+        return False, [], 400, "bind_host 0.0.0.0 requires advertise_host (URL 좀비 가드)"
+    # 3. 동시편집 감지 (선택): client_mtime 제공 시 현재 mtime 과 비교
+    try:
+        cur_mtime = os.stat(HUB_SETTING_FILE).st_mtime
+    except FileNotFoundError:
+        return False, [], 500, "hub_setting.yml not found"
+    if client_mtime is not None and abs(cur_mtime - float(client_mtime)) > 1e-6:
+        return False, [], 409, "file changed externally — reload"
+    # 4. 라인 in-place 치환
+    try:
+        with open(HUB_SETTING_FILE, encoding="utf-8") as f:
+            lines = f.readlines()
+    except OSError as e:
+        return False, [], 500, f"read failed: {e}"
+
+    active_re = re.compile(r"^(\s*)([a-z_]+)(\s*:\s*)(\S+)(\s*#.*)?(\r?\n?)$")
+    comment_re = re.compile(r"^(\s*)#\s*([a-z_]+)(\s*:\s*)(\S+)(\s*#.*)?(\r?\n?)$")
+    handled = set()
+    out = []
+    for line in lines:
+        m = active_re.match(line)
+        if m and m.group(2) in payload:
+            key = m.group(2)
+            sc = HUB_SETTING_SCHEMA_BY_KEY[key]
+            new_val = (payload[key] or "").strip() if sc["widget"] == "text" else payload[key]
+            # optional text 키가 빈값 → 라인을 다시 주석 처리
+            if sc["widget"] == "text" and sc.get("optional") and not new_val:
+                out.append(f"{m.group(1)}# {key}{m.group(3)}{m.group(4)}{m.group(5) or ''}{m.group(6)}")
+            else:
+                yval = _setting_to_yml_value(sc, new_val)
+                out.append(f"{m.group(1)}{key}{m.group(3)}{yval}{m.group(5) or ''}{m.group(6)}")
+            handled.add(key)
+            continue
+        cm = comment_re.match(line)
+        if cm and cm.group(2) in payload and cm.group(2) not in handled:
+            key = cm.group(2)
+            sc = HUB_SETTING_SCHEMA_BY_KEY[key]
+            new_val = (payload[key] or "").strip()
+            if new_val:
+                # 주석 → 활성화
+                yval = _setting_to_yml_value(sc, new_val)
+                out.append(f"{cm.group(1)}{key}{cm.group(3)}{yval}{cm.group(5) or ''}{cm.group(6)}")
+                handled.add(key)
+                continue
+            # 빈값 → 주석 라인 유지 (미설정)
+            handled.add(key)
+        out.append(line)
+    # 5. payload 에 있으나 파일에 라인 없는 키 → 파일 끝 append
+    tail = []
+    for key, val in payload.items():
+        if key in handled:
+            continue
+        sc = HUB_SETTING_SCHEMA_BY_KEY[key]
+        if sc["widget"] == "text" and sc.get("optional") and not (val or "").strip():
+            continue  # 미설정 optional → append 안 함
+        tail.append(f"{key}: {_setting_to_yml_value(sc, val)}\n")
+    if tail:
+        if out and not out[-1].endswith("\n"):
+            out[-1] += "\n"
+        out.extend(tail)
+    # 6. 원자적 쓰기
+    try:
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(HUB_SETTING_FILE), prefix=".hub_setting_", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.writelines(out)
+        os.replace(tmp, HUB_SETTING_FILE)
+    except OSError as e:
+        return False, [], 500, f"write failed: {e}"
+    # 7. restart 필요 키 집계 (값이 실제 변경된 restart 키만)
+    restart_required = [k for k in payload
+                        if HUB_SETTING_SCHEMA_BY_KEY[k]["apply"] == "restart" and cur.get(k) != payload[k]]
+    return True, restart_required, 200, None
 
 
 # Issue87: 중요 이벤트 판정 모듈 임계값 — _compute_important_events 가 참조.
@@ -971,6 +2452,151 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
+# --- Issue280: 세션 GC (세션·터미널 pane 강제 종료) ---------------------------
+# 가비지 세션(VSCode 터미널·tmux·iTerm 에 잔존)의 수동 GC. 핵심 설계:
+#   - register(live) 시점에 컨테이너 메타(gc_meta)를 캡처 — claude 사후에도
+#     shell/tmux pane 정리 가능 (죽은 뒤엔 ppid·pane 역추적 불가).
+#   - kill 대상은 sessions entry 의 live_pid·gc_meta 만 (body pid 수신 금지, Issue86 패턴).
+#   - kill 직전 comm 대조로 pid 재사용 오살 차단 (_gc_guard).
+
+def _ps_ppid(pid: int):
+    """pid 의 부모 pid. 실패 시 None."""
+    try:
+        r = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)],
+                           capture_output=True, text=True, timeout=3)
+        v = r.stdout.strip()
+        return int(v) if v else None
+    except Exception:
+        return None
+
+
+def _ps_comm(pid: int):
+    """pid 의 실행 커맨드명(comm). 실패 시 None."""
+    try:
+        r = subprocess.run(["ps", "-o", "comm=", "-p", str(pid)],
+                           capture_output=True, text=True, timeout=3)
+        v = r.stdout.strip()
+        return v or None
+    except Exception:
+        return None
+
+
+def _tmux_pane_for_pids(pids_set: set):
+    """후보 pid 집합이 tmux pane 루트 프로세스(pane_pid)와 일치하면 pane_id 반환.
+    tmux 미설치·서버 미가동·비매칭 → None."""
+    try:
+        r = subprocess.run(["tmux", "list-panes", "-a", "-F", "#{pane_pid} #{pane_id}"],
+                           capture_output=True, text=True, timeout=3)
+        if r.returncode != 0:
+            return None
+        for line in r.stdout.splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[0].isdigit() and int(parts[0]) in pids_set:
+                return parts[1]
+    except Exception:
+        pass
+    return None
+
+
+def _capture_gc_meta(pid: int) -> dict:
+    """register(live) 수신 시점(프로세스 생존 중) 컨테이너 메타 캡처.
+    shell_cmd 는 kill 시점 pid 재사용 대조용 스냅샷."""
+    meta = {"for_pid": pid, "captured": time.time(),
+            "shell_pid": None, "shell_cmd": None, "tmux_pane": None}
+    sp = _ps_ppid(pid)
+    if sp and sp > 1:
+        meta["shell_pid"] = sp
+        meta["shell_cmd"] = _ps_comm(sp)
+    cand = {pid}
+    if meta["shell_pid"]:
+        cand.add(meta["shell_pid"])
+    meta["tmux_pane"] = _tmux_pane_for_pids(cand)
+    return meta
+
+
+def _gc_plan(entry: dict) -> list:
+    """GC escalation 단계 계획 (순수 — 실행 없음). 순서 고정:
+    ① tmux pane kill(pane 통째 GC) ② claude pid ③ 부모 shell.
+    ①이 성공하면 ②③은 실행 단계에서 already-dead 로 수렴."""
+    steps = []
+    meta = entry.get("gc_meta") or {}
+    live_pid = entry.get("live_pid")
+    if meta.get("tmux_pane"):
+        steps.append({"kind": "tmux-kill-pane", "target": meta["tmux_pane"]})
+    if live_pid:
+        steps.append({"kind": "kill-claude", "pid": int(live_pid)})
+    if meta.get("shell_pid"):
+        steps.append({"kind": "kill-shell", "pid": int(meta["shell_pid"]),
+                      "expect_cmd": meta.get("shell_cmd")})
+    return steps
+
+
+def _gc_guard(kind: str, pid: int, expect_cmd, comm, server_pid: int):
+    """kill 직전 가드 판정 (순수). 통과 None, 차단 시 사유 문자열.
+    - pid ≤ 1·hub 자신 방어
+    - kill-claude: comm 에 claude 포함 또는 node/bun (pid 재사용 차단)
+    - kill-shell: 캡처 시점 shell_cmd 와 현재 comm 일치 요구"""
+    if not pid or pid <= 1 or pid == server_pid:
+        return "invalid/self pid"
+    if kind == "kill-claude":
+        c = (comm or "").lower()
+        if "claude" not in c and os.path.basename(c) not in ("node", "bun"):
+            return f"comm mismatch: {comm!r}"
+    elif kind == "kill-shell":
+        if expect_cmd and comm != expect_cmd:
+            return f"comm mismatch: {comm!r} != {expect_cmd!r}"
+    return None
+
+
+def _gc_execute(steps: list) -> list:
+    """GC plan 실행. 단계별 결과 리스트 반환 (분석 레코드에 그대로 저장).
+    signal 단계: SIGTERM → 2s poll → SIGKILL → 1s poll."""
+    stages = []
+    server_pid = os.getpid()
+    for st in steps:
+        kind = st["kind"]
+        if kind == "tmux-kill-pane":
+            try:
+                r = subprocess.run(["tmux", "kill-pane", "-t", st["target"]],
+                                   capture_output=True, text=True, timeout=5)
+                ok = r.returncode == 0
+                err = (r.stderr or "").strip() or None
+            except Exception as ex:
+                ok, err = False, str(ex)
+            stages.append({"step": kind, "target": st["target"], "ok": ok, "err": err})
+            if ok:
+                time.sleep(0.3)  # pane 하위 프로세스 사망 대기 → 후속 단계 already-dead 수렴
+            continue
+        pid = int(st.get("pid") or 0)
+        if pid > 1 and not _pid_alive(pid):
+            stages.append({"step": kind, "pid": pid, "ok": True, "note": "already dead"})
+            continue
+        reason = _gc_guard(kind, pid, st.get("expect_cmd"), _ps_comm(pid), server_pid)
+        if reason:
+            stages.append({"step": kind, "pid": pid, "ok": False, "note": "guard skip: " + reason})
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError as ex:
+            stages.append({"step": kind, "pid": pid, "ok": False, "note": f"SIGTERM failed: {ex}"})
+            continue
+        deadline = time.time() + 2.0
+        while time.time() < deadline and _pid_alive(pid):
+            time.sleep(0.2)
+        sig_used = "SIGTERM"
+        if _pid_alive(pid):
+            try:
+                os.kill(pid, signal.SIGKILL)
+                sig_used = "SIGKILL"
+            except OSError:
+                pass
+            deadline = time.time() + 1.0
+            while time.time() < deadline and _pid_alive(pid):
+                time.sleep(0.1)
+        stages.append({"step": kind, "pid": pid, "ok": not _pid_alive(pid), "signal": sig_used})
+    return stages
+
+
 def persist_pids() -> None:
     """Issue63: pids dict(runner PID 등록분)를 pids.json 에 atomic flush.
     종전 sessions 만 영속되고 pids 가 휘발 → 서버 재시작 시 복원 세션의 /control 이
@@ -1094,7 +2720,7 @@ def get_token_param(parsed) -> str:
 def path_within_serve_roots(abs_path: str, cwd_real: str) -> bool:
     """/view·/data confinement: cwd 하위 또는 서버 소유 TMP_OUT_DIR flat 파일 허용.
 
-    dashboard agent 가 z_htm 부재 시 dash/html 산출물을 TMP_OUT_DIR(/tmp/___pm)
+    dashboard agent 가 htm 폴더 부재 시 dash/html 산출물을 TMP_OUT_DIR(/tmp/___pm)
     평면에 떨굼(Issue39). dash-registry 의 cwd 는 프로젝트 cwd 라 cwd-confinement
     만으로는 'path outside cwd' 403 발생. TMP_OUT_DIR flat 파일은 서버 소유
     namespace 이므로 예외 허용. subdir(claude-htm-server/inbox) 은 제외."""
@@ -1139,12 +2765,18 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
+    def _acao(self) -> str:
+        # 요청 Origin 을 반향: file://(Origin: null)·host.local·127.0.0.1 모두 매칭.
+        # 과거 "null" 하드코딩은 host.local:9876 로 페이지를 열면 origin 불일치 →
+        # 브라우저 CORS 차단("Failed to fetch") 유발 (Simple Browser/htm-doc 경로).
+        return self.headers.get("Origin") or "null"
+
     def _send_json(self, status: int, body: dict):
         payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
-        self.send_header("Access-Control-Allow-Origin", "null")
+        self.send_header("Access-Control-Allow-Origin", self._acao())
         self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
@@ -1162,12 +2794,32 @@ class Handler(BaseHTTPRequestHandler):
             return
         parsed = urlparse(self.path)
         if parsed.path == "/":
+            # Issue213: hub-internal 모드면 쉘(/hub-shell)로, 아니면 종전 /hub 로.
+            #   standalone /hub 진입은 _handle_hub guard 가 어차피 쉘로 302 하지만,
+            #   루트는 여기서 직접 분기해 불필요한 더블 302 를 줄인다.
+            dest = "/hub-shell" if _load_hub_setting().get("render_tab_mode") == "hub-internal" else "/hub"
             self.send_response(302)
-            self.send_header("Location", "/hub")
+            self.send_header("Location", dest)
             self.end_headers()
             return
         # Issue182: fPm 프로젝트 아이콘 서빙 (favicon + 헤더 브랜딩 공용)
+        # Issue253: 배지 서버(Servers.md 이모지 등록)는 이모지 SVG 서빙 — favicon·문서
+        #   헤더 hub-link 가 전부 이 경로를 참조하므로 단일 지점에서 서버 아이콘으로 전환.
+        #   브라우저는 확장자가 아닌 Content-Type 으로 렌더하므로 .png 경로에 SVG 허용.
         if parsed.path == "/fpm-icon.png":
+            _emoji, _hue, _sname = _self_server_badge()
+            if _emoji:
+                svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
+                       '<text x="50" y="54" font-size="82" text-anchor="middle"'
+                       ' dominant-baseline="central">%s</text></svg>' % _emoji)
+                data = svg.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "image/svg+xml")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "public, max-age=3600")
+                self.end_headers()
+                self.wfile.write(data)
+                return
             icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fpm-icon.png")
             try:
                 with open(icon_path, "rb") as f:
@@ -1180,6 +2832,25 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(data)
             except OSError:
                 self._send_json(404, {"error": "icon not found"})
+            return
+        # Issue228: vendored QR 라이브러리 서빙 (오프라인 — 런타임 외부 의존 0)
+        if parsed.path == "/assets/qrcode.min.js":
+            js_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "qrcode.min.js")
+            try:
+                with open(js_path, "rb") as f:
+                    data = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/javascript; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "public, max-age=86400")
+                self.end_headers()
+                self.wfile.write(data)
+            except OSError:
+                self._send_json(404, {"error": "asset not found"})
+            return
+        # Issue228: 모바일 접속 QR 페이지 (반응형). LAN 접속 URL 의 QR 을 vendored JS 로 렌더.
+        if parsed.path == "/qr":
+            self._handle_qr(parsed)
             return
         if parsed.path == "/healthz":
             with projects_lock:
@@ -1195,6 +2866,9 @@ class Handler(BaseHTTPRequestHandler):
                 "registered_pids": rp,
             })
             return
+        if parsed.path == "/ob":
+            self._handle_ob_open(parsed)
+            return
         if parsed.path == "/events":
             self._handle_sse(parsed)
             return
@@ -1207,14 +2881,38 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/htm-doc":
             self._handle_htm_doc(parsed)
             return
+        # Issue255: htm 문서 상대 리소스(이미지) serve
+        if parsed.path == "/htm-res":
+            self._handle_htm_res(parsed)
+            return
+        # Issue284: 프로젝트 이슈맵(Issue_map.htm) serve — cwd 로 서버측 경로 재계산
+        if parsed.path == "/issue-map":
+            self._handle_issue_map(parsed)
+            return
         if parsed.path == "/boards":
             self._handle_dashboards(parsed)
             return
         if parsed.path == "/api/file-stat":
             self._handle_file_stat(parsed)
             return
+        if parsed.path == "/api/settings":
+            self._handle_get_settings(parsed)
+            return
+        if parsed.path == "/api/i18n":
+            # Issue169 Stage8: 클라이언트 JS i18n 사전 (lang= 쿼리, en merge)
+            qs = parse_qs(parsed.query or "")
+            lang = i18n.norm_lang((qs.get("lang") or [""])[0])
+            self._send_json(200, {"lang": lang, "dict": i18n.merged(lang)})
+            return
         if parsed.path == "/hub":
             self._handle_hub(parsed)
+            return
+        # Issue194: hub 내부 탭 쉘 + 전용 SSE 채널
+        if parsed.path == "/hub-shell":
+            self._handle_hub_shell(parsed)
+            return
+        if parsed.path == "/hub-events":
+            self._handle_hub_events(parsed)
             return
         if parsed.path == "/projects-list":
             self._send_json(200, {"projects": _projects_list_with_htm()})
@@ -1270,6 +2968,10 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/register-doc":
             self._handle_register_doc(parsed)
             return
+        # Issue194: hub 쉘 단일 창 리스 인계
+        if parsed.path == "/hub-claim":
+            self._handle_hub_claim(parsed)
+            return
         if parsed.path == "/hub-rescan":
             self._handle_hub_rescan(parsed)
             return
@@ -1286,6 +2988,9 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/open-session":
             self._handle_open_session(parsed)
             return
+        if parsed.path == "/open-simple-browser":
+            self._handle_open_simple_browser(parsed)
+            return
         if parsed.path == "/htm-toggle":
             self._handle_htm_toggle(parsed)
             return
@@ -1297,6 +3002,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/open-settings-yml":
             self._handle_open_settings_yml(parsed)
+            return
+        if parsed.path == "/api/settings":
+            self._handle_post_settings(parsed)
             return
         # Issue17 Phase 1
         if parsed.path == "/session/register":
@@ -1435,7 +3143,44 @@ class Handler(BaseHTTPRequestHandler):
         h = cwd_hash(cwd)
         sent = sse_broadcast(h, "reload", body)
         log(f"POST /notify — broadcast (hash={h}, file={body.get('file', body.get('path', '?'))}, clients={sent})")
+        # Issue254: dash 산출물 auto-register — 생산자(runner)가 /register-doc 를 호출하지
+        #   않는 사각(dash 는 htm 과 달리 자동 등록 경로 전무) 보강. notify 는 data 갱신마다
+        #   발화하므로 이미 등록된 path 는 skip(매회 registry 재기록 금지).
+        nfile = (body.get("file") or body.get("path") or "").strip()
+        if nfile.endswith((".dash.yaml", ".dash.yml", ".dash.json")):
+            self._auto_register_dash(cwd, nfile)
         self._send_json(200, {"status": "broadcast", "clients": sent})
+
+    def _auto_register_dash(self, cwd: str, file_path: str):
+        """Issue254: /notify 경유 dash 파일을 dash-registry 에 자동 등록.
+
+        - 이미 등록된 path → no-op (notify heartbeat 마다 registry 재기록 방지)
+        - DASH_CLEARED tombstone path → no-op (Issue54 의미 보존 — 자동 경로는 clear 를
+          부활시키지 않는다. 해제는 생산자의 명시 /register-doc 전용)
+        - serve-root confinement 는 /register-doc dash 분기와 동일 기준 (밖이면 skip —
+          notify 본 기능(broadcast)은 이미 수행됐으므로 fail-soft)"""
+        if not file_path.startswith("/"):
+            file_path = os.path.join(cwd, file_path)
+        path_real = os.path.realpath(os.path.expanduser(file_path))
+        if not os.path.isfile(path_real):
+            return
+        if not path_within_serve_roots(path_real, os.path.realpath(cwd)):
+            log(f"notify dash auto-register skip — outside serve-root: {path_real}")
+            return
+        with registry_lock:
+            entries = load_registry(DASH_REGISTRY)
+            if any(e.get("path") == path_real for e in entries):
+                return
+            if path_real in set(load_registry(DASH_CLEARED)):
+                return
+            meta = self._read_dash_file(path_real) or {}
+            entries.append({
+                "path": path_real, "cwd": cwd,
+                "title": meta.get("title") or "",
+                "registered_at": time.time(),
+            })
+            save_registry(DASH_REGISTRY, entries)
+        log(f"notify dash auto-register — path={path_real} (registry={len(entries)})")
 
     def _read_dash_file(self, abs_path: str):
         """Issue41: 등록된 단일 dash 파일을 읽어 메타(mtime/title/status/progress/pid) 추출.
@@ -1470,21 +3215,28 @@ class Handler(BaseHTTPRequestHandler):
         return entry
 
     def _scan_dashes(self, cwd: str) -> list:
-        """Issue16_7 / Issue31: cwd 하위 _doc_work/z_htm/ 에서 *.dash.{json,yaml,yml} 스캔.
+        """Issue16_7 / Issue31: cwd 하위 htm 폴더에서 *.dash.{json,yaml,yml} 스캔.
         Issue41: 자동 hub 갱신 경로에서 제거됨 — /hub-rescan(수동 부트스트랩) 전용.
+        Issue289: 단일 z_htm 대신 HTM_DIRS 전체를 훑는다(활성→아카이브→legacy).
         yaml 은 stdlib 미지원이므로 dashboard.md 양식 한정 경량 파서 사용 (Issue31 (a))."""
         results = []
-        z_htm = os.path.join(cwd, "_doc_work", "z_htm")
-        if not os.path.isdir(z_htm):
-            return results
-        try:
-            entries = sorted(os.listdir(z_htm))
-        except OSError:
-            return results
-        for name in entries:
+        pairs = []
+        for htm_dir in _htm_dirs_for(cwd):
+            if not os.path.isdir(htm_dir):
+                continue
+            try:
+                names = sorted(os.listdir(htm_dir))
+            except OSError:
+                continue
+            pairs.extend((htm_dir, n) for n in names)
+        seen_names = set()
+        for htm_dir, name in pairs:
             if not (name.endswith(".dash.json") or name.endswith(".dash.yaml") or name.endswith(".dash.yml")):
                 continue
-            abs_path = os.path.join(z_htm, name)
+            if name in seen_names:  # 같은 파일명이 여러 경로에 있으면 우선순위 앞선 것만
+                continue
+            seen_names.add(name)
+            abs_path = os.path.join(htm_dir, name)
             try:
                 st = os.stat(abs_path)
             except OSError:
@@ -1589,6 +3341,22 @@ class Handler(BaseHTTPRequestHandler):
         text = re.sub(r"\s+", " ", text).strip()
         return text[:200]
 
+    @staticmethod
+    def _extract_html_sid(abs_path: str) -> str:
+        """Issue169: htm 문서를 만든 세션 sid 추출. canonical 헤더의 세션 링크
+        onclick(`sid:'<sid>'`) 또는 vscode URI(`open?session=<sid>`)에서 발췌.
+        hub 카드 '🆚 세션' 버튼이 /open-session 으로 그 세션 탭을 포커스하게 함.
+        전역 hook(register-doc) 의존 없이 파일 자체에서 회수. 실패 시 빈 문자열."""
+        try:
+            with open(abs_path, encoding="utf-8", errors="replace") as f:
+                data = f.read(65536)
+        except OSError:
+            return ""
+        m = re.search(r"sid:'([A-Za-z0-9_-]{1,128})'", data)
+        if not m:
+            m = re.search(r"open\?session=([A-Za-z0-9_-]{1,128})", data)
+        return m.group(1) if m else ""
+
     def _scan_htm_docs_in(self, directory: str, skip: set = None,
                           limit: int = 0) -> list:
         """Issue40: directory 에서 htm 스킬 단발 출력(claude-htm-*.html) 스캔.
@@ -1616,7 +3384,7 @@ class Handler(BaseHTTPRequestHandler):
                 continue
             candidates.append((name, abs_path))
         # Issue55: search_limit — 파일명 unixtime 최신 N개만 처리.
-        # z_htm 누적 시 전수 stat + _extract_html_title(파일 열람) 폭주를 차단.
+        # htm 누적 시 전수 stat + _extract_html_title(파일 열람) 폭주를 차단.
         if limit > 0 and len(candidates) > limit:
             def _name_ts(fname):
                 m = re.search(r"(\d+)\.html$", fname)
@@ -1640,16 +3408,24 @@ class Handler(BaseHTTPRequestHandler):
         return results
 
     def _scan_htm_docs(self, cwd: str, skip: set = None, limit: int = 0) -> list:
-        """Issue40: 프로젝트 cwd 하위 _doc_work/z_htm/ 의 htm 단발 출력 스캔."""
-        return self._scan_htm_docs_in(os.path.join(cwd, "_doc_work", "z_htm"),
-                                      skip, limit)
+        """Issue40: 프로젝트 cwd 하위 htm 폴더의 htm 단발 출력 스캔.
+        Issue289: HTM_DIRS 전체(활성→아카이브→legacy)를 훑고 파일명 기준 dedup —
+        같은 문서가 이동 중 두 곳에 보여도 우선순위 앞선 경로 하나만 노출한다."""
+        results, seen = [], set()
+        for htm_dir in _htm_dirs_for(cwd):
+            for item in self._scan_htm_docs_in(htm_dir, skip, limit):
+                if item["name"] in seen:
+                    continue
+                seen.add(item["name"])
+                results.append(item)
+        return results
 
     def _scan_tmp_htm_docs(self, skip: set = None, limit: int = 0) -> list:
-        """Issue40: /tmp/___pm 평면 htm 출력 스캔 (z_htm 부재 시 fallback 경로)."""
+        """Issue40: /tmp/___pm 평면 htm 출력 스캔 (htm 폴더 부재 시 fallback 경로)."""
         return self._scan_htm_docs_in("/tmp/___pm", skip, limit)
 
     def _all_disk_htm_paths(self) -> set:
-        """Issue92: clear tombstone 용 — 등록 프로젝트 z_htm + /tmp/___pm 의
+        """Issue92: clear tombstone 용 — 등록 프로젝트 htm 폴더(Issue289: HTM_DIRS 전체) + /tmp/___pm 의
         claude-htm-*.html 절대경로 전수(set). title 추출 없이 path 만 수집
         (dash 동반 .html 제외). _scan_htm_docs_in 과 동일 후보 규칙이나
         파일 열람·limit 없이 경로만 — clear 가 디스크에 권위적이도록.
@@ -1660,7 +3436,7 @@ class Handler(BaseHTTPRequestHandler):
             for p in projects.values():
                 cwd = p.get("cwd", "")
                 if cwd:
-                    dirs.append(os.path.join(cwd, "_doc_work", "z_htm"))
+                    dirs.extend(_htm_dirs_for(cwd))
         dirs.append(TMP_OUT_DIR)
         out = set()
         for d in dirs:
@@ -1681,7 +3457,7 @@ class Handler(BaseHTTPRequestHandler):
         return out
 
     def _all_disk_dash_paths(self) -> set:
-        """Issue95: clear tombstone용 — 등록 프로젝트 z_htm + /tmp/___pm의
+        """Issue95: clear tombstone용 — 등록 프로젝트 htm 폴더(Issue289: HTM_DIRS 전체) + /tmp/___pm의
         *.dash.{json,yaml,yml} 절대경로 전수(set). path만 수집(파일 열람 없음) —
         clear가 디스크에 권위적이도록. registry 미등록 orphan도 포함하여
         clear 후 rescan 부활을 원천 차단한다."""
@@ -1690,7 +3466,7 @@ class Handler(BaseHTTPRequestHandler):
             for p in projects.values():
                 cwd = p.get("cwd", "")
                 if cwd:
-                    dirs.append(os.path.join(cwd, "_doc_work", "z_htm"))
+                    dirs.extend(_htm_dirs_for(cwd))
         dirs.append(TMP_OUT_DIR)
         out = set()
         for d in dirs:
@@ -1730,6 +3506,7 @@ class Handler(BaseHTTPRequestHandler):
             missing = not os.path.isfile(path)
             mtime, mtime_ts = "", 0
             summary = ""  # Issue70: htm-doc 카드 본문 2줄 요약
+            doc_sid = ""  # Issue169: 문서 생성 세션 sid (🆚 세션 버튼용)
             if not missing:
                 try:
                     st = os.stat(path)
@@ -1737,13 +3514,15 @@ class Handler(BaseHTTPRequestHandler):
                     mtime = time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime_ts))
                     # Issue45: mtime 불변 시 재추출 생략. Issue70: {title,summary} dict 캐시
                     doc_c = doc_cache_get(path, mtime_ts)
-                    if doc_c is None or not isinstance(doc_c, dict):
+                    if doc_c is None or not isinstance(doc_c, dict) or "sid" not in doc_c:
                         doc_c = {"title": self._extract_html_title(path),
-                                 "summary": self._extract_html_summary(path)}
+                                 "summary": self._extract_html_summary(path),
+                                 "sid": self._extract_html_sid(path)}
                         doc_cache_put(path, mtime_ts, doc_c)
                     if doc_c.get("title"):
                         title = doc_c["title"]
                     summary = doc_c.get("summary", "")
+                    doc_sid = doc_c.get("sid", "")
                 except OSError:
                     missing = True
             h = cwd_hash(cwd) if cwd else "__tmp__"
@@ -1787,6 +3566,7 @@ class Handler(BaseHTTPRequestHandler):
                 "path": path, "path_display": path_display,
                 "view_url": view_url, "virtual": not bool(p), "missing": missing,
                 "is_ask": is_ask, "answered": answered, "qa_failed": qa_failed,
+                "sid": doc_sid,  # Issue169: 🆚 세션 포커스용
             })
         results.sort(key=lambda x: x["mtime_ts"], reverse=True)
         # Issue52: card_limit — mtime 최신 N개만 hub 카드로 노출 (registry 는 미변경)
@@ -2043,6 +3823,8 @@ class Handler(BaseHTTPRequestHandler):
             "hook_feed": hook_feed,
             "important_events": important_events,
             "live_session_limit": _load_hub_setting()["live_session_limit"],  # Issue129: 카드당 세션 행 상한
+            "live_session_copy_button": _load_hub_setting()["live_session_copy_button"],  # Issue277: 세션 ID 복사 버튼 표시
+            "feed_blink_on_new": _load_hub_setting()["feed_blink_on_new"],  # Issue279: 새 피드 깜빡임
             "ts": int(time.time()),
         })
 
@@ -2145,10 +3927,14 @@ class Handler(BaseHTTPRequestHandler):
         results = []
         terminal_keys = []  # Issue63: TTL prune 대상 (terminal dashboard 세션)
         cleared_keys = []   # Issue95: tombstone 매칭 → 즉시 제거 대상
-        # Issue99: live 세션 dedup — (cwd_hash, live_pid) 동일분은 freshest 1개만 노출.
+        # Issue99: live 세션 dedup — 동일 live_pid 는 freshest 1개만 노출.
         #   훅 중복 fire(동일 프로세스 다중 sid)로 인한 중복 카드 차단. 비-freshest 는
         #   skip set 에 담아 루프에서 제외(+ terminal prune).
-        live_best = {}   # (h, live_pid) -> (updated, sid)
+        # Issue282: dedup 키를 (cwd_hash, live_pid) → live_pid 전역으로 확장.
+        #   세션 중 cd 로 cwd 가 드리프트하면 동일 세션이 다른 hash 아래 재등록돼
+        #   프로젝트 카드 2장으로 중복 노출됐다(hash 가 갈리면 종전 키로는 무력).
+        #   한 OS 프로세스 = 한 세션이므로 pid 전역 dedup 이 안전하다.
+        live_best = {}   # live_pid -> (updated, h, sid)
         for (h, sid), entry in sess_snap:
             if entry.get("content_type") != "live":
                 continue
@@ -2156,9 +3942,9 @@ class Handler(BaseHTTPRequestHandler):
             if lp is None:
                 continue
             u = entry.get("updated", 0) or 0
-            prev = live_best.get((h, lp))
+            prev = live_best.get(lp)
             if prev is None or u > prev[0]:
-                live_best[(h, lp)] = (u, sid)
+                live_best[lp] = (u, h, sid)
         live_dup_skip = set()
         for (h, sid), entry in sess_snap:
             if entry.get("content_type") != "live":
@@ -2166,7 +3952,7 @@ class Handler(BaseHTTPRequestHandler):
             lp = entry.get("live_pid")
             if lp is None:
                 continue
-            if live_best.get((h, lp), (None, None))[1] != sid:
+            if live_best.get(lp, (None, None, None))[1:] != (h, sid):
                 live_dup_skip.add((h, sid))
         for (h, sid), entry in sess_snap:
             if (h, sid) in live_dup_skip:  # Issue99: 중복 live 세션 (비-freshest) 제외
@@ -2279,6 +4065,16 @@ class Handler(BaseHTTPRequestHandler):
             if not p:
                 continue
             token = p.get("token", "")
+            # Issue177: 세션 출처 — capabilities.entrypoint(SessionStart 훅 전송)로
+            #   VSCode 확장(claude-vscode)과 터미널 CLI(cli 등)를 구분.
+            #   claude-vscode → "vscode"(카드 클릭 시 VSCode 탭 포커스),
+            #   그 외/미상 → "terminal"(클릭 시 VSCode 재오픈 안 함).
+            _entry_caps = entry.get("capabilities") or {}
+            _ep = str(_entry_caps.get("entrypoint", "")).strip()
+            origin = "vscode" if _ep == "claude-vscode" else "terminal"
+            # Issue273: 메인 세션 모델 — producer hook 이 caps.model 로 transcript 최신 model 전송.
+            _model_id = str(_entry_caps.get("model", "")).strip()
+            _model_tier = _classify_model_tier(_model_id)
             results.append({
                 "cwd": p.get("cwd", ""),
                 "cwd_hash": h,
@@ -2286,8 +4082,15 @@ class Handler(BaseHTTPRequestHandler):
                 "name": p.get("name", ""),
                 "color": p.get("color", "hsl(220,60%,45%)"),
                 "emoji": _project_emoji(p.get("cwd", "")),
+                # Issue284: 카드 헤더 🗺️ 아이콘 조건부 렌더용. Issue284_1 — 맵 파일 존재만으론
+                #   부족하고 `Issue.md` 에 `* depends:` 간선이 있어야 노출(관계도 가치 有).
+                #   경로는 노출하지 않는다(/issue-map 이 cwd 로 서버측 재계산 — 경로 조작 차단).
+                "issue_map": _issue_map_visible(p.get("cwd", "")),
                 "mode": entry.get("mode"),
                 "content_type": entry.get("content_type"),
+                "origin": origin,         # Issue177: "vscode" | "terminal" (카드 배지·클릭 분기)
+                "model_tier": _model_tier,  # Issue273: opus|sonnet|haiku|fable|"" (신호등 이모지)
+                "model_id": _model_id,      # Issue273: 이모지 hover 툴팁 원문
                 "title": dash_title,      # Issue80: dashboard topic (없으면 None → JS fallback)
                 "updated_age": round(age, 1),
                 "subscribers": subs,
@@ -2307,6 +4110,9 @@ class Handler(BaseHTTPRequestHandler):
         #   빈 세션은 정보가 없으므로 가장 최근(updated_age 최소) 1개만 남기고 collect
         #   단계에서 숨긴다. title 있는 live·dashboard 세션은 전부 유지(중요 정보).
         #   results 는 updated_age 오름차순 정렬 상태 → 순회 시 첫 빈 세션이 최신.
+        # Issue166: live_session_show_empty=false(기본) 면 빈 live 세션 전체 숨김.
+        #   true 면 종전 Issue136 동작(프로젝트당 최신 1개)으로 노출.
+        _show_empty = _load_hub_setting().get("live_session_show_empty", False)
         _empty_live_seen = set()
         _deduped = []
         for r in results:
@@ -2316,6 +4122,8 @@ class Handler(BaseHTTPRequestHandler):
             if not is_empty_live:
                 _deduped.append(r)
                 continue
+            if not _show_empty:
+                continue  # Issue166: 명령 전 빈 세션 전체 숨김 (기본값)
             h2 = r.get("cwd_hash")
             if h2 in _empty_live_seen:
                 continue  # 이 프로젝트의 빈 live 세션 이미 1개 표시함 → 숨김
@@ -2356,17 +4164,19 @@ class Handler(BaseHTTPRequestHandler):
         return results
 
     def _handle_file_stat(self, parsed):
-        """Issue115: dashboard 데이터 파일 폴링 — _doc_work/z_htm/*.dash.yaml 의 mtime 반환"""
+        """Issue115: dashboard 데이터 파일 폴링 — htm 폴더의 *.dash.yaml mtime 반환.
+        Issue289: HTM_DIRS 전체를 우선순위 순으로 훑되 같은 파일명은 앞선 경로가 이긴다."""
         qs = parse_qs(parsed.query)
         cwd = unquote(qs.get("cwd", [""])[0]) or ""
 
         files = {}
         if cwd:
-            z_htm_dir = os.path.join(cwd, "_doc_work", "z_htm")
-            if os.path.isdir(z_htm_dir):
-                for f in os.listdir(z_htm_dir):
-                    if f.endswith(".dash.yaml"):
-                        path = os.path.join(z_htm_dir, f)
+            for htm_dir in _htm_dirs_for(cwd):
+                if not os.path.isdir(htm_dir):
+                    continue
+                for f in os.listdir(htm_dir):
+                    if f.endswith(".dash.yaml") and f not in files:
+                        path = os.path.join(htm_dir, f)
                         try:
                             stat = os.stat(path)
                             files[f] = {"mtime_ts": stat.st_mtime}
@@ -2375,16 +4185,130 @@ class Handler(BaseHTTPRequestHandler):
 
         self._send_json(200, {"files": files})
 
+    def _handle_qr(self, parsed):
+        # Issue228: 모바일 접속 QR. advertise_host 우선, 없으면 LAN IP 자동탐지.
+        setting = _load_hub_setting()
+        host = (setting.get("advertise_host") or "").strip()
+        if not host:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(("8.8.8.8", 80))  # 실제 송신 없음 — 로컬 라우팅 소스 IP 획득
+                host = s.getsockname()[0]
+                s.close()
+            except OSError:
+                host = socket.gethostname() or "127.0.0.1"
+        bind = setting.get("bind_host", "127.0.0.1")
+        if isinstance(bind, list):
+            bind = bind[0] if bind else "127.0.0.1"
+        lan_active = str(bind) not in ("127.0.0.1", "localhost", "::1")
+        url = "http://%s:%d/hub" % (host, PORT)
+        # url 을 JS 문자열 리터럴로 안전 임베드
+        url_js = json.dumps(url)
+        warn_html = "" if lan_active else (
+            '<p class="warn">⚠️ 현재 bind_host 가 로컬 전용(<code>%s</code>)이라 다른 기기에서 '
+            '접속되지 않습니다. LAN 접속하려면 설정에서 <code>bind_host: 0.0.0.0</code> + '
+            '<code>advertise_host</code> 지정 후 hub 재시작하세요.</p>' % bind)
+        html = """<!DOCTYPE html>
+<html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="/fpm-icon.png"><title>fPm — 모바일 접속 QR</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    margin: 0; padding: 1.5rem 1rem 3rem; line-height: 1.6; text-align: center;
+    color: #1a1a1a; background: #fff; }
+  h1 { font-size: 1.3rem; margin: 0.4rem 0 1rem; }
+  #qr { display: inline-block; padding: 1rem; background: #fff; border-radius: 12px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.12); margin: 0.5rem auto 1.2rem; }
+  #qr svg, #qr img { width: min(72vw, 320px); height: auto; }
+  .url { font-family: ui-monospace, monospace; font-size: 1.05rem; word-break: break-all;
+    background: rgba(0,0,0,0.06); padding: 0.5rem 0.8rem; border-radius: 8px;
+    display: inline-block; margin-bottom: 1rem; }
+  .hint { color: #555; font-size: 0.95rem; max-width: 30rem; margin: 0.5rem auto; }
+  .warn { color: #9a3a00; background: hsl(40,80%,92%); border-radius: 8px;
+    padding: 0.7rem 1rem; max-width: 32rem; margin: 1rem auto; text-align: left; }
+  code { background: rgba(0,0,0,0.08); padding: 0.05rem 0.3rem; border-radius: 4px; }
+  @media (prefers-color-scheme: dark) {
+    body { color: #e0e0e0; background: #161616; }
+    .url { background: rgba(255,255,255,0.1); } .hint { color: #aaa; }
+    .warn { color: #ffca8a; background: hsl(40,40%,18%); }
+    code { background: rgba(255,255,255,0.12); }
+  }
+</style></head><body>
+<h1>📱 fPm hub 모바일 접속</h1>
+<div id="qr">QR 생성 중…</div>
+<div class="url">__URL__</div>
+<p class="hint">같은 Wi-Fi 에서 휴대폰 카메라로 QR 을 스캔하면 이 hub 에 접속됩니다.</p>
+__WARN__
+<script src="/assets/qrcode.min.js"></script>
+<script>
+  (function(){
+    var url = __URL_JS__;
+    try {
+      var qr = qrcode(0, 'M');
+      qr.addData(url);
+      qr.make();
+      document.getElementById('qr').innerHTML = qr.createSvgTag({cellSize:6, margin:2});
+    } catch (e) {
+      document.getElementById('qr').textContent = 'QR 생성 실패: ' + e.message;
+    }
+  })();
+</script>
+</body></html>"""
+        html = html.replace("__URL_JS__", url_js).replace("__URL__", url).replace("__WARN__", warn_html)
+        body = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _handle_hub(self, parsed):
         # Issue42/47: hub_setting.yml 값으로 HUB_HTML placeholder 치환
         setting = _load_hub_setting()
+        # Issue213: hub-internal 모드에서 standalone /hub(=탭바 없는 hub 홈)를 top-level 로
+        #   직접 열면 /hub-shell(쉘) 과 두 창이 공존한다. /hub 는 이미 쉘의 home 탭(iframe
+        #   src=/hub?_shell=1)이므로, 최상위 직접 열람은 /hub-shell 로 302 → 단일 쉘로 funnel.
+        #   임베드(_shell=1 마커 1순위 / Sec-Fetch-Dest 보조)는 raw serve 유지(redirect loop 방지).
+        #   htm-doc(_handle_htm_doc) 와 동일 패턴.
+        qs = parse_qs(parsed.query)
+        _is_embed = ((qs.get("_shell") or [""])[0] == "1"
+                     or self.headers.get("Sec-Fetch-Dest") in ("iframe", "embed"))
+        if not _is_embed and setting.get("render_tab_mode") == "hub-internal":
+            self.send_response(302)
+            self.send_header("Location", "/hub-shell")
+            self.end_headers()
+            return
+        # Issue242: 이 서버가 Servers.md 에 이모지 등록돼 있으면 헤더 로고=이모지 + 그라디언트=대응색.
+        #   미등록(jm4 등)이면 fPm 아이콘 + 기본 파랑-보라 그라디언트(canonical).
+        _emoji, _hue, _sname = _self_server_badge()
+        if _emoji:
+            _logo = ('<span class="hub-logo hub-emoji" title="%s">%s</span>'
+                     % (html.escape(_sname or ""), html.escape(_emoji)))
+            _grad = ("linear-gradient(90deg, hsl(%d,60%%,42%%), hsl(%d,62%%,50%%))"
+                     % (_hue, (_hue + 40) % 360))
+        else:
+            _logo = '<img class="hub-logo" src="/fpm-icon.png" alt="fPm">'
+            _grad = "linear-gradient(90deg, hsl(220,60%,45%), hsl(280,60%,45%))"
         html_str = (HUB_HTML
+            .replace("{HUB_LOGO}", _logo)
+            .replace("{HUB_HEADER_GRAD}", _grad)
             .replace("{FEED_DEFAULT_VISIBLE}",
                      "true" if setting.get("feed_default_visible", True) else "false")
             .replace("{FEED_SHOW_PROJECT_EMOJI}",
                      "true" if setting.get("feed_show_project_emoji", True) else "false")
             .replace("{FEED_SHOW_PROJECT_NAME}",
                      "true" if setting.get("feed_show_project_name", True) else "false"))
+        # Issue169: i18n — {T:key} placeholder 를 현재 language 로 1패스 치환(서버 정적).
+        #   차후 마이그레이션은 HUB_HTML 에 {T:key} 추가 + locale 항목 추가만으로 동작(핸들러 무변경).
+        lang = i18n.norm_lang(setting.get("language"))
+        # Stage8: JS 런타임 합성용 사전·lang 을 인라인 주입 (window.__i18n / window.__lang)
+        html_str = (html_str
+            .replace("{I18N_LANG}", lang)
+            .replace("{I18N_ALL_JSON}", json.dumps(
+                {lg: i18n.merged(lg) for lg in i18n.SUPPORTED}, ensure_ascii=False))
+            .replace("{I18N_JSON}", json.dumps(i18n.merged(lang), ensure_ascii=False)))
+        html_str = re.sub(r"\{T:([\w.]+)\}", lambda m: i18n.t(m.group(1), lang), html_str)
         body = html_str.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -2718,10 +4642,176 @@ class Handler(BaseHTTPRequestHandler):
                 cleared.discard(path)
                 save_registry(tomb_path, sorted(cleared))
         log(f"POST /register-doc — type={kind} path={path} (registry={count})")
+        # Issue194: hub-internal 모드면 hub 쉘에 tab-open push (OS 새 탭 대신 내부 iframe 탭).
+        #   render_tab_mode 는 서버가 yml 직독(설계 FIXME 채택 — hook 변경 불요로 MVP 성립).
+        if kind == "htm" and _load_hub_setting().get("render_tab_mode") == "hub-internal":
+            base = os.path.basename(path)
+            # 파일명 mode 토큰(_a_/_b_/_c_)으로 content_type 도출 (R3 단축키 노출 판정용)
+            ctype = "response"
+            if "_b_" in base:
+                ctype = "form"
+            elif "_c_" in base:
+                ctype = "dashboard"
+            import urllib.parse as _u
+            # Issue248 잔여: hub-shell 탭 dedup 은 view_url 문자열 완전일치 기준(프론트 addTab).
+            #   여기서 항상 "/htm-doc?path=..." 로 broadcast 했으나, /boards 폴링 fallback
+            #   (_collect_htm_docs, Issue199)은 프로젝트에 token 이 있으면 "/view?cwd=&token=&path="
+            #   형식을 쓴다 — 같은 문서인데 두 view_url 이 달라 dedup 이 깨져 탭이 2개로 중복됐다.
+            #   /boards 와 동일한 token 유무 분기로 view_url 을 맞춘다.
+            cwd_q = cwd
+            token = ""
+            if cwd_q:
+                h = cwd_hash(cwd_q)
+                with projects_lock:
+                    p = projects.get(h)
+                token = (p or {}).get("token", "")
+            if token:
+                view_url = (f"/view?cwd={_u.quote(cwd_q)}&token={token}"
+                            f"&path={_u.quote(path)}")
+            else:
+                view_url = "/htm-doc?path=" + _u.quote(path)
+            sse_broadcast(HUB_SHELL_HASH, "tab-open", {
+                "view_url": view_url,
+                "title": title or base,
+                "sid": sid,
+                "content_type": ctype,
+            })
         self._send_json(200, {"status": "ok", "type": kind, "path": path, "count": count})
 
+    # ── Issue194: hub 내부 탭 쉘 ─────────────────────────────────────────
+    def _hub_holder_alive(self, ip):
+        """Issue209: 이 host(ip)에 살아있는 hub-shell lease 보유자가 있는가.
+        단일 창 모드(hub_single_window) off → 다중 쉘 허용이라 충돌 없음 → False(종전 302).
+        on 이면 lease 보유자의 last_seen 이 ttl 이내(heartbeat 15s 갱신)일 때만 alive."""
+        setting = _load_hub_setting()
+        if not bool(setting.get("hub_single_window", True)):
+            return False
+        ttl = int(setting.get("hub_lease_ttl", 30))
+        with hub_lease_lock:
+            cur = hub_lease.get(ip)
+            if not cur:
+                return False
+            return (time.time() - cur.get("last_seen", 0)) <= ttl
+
+    def _hub_lease_acquire(self, ip, cid, single, ttl):
+        """host(ip) 단일 창 리스 획득 시도. single=False 면 항상 grant.
+        리스 없음·본인 보유·TTL 만료 → grant. 타인 활성 보유 → 거부(False)."""
+        if not single:
+            return True
+        now = time.time()
+        with hub_lease_lock:
+            cur = hub_lease.get(ip)
+            if (cur is None or cur.get("client_id") == cid
+                    or (now - cur.get("last_seen", 0)) > ttl):
+                hub_lease[ip] = {"client_id": cid, "granted_at": now, "last_seen": now}
+                return True
+            return False
+
+    def _handle_hub_events(self, parsed):
+        """Issue194: hub 쉘 전용 SSE. cwd+token 없는 host-trusted 채널(전역 IP 게이트로 보호).
+        lease 판정 → granted/denied → tab-open relay + keepalive heartbeat(last_seen 갱신).
+        타 client 인계(/hub-claim) 시 heartbeat 가 evicted 감지하여 스트림 종료."""
+        ip = self.client_address[0] if self.client_address else ""
+        qs = parse_qs(parsed.query)
+        cid = (qs.get("cid") or [""])[0].strip()
+        if not cid or not re.fullmatch(r"[a-zA-Z0-9_-]+", cid):
+            self._send_json(400, {"error": "missing/invalid cid"})
+            return
+        setting = _load_hub_setting()
+        single = bool(setting.get("hub_single_window", True))
+        ttl = int(setting.get("hub_lease_ttl", 30))
+        granted = self._hub_lease_acquire(ip, cid, single, ttl)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Access-Control-Allow-Origin", self._acao())
+            self.end_headers()
+            info = {}
+            if not granted:
+                with hub_lease_lock:
+                    cur = dict(hub_lease.get(ip, {}))
+                info = {"holder": cur.get("client_id", ""),
+                        "age": round(time.time() - cur.get("granted_at", time.time()))}
+            ev = "granted" if granted else "denied"
+            self.wfile.write(f"event: {ev}\ndata: {json.dumps(info)}\n\n".encode("utf-8"))
+            self.wfile.flush()
+        except Exception:
+            return
+        if not granted:
+            return  # 거부: shell 이 denied 수신 후 takeover UI 표시 → 스트림 불요
+        key = (HUB_SHELL_HASH, cid)
+        with sse_lock:
+            sse_subscribers.setdefault(key, []).append(self.wfile)
+        log(f"hub-shell SSE connect — ip={ip} cid={cid}")
+        try:
+            while True:
+                time.sleep(15)
+                if single:
+                    with hub_lease_lock:
+                        cur = hub_lease.get(ip)
+                        if not cur or cur.get("client_id") != cid:
+                            break  # 인계됨(evicted) → 스트림 종료
+                        cur["last_seen"] = time.time()
+                self.wfile.write(b": keepalive\n\n")
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            with sse_lock:
+                subs = sse_subscribers.get(key, [])
+                if self.wfile in subs:
+                    subs.remove(self.wfile)
+            with hub_lease_lock:
+                cur = hub_lease.get(ip)
+                if cur and cur.get("client_id") == cid:
+                    del hub_lease[ip]
+            log(f"hub-shell SSE disconnect — ip={ip} cid={cid}")
+
+    def _handle_hub_claim(self, parsed):
+        """Issue194: 단일 창 강제 시 2번째 창의 명시 인계. 기존 보유자 lease 회수 +
+        evicted push(기존 창 안내 전환) → 신규 client 에 grant."""
+        ip = self.client_address[0] if self.client_address else ""
+        if not _ip_allowed(ip):
+            self._send_json(403, {"error": "localhost only"})
+            return
+        body, err = self._read_json_body()
+        if err:
+            self._send_json(400, {"error": err})
+            return
+        cid = (body.get("cid") or "").strip()
+        if not cid or not re.fullmatch(r"[a-zA-Z0-9_-]+", cid):
+            self._send_json(400, {"error": "missing/invalid cid"})
+            return
+        now = time.time()
+        with hub_lease_lock:
+            old = hub_lease.get(ip)
+            old_cid = old.get("client_id") if old else None
+            hub_lease[ip] = {"client_id": cid, "granted_at": now, "last_seen": now}
+        if old_cid and old_cid != cid:
+            sse_broadcast(HUB_SHELL_HASH, "evicted", {}, sid=old_cid)
+        log(f"hub-shell claim — ip={ip} new_cid={cid} old_cid={old_cid}")
+        self._send_json(200, {"status": "claimed"})
+
+    def _handle_hub_shell(self, parsed):
+        """Issue194: hub 내부 탭 쉘 페이지. 탭 바 + iframe viewport. /hub-events SSE 로
+        tab-open 수신 → iframe 탭 생성. tab_close_shortcut 으로 렌더 탭만 닫기(R3)."""
+        setting = _load_hub_setting()
+        shortcut = str(setting.get("tab_close_shortcut", "alt+w"))
+        single = "true" if setting.get("hub_single_window", True) else "false"
+        html = HUB_SHELL_HTML.replace("__SHORTCUT__", json.dumps(shortcut)) \
+                             .replace("__SINGLE__", single)
+        body = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _handle_hub_rescan(self, parsed):
-        """Issue41: 수동 부트스트랩. 등록 프로젝트의 z_htm + /tmp/___pm 를 1회 스캔하여
+        """Issue41: 수동 부트스트랩. 등록 프로젝트의 htm 폴더(Issue289: HTM_DIRS 전체) + /tmp/___pm 를 1회 스캔하여
         registry 에 누락된 htm/dash 산출물을 수거(merge, dedup). 자동 호출 없음 —
         hub 의 명시적 버튼 클릭으로만 트리거되는 사용자 액션. 127.0.0.1 trust.
         Issue55: htm 스캔은 HTM_CLEARED tombstone 을 skip(부활 차단, dash 측 Issue54 대칭),
@@ -2869,6 +4959,53 @@ class Handler(BaseHTTPRequestHandler):
             "status": "ok", "keep": keep, "total": total, "removed_count": removed,
         })
 
+    def _handle_ob_open(self, parsed):
+        """Issue266: 채팅 http 링크 → Obsidian 점프 브리지 (prj3 ob-* SCAR 보고 링크용).
+        VSCode 채팅 webview 는 obsidian:// 커스텀 스킴 앵커를 차단하므로
+        http://localhost:9876/ob?path=<절대경로> 를 대신 노출하고, 서버가
+        host-local `open "obsidian://open?path=..."` 를 실행해 Obsidian 을 연다.
+        (Simple Browser 가 obsidian:// redirect 를 막을 수 있어 302 대신 직접 open.)
+        보안: loopback only + $HOME 하위 실존 파일만 허용 (임의 경로 open 차단)."""
+        client_ip = self.client_address[0] if self.client_address else ""
+        if client_ip not in LOOPBACK_IPS:
+            self._send_json(403, {"error": "loopback only"})
+            return
+        qs = parse_qs(parsed.query or "")
+        raw = (qs.get("path", [""])[0] or "").strip()
+        if not raw:
+            self._send_json(400, {"error": "path required"})
+            return
+        target = os.path.abspath(os.path.expanduser(raw))
+        home = os.path.expanduser("~")
+        if not target.startswith(home + os.sep):
+            self._send_json(403, {"error": "path outside home"})
+            return
+        if not os.path.isfile(target):
+            self._send_json(404, {"error": "file not found"})
+            return
+        uri = "obsidian://open?path=" + quote(target)
+        try:
+            subprocess.Popen(["open", uri],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            self._send_json(500, {"error": f"spawn failed: {e}"})
+            return
+        log(f"GET /ob — {target}")
+        page = (
+            "<!doctype html><html><head><meta charset='utf-8'>"
+            "<title>Obsidian으로 이동</title></head>"
+            '<body style="font:14px/1.6 -apple-system,sans-serif;padding:2em">'
+            f"<p>Obsidian으로 열었음: <code>{html.escape(target)}</code></p>"
+            "<p style='color:#888'>이 탭은 닫아도 됨.</p>"
+            "<script>setTimeout(function(){window.close()},1500)</script>"
+            "</body></html>"
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(page)))
+        self.end_headers()
+        self.wfile.write(page)
+
     def _handle_open_project(self, parsed):
         """Issue42: 피드 항목 제목 클릭 → 해당 프로젝트를 VSCode 로 연다 (cdfv 효과 재현).
         cwd 는 Projects.md 등록 경로 또는 서버 projects 레지스트리 경로일 때만 허용 —
@@ -2896,14 +5033,31 @@ class Handler(BaseHTTPRequestHandler):
         if not os.path.isdir(cwd):
             self._send_json(404, {"error": "cwd not a directory"})
             return
+        # 서브폴더 cwd(ex: unity_base/Examples) 는 등록 프로젝트 루트로 정규화 후 오픈.
+        #   원본 cwd 그대로 `open -a VSCode`에 넘기면 이미 열린 루트 워크스페이스 창을
+        #   "이미 열림"으로 인식 못 하고 별도 새 창을 띄운다 — 다른 프로젝트가 열린 것처럼 보이는
+        #   원인(hub 카드는 _resolve_project_root 로 루트 이름·색을 표시하는데 open 은 원본 cwd 사용).
+        matched_root = _resolve_project_root(cwd)
+        open_cwd = os.path.expanduser(matched_root.get("path", "")).rstrip("/") if matched_root else ""
+        if not open_cwd or not os.path.isdir(open_cwd):
+            open_cwd = cwd
+        # Issue237: 비루프백 클라이언트 + alias 설정 시 서버 host-local `open` 대신
+        #   vscode-remote:// URI 반환 → 브라우저(같은 머신의 VSCode)가 Remote-SSH 창 재사용해 연다.
+        if client_ip not in LOOPBACK_IPS:
+            alias = (_load_hub_setting().get("ssh_remote_alias") or "").strip()
+            if alias:
+                uri = _ssh_remote_uri(open_cwd, alias)
+                log(f"POST /open-project — remote client={client_ip} → {uri}")
+                self._send_json(200, {"status": "remote", "uri": uri, "cwd": open_cwd})
+                return
         try:
-            subprocess.Popen(["open", "-a", "Visual Studio Code", cwd],
+            subprocess.Popen(["open", "-a", "Visual Studio Code", open_cwd],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
             self._send_json(500, {"error": f"spawn failed: {e}"})
             return
-        log(f"POST /open-project — cwd={cwd}")
-        self._send_json(200, {"status": "opened", "cwd": cwd})
+        log(f"POST /open-project — cwd={cwd} open_cwd={open_cwd}")
+        self._send_json(200, {"status": "opened", "cwd": open_cwd})
 
     def _handle_open_session(self, parsed):
         """Issue131: 활성 세션 카드 행 클릭 → VSCode 의 해당 Claude Code 세션 탭으로 포커스.
@@ -2939,19 +5093,155 @@ class Handler(BaseHTTPRequestHandler):
         if not os.path.isdir(cwd):
             self._send_json(404, {"error": "cwd not a directory"})
             return
+        # 서브폴더 cwd 는 등록 프로젝트 루트로 정규화 후 워크스페이스를 연다 — 세션 URI(uri)는
+        # sid 로 탭을 찾으므로 cwd 무관하지만, 앞단 `open -a VSCode` 는 원본(서브폴더) cwd 를
+        # 쓰면 이미 열린 루트 창을 "이미 열림"으로 인식 못 해 별개 새 창을 띄운다(다른 프로젝트가
+        # 열린 것처럼 보이는 원인 — hub 카드는 _resolve_project_root 로 루트 이름을 표시하는데
+        # open 은 원본 cwd 를 써서 실제로는 다른 폴더가 열림).
+        matched_root = _resolve_project_root(cwd)
+        open_cwd = os.path.expanduser(matched_root.get("path", "")).rstrip("/") if matched_root else ""
+        if not open_cwd or not os.path.isdir(open_cwd):
+            open_cwd = cwd
         uri = f"vscode://anthropic.claude-code/open?session={sid}"
+        # Issue237: 원격 클라이언트 + alias 설정 시 클라이언트측 URI 반환.
+        #   세션 포커스 URI(uri)는 이미 연결된 워크스페이스 창에서 탭을 포커스한다.
+        #   워크스페이스가 안 열려 있을 때를 대비해 folder_uri(vscode-remote)를 함께 반환 —
+        #   브라우저 JS 가 folder_uri 로 창을 보장한 뒤 세션 URI 로 포커스한다.
+        if client_ip not in LOOPBACK_IPS:
+            alias = (_load_hub_setting().get("ssh_remote_alias") or "").strip()
+            if alias:
+                folder_uri = _ssh_remote_uri(open_cwd, alias)
+                log(f"POST /open-session — remote client={client_ip} sid={sid}")
+                self._send_json(200, {"status": "remote", "uri": uri,
+                                      "folder_uri": folder_uri, "sid": sid})
+                return
         try:
             # 워크스페이스 창 보장·전면화 후(0.4s) 세션 URI 로 탭 포커스.
             subprocess.Popen(
                 ["bash", "-c",
-                 f'open -a "Visual Studio Code" {shlex.quote(cwd)}; '
+                 f'open -a "Visual Studio Code" {shlex.quote(open_cwd)}; '
                  f'sleep 0.4; open {shlex.quote(uri)}'],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
             self._send_json(500, {"error": f"spawn failed: {e}"})
             return
-        log(f"POST /open-session — cwd={cwd} sid={sid}")
+        log(f"POST /open-session — cwd={cwd} open_cwd={open_cwd} sid={sid}")
         self._send_json(200, {"status": "opened", "sid": sid})
+
+    def _handle_open_simple_browser(self, parsed):
+        """Issue216: hub 렌더 문서(htm)를 VSCode Simple Browser 패널에 띄운다.
+        VSCode 내장 `simpleBrowser.show` 는 외부 vscode:// URI·CLI 로 직접 호출 불가 →
+        전용 확장 finfra.fpm-simple-browser 가 등록한 URI 핸들러를 경유한다:
+          open "vscode://finfra.fpm-simple-browser/open?url=<htm-doc URL>"
+        보안: localhost only + register-doc 화이트리스트 exact-match(htm-doc 동일 보안 모델).
+        임의 경로/외부 URL open 차단. 확장 측에서도 host 화이트리스트 재검증."""
+        client_ip = self.client_address[0] if self.client_address else ""
+        if not _ip_allowed(client_ip):
+            self._send_json(403, {"error": "localhost only"})
+            return
+        body, err = self._read_json_body()
+        if err:
+            self._send_json(400, {"error": err})
+            return
+        path = (body.get("path") or "").strip()
+        if not path:
+            self._send_json(400, {"error": "path required"})
+            return
+        # prj3#Issue187 잔여(Issue180 각주) + Issue250:
+        #   render_tab_mode:hub-internal 의 유일 표면은 hub-shell — register-doc 이 tab-open
+        #   SSE 로 즉시 표시하고, SSE 부재(서버 재시작·탭 freeze) 구간도 폴링 fallback(Issue199)
+        #   + 재연결이 복귀 시 수거한다. 종전에는 `_any_hub_shell_alive()` 일 때만 skip 했으나,
+        #   Chrome 이 백그라운드 hub-shell 탭을 freeze 하면 lease(ttl 30s)가 즉시 죽어
+        #   "shell 없음"으로 오판 → 매 렌더마다 VSCode 강제 전면화(포커스 탈취) + Simple
+        #   Browser 중복 표시가 재발했다(Issue250). hub-internal 이면 alive 여부 무관 항상 skip.
+        #   Simple Browser 를 표면으로 쓰려면 render_tab_mode: browser-tab + render_target: hub.
+        if _load_hub_setting().get("render_tab_mode") == "hub-internal":
+            log(f"POST /open-simple-browser SKIP — render_tab_mode=hub-internal "
+                f"(hub-shell 이 유일 표면, Issue250) path={path}")
+            self._send_json(200, {"status": "skipped-hub-internal", "path": path})
+            return
+        abs_path = os.path.realpath(os.path.expanduser(path))
+        # register-doc 화이트리스트 검증 (htm-doc 동일 패턴)
+        with registry_lock:
+            reg = load_registry(HTM_REGISTRY)
+        reg_paths = set()
+        owner_cwd = ""   # Issue232: 매칭 엔트리의 owner 프로젝트 cwd
+        for e in reg:
+            p = e.get("path") or ""
+            if p:
+                rp = os.path.realpath(p)
+                reg_paths.add(p)
+                reg_paths.add(rp)
+                if abs_path in (p, rp) or path in (p, rp):
+                    owner_cwd = (e.get("cwd") or "").rstrip("/")
+        if abs_path not in reg_paths and path not in reg_paths:
+            log(f"POST /open-simple-browser REJECT — unregistered path: {abs_path}")
+            self._send_json(403, {"error": "not a registered htm doc"})
+            return
+        if not abs_path.endswith((".html", ".htm")):
+            self._send_json(403, {"error": "extension not allowed"})
+            return
+        if not os.path.isfile(abs_path):
+            self._send_json(404, {"error": "file not found"})
+            return
+        # Simple Browser 에는 raw 문서를 띄운다 — _shell=1 로 hub-shell 302 우회.
+        import urllib.parse as _u
+        doc_url = f"http://127.0.0.1:{PORT}/htm-doc?path={_u.quote(abs_path)}&_shell=1"
+        uri = f"vscode://finfra.fpm-simple-browser/open?url={_u.quote(doc_url, safe='')}"
+        # Issue232: `open <uri>` 는 macOS 가 frontmost VSCode 창으로 라우팅 →
+        #   직전 포커스한 다른 프로젝트 창에 패널이 열리는 문제. owner cwd 가
+        #   등록 프로젝트면 그 폴더를 먼저 전면화 후 URI 호출(open-session 동일 패턴).
+        # Issue287: owner_cwd 가 프로젝트 루트의 하위 폴더(ex: m2slide/Projects/aTest)일 때
+        #   과거엔 `allowed` 정확 일치만 검사해 실패 → target_cwd="" → else 분기로 빠져
+        #   frontmost 창(이미 열린 루트 창과 다른 폴더)에 URI 가 라우팅 → 새 창 발생.
+        #   open-project/open-session 과 동일하게 _resolve_project_root() 로 등록 루트 정규화.
+        target_cwd = ""
+        if owner_cwd and os.path.isdir(owner_cwd):
+            matched_root = _resolve_project_root(owner_cwd)
+            resolved_cwd = (os.path.expanduser(matched_root.get("path", "")).rstrip("/")
+                            if matched_root else "")
+            allowed = set(_load_projects_colors().keys())
+            with projects_lock:
+                allowed.update((p.get("cwd", "") or "").rstrip("/") for p in projects.values())
+            if resolved_cwd and os.path.isdir(resolved_cwd):
+                target_cwd = resolved_cwd
+            elif owner_cwd in allowed:
+                target_cwd = owner_cwd
+        # Issue288: 포커스 탈취 가드. 본 엔드포인트는 클라이언트 JS 호출자가 0건 —
+        #   전량 hook 자동 렌더 경로(사용자 제스처 없음)인데 클릭 경로(/open-session)의
+        #   전면화 패턴을 그대로 이식해, 백그라운드 세션의 렌더가 사용자가 타이핑 중인
+        #   다른 프로젝트 VSCode 창에서 포커스를 빼앗았다. hub 페이지 버튼(/open-project·
+        #   /open-session)은 별도 엔드포인트라 이 가드와 무관(전면화 유지가 맞음).
+        #   skip 해도 register-doc 등록은 이미 끝나 hub-shell 탭·폴링(Issue199)·채팅
+        #   fallback URL 로 수거 가능 → 정보 유실 0.
+        focus_mode = (_load_hub_setting().get("simple_browser_focus") or "gate").strip()
+        front_proc, front_win = ("", "")
+        if focus_mode == "gate":
+            front_proc, front_win = _frontmost_app_window()
+        skip = _simple_browser_focus_skip(focus_mode, front_proc, front_win, target_cwd)
+        if skip:
+            log(f"POST /open-simple-browser SKIP — {skip} "
+                f"(mode={focus_mode} front='{front_proc}|{front_win}' "
+                f"owner='{os.path.basename(target_cwd) if target_cwd else '-'}') path={abs_path}")
+            self._send_json(200, {"status": f"skipped-{skip}", "front": front_win,
+                                  "owner": os.path.basename(target_cwd) if target_cwd else "",
+                                  "path": abs_path})
+            return
+        try:
+            if target_cwd:
+                subprocess.Popen(
+                    ["bash", "-c",
+                     f'open -a "Visual Studio Code" {shlex.quote(target_cwd)}; '
+                     f'sleep 0.4; open {shlex.quote(uri)}'],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                subprocess.Popen(["open", uri],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            self._send_json(500, {"error": f"spawn failed: {e}"})
+            return
+        log(f"POST /open-simple-browser — path={abs_path} owner_cwd={target_cwd or '-'}")
+        self._send_json(200, {"status": "opened", "path": abs_path})
 
     def _handle_open_settings_yml(self, parsed):
         """⚙️ 설정 버튼 — data/hub_setting.yml 을 VSCode 로 연다."""
@@ -2970,6 +5260,84 @@ class Handler(BaseHTTPRequestHandler):
             return
         log("POST /open-settings-yml — hub_setting.yml")
         self._send_json(200, {"status": "opened", "path": HUB_SETTING_FILE})
+
+    def _handle_get_settings(self, parsed):
+        """Issue168: GET /api/settings — 현재 yml 값 + schema 반환 (설정 모달 폼 렌더용)."""
+        client_ip = self.client_address[0] if self.client_address else ""
+        if not _ip_allowed(client_ip):
+            self._send_json(403, {"error": "localhost only"})
+            return
+        try:
+            mtime = os.stat(HUB_SETTING_FILE).st_mtime
+        except FileNotFoundError:
+            mtime = 0.0
+        # Issue169 Stage2: 필드 설명(comment)을 현재 language 로 번역(settings.field.<key>).
+        #   키 부재 시 schema 내장 comment(ko) fallback.
+        #   lang 쿼리 파라미터(?lang=ko|en)로 override — 모달 헤더 KO/EN 뷰 토글이 재-fetch 시 사용.
+        qs = parse_qs(parsed.query or "")
+        lang_q = (qs.get("lang", [None])[0])
+        lang = i18n.norm_lang(lang_q if lang_q else _load_hub_setting().get("language"))
+        schema = []
+        for s in HUB_SETTING_SCHEMA:
+            item = dict(s)
+            tk = "settings.field." + s["key"]
+            tr = i18n.t(tk, lang)
+            item["comment"] = s["comment"] if tr == tk else tr
+            schema.append(item)
+        # 기본값 대비 변경분(연필 ✏️) 판정용 defaults.
+        #   1차: hub_setting_org.yml(기본값 SSOT 템플릿) → 2차: HUB_SETTING_DEFAULTS
+        #   → 3차: 위젯별 자연기본 추정(select 첫 옵션, toggle→False, number→0, 그 외 "").
+        #   org.yml 이 곧 시스템 기본이므로 템플릿 그대로 쓰면 연필 미표시.
+        org_defaults = _load_hub_setting_org()
+        defaults = {}
+        for s in HUB_SETTING_SCHEMA:
+            k = s["key"]
+            if k in org_defaults:
+                defaults[k] = org_defaults[k]
+            elif k in HUB_SETTING_DEFAULTS:
+                dv = HUB_SETTING_DEFAULTS[k]
+                if s["widget"] == "toggle":
+                    defaults[k] = bool(dv)
+                elif s["widget"] == "number":
+                    defaults[k] = int(dv)
+                else:
+                    defaults[k] = str(dv)
+            elif s["widget"] == "toggle":
+                defaults[k] = False
+            elif s["widget"] == "number":
+                defaults[k] = 0
+            elif s["widget"] == "select" and s.get("options"):
+                defaults[k] = str(s["options"][0])
+            else:
+                defaults[k] = ""
+        self._send_json(200, {
+            "values": _load_hub_setting_raw(),
+            "schema": schema,
+            "defaults": defaults,
+            "mtime": mtime,
+        })
+
+    def _handle_post_settings(self, parsed):
+        """Issue168: POST /api/settings — 변경 diff 를 yml 에 주석 보존 기록."""
+        client_ip = self.client_address[0] if self.client_address else ""
+        if not _ip_allowed(client_ip):
+            self._send_json(403, {"error": "localhost only"})
+            return
+        body, err = self._read_json_body()
+        if err:
+            self._send_json(400, {"error": err})
+            return
+        payload = body.get("values") if isinstance(body, dict) else None
+        if not isinstance(payload, dict):
+            self._send_json(400, {"error": "values object required"})
+            return
+        client_mtime = body.get("mtime") if isinstance(body, dict) else None
+        ok, restart_required, code, werr = _write_hub_setting(payload, client_mtime)
+        if not ok:
+            self._send_json(code, {"error": werr})
+            return
+        log(f"POST /api/settings — keys={list(payload.keys())} restart={restart_required}")
+        self._send_json(200, {"status": "saved", "restart_required": restart_required})
 
     def _handle_htm_toggle(self, parsed):
         """Project List 토글 버튼 — 프로젝트의 per-cwd htm 상태 파일을 on↔off 플립.
@@ -3029,6 +5397,22 @@ class Handler(BaseHTTPRequestHandler):
         target = (body.get("state") or "").strip()
         if target not in ("on", "off"):
             self._send_json(400, {"error": "state must be 'on' or 'off'"})
+            return
+        # Issue215: 마스터 토글 = 진짜 hub 마스터(`..hub on/off` 동치). per-cwd 만
+        #   기록하면 dominant 플래그 `.hub-system-off` 가 모두 마스킹 → 토글 무력.
+        #   target=on → 시스템 OFF 플래그 해제, target=off → 시스템 OFF 플래그 생성.
+        sys_off_flag = os.path.join(os.path.expanduser("~"), ".claude", ".hub-system-off")
+        try:
+            if target == "on":
+                if os.path.exists(sys_off_flag):
+                    os.remove(sys_off_flag)
+            else:
+                os.makedirs(os.path.dirname(sys_off_flag), exist_ok=True)
+                with open(sys_off_flag, "w", encoding="utf-8") as f:
+                    f.write("")
+        except OSError as e:
+            log(f"POST /htm-toggle-all — system flag {target} failed: {e}")
+            self._send_json(500, {"error": f"system flag update failed: {e}"})
             return
         results = []
         for r in _load_projects_list():
@@ -3586,7 +5970,7 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "keep-alive")
             self.send_header("X-Accel-Buffering", "no")
-            self.send_header("Access-Control-Allow-Origin", "null")
+            self.send_header("Access-Control-Allow-Origin", self._acao())
             self.end_headers()
             self.wfile.write(b": connected\n\n")
             self.wfile.flush()
@@ -3643,9 +6027,179 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         self.send_header("Content-Type", ct + "; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Access-Control-Allow-Origin", "null")
+        self.send_header("Access-Control-Allow-Origin", self._acao())
         self.end_headers()
         self.wfile.write(body)
+
+    def _handle_htm_res(self, parsed):
+        """Issue255: htm 문서의 상대 리소스(이미지) serve.
+        인증 2모드 — (1) cwd+token(=/view 대칭, cwd-jail) (2) htm-registry
+        exact-match(토큰리스, /htm-doc 대칭). registry 모드의 jail 은 doc 의
+        `_doc_work/` 상위(없으면 doc 디렉토리) — 프로젝트 임의 파일 노출 차단."""
+        qs = parse_qs(parsed.query)
+        doc = (qs.get("doc") or [""])[0]
+        rel = (qs.get("rel") or [""])[0]
+        # Issue283: abs= 는 file:// 절대경로 모드 (프로젝트 jail 밖 이미지)
+        abs_p = (qs.get("abs") or [""])[0]
+        if not doc or (not rel and not abs_p):
+            self._send_json(400, {"error": "missing doc or rel/abs"})
+            return
+        doc_real = os.path.realpath(doc)
+        jail = None
+        cwd = get_cwd_param(parsed)
+        token = get_token_param(parsed)
+        if cwd and token and validate(cwd, token):
+            cwd_real = os.path.realpath(cwd)
+            if path_within_serve_roots(doc_real, cwd_real):
+                jail = cwd_real
+        if jail is None:
+            with registry_lock:
+                reg = load_registry(HTM_REGISTRY)
+            reg_paths = set()
+            for e in reg:
+                p = e.get("path") or ""
+                if p:
+                    reg_paths.add(p)
+                    reg_paths.add(os.path.realpath(p))
+            if doc_real not in reg_paths and doc not in reg_paths:
+                log(f"GET /htm-res — unauthorized doc rejected: {doc_real}")
+                self._send_json(403, {"error": "doc not authorized"})
+                return
+            marker = os.sep + "_doc_work" + os.sep
+            i = doc_real.find(marker)
+            jail = (doc_real[:i + len(marker) - 1] if i >= 0
+                    else os.path.dirname(doc_real))
+        if abs_p:
+            # Issue283: file:// 절대경로 모드. jail 이 $HOME 으로 완화되므로
+            # loopback 전용 + (위에서 통과한) doc 등록 인증을 함께 요구한다.
+            # /ob 브리지(Issue266)와 동일한 보안 등급.
+            client_ip = self.client_address[0] if self.client_address else ""
+            if client_ip not in LOOPBACK_IPS:
+                self._send_json(403, {"error": "loopback only"})
+                return
+            res = os.path.realpath(os.path.abspath(os.path.expanduser(abs_p)))
+            home = os.path.realpath(os.path.expanduser("~"))
+            if not res.startswith(home + os.sep):
+                log(f"GET /htm-res — abs outside home rejected: {res}")
+                self._send_json(403, {"error": "abs outside home"})
+                return
+        else:
+            res = os.path.realpath(os.path.join(os.path.dirname(doc_real), rel))
+            if res != jail and not res.startswith(jail + os.sep):
+                log(f"GET /htm-res — rel escapes jail rejected: {res}")
+                self._send_json(403, {"error": "rel outside jail"})
+                return
+        ext = os.path.splitext(res)[1].lower()
+        if ext not in _HTM_RES_EXTS:
+            self._send_json(403, {"error": "extension not allowed"})
+            return
+        try:
+            with open(res, "rb") as f:
+                data = f.read()
+        except OSError:
+            self._send_json(404, {"error": "file not found"})
+            return
+        ctype = mimetypes.guess_type(res)[0] or "application/octet-stream"
+        if ext == ".svg":
+            ctype = "image/svg+xml"
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _send_htm_doc_tmp_hint(self, abs_path: str):
+        """/tmp fallback 문서가 미등록 403 일 때, raw JSON 대신 원인·해결 안내 HTML serve.
+        원인: 프로젝트에 활성 htm 폴더 부재 → 트리거가 /tmp/___pm 로 fallback → register 훅
+        (htm 경로만 매칭)이 등록 스킵 → whitelist 403. 해결: 프로젝트에 htm 폴더 생성 후 재렌더.
+        Issue289: 안내 폴더를 legacy `z_htm` 에서 활성 `_doc_work/htm/` 으로 교체."""
+        base = os.path.basename(abs_path)
+        port = self.server.server_address[1]
+        reg_cmd = (
+            "curl -s -X POST http://127.0.0.1:%d/register-doc "
+            "-H 'Content-Type: application/json' "
+            "-d '{\"type\":\"htm\",\"path\":\"%s\",\"title\":\"%s\"}'"
+            % (port, abs_path, base)
+        )
+        html = (
+            "<!doctype html><html lang=ko><head><meta charset=utf-8>"
+            "<meta name=viewport content='width=device-width,initial-scale=1'>"
+            "<title>미등록 htm — htm 폴더 필요</title><style>"
+            "body{font:15px/1.6 -apple-system,system-ui,sans-serif;max-width:760px;"
+            "margin:3rem auto;padding:0 1.2rem;color:#222}"
+            "h1{font-size:1.3rem}code{background:#f2f2f5;padding:.15em .4em;border-radius:4px}"
+            "pre{background:#1e1e24;color:#e8e8ee;padding:1rem;border-radius:8px;overflow-x:auto}"
+            ".box{background:#fff7e6;border:1px solid #f0c36d;border-radius:8px;padding:1rem 1.2rem;margin:1.2rem 0}"
+            "@media(prefers-color-scheme:dark){body{background:#16161a;color:#ddd}"
+            "code{background:#2a2a33}.box{background:#2b2410;border-color:#7a5c1e}}"
+            "</style></head><body>"
+            "<h1>⚠️ 미등록 htm 문서 — 프로젝트에 <code>_doc_work/htm/</code> 필요</h1>"
+            "<p>이 문서는 <code>/tmp/___pm/</code> fallback 경로에 저장됐습니다. "
+            "프로젝트 루트에 <code>_doc_work/htm/</code> 폴더가 <b>없어서</b> hub 렌더가 "
+            "/tmp 로 회피했고, 등록 훅이 /tmp 경로를 매칭하지 못해 hub registry 에 "
+            "등록되지 않았습니다 → <code>/htm-doc</code> 화이트리스트 403.</p>"
+            "<div class=box><b>영구 해결</b> — 프로젝트 루트에서 htm 폴더 생성 후 다시 렌더:"
+            "<pre>mkdir -p _doc_work/htm</pre>"
+            "이후 hub 렌더는 프로젝트 <code>_doc_work/htm/</code> 에 저장되어 자동 등록됩니다. "
+            "(legacy <code>_doc_work/z_htm/</code> 도 읽기는 계속 지원 — Issue289)</div>"
+            "<p><b>이 문서만 즉시 복구</b> (수동 등록):</p>"
+            "<pre>" + reg_cmd + "</pre>"
+            "<p style=color:#888>파일: <code>" + abs_path + "</code></p>"
+            "</body></html>"
+        )
+        body = html.encode("utf-8")
+        self.send_response(403)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _htm_resolve_moved(self, abs_path: str, cleared: set) -> str:
+        """Issue289 (축 2 — ENOENT self-heal): 등록 경로가 디스크에 없을 때
+        **같은 프로젝트 루트 하위 HTM_DIRS** 에서 basename 으로 재탐색한다.
+        아카이브 이동(`htm/` → `z_done/htm/`)으로 죽은 URL·북마크를 흡수하는 경로.
+
+        보안 불변식:
+        * 요청/registry 경로에서 취하는 것은 `basename` 뿐이다 — 경로 성분은 전부 폐기하므로
+          `../` 류 traversal 로 화이트리스트 밖 파일에 도달할 수 없다.
+        * 후보가 symlink 등으로 프로젝트 루트 밖을 가리키면 거부한다.
+        * HTM_CLEARED tombstone 에 든 경로는 되살리지 않는다 — clear 무효화 금지.
+
+        찾지 못하면 빈 문자열."""
+        marker = "/_doc_work/"
+        idx = abs_path.find(marker)
+        if idx <= 0:
+            return ""
+        root = abs_path[:idx]
+        base = os.path.basename(abs_path)
+        if not base or base in (".", ".."):
+            return ""
+        for d in HTM_DIRS:
+            cand = os.path.realpath(
+                os.path.join(root, "_doc_work", *d.split("/"), base))
+            if not cand.startswith(root + os.sep):
+                continue  # 프로젝트 밖으로 새는 후보 거부
+            if cand == abs_path or not os.path.isfile(cand):
+                continue
+            if cand in cleared:
+                continue  # clear 된 문서가 fallback 으로 부활하지 않도록
+            return cand
+        return ""
+
+    def _htm_registry_rewrite(self, old_paths: set, new_path: str) -> None:
+        """Issue289: self-heal 성공 시 registry 의 옛 경로를 새 위치로 갱신(1회성 자가 치유).
+        이후 조회는 registry 가 새 경로를 직접 가리키므로 fallback 비용이 없다."""
+        with registry_lock:
+            entries = load_registry(HTM_REGISTRY)
+            changed = False
+            for e in entries:
+                if (e.get("path") or "") in old_paths:
+                    e["path"] = new_path
+                    changed = True
+            if changed:
+                save_registry(HTM_REGISTRY, entries)
+                log(f"htm-doc self-heal — registry rewrite -> {new_path}")
 
     def _handle_htm_doc(self, parsed):
         """Issue50: htm-registry 등록 htm html 을 토큰 없이 serve. registry 는
@@ -3668,23 +6222,145 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
                 reg_paths.add(os.path.realpath(p))
         if abs_path not in reg_paths and rel not in reg_paths:
             log(f"GET /htm-doc — unregistered path rejected: {abs_path}")
+            # Issue: /tmp fallback 경로(=프로젝트에 htm 폴더 부재로 트리거가 /tmp 로 회피)
+            #   는 register 훅(fpm-hub-doc-register, htm 경로만 매칭)이 등록을 스킵 → 영구 403.
+            #   이 경우 raw JSON 대신 "htm 폴더 만들라" 안내 HTML 을 serve (원인·해결 즉시 인지).
+            if os.path.dirname(abs_path) == os.path.realpath(TMP_OUT_DIR):
+                self._send_htm_doc_tmp_hint(abs_path)
+                return
             self._send_json(403, {"error": "not a registered htm doc"})
             return
         # Issue102: htm 스킬(Issue123)이 .htm 확장자로 문서를 씀 → .html/.htm 모두 허용
         if not abs_path.endswith((".html", ".htm")):
             self._send_json(403, {"error": "extension not allowed"})
             return
+        # Issue201/Issue202: hub-internal 모드에서 최상위 직접 열람(주소창/링크/새 탭)은 raw 문서
+        #   대신 hub 쉘로 302 → 표준 htm-doc URL 을 어디서 열어도 OS 새 탭이 아니라 /hub-shell
+        #   내부 iframe 탭으로 착지(쉘 onload pollDocs 가 등록분을 탭으로 수거).
+        #   임베드 판정은 결정적 마커 _shell=1(쉘 JS embedUrl 부여)을 1순위로 사용 — Sec-Fetch-Dest
+        #   헤더는 보조(일부 네비에서 헤더 누락 시 standalone 누출하던 Issue201 한계 보완).
+        #   iframe src(_shell=1 또는 Sec-Fetch-Dest: iframe/embed)·메타데이터는 그대로 serve(redirect loop 방지).
+        # Issue221: 외부 브라우저에서 채팅 fallback URL(/htm-doc?path=, non-embed) 클릭 시
+        #   funnel(Issue209/213) 이 살아있는 hub-shell(=VSCode 패널, Issue170)에 tab-open SSE 를
+        #   push + 클릭한 브라우저엔 "기존 hub 창에 열림" 확인 페이지를 serve → 같은 문서가
+        #   VSCode 패널·외부 브라우저 양쪽에 이중 노출됐다(funnel 은 모든 표면이 같은 브라우저라는
+        #   Issue209 시절 전제. Issue170 으로 render_target 이 VSCode 패널로 분리되며 그 전제 붕괴).
+        #   해결: non-embed 외부 클릭은 funnel 하지 않고 "클릭한 그 브라우저에 standalone serve"
+        #   (아래로 fall-through). 단일 표면. VSCode 패널 경로는 /open-simple-browser →
+        #   /htm-doc?...&_shell=1(_is_embed=True) 라 이 블록 자체를 타지 않아 무영향.
+        #   (구 funnel: _hub_holder_alive → tab-open SSE + HUB_OPENED_HTML / else 302 /hub-shell)
         try:
             with open(abs_path, "rb") as f:
                 body = f.read()
         except FileNotFoundError:
-            self._send_json(404, {"error": "file not found"})
-            return
+            # Issue289: 아카이브 이동 등으로 등록 경로가 비었을 때 basename 재탐색(자가 치유).
+            #   whitelist 는 이미 위에서 통과했고(=등록된 문서), tombstone 은 아래에서 재적용한다.
+            with registry_lock:
+                cleared = set(load_registry(HTM_CLEARED))
+            moved = self._htm_resolve_moved(abs_path, cleared)
+            if not moved:
+                self._send_json(404, {"error": "file not found"})
+                return
+            try:
+                with open(moved, "rb") as f:
+                    body = f.read()
+            except OSError:
+                self._send_json(404, {"error": "file not found"})
+                return
+            log(f"GET /htm-doc — self-heal {abs_path} -> {moved}")
+            self._htm_registry_rewrite({abs_path, rel}, moved)
+            abs_path = moved
+        self._send_htm_html(body, abs_path)
+
+    def _send_htm_html(self, body: bytes, abs_path: str):
+        """htm 문서 공통 serve 파이프라인 (정규화 + 쉘 shim 주입 + 200 응답).
+        Issue284: /htm-doc 와 /issue-map 이 동일 표현을 갖도록 추출 — 렌더 규약이 한 곳."""
+        # Issue255: 상대 <img src> → /htm-res 재작성 (registry 모드)
+        #   주의: /htm-res 는 registry 등록 doc 만 인증하므로, 미등록 문서(/issue-map 경로)의
+        #   상대 이미지는 403 이 된다. 이슈맵은 자립형(SVG 인라인) 규약이라 해당 없음.
+        body = _rewrite_relative_imgs(body, abs_path)
+        # Issue244: mermaid 런타임을 서버 표준(pinned UMD + run())으로 정규화 — esm race bomb 제거.
+        body = _normalize_mermaid_runtime(body)
+        # a모드 htm 의 header CSS 누락 정규화 — `<header>` 있으나 `header{}` 없으면 canonical 주입.
+        body = _normalize_hub_header_css(body)
+        # 본문 폭·표 정규화 — body max-width 중앙정렬 무력화(전체 폭) + 표/코드/이미지 넘침 차단.
+        body = _normalize_hub_body_css(body)
+        # Issue216: 닫기 버튼이 쉘 탭을 닫도록 window.close override 쉼 주입.
+        body = _inject_before_body_end(body, CLOSE_SHIM)
+        # Issue214(재해결): canonical 헤더에 🔗 문서 링크 복사 버튼 주입.
+        body = _inject_before_body_end(body, COPY_LINK_SHIM)
+        # Issue278: 헤더에 📋 세션 ID 복사 버튼 주입 (COPY_LINK_SHIM 뒤·옵션 공유).
+        if _load_hub_setting()["live_session_copy_button"]:
+            body = _inject_before_body_end(body, SID_COPY_SHIM)
+        # Issue220: 🗂 Hub 링크 클릭 → 쉘 home 탭 전환(in-place 네비 차단).
+        body = _inject_before_body_end(body, HUB_LINK_SHIM)
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _handle_issue_map(self, parsed):
+        """Issue284: 프로젝트 이슈맵(`Issue_map.htm`) serve.
+
+        보안 모델 — registry 화이트리스트를 쓸 수 없어(프로젝트 루트 파일은 등록 대상이
+        아님) 다음 게이트를 조합한다:
+          1. source-IP — 전역 `_ip_allowed()` (Servers.md allowlist / bind self). 모든
+             요청 진입점에서 이미 적용되므로 본 핸들러에 추가 게이트를 두지 않는다.
+             Issue284_2: 종전의 loopback 전용 게이트는 **오분류**였다. loopback 전용은
+             호스트에서 부수효과를 실행하는 엔드포인트(`/ob`·`/open-session` 의 `open`)와
+             $HOME 전역 jail(`/htm-res` abs) 의 등급이고, 이슈맵은 문서를 읽어 돌려주는
+             `/htm-doc` 등급이다. LAN(`bind_host` 비루프백) 접속에서 403 이 나 기능이
+             통째로 죽었다.
+          2. cwd 화이트리스트 — hub 등록 프로젝트(projects) ∪ Projects.md 목록의 트리
+             안쪽만. 세션 cwd 가 하위 폴더로 드리프트해도(Issue282) 카드 링크가 살아있어야
+             하므로 exact 가 아닌 at-or-under 매치.
+          3. 해석 결과 재검증 — 상향 탐색이 등록 트리 **밖의** 조상 `Issue.md` 로 빠져나가
+             무관한 프로젝트의 맵을 serve 하지 않도록, 찾아낸 맵의 디렉토리에도 2 와 같은
+             at-or-under 판정을 다시 적용한다.
+          4. 파일명 서버 고정 — 클라이언트는 cwd 만 넘기고 실제 경로는 서버가 재계산
+             (`_issue_map_path`) → path traversal 입력면 자체가 없음
+        """
+        cwd = get_cwd_param(parsed)
+        if not cwd:
+            self._send_json(400, {"error": "missing cwd"})
+            return
+        cwd_real = os.path.realpath(os.path.expanduser(cwd))
+        allowed = set()
+        with projects_lock:
+            for p in projects.values():
+                c = p.get("cwd") or ""
+                if c:
+                    allowed.add(os.path.realpath(os.path.expanduser(c)))
+        for r in _load_projects_list():
+            p = (r.get("path") or "").strip()
+            if p:
+                allowed.add(os.path.realpath(os.path.expanduser(p)))
+
+        def _within(target: str) -> bool:
+            return any(target == root or target.startswith(root.rstrip(os.sep) + os.sep)
+                       for root in allowed)
+
+        if not _within(cwd_real):
+            log(f"GET /issue-map — unknown cwd rejected: {cwd_real}")
+            self._send_json(403, {"error": "cwd not a registered project"})
+            return
+        path = _issue_map_path(cwd_real)
+        if not path:
+            self._send_json(404, {"error": f"{ISSUE_MAP_NAME} not found"})
+            return
+        # 게이트 3 — 상향 탐색이 등록 트리 밖으로 빠져나간 경우 차단.
+        if not _within(os.path.dirname(path)):
+            log(f"GET /issue-map — resolved map outside registered tree: {path}")
+            self._send_json(403, {"error": "map outside registered project"})
+            return
+        try:
+            with open(path, "rb") as f:
+                body = f.read()
+        except OSError:
+            self._send_json(404, {"error": "file not found"})
+            return
+        self._send_htm_html(body, path)
 
     def _handle_view(self, parsed):
         """Issue16_2: dashboard·form HTML을 동일 origin(http://127.0.0.1)으로 serve.
@@ -3732,14 +6408,25 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
                 b"var cwd=p.get('cwd'),tok=p.get('token'),tgt=p.get('path');"
                 b"if(!cwd||!tok)return;"
                 b"var url='/events?cwd='+encodeURIComponent(cwd)+'&token='+encodeURIComponent(tok);"
-                b"var es=new EventSource(url);"
+                # Issue258: Page Visibility 게이팅 — 백그라운드 탭 SSE 연결 반납, 가시 복귀
+                #   시 재연결. (재수정: 크래시 근본은 iframe 재네비 detached-doc 누수 →
+                #   navTo 노드 swap + pagehide 반납이 담당. 게이팅은 보조.)
+                b"var es=null;"
+                b"function openSSE(){if(es)return;es=new EventSource(url);"
                 b"es.addEventListener('reload',function(ev){"
                 b"try{var b=JSON.parse(ev.data||'{}');var f=b.file||'';"
                 b"var tn=tgt?tgt.split('/').pop():'';"
                 b"if(!tn||f.endsWith(tn)){location.reload();}"
                 b"}catch(e){location.reload();}"
                 b"});"
-                b"es.addEventListener('error',function(){});"
+                b"es.addEventListener('error',function(){});}"
+                b"function closeSSE(){if(es){try{es.close();}catch(e){}es=null;}}"
+                b"document.addEventListener('visibilitychange',function(){"
+                b"if(document.visibilityState==='hidden'){closeSSE();}else{openSSE();}"
+                b"});"
+                # Issue258(재수정): doc 폐기 직전 SSE 반납 — detached document 누수 차단.
+                b"window.addEventListener('pagehide',function(){closeSSE();});"
+                b"if(document.visibilityState!=='hidden'){openSSE();}"
                 b"}catch(e){}"
                 b"})();</script>"
             )
@@ -3749,6 +6436,27 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
                 body = body[:idx] + inject + body[idx:]
             else:
                 body = body + inject
+        # Issue214(재해결): /view 로 serve 되는 문서(form `_b_`·response 등)도 hub-shell
+        #   iframe 안에서 열리므로 닫기 버튼의 window.close() 가 no-op 였다(간헐적 닫기 실패의
+        #   원인 — 탭이 /htm-doc 경로로 열리면 닫히고 /view 경로면 안 닫힘). _handle_htm_doc 와
+        #   동일하게 CLOSE_SHIM(닫기 정상화) + COPY_LINK_SHIM(🔗 링크 복사) 주입.
+        # Issue255: 상대 <img src> → /htm-res 재작성 (cwd+token 모드)
+        from urllib.parse import quote as _q255
+        body = _rewrite_relative_imgs(
+            body, abs_path,
+            extra_query=f"cwd={_q255(cwd, safe='')}&token={_q255(token, safe='')}")
+        # Issue244: mermaid 런타임 정규화(esm race bomb 제거) — htm-doc 경로와 동일.
+        body = _normalize_mermaid_runtime(body)
+        # header CSS 누락 정규화 — htm-doc 경로와 동일.
+        body = _normalize_hub_header_css(body)
+        # 본문 폭·표 정규화 — htm-doc 경로와 동일.
+        body = _normalize_hub_body_css(body)
+        body = _inject_before_body_end(body, CLOSE_SHIM)
+        body = _inject_before_body_end(body, COPY_LINK_SHIM)
+        # Issue278: 헤더에 📋 세션 ID 복사 버튼 주입 (COPY_LINK_SHIM 뒤·옵션 공유).
+        if _load_hub_setting()["live_session_copy_button"]:
+            body = _inject_before_body_end(body, SID_COPY_SHIM)
+        body = _inject_before_body_end(body, HUB_LINK_SHIM)
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -3990,10 +6698,13 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
 
     @classmethod
     def _render_nodegraph_svg(cls, nodes, edges, value=None) -> str:
-        """graph/dag/tree → 레이어드 DAG SVG. chart(시계열)와 별개.
-        입력: nodes=[{id,label,status}|str], edges=[{from,to}|[a,b]].
+        """graph/dag/tree → 레이어드 DAG SVG (이슈 트리 강화판). chart(시계열)와 별개.
+        입력: nodes=[{id,label,status,progress?,sub?,current?}|str], edges=[{from,to}|[a,b]].
           top-level 미존재 시 value dict({nodes,edges}) 또는 JSON 문자열 fallback.
-        토폴로지 레벨로 행 배치, 노드 박스 + 엣지 선. 빈 그래프 → 빈 문자열."""
+        노드: 상태 아이콘(✅🔴🟢⏳🚫⬜) + 상태색 테두리 + 연한 tint 배경 + 라벨 +
+          (sub 보조줄) + (이슈별 progress 바). current=true → 굵은 강조 + 외곽 글로우.
+          progress/sub 유무에 따라 노드 높이 동적(전 노드 균일). 토폴로지 레벨로 행 배치.
+        빈 그래프 → 빈 문자열."""
         if not nodes and value is not None:
             v = cls._coerce_widget_value(value)
             if isinstance(v, dict):
@@ -4001,7 +6712,31 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
                 edges = edges or v.get("edges")
         if not isinstance(nodes, list) or not nodes:
             return ""
-        # 노드 정규화
+
+        def _norm_prog(p):
+            """progress 필드 → (pct 0~100, 라벨). 파싱 실패 → None."""
+            if p is None:
+                return None
+            mx = None
+            lab = None
+            raw = p
+            if isinstance(p, dict):
+                raw = p.get("value")
+                mx = p.get("max")
+                lab = p.get("label")
+            try:
+                val = float(raw)
+            except (TypeError, ValueError):
+                return None
+            if isinstance(mx, (int, float)) and not isinstance(mx, bool) and mx:
+                pct = val / float(mx) * 100.0
+                lab = lab or f"{val:g}/{mx:g}"
+            else:
+                pct = val
+                lab = lab or f"{pct:.0f}%"
+            return (max(0.0, min(100.0, pct)), str(lab))
+
+        # 노드 정규화 (강화 필드: progress/sub/current)
         norm = []
         ids = []
         for nd in nodes:
@@ -4009,10 +6744,18 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
                 nid = str(nd.get("id", nd.get("label", "")))
                 label = str(nd.get("label", nid))
                 st = str(nd.get("status", "") or "").lower()
+                prog = _norm_prog(nd.get("progress"))
+                sub = nd.get("sub") or nd.get("note") or ""
+                sub = str(sub)
+                cur = bool(nd.get("current"))
             else:
                 nid = label = str(nd)
                 st = ""
-            norm.append({"id": nid, "label": label, "status": st})
+                prog = None
+                sub = ""
+                cur = False
+            norm.append({"id": nid, "label": label, "status": st,
+                         "prog": prog, "sub": sub, "current": cur})
             ids.append(nid)
         idset = set(ids)
         # 엣지 정규화 (from,to)
@@ -4028,11 +6771,6 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
                 E.append((a, b))
         # 레벨 산출 (parent level+1, 사이클 방어로 노드수 cap)
         level = {nid: 0 for nid in ids}
-        children = {nid: [] for nid in ids}
-        indeg = {nid: 0 for nid in ids}
-        for a, b in E:
-            children[a].append(b)
-            indeg[b] += 1
         for _ in range(len(ids)):
             changed = False
             for a, b in E:
@@ -4048,7 +6786,15 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             rows[level[nid]].append(nid)
         maxlvl = max(level.values()) if level else 0
         maxw = max((len(r) for r in rows.values()), default=1)
-        NW, NH, GX, GY = 150.0, 34.0, 24.0, 30.0
+        # 노드 높이 — sub/progress 유무로 동적 결정(전 노드 균일 배치)
+        has_sub = any(n["sub"] for n in norm)
+        has_prog = any(n["prog"] for n in norm)
+        NW, GX, GY = 198.0, 26.0, 34.0
+        PAD = 9.0
+        LABEL_H = 19.0
+        SUB_H = 15.0 if has_sub else 0.0
+        PROG_H = 18.0 if has_prog else 0.0
+        NH = PAD * 2 + LABEL_H + SUB_H + PROG_H
         W = max(1.0, maxw) * (NW + GX) + GX
         H = (maxlvl + 1) * (NH + GY) + GY
         pos = {}
@@ -4059,32 +6805,73 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             y = GY + lvl * (NH + GY)
             for i, nid in enumerate(row):
                 pos[nid] = (x0 + i * (NW + GX), y)
-        scolor = {"done": "hsl(140,55%,45%)", "running": "hsl(210,70%,52%)",
-                  "active": "hsl(210,70%,52%)", "pending": "hsl(0,0%,65%)",
-                  "error": "hsl(0,70%,55%)", "waiting": "hsl(40,80%,50%)"}
+        # 상태 → (아이콘, 테두리색, 배경 tint, 텍스트색)
+        st_map = {
+            "done":       ("✅", "hsl(140,55%,42%)", "hsl(140,55%,96%)", "hsl(140,45%,30%)"),
+            "running":    ("🟢", "hsl(210,72%,52%)", "hsl(210,72%,96%)", "hsl(210,58%,38%)"),
+            "active":     ("🟢", "hsl(210,72%,52%)", "hsl(210,72%,96%)", "hsl(210,58%,38%)"),
+            "error":      ("🔴", "hsl(0,72%,55%)",   "hsl(0,72%,97%)",   "hsl(0,58%,44%)"),
+            "unresolved": ("🔴", "hsl(0,72%,55%)",   "hsl(0,72%,97%)",   "hsl(0,58%,44%)"),
+            "open":       ("🔴", "hsl(0,72%,55%)",   "hsl(0,72%,97%)",   "hsl(0,58%,44%)"),
+            "waiting":    ("⏳", "hsl(40,85%,48%)",  "hsl(42,90%,95%)",  "hsl(38,70%,36%)"),
+            "blocked":    ("🚫", "hsl(0,0%,55%)",    "hsl(0,0%,95%)",    "hsl(0,0%,38%)"),
+            "pending":    ("⬜", "hsl(0,0%,62%)",    "hsl(0,0%,97%)",    "hsl(0,0%,42%)"),
+        }
+        DEF = ("•", "hsl(273,40%,55%)", "hsl(273,40%,97%)", "hsl(273,30%,40%)")
         parts = [f'<svg class="w-graph" viewBox="0 0 {W:.0f} {H:.0f}" preserveAspectRatio="xMidYMid meet">']
-        # 엣지
+        # 엣지 (부모 박스 하단 중앙 → 자식 상단 중앙)
         for a, b in E:
             ax, ay = pos[a]
             bx, by = pos[b]
             parts.append(
-                f'<line x1="{ax + NW/2:.1f}" y1="{ay + NH:.1f}" x2="{bx + NW/2:.1f}" y2="{by:.1f}" '
-                f'stroke="#bbb" stroke-width="1.5"/>')
+                f'<line x1="{ax + NW / 2:.1f}" y1="{ay + NH:.1f}" x2="{bx + NW / 2:.1f}" y2="{by:.1f}" '
+                f'stroke="#c4c4cc" stroke-width="1.6"/>')
         # 노드
         for nd in norm:
             nid = nd["id"]
             if nid not in pos:
                 continue
             x, y = pos[nid]
-            col = scolor.get(nd["status"], "hsl(273,40%,55%)")
-            lab = nd["label"]
-            if len(lab) > 20:
-                lab = lab[:19] + "…"
+            icon, bcol, fill, tcol = st_map.get(nd["status"], DEF)
+            sw = 3.0 if nd["current"] else 1.8
+            if nd["current"]:  # 현재 노드 외곽 글로우
+                parts.append(
+                    f'<rect x="{x - 4:.1f}" y="{y - 4:.1f}" width="{NW + 8:.0f}" height="{NH + 8:.0f}" '
+                    f'rx="10" fill="none" stroke="{bcol}" stroke-width="1.2" opacity="0.35"/>')
             parts.append(
-                f'<rect x="{x:.1f}" y="{y:.1f}" width="{NW:.0f}" height="{NH:.0f}" rx="6" '
-                f'fill="#fff" stroke="{col}" stroke-width="2"/>'
-                f'<text x="{x + NW/2:.1f}" y="{y + NH/2 + 4:.1f}" text-anchor="middle" '
-                f'class="graph-lbl" fill="{col}">{html.escape(lab)}</text>')
+                f'<rect x="{x:.1f}" y="{y:.1f}" width="{NW:.0f}" height="{NH:.0f}" rx="7" '
+                f'fill="{fill}" stroke="{bcol}" stroke-width="{sw}"/>')
+            tx = x + PAD
+            lab_y = y + PAD + LABEL_H - 5
+            lab = nd["label"]
+            if len(lab) > 22:
+                lab = lab[:21] + "…"
+            parts.append(
+                f'<text x="{tx:.1f}" y="{lab_y:.1f}" class="graph-lbl" fill="{tcol}">'
+                f'{html.escape(icon)} {html.escape(lab)}</text>')
+            if has_sub and nd["sub"]:
+                sub = nd["sub"]
+                if len(sub) > 30:
+                    sub = sub[:29] + "…"
+                parts.append(
+                    f'<text x="{tx:.1f}" y="{lab_y + SUB_H:.1f}" class="graph-sub" '
+                    f'fill="#8a8a93">{html.escape(sub)}</text>')
+            if has_prog:
+                pby = y + NH - PAD - 11.0
+                lab_w = 40.0 if nd["prog"] else 0.0
+                bar_x = x + PAD
+                bar_w = NW - PAD * 2 - lab_w
+                parts.append(
+                    f'<rect x="{bar_x:.1f}" y="{pby:.1f}" width="{bar_w:.1f}" height="9" '
+                    f'rx="4.5" fill="#e6e6ee"/>')
+                if nd["prog"]:
+                    pct, plab = nd["prog"]
+                    parts.append(
+                        f'<rect x="{bar_x:.1f}" y="{pby:.1f}" width="{bar_w * pct / 100.0:.1f}" '
+                        f'height="9" rx="4.5" fill="{bcol}"/>')
+                    parts.append(
+                        f'<text x="{x + NW - PAD:.1f}" y="{pby + 8:.1f}" text-anchor="end" '
+                        f'class="graph-prog-lab" fill="{tcol}">{html.escape(plab)}</text>')
         parts.append("</svg>")
         return "".join(parts)
 
@@ -4246,16 +7033,31 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             'fetch("/open-project",{method:"POST",headers:{"Content-Type":"application/json"},'
             'body:JSON.stringify({cwd:' + cwd_js + '})})'
             '.then(function(r){return r.json();})'
-            '.then(function(j){if(j&&j.error)alert("VSCode 열기 실패: "+j.error);})'
+            '.then(function(j){if(j&&j.uri){window.location.href=j.uri;}else if(j&&j.error)alert("VSCode 열기 실패: "+j.error);})'
             '.catch(function(){alert("hub 서버 미응답 — VSCode 열기 실패");});'
+        )
+        # Issue214: 헤더 액션 개편 — (1) 🔗 문서 링크 복사 버튼 추가(쉘 iframe 내에선
+        #   주소창이 /hub-shell 만 보여 문서 URL 직접 복사 불가) (2) 닫기를 ✕ 아이콘화 +
+        #   맨 오른쪽 끝 분리(margin) (3) 전 액션 title 툴팁 부착.
+        #   Issue213: hub-link target="_blank" 제거 — 새 OS 창(중복) 차단, 쉘 iframe 안 in-place 합류.
+        copy_onclick = (
+            "(function(b){var u=location.href.replace(/[?&]_shell=1$/,'');"
+            "function ok(){var o=b.textContent;b.textContent='✓';setTimeout(function(){b.textContent=o;},1200);}"
+            "function fb(){try{var ta=document.createElement('textarea');ta.value=u;"
+            "ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);"
+            "ta.focus();ta.select();var r=document.execCommand('copy');document.body.removeChild(ta);"
+            "if(r){ok();}else{window.prompt('문서 링크 복사',u);}}"
+            "catch(e){window.prompt('문서 링크 복사',u);}}"
+            "if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(u).then(ok).catch(fb);}else{fb();}})(this)"
         )
         header_html = (
             '<header class="dash-hdr"><h1>' + esc(title) + '</h1>'
             '<nav class="hdr-actions">'
-            '<a class="proj-badge" href="#" title="VSCode 로 ' + proj_label + ' 열기" onclick=\'' + onclick_open + '\'>📁 ' + proj_label + '</a>'
-            '<a class="sess-link" href="/hub" title="활성 세션 목록 (hub)">🛰 활성 세션</a>'
-            '<a class="hub-link" href="/hub" target="_blank">🗂 Hub</a>'
-            '<button type="button" onclick="window.close()">닫기 ✕</button>'
+            '<a class="proj-badge" href="#" title="VSCode 로 ' + proj_label + ' 프로젝트 열기" onclick=\'' + onclick_open + '\'>📁 ' + proj_label + '</a>'
+            '<a class="sess-link" href="/hub" title="활성 세션 목록 보기 (hub)">🛰 활성 세션</a>'
+            '<button type="button" class="copy-link" title="이 문서 링크 복사" onclick="' + copy_onclick + '">🔗</button>'
+            '<a class="hub-link" href="/hub" title="통합 Hub 대시보드로 이동">🗂 Hub</a>'
+            '<button type="button" class="close-btn" title="이 문서 탭 닫기" onclick="window.close()">✕</button>'
             '</nav></header>'
         )
 
@@ -4347,8 +7149,10 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
   .w-badge-dead, .w-badge-error {{ background: #fde3e3; color: #c33; }}
   .w-badge-pending {{ background: #fff4e0; color: #b80; }}
   .w-badge-warn {{ background: #fff4e0; color: #b80; }}
-  .w-graph {{ width: 100%; max-height: 320px; display: block; margin-top: 0.2rem; }}
-  .graph-lbl {{ font-size: 12px; font-weight: 600; }}
+  .w-graph {{ width: 100%; max-height: 560px; display: block; margin-top: 0.2rem; }}
+  .graph-lbl {{ font-size: 12.5px; font-weight: 700; }}
+  .graph-sub {{ font-size: 10.5px; font-weight: 400; }}
+  .graph-prog-lab {{ font-size: 10px; font-weight: 700; }}
   .w-log {{ background: #1e1e22; color: #d6d6d6; padding: 0.5rem 0.7rem; border-radius: 4px; font-family: ui-monospace, Menlo, monospace; font-size: 0.78rem; line-height: 1.45; white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow: auto; margin: 0.2rem 0 0; }}
   .w-diff {{ background: #1e1e22; padding: 0.5rem 0.7rem; border-radius: 4px; font-family: ui-monospace, Menlo, monospace; font-size: 0.78rem; line-height: 1.45; white-space: pre-wrap; max-height: 260px; overflow: auto; margin: 0.2rem 0 0; }}
   .w-diff span {{ display: block; }}
@@ -4365,8 +7169,12 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
   .dash-hdr {{ position: sticky; top: 0; z-index: 100; display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; padding: 0.8rem 1.2rem; margin: 0 -1rem 1rem; background: hsl(273,60%,45%); color: #fff; }}
   .dash-hdr h1 {{ margin: 0; font-size: 1.15rem; flex: 1 1 auto; min-width: 0; color: #fff; }}
   .hdr-actions {{ display: flex; align-items: center; gap: 0.5rem; flex: 0 0 auto; }}
-  .hdr-actions .proj-badge, .hdr-actions .sess-link, .hdr-actions .hub-link, .hdr-actions button {{ color: #fff; text-decoration: none; cursor: pointer; white-space: nowrap; background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.35); padding: 0.2rem 0.6rem; border-radius: 6px; font-size: 0.85rem; }}
+  .hdr-actions .proj-badge, .hdr-actions .sess-link, .hdr-actions .hub-link, .hdr-actions button {{ display: inline-flex; align-items: center; line-height: 1; color: #fff; text-decoration: none; cursor: pointer; white-space: nowrap; background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.35); padding: 0.2rem 0.6rem; border-radius: 6px; font-size: 0.85rem; }}
   .hdr-actions .proj-badge:hover, .hdr-actions .sess-link:hover, .hdr-actions .hub-link:hover, .hdr-actions button:hover {{ background: rgba(255,255,255,0.28); text-decoration: underline; }}
+  /* Issue214: 🔗 복사·✕ 닫기 아이콘 버튼 — 정사각 정렬 + 닫기는 맨 오른쪽 분리 */
+  .hdr-actions .copy-link, .hdr-actions .close-btn {{ justify-content: center; padding: 0.2rem 0.5rem; }}
+  .hdr-actions .close-btn {{ margin-left: 0.6rem; }}
+  .hdr-actions .close-btn:hover {{ background: rgba(255,90,90,0.45); border-color: #fff; text-decoration: none; }}
   /* Issue138: 컨트롤바 */
   .dctl-bar {{ display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; padding: 0.6rem 0.8rem; background: #f5f3fa; border: 1px solid #e0d8f0; border-radius: 8px; }}
   .dctl {{ font-size: 0.88rem; padding: 0.35rem 0.8rem; border-radius: 6px; cursor: pointer; border: 1px solid #ccc; background: #fff; font-weight: 600; }}
@@ -4394,6 +7202,10 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
 </body>
 </html>"""
         body = page.encode("utf-8")
+        # Issue216: dash 헤더 닫기(✕)도 쉘 탭을 닫도록 window.close override 쉼 주입.
+        body = _inject_before_body_end(body, CLOSE_SHIM)
+        # Issue220: dash 헤더 🗂 Hub 링크 클릭 → 쉘 home 탭 전환.
+        body = _inject_before_body_end(body, HUB_LINK_SHIM)
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -4443,6 +7255,27 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             self._send_json(400, {"error": "live registration requires integer pid"})
             return
         live_label = str(body.get("label", "")).strip() or None  # tmux window/topic 등 카드 제목
+        # Issue282: sid-sticky — 세션 중 cd 로 cwd 가 드리프트해도 최초 등록 프로젝트에
+        #   고정. hook 이 세션 현재 cwd 를 보내므로 cd 후 heartbeat 가 다른 cwd_hash 로
+        #   재등록돼 카드가 2장으로 갈라졌다. 동일 sid 가 이미 다른 hash 아래 존재하면
+        #   그 프로젝트의 cwd 로 치환해 기존 (h, sid) key 를 재사용한다
+        #   (sid 는 uuid4 — 프로젝트 간 우연 충돌 없음. projects[h] 덮어쓰기도 방지).
+        if reg_ctype == "live":
+            h_new = cwd_hash(cwd)
+            h_prev = None
+            with sessions_lock:
+                for (h_old, s_old) in sessions.keys():
+                    if s_old == sid and h_old != h_new:
+                        h_prev = h_old
+                        break
+            if h_prev:
+                with projects_lock:
+                    p_old = projects.get(h_prev)
+                prev_cwd = (p_old or {}).get("cwd", "")
+                if prev_cwd:
+                    log(f"POST /session/register — sid-sticky remap (Issue282): "
+                        f"sid={sid} cwd {cwd} → {prev_cwd}")
+                    cwd = prev_cwd
         h = cwd_hash(cwd)
         meta = project_meta(cwd)
         # 프로젝트 자동 등록 (기존 /register 동일 로직)
@@ -4487,9 +7320,20 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
                 if reg_ctype == "live":
                     entry["content_type"] = "live"
             # Issue98: live 메타 기록 (pid·label) — register/heartbeat 마다 갱신.
+            need_gc_meta = False
             if reg_ctype == "live":
                 entry["live_pid"] = live_pid
                 entry["live_label"] = live_label
+                # Issue280: 컨테이너 메타는 pid 당 1회 캡처 (heartbeat 마다 ps/tmux 재실행 방지)
+                gm = entry.get("gc_meta")
+                need_gc_meta = not gm or gm.get("for_pid") != live_pid
+        if need_gc_meta:
+            # Issue280: subprocess 호출은 sessions_lock 밖에서 — 캡처 후 재획득 저장
+            gm = _capture_gc_meta(live_pid)
+            with sessions_lock:
+                e2 = sessions.get((h, sid))
+                if e2 is not None:
+                    e2["gc_meta"] = gm
         persist_sessions()
         url = f"http://{HOST}:{PORT}/s/{h}/{sid}?token={token}"
         # Issue21: SSE subscriber 수 회신 → 클라이언트 hook 이 first_open 정확 판정
@@ -4567,6 +7411,56 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         log(f"POST /session/update — hash={h} sid={sid} mode={mode} ctype={ctype} clients={clients}")
         self._send_json(200, {"ok": True, "mode": mode, "clients": clients})
 
+    def _dash_entry_for_sid(self, cwd_h, cwd, sid):
+        """Issue229: DASH_REGISTRY 에 등록된 dash 중 (cwd_h, sid) 매칭 파일을 풀 파싱해
+        sessions 엔트리 형태로 합성 반환. dashboard runner 는 dash.yaml 파일만 갱신하고
+        /session/register 로 sessions dict 에 push 하지 않으므로(파일 기반·HTTP 없음),
+        /s/{sid}/data 가 sessions 에서 못 찾는다. registry(디스크)에서 직접 읽어 메운다.
+        반환: sessions entry 호환 dict(content_type=dashboard, content=full dash JSON) 또는 None."""
+        if not sid:
+            return None
+        try:
+            with registry_lock:
+                dash_entries = load_registry(DASH_REGISTRY)
+        except Exception:
+            return None
+        for e in dash_entries:
+            if e.get("sid", "") != sid:
+                continue
+            ecwd = os.path.normpath(e.get("cwd", "") or "")
+            if ecwd and cwd_hash(ecwd) != cwd_h:
+                continue
+            path = e.get("path", "")
+            if not path:
+                continue
+            try:
+                with open(path, encoding="utf-8") as f:
+                    raw = f.read()
+                if path.endswith(".dash.json"):
+                    data = json.loads(raw)
+                else:
+                    try:
+                        import yaml  # type: ignore
+                        data = yaml.safe_load(raw)
+                    except ImportError:
+                        data = self._parse_dash_yaml(raw)
+                if not isinstance(data, dict):
+                    return None
+                st = os.stat(path)
+                return {
+                    "content_type": "dashboard",
+                    # SPA reload() 는 mode 로 렌더 분기 — dashboard 는 "C"(renderDashboard).
+                    #   "A" 면 raw content 를 그대로 innerHTML 덤프(JSON 문자열 노출). (Issue229)
+                    "content": json.dumps(data, ensure_ascii=False),
+                    "mode": "C",
+                    "updated": st.st_mtime,
+                    "capabilities": {},
+                }
+            except Exception as ex:
+                log(f"_dash_entry_for_sid fail {path}: {ex}")
+                return None
+        return None
+
     def _handle_session_get(self, parsed):
         """GET /s/{cwd_hash}/{sid}?token=  → SPA shell HTML
         GET /s/{cwd_hash}/{sid}/data?token= → session JSON
@@ -4602,6 +7496,10 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             with sessions_lock:
                 entry = sessions.get((cwd_h, sid))
             if not entry:
+                # Issue229: 디스크 dashboard(runner 가 파일만 갱신, sessions 미push)는
+                #   registry 에서 sid 매칭 dash 파일을 직접 읽어 serve (SPA "대기 중" 해소).
+                entry = self._dash_entry_for_sid(cwd_h, cwd, sid)
+            if not entry:
                 self._send_json(404, {"error": "session not registered"})
                 return
             content_out = entry.get("content", "")
@@ -4618,12 +7516,26 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
                         content_out = json.dumps(d, ensure_ascii=False)
                     except Exception:
                         pass
+            ctype_out = entry.get("content_type", "response")
+            mode_out = entry.get("mode", "A")
+            # Issue219: 푸시된 렌더 content 가 비어 있으면(터미널 CLI 세션 등 — content_type
+            #   "live") JSONL 대화 transcript 로 fallback. '대화 내용 보기' 충족.
+            if not content_out:
+                tr = _session_transcript_html(cwd, sid)
+                if tr:
+                    content_out = tr
+                    ctype_out = "response"
+                    mode_out = "A"
+            gm = entry.get("gc_meta") or {}
             self._send_json(200, {
-                "content_type": entry.get("content_type", "response"),
+                "content_type": ctype_out,
                 "content": content_out,
-                "mode": entry.get("mode", "A"),
+                "mode": mode_out,
                 "updated": entry.get("updated", 0),
                 "capabilities": entry.get("capabilities", {}),
+                # Issue280: GC 버튼 활성 판정 — kill 대상 정보 보유 여부
+                "can_gc": bool(entry.get("live_pid") or gm.get("shell_pid")
+                               or gm.get("tmux_pane")),
             })
             return
         # SPA shell HTML serve
@@ -4789,8 +7701,12 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             self._send_json(400, {"error": err})
             return
         action_type = body.get("action_type")
-        if action_type not in ("notify", "link", "control"):
+        if action_type not in ("notify", "link", "control", "terminate"):
             self._send_json(400, {"error": f"invalid action_type: {action_type!r}"})
+            return
+        # Issue280: terminate = 세션 GC — 서버가 직접 kill 체인 실행
+        if action_type == "terminate":
+            self._handle_session_terminate(cwd_h, sid, body, p)
             return
         # link/control 은 클라이언트 측에서 처리, server 는 notify 인 경우에만 inbox 저장
         if action_type != "notify":
@@ -4814,6 +7730,62 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             json.dump(record, f, ensure_ascii=False, indent=2)
         log(f"POST /s/{cwd_h}/{sid}/action — saved {out_path}")
         self._send_json(200, {"ok": True, "path": out_path, "ts": ts})
+
+    def _handle_session_terminate(self, cwd_h: str, sid: str, body: dict, proj: dict):
+        """Issue280: 세션 GC — /s/{h}/{sid}/action action_type=terminate.
+        kill 대상은 sessions entry 의 live_pid·gc_meta 만 (body pid 수신 금지).
+        message 는 실전달 없이 레코드로만 저장 (향후 분석용).
+        절차: plan → execute → 분석 로그(JSONL)+inbox 레코드 → tombstone·prune → SSE."""
+        with sessions_lock:
+            entry = sessions.get((cwd_h, sid))
+            snap = dict(entry) if entry else None
+        if not snap:
+            self._send_json(404, {"error": "session not registered"})
+            return
+        steps = _gc_plan(snap)
+        if not steps:
+            self._send_json(409, {"error": "no GC target — live_pid/gc_meta 미등록 세션"})
+            return
+        message = str(body.get("message", "") or "")[:2000]
+        stages = _gc_execute(steps)
+        ok_any = any(s.get("ok") for s in stages)
+        method = ("tmux-pane" if any(s["step"] == "tmux-kill-pane" and s.get("ok")
+                                     for s in stages) else "signal")
+        ts = int(time.time() * 1000)
+        record = {
+            "ts": ts, "cwd_hash": cwd_h, "sid": sid, "cwd": proj.get("cwd", ""),
+            "live_pid": snap.get("live_pid"), "gc_meta": snap.get("gc_meta"),
+            "method": method, "ok": ok_any, "stages": stages, "message": message,
+            "client": self.client_address[0] if self.client_address else None,
+        }
+        # 분석용 GC 로그 (JSONL append — server.log 와 동일 STATE_DIR)
+        try:
+            os.makedirs(STATE_DIR, exist_ok=True)
+            with open(f"{STATE_DIR}/session-gc.jsonl", "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception as ex:
+            log(f"session-gc.jsonl append 실패: {ex}", "WARNING")
+        # inbox terminate 레코드 — 세션이 아직 폴링 중이면 회수 가능 + 분석 원천
+        try:
+            inbox = f"{INBOX_ROOT}/{cwd_h}/{sid}"
+            os.makedirs(inbox, exist_ok=True)
+            with open(f"{inbox}/action-{ts}.json", "w", encoding="utf-8") as f:
+                json.dump({"sid": sid, "ts": ts, "source": "session_action",
+                           "action_type": "terminate", "message": message,
+                           "method": method, "stages": stages},
+                          f, ensure_ascii=False, indent=2)
+        except Exception as ex:
+            log(f"terminate inbox 레코드 실패: {ex}", "WARNING")
+        # tombstone + prune — 활성 카드 즉시 소멸·heartbeat 재등록 부활 차단 (Issue135 재사용)
+        with sessions_lock:
+            pruned = sessions.pop((cwd_h, sid), None) is not None
+        _live_dismiss_add(cwd_h, sid)
+        if pruned:
+            persist_sessions()
+        sse_broadcast(cwd_h, "session_terminated", {"sid": sid, "method": method}, sid=sid)
+        log(f"POST /s/{cwd_h}/{sid}/action terminate — ok={ok_any} method={method} "
+            f"stages={len(stages)}")
+        self._send_json(200, {"ok": ok_any, "method": method, "stages": stages, "ts": ts})
 
     def _handle_session_preview(self, parsed):
         """Issue29 Phase 6: POST /session/preview?cwd=&token= body={content_type, content}.
@@ -4959,9 +7931,12 @@ HUB_HTML = """<!doctype html>
 * { box-sizing: border-box; }
 body { font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
   background: var(--bg); color: var(--fg); margin: 0; padding: 0; line-height: 1.5; }
-header { background: linear-gradient(90deg, hsl(220,60%,45%), hsl(280,60%,45%)); color: white; padding: 1rem 1.5rem;
+header { background: {HUB_HEADER_GRAD}; color: white; padding: 1rem 1.5rem;
   display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
 header .hub-logo { height: 3em; flex: 0 0 auto; }
+/* Issue242: 서버 이모지 로고 — fPm 아이콘(img) 대체. img 3em 높이에 맞춤. */
+header .hub-logo.hub-emoji { height: auto; font-size: 2.5rem; line-height: 1; display: flex; align-items: center;
+  filter: drop-shadow(0 1px 2px rgba(0,0,0,0.3)); }
 header .header-text { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; }
 header h1 { margin: 0; font-size: 1.3rem; }
 header h1 #hub-headline { font-weight: 400; opacity: 0.92; font-size: 0.92em; }
@@ -4988,6 +7963,69 @@ span.imp-chip:hover { filter: brightness(1.12); }
 .btn-settings { flex: none; background: transparent; border: none;
   color: white; padding: 0.4rem 0.5rem; border-radius: 6px; font-size: 1.1em; cursor: pointer; line-height: 1; }
 .btn-settings:hover { background: rgba(255,255,255,0.2); }
+/* 설정 모달 헤더 KO/EN 뷰 토글 (다국어 보기 — 저장값 미변경, 기본=서버 language) */
+.set-lang { display: inline-flex; border: 1px solid rgba(255,255,255,0.55); border-radius: 6px; overflow: hidden; margin-right: 0.6rem; }
+.set-lang button { background: transparent; border: none; color: #fff; padding: 0.12rem 0.55rem; font-size: 0.72em; font-weight: 700; cursor: pointer; line-height: 1.7; }
+.set-lang button.active { background: rgba(255,255,255,0.92); color: #333; }
+/* Issue168: 설정 모달 (3탭) */
+/* Issue205/207: 탭바를 modal-body 밖(head 직후 비스크롤 형제)에 배치 → 자연 고정. 음수마진 sticky 폐기 */
+.set-tabs { display: flex; gap: 0.3rem; border-bottom: 1px solid var(--border);
+  background: var(--bg); padding: 0 1.1rem; flex: 0 0 auto; }
+.set-tab { background: transparent; border: none; border-bottom: 2px solid transparent; color: var(--muted);
+  padding: 0.5rem 0.9rem; font-size: 0.95em; cursor: pointer; }
+.set-tab:hover { color: var(--fg); }
+.set-tab.active { color: var(--fg); border-bottom-color: hsl(220,80%,55%); font-weight: 600; }
+/* Issue: 탭 전환 시 모달 높이 점프 제거 — 3 pane 을 같은 grid cell 에 적층하여
+   숨은 pane 도 높이를 점유 → modal-body 높이 = 가장 높은 탭 기준으로 고정 */
+.set-pane { grid-area: 1 / 1; visibility: hidden; }
+.set-pane.active { visibility: visible; }
+/* 키 라벨 좌측정렬 + 컨트롤 42% 컬럼 이후 배치 · 행 높이 균일 (Issue261) */
+.set-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.7rem; padding: 0.6rem 0; border-bottom: 1px dashed var(--border); min-height: 2.6em; }
+.set-row:last-child { border-bottom: none; }
+.set-row label.set-key { flex: 0 0 42%; text-align: left; font-family: ui-monospace, monospace; font-size: 0.9em; }
+/* Issue208: 키의 `_` 를 배경색과 동색으로 숨김(비가시). 문자 유지 → 복붙 시 실제 키명 보존 */
+.set-row label.set-key .set-us { color: var(--bg); }
+/* 기본값에서 변경된 항목 연필 마커 (라벨 우측 = 중심선 옆) */
+.set-row label.set-key .set-pencil { color: #c60; margin-left: 0.35em; font-size: 0.92em; cursor: help; }
+.set-row .set-input { flex: 0 0 auto; min-height: 1.9em; display: inline-flex; align-items: center; gap: 0.3rem; }
+.set-row .set-input input[type=number] { width: 7em; }
+.set-row .set-input input[type=text] { width: 22em; max-width: 100%; }
+.set-row .set-input select, .set-row .set-input input { padding: 0.25rem 0.4rem; border: 1px solid var(--border);
+  border-radius: 5px; background: var(--bg); color: var(--fg); font-size: 0.9em; }
+/* Issue196: 설명을 컨트롤 아래 전체폭(2행)으로 — 단어당 줄바꿈 깨짐 해소 */
+.set-row .set-desc { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  width: 1.35em; height: 1.35em; font-size: 0.78em; font-weight: 700; color: var(--muted);
+  border: 1px solid var(--border); border-radius: 50%; cursor: help; user-select: none; }
+.set-row .set-badge { flex: 0 0 auto; margin-left: auto; font-size: 0.72em; padding: 0.05rem 0.4rem; border-radius: 9px; white-space: nowrap; }
+.set-badge.b-auto { background: #d3f0d3; color: #1a5d1a; }
+.set-badge.b-hook { background: #d0e4f7; color: #134a78; }
+.set-badge.b-restart { background: #fbe3c5; color: #8a4b08; }
+.set-badge { cursor: help; }
+/* Issue168: 배지 hover 즉시 풍선 도움말 (position:fixed → modal-body overflow 비절단, 배지 위쪽 표시) */
+#set-tip { position: fixed; z-index: 3000; max-width: 270px; background: #222; color: #fff;
+  padding: 0.5rem 0.7rem; border-radius: 7px; font-size: 0.8rem; line-height: 1.55; text-align: left;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.35); pointer-events: none; white-space: normal; }
+#set-tip[hidden] { display: none; }
+#set-tip::after { content: ''; position: absolute; top: 100%; border: 7px solid transparent;
+  border-top-color: #222; left: var(--tip-arrow, 50%); transform: translateX(-50%); }
+/* 토글 스위치 */
+.set-sw { width: 2.4em; height: 1.3em; border-radius: 999px; border: none; padding: 0; cursor: pointer;
+  position: relative; background: rgba(128,128,128,0.45); transition: background 0.15s; }
+.set-sw.on { background: #2ca02c; }
+.set-sw .set-sw-knob { width: 1em; height: 1em; border-radius: 50%; background: #fff; position: absolute;
+  top: 50%; transform: translateY(-50%); left: 0.15em; transition: left 0.15s; box-shadow: 0 1px 2px rgba(0,0,0,0.3); }
+.set-sw.on .set-sw-knob { left: calc(100% - 1.15em); }
+.set-warn { background: rgba(250,180,80,0.15); border: 1px solid rgba(200,120,20,0.4); border-radius: 6px;
+  padding: 0.5rem 0.7rem; font-size: 0.8em; margin-bottom: 0.8rem; line-height: 1.5; }
+.set-ok-btn { flex: none; background: #2ca02c; color: #fff; border: 1px solid #1a7a1a; border-radius: 5px;
+  padding: 0.4rem 1.1rem; font-size: 0.95em; cursor: pointer; }
+.set-ok-btn:hover { background: #1a7a1a; }
+.set-ok-btn:disabled { opacity: 0.5; cursor: default; }
+@media (prefers-color-scheme: dark) {
+  .set-badge.b-auto { background: #1e3a1e; color: #8fd98f; }
+  .set-badge.b-hook { background: #16314a; color: #8ec6f0; }
+  .set-badge.b-restart { background: #4a3410; color: #e0a860; }
+}
 /* Project List 팝업 모달 */
 .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 2000;
   display: flex; align-items: center; justify-content: center; }
@@ -5001,6 +8039,8 @@ span.imp-chip:hover { filter: brightness(1.12); }
   width: 1.9em; height: 1.9em; border-radius: 50%; cursor: pointer; font-size: 0.9em; line-height: 1; }
 .modal-close:hover { background: #c33; border-color: #c33; }
 .modal-body { padding: 0.9rem 1.1rem; overflow-y: auto; }
+/* 설정 모달 body: pane 적층(grid) → 탭 전환해도 높이 불변(가장 높은 탭 기준) */
+#set-modal .modal-body { display: grid; align-items: start; }
 .modal-foot { padding: 0.5rem 1.1rem; font-size: 0.78em; color: var(--muted); border-top: 1px solid var(--border);
   display: flex; justify-content: space-between; align-items: center; gap: 0.8rem; }
 .pl-edit-btn { flex: none; background: #36c; color: white; border: 1px solid #258; border-radius: 4px;
@@ -5044,7 +8084,7 @@ span.imp-chip:hover { filter: brightness(1.12); }
 main { padding: 1.5rem; max-width: 1600px; margin: 0 auto; display: flex; gap: 1rem; align-items: flex-start; }
 .hub-main { flex: 2; min-width: 0; }
 .status-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; font-size: 0.9em; color: var(--muted); }
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1.4rem; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.4rem; }
 .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; transition: transform 0.15s; }
 .card:hover { transform: translateY(-2px); }
 /* Issue28: peacock.color (파스텔) → 어두운 글자 기본 */
@@ -5079,6 +8119,9 @@ main { padding: 1.5rem; max-width: 1600px; margin: 0 auto; display: flex; gap: 1
 .actions { margin-top: 0.6rem; display: flex; gap: 0.4rem; }
 .actions a, .actions button { font-size: 0.8em; padding: 0.3rem 0.6rem; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--fg); cursor: pointer; text-decoration: none; white-space: nowrap; flex-shrink: 0; }
 .actions a:hover { background: var(--card); }
+/* Issue169: 열기(↗) 이모지 버튼 + 🆚 세션 버튼 */
+.actions .doc-open { font-size: 1em; line-height: 1; }
+.actions .doc-sess { font-weight: 600; }
 .actions .stop { background: #c33; color: white; border-color: #c33; }
 .actions .stop:hover { background: #a22; }
 .actions .approve-btn { background: #e8a020; color: white; border-color: #c8861a; font-weight: 600; }
@@ -5127,7 +8170,11 @@ main { padding: 1.5rem; max-width: 1600px; margin: 0 auto; display: flex; gap: 1
 .card.live[data-cwd] { transition: box-shadow .12s, transform .12s; }
 .card.live[data-cwd]:hover { box-shadow: 0 2px 10px rgba(0,0,0,.18); transform: translateY(-1px); }
 /* Issue101: 프로젝트별 그룹 카드 — head 에 세션 수 배지, body 는 세션 topic 리스트 */
-.card-head .name .live-badge { background: rgba(0,0,0,0.16); color: #1a1a1a; padding: 0.02rem 0.42rem; border-radius: 10px; font-size: 0.78em; font-weight: 600; margin-left: 0.3rem; }
+/* Issue284: live-badge 를 .name 밖 .head-right 로 이동(🗺️ 와 함께 우측 정렬) — 셀렉터에서 .name 제거 */
+.card-head .live-badge { background: rgba(0,0,0,0.16); color: #1a1a1a; padding: 0.02rem 0.42rem; border-radius: 10px; font-size: 0.78em; font-weight: 600; }
+/* Issue284: 이슈맵(Issue_map.htm) 바로가기 — 숫자 배지 왼쪽 */
+.card-head .issue-map { text-decoration: none; font-size: 0.95em; line-height: 1; opacity: 0.85; }
+.card-head .issue-map:hover { opacity: 1; transform: scale(1.15); }
 .live-list { list-style: none; margin: 0; padding: 0; }
 .live-item { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0; border-top: 1px solid var(--border); }
 .live-item:first-child { border-top: none; }
@@ -5141,11 +8188,27 @@ main { padding: 1.5rem; max-width: 1600px; margin: 0 auto; display: flex; gap: 1
 /* Issue131: 세션 행 클릭 → VSCode 세션 탭 포커스. 클릭 가능 시각화 */
 .live-item[data-sid] { cursor: pointer; border-radius: 5px; margin: 0 -0.25rem; padding-left: 0.25rem; padding-right: 0.25rem; transition: background .1s; }
 .live-item[data-sid]:hover { background: rgba(127,127,127,.12); }
+/* Issue177: 세션 출처 배지 (🆚 VSCode / ⌨️ 터미널) — topic 앞 작은 아이콘 */
+.live-origin { flex-shrink: 0; font-size: 0.82em; line-height: 1; opacity: 0.85; cursor: help; position: relative; }
+/* Issue273: 메인 세션 모델 신호등 배지 (🟣 opus / 🔵 sonnet / 🟢 haiku / 🟠 fable) — origin 배지 옆 */
+.live-model { flex-shrink: 0; font-size: 0.78em; line-height: 1; cursor: help; margin-left: -0.25rem; position: relative; }
+/* Issue221: 네이티브 title 툴팁은 브라우저가 지연(~1.5~2.5s) 소유·조정 불가 → data-tip 커스텀 툴팁으로 즉시 표시(지연 0)
+   Issue281: CSS ::after(position:absolute)는 조상 .card{overflow:hidden}에 잘림 → #live-tip(position:fixed, body 직속)로 전환 */
+#live-tip { position: fixed; z-index: 3000; max-width: 270px; background: #222; color: #fff;
+  padding: 3px 8px; border-radius: 5px; font-size: 11px; line-height: 1.3; white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0,0,0,.35); pointer-events: none; font-weight: 400; }
+#live-tip[hidden] { display: none; }
+.live-item[data-origin="terminal"] { cursor: pointer; }
+.live-item[data-origin="terminal"]:hover { background: rgba(127,127,127,.12); }
 .live-acts { display: flex; align-items: center; gap: 0.3rem; flex-shrink: 0; }
 .live-acts .approve-btn { background: #e8a020; color: #fff; border: 1px solid #c8861a; font-weight: 600; font-size: 0.76em; padding: 0.12rem 0.45rem; border-radius: 4px; cursor: pointer; }
 .live-acts .approve-btn:hover { background: #c8861a; }
 .live-acts .card-close { width: 1.5em; height: 1.5em; padding: 0; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; border: 1px solid var(--border); background: var(--bg); color: var(--muted); cursor: pointer; font-size: 0.78em; line-height: 1; }
 .live-acts .card-close:hover { background: #c33; color: #fff; border-color: #c33; }
+/* Issue276: 세션 ID 복사 버튼 — X 왼쪽, 초록 hover/복사완료 피드백 */
+.live-acts .copy-sid { width: 1.5em; height: 1.5em; padding: 0; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; border: 1px solid var(--border); background: var(--bg); color: var(--muted); cursor: pointer; font-size: 0.72em; line-height: 1; }
+.live-acts .copy-sid:hover { background: #2a9d5c; color: #fff; border-color: #2a9d5c; }
+.live-acts .copy-sid.copied { background: #2a9d5c; color: #fff; border-color: #2a9d5c; }
 .live-meta { font-size: 0.8em; color: var(--muted); margin: 0.2rem 0; }
 .live-meta code { background: var(--code-bg); padding: 0.05rem 0.3rem; border-radius: 3px; font-size: 0.9em; }
 /* Issue40: htm 스킬 단발 출력 카드 — 보라색 좌측 바 */
@@ -5181,12 +8244,13 @@ section.sec-collapsed .htm-bar-right { display: none; }
   border: 1px solid var(--border); border-radius: 8px; background: var(--card); }
 .hub-feed.hidden { display: none; }
 .feed-head { display: flex; justify-content: space-between; align-items: center;
-  padding: 0.6rem 0.8rem; border-bottom: 1px solid var(--border);
+  gap: 0.3rem; padding: 0.6rem 0.5rem; border-bottom: 1px solid var(--border);
   position: sticky; top: 0; background: var(--card); z-index: 1; }
-.feed-title-label { font-weight: 600; font-size: 0.95em; }
-.feed-actions { display: flex; gap: 0.3rem; align-items: center; }
+.feed-title-label { font-weight: 600; font-size: 0.95em; white-space: nowrap;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.feed-actions { display: flex; gap: 0.2rem; align-items: center; flex-shrink: 0; }
 #feed-toggle, #feed-collapse-all, #feed-keep, #feed-clear { background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
-  cursor: pointer; padding: 0.2rem 0.55rem; font-size: 0.8em; color: var(--fg); }
+  cursor: pointer; padding: 0.2rem 0.4rem; font-size: 0.8em; color: var(--fg); white-space: nowrap; }
 #feed-toggle:hover, #feed-collapse-all:hover, #feed-keep:hover { background: var(--code-bg); }
 #feed-clear:hover { background: #fee2e2; border-color: #fca5a5; }
 .feed-list { padding: 0.5rem; display: flex; flex-direction: column; gap: 0.4rem; }
@@ -5205,12 +8269,12 @@ section.sec-collapsed .htm-bar-right { display: none; }
 .feed-detail { display: none; padding: 0.45rem 0.65rem 0.6rem; border-top: 1px dashed var(--border);
   font-size: 0.82em; color: var(--muted); white-space: pre-wrap; word-break: break-word; }
 .feed-item.open .feed-detail { display: block; }
-.feed-strip { display: none; flex: none; align-self: stretch; cursor: pointer;
-  background: var(--card); border: 1px solid var(--border); border-radius: 6px;
-  writing-mode: vertical-rl; text-align: center; padding: 0.6rem 0.35rem;
-  color: var(--muted); font-size: 0.82em; }
-.feed-strip:hover { background: var(--code-bg); }
-.hub-feed.hidden + .feed-strip { display: block; }
+.hub-controls .btn-feed-vis { background: var(--bg); border: 1px solid var(--border);
+  border-radius: 4px; cursor: pointer; padding: 0.25rem 0.5rem; font-size: 0.95em; line-height: 1;
+  transition: background 80ms, transform 80ms; }
+.hub-controls .btn-feed-vis:hover { background: var(--code-bg); }
+/* Issue279: 새 피드 도착 깜빡 프레임 — 배경 녹색 + 이모지 15% 확대 */
+.hub-controls .btn-feed-vis.blinking { background: #22c55e; border-color: #16a34a; transform: scale(1.15); }
 @media (max-width: 900px) {
   main { flex-direction: column; }
   .hub-main, .hub-feed { flex: none; width: 100%; }
@@ -5220,14 +8284,14 @@ section.sec-collapsed .htm-bar-right { display: none; }
 </head>
 <body>
 <header>
-  <img class="hub-logo" src="/fpm-icon.png" alt="fPm">
+  {HUB_LOGO}
   <div class="header-text">
     <h1>fPm Hub<span id="hub-headline"></span></h1>
-    <div class="sub" id="hub-important">로딩 중...</div>
+    <div class="sub" id="hub-important">{T:common.loading}</div>
   </div>
   <div class="header-actions">
-    <button class="btn-project-list" id="btn-project-list" title="Projects.md 프로젝트 목록 보기">📋 Projects</button>
-    <button class="btn-settings" id="btn-settings" title="hub_setting.yml 설정파일 열기">⚙️</button>
+    <button class="btn-project-list" id="btn-project-list" title="{T:projectList.openTitle}">📋 Projects</button>
+    <button class="btn-settings" id="btn-settings" title="{T:settings.openBtnTitle}">⚙️</button>
   </div>
 </header>
 <main>
@@ -5236,45 +8300,46 @@ section.sec-collapsed .htm-bar-right { display: none; }
   <span id="hub-stats">—</span>
   <span class="hub-controls">
     <span id="updated" style="font-size:0.85em;color:var(--muted)">—</span>
-    <button class="btn-rescan" id="btn-rescan" title="등록 프로젝트 디스크를 1회 수동 스캔하여 누락된 htm/dash 산출물을 registry 에 수거">🔄 디스크 재스캔</button>
+    <button class="btn-rescan" id="btn-rescan" title="{T:statusbar.rescanTitle}">{T:statusbar.rescan}</button>
+    <button class="btn-feed-vis" id="feed-vis-toggle" title="{T:feed.visToggleTitle}">🙉</button>
   </span>
 </div>
 <div class="error-bar" id="error-bar"></div>
 <section id="live-sessions-section" style="display:none">
-  <h2 class="section-title"><button class="sec-toggle" data-sec="live-sessions-section" title="섹션 접기">▾</button>📡 활성 세션 <span id="live-count" class="count-badge"></span><button class="btn-zombie" id="btn-zombie" title="빈(프롬프트 전) 좀비 claude 세션을 일괄 종료 후 새로고침 — 작업 중(제목 있는) 세션·dashboard 는 보존">🧟 좀비 킬러</button></h2>
+  <h2 class="section-title"><button class="sec-toggle" data-sec="live-sessions-section" title="{T:common.collapseSection}">▾</button>{T:liveSessions.title} <span id="live-count" class="count-badge"></span><button class="btn-zombie" id="btn-zombie" title="{T:liveSessions.zombieTitle}">{T:liveSessions.zombie}</button></h2>
   <div class="grid" id="live-grid"></div>
 </section>
 <section id="dashboard-section" style="display:none">
   <div class="dash-section-bar">
-    <h2 class="section-title"><button class="sec-toggle" data-sec="dashboard-section" title="섹션 접기">▾</button>📊 dashboard</h2>
+    <h2 class="section-title"><button class="sec-toggle" data-sec="dashboard-section" title="{T:common.collapseSection}">▾</button>📊 dashboard</h2>
     <span class="dash-controls">
       <label>filter: <select id="filter-status">
-        <option value="all" selected>모두 보기</option>
-        <option value="running">활성만</option>
+        <option value="all" selected>{T:dashboard.filter.all}</option>
+        <option value="running">{T:dashboard.filter.running}</option>
         <option value="done">done</option>
         <option value="stopped">stopped</option>
       </select></label>
       <label>sort: <select id="sort-by">
-        <option value="recent">최근 활동순</option>
-        <option value="name">이름순</option>
-        <option value="progress">진행률순</option>
+        <option value="recent">{T:dashboard.sort.recent}</option>
+        <option value="name">{T:dashboard.sort.name}</option>
+        <option value="progress">{T:dashboard.sort.progress}</option>
       </select></label>
-      <button class="btn-clear" id="btn-clear-done" title="status가 done/stopped/stale 인 dashboard 를 hub 목록(registry)에서 제거 — 실제 파일은 보존">🧹 done/stopped/stale 정리</button>
+      <button class="btn-clear" id="btn-clear-done" title="{T:dashboard.clearTitle}">{T:dashboard.clear}</button>
     </span>
   </div>
-  <div class="grid" id="grid"><div class="empty">로딩 중...</div></div>
+  <div class="grid" id="grid"><div class="empty">{T:common.loading}</div></div>
 </section>
 <section id="htm-docs-section" style="display:none">
   <div class="htm-section-bar">
     <div class="htm-bar-left">
-      <button class="sec-toggle" data-sec="htm-docs-section" title="섹션 접기">▾</button>
-      <span class="htm-bar-title">📄 hub 문서 <span id="htm-count" class="count-badge"></span></span>
-      <select id="htm-prj-filter" class="htm-filter-sel" title="프로젝트 필터 추가 (복수 선택 가능 — 오늘 추가분은 항상 표시)"><option value="">+ 프로젝트 필터</option></select>
+      <button class="sec-toggle" data-sec="htm-docs-section" title="{T:common.collapseSection}">▾</button>
+      <span class="htm-bar-title">{T:htmDocs.title} <span id="htm-count" class="count-badge"></span></span>
+      <select id="htm-prj-filter" class="htm-filter-sel" title="{T:htmDocs.filterTitle}"><option value="">{T:htmDocs.filterAdd}</option></select>
       <div class="htm-filter-chips" id="htm-filter-chips"></div>
     </div>
     <div class="htm-bar-right">
-      <button class="htm-btn keep" id="btn-htm-keep" title="mtime 최신 12개만 hub 목록에 남기고 나머지를 registry 에서 제거 — 실제 .html 파일은 보존">🧹 최신 12개만 남기기</button>
-      <button class="htm-btn" id="btn-htm-clear" title="모든 hub 문서를 hub 목록(registry)에서 제거 — 실제 .html 파일은 보존">🗑 hub 목록 전체 제거</button>
+      <button class="htm-btn keep" id="btn-htm-keep" title="{T:htmDocs.keepTitle}">{T:htmDocs.keep}</button>
+      <button class="htm-btn" id="btn-htm-clear" title="{T:htmDocs.clearTitle}">{T:htmDocs.clear}</button>
     </div>
   </div>
   <div class="grid" id="htm-grid"></div>
@@ -5282,46 +8347,88 @@ section.sec-collapsed .htm-bar-right { display: none; }
 </div>
 <aside class="hub-feed" id="hub-feed">
   <div class="feed-head">
-    <span class="feed-title-label">🔔 활동 피드 <span id="feed-count" class="count-badge"></span></span>
+    <span class="feed-title-label">{T:feed.title} <span id="feed-count" class="count-badge"></span></span>
     <span class="feed-actions">
-      <button id="feed-collapse-all" title="펼친 항목 모두 줄이기">⊟</button>
-      <button id="feed-keep" title="최신 20개만 남기고 나머지 제거">🧹 20개만</button>
-      <button id="feed-clear" title="활동 피드 전체 비우기">🗑 클리어</button>
-      <button id="feed-toggle" title="피드 숨기기">◀ 숨기기</button>
+      <button id="feed-collapse-all" title="{T:feed.collapseAllTitle}">⊟</button>
+      <button id="feed-keep" title="{T:feed.keepTitle}">{T:feed.keep}</button>
+      <button id="feed-clear" title="{T:feed.clearTitle}">{T:feed.clear}</button>
     </span>
   </div>
-  <div class="feed-list" id="feed-list"><div class="feed-empty">로딩 중...</div></div>
+  <div class="feed-list" id="feed-list"><div class="feed-empty">{T:common.loading}</div></div>
 </aside>
-<div class="feed-strip" id="feed-strip" title="활동 피드 보기">▶ 활동 피드</div>
 </main>
 <div class="toast" id="toast"></div>
 <div class="modal-backdrop" id="pl-modal" hidden>
   <div class="modal" role="dialog" aria-modal="true" aria-label="Project List">
     <div class="modal-head">
       <span class="modal-title">📋 Project List</span>
-      <button class="modal-close" id="pl-close" title="닫기 (ESC)" aria-label="닫기">✕</button>
+      <button class="modal-close" id="pl-close" title="{T:settings.close}" aria-label="{T:common.close}">✕</button>
     </div>
-    <div class="modal-body" id="pl-body"><div class="empty">로딩 중...</div></div>
+    <div class="modal-body" id="pl-body"><div class="empty">{T:common.loading}</div></div>
     <div class="modal-foot">
-      <span id="pl-foot-status">hub 토글 → 자동 렌더 on/off · 행 클릭 → 선택 · 더블클릭/버튼 → VSCode 로 열기 · ESC · ✕ · 바깥 클릭으로 닫기</span>
-      <button class="pl-edit-btn" id="pl-edit" title="선택한 프로젝트를 VSCode 로 열기">✏️ VSCode로 열기</button>
+      <span id="pl-foot-status">{T:projectList.footStatus}</span>
+      <button class="pl-edit-btn" id="pl-edit" title="{T:projectList.openSelectedTitle}">{T:projectList.openVscode}</button>
     </div>
   </div>
 </div>
 <div class="modal-backdrop" id="cf-modal" hidden>
-  <div class="modal" role="dialog" aria-modal="true" aria-label="확인" style="width:min(440px,92vw)">
+  <div class="modal" role="dialog" aria-modal="true" aria-label="{T:common.confirm}" style="width:min(440px,92vw)">
     <div class="modal-head">
-      <span class="modal-title">⚠️ 확인</span>
-      <button class="modal-close" id="cf-x" title="취소 (ESC)" aria-label="취소">✕</button>
+      <span class="modal-title">{T:common.confirmTitle}</span>
+      <button class="modal-close" id="cf-x" title="{T:common.cancelEsc}" aria-label="{T:common.cancel}">✕</button>
     </div>
     <div class="modal-body"><p id="cf-msg" style="white-space:pre-line;line-height:1.65;margin:0"></p></div>
     <div class="modal-foot" style="justify-content:flex-end;gap:0.5rem">
-      <button class="cf-btn cf-cancel" id="cf-cancel">취소</button>
-      <button class="cf-btn cf-ok" id="cf-ok">진행</button>
+      <button class="cf-btn cf-cancel" id="cf-cancel">{T:common.cancel}</button>
+      <button class="cf-btn cf-ok" id="cf-ok">{T:common.proceed}</button>
     </div>
   </div>
 </div>
+<div class="modal-backdrop" id="set-modal" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-label="{T:settings.title}" style="width:min(960px,92vw)">
+    <div class="modal-head">
+      <span class="modal-title" data-i18n="settings.title">{T:settings.title}</span>
+      <span style="display:inline-flex;align-items:center">
+        <span class="set-lang" id="set-lang">
+          <button type="button" data-lang="ko">KO</button>
+          <button type="button" data-lang="en">EN</button>
+        </span>
+        <button class="modal-close" id="set-close" title="{T:settings.close}" aria-label="{T:settings.close}">✕</button>
+      </span>
+    </div>
+    <div class="set-tabs" id="set-tabs">
+      <button class="set-tab active" data-tab="basic" data-i18n="settings.tab.basic">{T:settings.tab.basic}</button>
+      <button class="set-tab" data-tab="session" data-i18n="settings.tab.session">{T:settings.tab.session}</button>
+      <button class="set-tab" data-tab="advanced" data-i18n="settings.tab.advanced">{T:settings.tab.advanced}</button>
+    </div>
+    <div class="modal-body">
+      <div class="set-pane active" data-pane="basic" id="set-pane-basic"></div>
+      <div class="set-pane" data-pane="session" id="set-pane-session"></div>
+      <div class="set-pane" data-pane="advanced" id="set-pane-advanced">
+        <div class="set-warn" data-i18n="settings.advancedWarn">{T:settings.advancedWarn}</div>
+      </div>
+    </div>
+    <div class="modal-foot" style="gap:0.5rem">
+      <button class="pl-edit-btn" id="set-open-file" title="{T:settings.openFileTitle}" style="background:#555;border-color:#444" data-i18n="settings.openFile">{T:settings.openFile}</button>
+      <span style="flex:1 1 auto"></span>
+      <button class="cf-btn cf-cancel" id="set-cancel" data-i18n="settings.cancel">{T:settings.cancel}</button>
+      <button class="set-ok-btn" id="set-save" data-i18n="settings.save">{T:settings.save}</button>
+    </div>
+  </div>
+</div>
+<div id="set-tip" hidden></div>
+<div id="live-tip" hidden></div>
 <script>
+// Issue169 Stage8: 클라이언트 i18n — 서버가 주입한 사전(window.__i18n)·언어(window.__lang).
+//   t(key, vars): 사전 조회 후 {var} 보간. 누락 키 → key 자체(가시화). vars 값은 그대로 삽입(호출부에서 escape).
+window.__lang = "{I18N_LANG}";
+window.__i18n = {I18N_JSON};
+window.__i18n_all = {I18N_ALL_JSON};   // {ko:{...}, en:{...}} — 모달 KO/EN 뷰 토글 라이브 재번역용
+function t(key, vars) {
+  let s = (window.__i18n && window.__i18n[key]) || key;
+  if (vars) for (const k in vars) s = s.split('{' + k + '}').join(vars[k]);
+  return s;
+}
 const grid = document.getElementById('grid');
 const updated = document.getElementById('updated');
 const hubStats = document.getElementById('hub-stats');
@@ -5356,8 +8463,9 @@ async function reload() {
     const data = await r.json();
     errorBar.style.display = 'none';
     renderProjects(data.projects || []);
-    renderLiveSessions(data.live_sessions || [], data.live_session_limit);
+    renderLiveSessions(data.live_sessions || [], data.live_session_limit, data.live_session_copy_button);
     renderHtmDocs(data.htm_docs || []);
+    FEED_BLINK_ON_NEW = data.feed_blink_on_new !== false;  // Issue279: 기본 on
     renderFeed(data.hook_feed || []);
     renderHeadline(data.hook_feed || []);
     renderImportant(data.important_events || []);
@@ -5367,7 +8475,7 @@ async function reload() {
     const liveCount = (data.live_sessions || []).length;
     const htmCount = (data.htm_docs || []).length;
     if (hubStats) hubStats.textContent = `${(data.projects||[]).length} project · ${dashCount} dashboard · ${liveCount} live session · ${htmCount} hub doc`;
-    updated.textContent = '갱신: ' + new Date().toLocaleTimeString();
+    updated.textContent = t('statusbar.updated', {time: new Date().toLocaleTimeString()});
   } catch (e) {
     errorBar.textContent = '❌ ' + e.message;
     errorBar.style.display = 'block';
@@ -5377,7 +8485,9 @@ async function reload() {
 // Issue104: "외 N개 더" 로 확장된 카드의 cwd 집합. 5초 reload() 재렌더에도 확장 상태 유지.
 const expandedCards = new Set();
 // Issue33: SSE alive + 최근 갱신 session 노출 (별도 섹션)
-function renderLiveSessions(list, limit) {
+function renderLiveSessions(list, limit, showCopy) {
+  // Issue277: showCopy 미정의(구 payload)면 기본 표시(true). false 일 때만 복사 버튼 숨김.
+  showCopy = (showCopy !== false);
   const sec = document.getElementById('live-sessions-section');
   const lg = document.getElementById('live-grid');
   const lc = document.getElementById('live-count');
@@ -5391,27 +8501,47 @@ function renderLiveSessions(list, limit) {
   const groups = new Map();
   for (const s of list) {
     const key = s.cwd || s.name;
-    if (!groups.has(key)) groups.set(key, {cwd: s.cwd, name: s.name, color: s.color, emoji: s.emoji, items: []});
-    groups.get(key).items.push(s);
+    if (!groups.has(key)) groups.set(key, {cwd: s.cwd, name: s.name, color: s.color, emoji: s.emoji, issueMap: false, items: []});
+    const g = groups.get(key);
+    g.items.push(s);
+    // Issue284: 그룹 내 한 세션이라도 이슈맵 보유면 카드에 🗺️ 노출
+    if (s.issue_map) g.issueMap = true;
   }
   const rowHtml = (s, extraCls) => {
     // Issue66: 큐 dashboard(supervisor_pid 존재)는 graceful remove, 일반은 stop
     const killBtn = s.pid
       ? (s.supervisor_pid
-          ? `<button class="card-close" onclick="removeQueueDash('${escapeHtml(s.cwd)}','${escapeHtml(s.token)}',${s.supervisor_pid},'${escapeHtml(s.sid)}',this)" title="큐 dashboard graceful 제거 (supervisor PID ${s.supervisor_pid})" aria-label="remove">✕</button>`
-          : `<button class="card-close" onclick="stopRunner('${escapeHtml(s.cwd)}','${escapeHtml(s.token)}',${s.pid},this)" title="dashboard runner 종료 (PID ${s.pid})" aria-label="kill">✕</button>`)
+          ? `<button class="card-close" onclick="removeQueueDash('${escapeHtml(s.cwd)}','${escapeHtml(s.token)}',${s.supervisor_pid},'${escapeHtml(s.sid)}',this)" title="${escapeHtml(t('liveSessions.removeQueueTitle', {pid: s.supervisor_pid}))}" aria-label="remove">✕</button>`
+          : `<button class="card-close" onclick="stopRunner('${escapeHtml(s.cwd)}','${escapeHtml(s.token)}',${s.pid},this)" title="${escapeHtml(t('liveSessions.killRunnerTitle', {pid: s.pid}))}" aria-label="kill">✕</button>`)
       // Issue132: pid 없는 live(claude) 세션 — dismiss 버튼(프로세스 kill 아님, 카드만 제거)
-      : `<button class="card-close" onclick="dismissSession('${escapeHtml(s.cwd)}','${escapeHtml(s.token)}','${escapeHtml(s.sid)}',this)" title="이 세션 카드를 hub 목록에서 숨김 (claude 프로세스는 종료하지 않음)" aria-label="dismiss">✕</button>`;
+      : `<button class="card-close" onclick="dismissSession('${escapeHtml(s.cwd)}','${escapeHtml(s.token)}','${escapeHtml(s.sid)}',this)" title="${escapeHtml(t('liveSessions.dismissTitle'))}" aria-label="dismiss">✕</button>`;
+    // Issue276: 세션 ID 복사 버튼 (X 왼쪽). /cc-session id 없이 hub 에서 바로 sid 확보.
+    //   sid 없는 행(가상/집계)은 미표시. 클릭 위임은 closest('button,a') 로 제외되어 행-클릭 미발동.
+    const copyBtn = (s.sid && showCopy)
+      ? `<button class="copy-sid" onclick="copySid('${escapeHtml(s.sid)}',this)" title="${escapeHtml(t('liveSessions.copySidTitle'))}" aria-label="copy session id">📋</button>`
+      : '';
     // Issue66 Phase 7: 큐 dashboard 에 waiting_approval 항목이 있으면 승인 버튼
     const approveBtn = (s.supervisor_pid && s.waiting_approval_item)
-      ? `<button class="approve-btn" onclick="approveQueueItem('${escapeHtml(s.cwd)}','${escapeHtml(s.token)}','${escapeHtml(s.sid)}','${escapeHtml(s.waiting_approval_item)}',this)" title="승인 대기 항목 '${escapeHtml(s.waiting_approval_item)}' 진행 승인">▶ ${escapeHtml(s.waiting_approval_item)}</button>`
+      ? `<button class="approve-btn" onclick="approveQueueItem('${escapeHtml(s.cwd)}','${escapeHtml(s.token)}','${escapeHtml(s.sid)}','${escapeHtml(s.waiting_approval_item)}',this)" title="${escapeHtml(t('liveSessions.approveTitle', {item: s.waiting_approval_item}))}">▶ ${escapeHtml(s.waiting_approval_item)}</button>`
       : '';
     // Issue129: 명령(프롬프트) 전 세션은 title 없음 → "-" 표기 (기존 content_type/'response' fallback 폐기)
     const topic = s.title || '-';
+    // Issue177: 세션 출처 배지 — VSCode(🆚) vs 터미널(⌨️). origin 은 서버가 capabilities.entrypoint 로 판정.
+    //   터미널 세션은 클릭해도 VSCode 재오픈 안 함(아래 위임 핸들러 분기). data-origin 으로 핸들러에 전달.
+    const origin = s.origin === 'vscode' ? 'vscode' : 'terminal';
+    // Issue221: title→data-tip (커스텀 CSS 툴팁, 지연 0). CSS .live-origin[data-tip]:hover::after
+    const originBadge = origin === 'vscode'
+      ? `<span class="live-origin vs" data-tip="VSCode 세션 — 클릭 시 탭 포커스">🆚</span>`
+      : `<span class="live-origin term" data-tip="터미널 세션(CLI) — 클릭 시 대화 내용 보기(뷰어)">⌨️</span>`;
+    // Issue273: 메인 세션 모델 신호등 배지 — 🟣 opus / 🔵 sonnet / 🟢 haiku / 🟠 fable. 미상→무표시.
+    const modelDot = {opus:'🟣', sonnet:'🔵', haiku:'🟢', fable:'🟠'}[s.model_tier] || '';
+    const modelBadge = modelDot
+      ? `<span class="live-model" data-tip="모델: ${escapeHtml(s.model_id || s.model_tier)}">${modelDot}</span>`
+      : '';
     // Issue131: 행 클릭 → 해당 Claude Code 세션 탭 포커스 (data-sid·data-cwd). title 툴팁으로 전체 표시(ellipsis 보완).
     // Issue104: extraCls 로 초과 행에 live-hidden 부여 (접힘 상태 기본 숨김).
     const cls = 'live-item' + (extraCls ? ' ' + extraCls : '');
-    return `<li class="${cls}" data-sid="${escapeHtml(s.sid)}" data-cwd="${escapeHtml(s.cwd)}" title="${escapeHtml(topic)} — 클릭: VSCode 세션 탭 열기"><span class="live-topic">${escapeHtml(topic)}</span><span class="live-acts">${approveBtn}${killBtn}</span></li>`;
+    return `<li class="${cls}" data-sid="${escapeHtml(s.sid)}" data-cwd="${escapeHtml(s.cwd)}" data-origin="${origin}" data-url="${escapeHtml(s.url || '')}" title="${escapeHtml(t('liveSessions.topicTitle', {topic: topic}))}">${originBadge}${modelBadge}<span class="live-topic">${escapeHtml(topic)}</span><span class="live-acts">${approveBtn}${copyBtn}${killBtn}</span></li>`;
   };
   const cards = [...groups.values()].map(g => {
     // Issue129/Issue104: limit 초과 시 첫 (lim-1)개는 표시, 초과분은 live-hidden 으로 렌더(잘라내지 않음)
@@ -5422,7 +8552,7 @@ function renderLiveSessions(list, limit) {
       const hidden = g.items.slice(lim - 1).map(s => rowHtml(s, 'live-hidden')).join('');
       const more = g.items.length - (lim - 1);
       const expanded = expandedCards.has(g.cwd);
-      const label = expanded ? '접기 ▴' : ('외 ' + more + '개 더 ▾');
+      const label = expanded ? t('liveSessions.collapse') : t('liveSessions.moreCount', {n: more});
       const moreRow = `<li class="live-item live-more" data-action="toggle-more" data-more="${more}"><span class="live-topic">${label}</span></li>`;
       rows = visible + hidden + moreRow;
     } else {
@@ -5431,9 +8561,16 @@ function renderLiveSessions(list, limit) {
     // Issue104: expandedCards 에 cwd 가 있으면 expanded 클래스로 초과 행 노출 (5초 reload 재렌더 시 상태 유지).
     const expCls = expandedCards.has(g.cwd) ? ' expanded' : '';
     // Issue101: 카드 클릭 → VSCode 열기(cdfv). 리스트 항목 버튼은 위임 핸들러가 closest('button,a') 로 제외.
-    return `<div class="card live${expCls}" data-cwd="${escapeHtml(g.cwd)}" title="클릭 → VSCode 로 열기">
+    // Issue284: 이슈맵 보유 프로젝트만 🗺️ 렌더(미보유는 아이콘 자체 없음 — 빈 아이콘·404 금지).
+    //   서버가 cwd 로 경로를 재계산하므로 링크는 cwd 만 전달. 카드 클릭(VSCode 열기)은
+    //   위임 핸들러가 closest('button,a') 로 제외하므로 <a> 만으로 충돌 없음.
+    const mapLink = g.issueMap
+      ? `<a class="issue-map" href="/issue-map?cwd=${encodeURIComponent(g.cwd)}" target="_blank" data-title="${escapeHtml(g.name)} — Issue Map" onclick="return fpmOpenInShell(event,this)" title="${escapeHtml(t('liveSessions.issueMapTitle'))}">🗺️</a>`
+      : '';
+    return `<div class="card live${expCls}" data-cwd="${escapeHtml(g.cwd)}" title="{T:common.openVscodeTitle}">
       <div class="card-head" style="background:${escapeHtml(g.color)}">
-        <span class="name">${escapeHtml(g.emoji || '📁')} ${escapeHtml(g.name)} <span class="live-badge">${g.items.length}</span></span>
+        <span class="name">${escapeHtml(g.emoji || '📁')} ${escapeHtml(g.name)}</span>
+        <span class="head-right">${mapLink}<span class="live-badge">${g.items.length}</span></span>
       </div>
       <div class="card-body"><ul class="live-list">${rows}</ul></div>
     </div>`;
@@ -5441,20 +8578,68 @@ function renderLiveSessions(list, limit) {
   lg.innerHTML = cards.join('');
 }
 
+// Issue276: 세션 ID 클립보드 복사. isSecureContext 가드 + execCommand fallback + prompt 최종 폴백.
+//   HTTP 비-localhost(host.local 등 insecure context)에선 navigator.clipboard 미정의 → execCommand 경유.
+function copySid(sid, btn) {
+  function ok() {
+    if (!btn) return;
+    const orig = btn.textContent;
+    btn.textContent = '✓';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = orig; btn.classList.remove('copied'); }, 1200);
+  }
+  function fb() {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = sid; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.focus(); ta.select();
+      const r = document.execCommand('copy');
+      document.body.removeChild(ta);
+      if (r) { ok(); return; }
+    } catch (_) {}
+    window.prompt(t('liveSessions.copySidTitle'), sid);
+  }
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(sid).then(ok).catch(fb);
+  } else { fb(); }
+}
+
+// Issue194: hub-shell(/hub-shell) iframe 안에서 열렸으면 카드 열기(↗) 클릭을
+//   부모 쉘 내부 탭으로 라우팅(새 OS 탭 미생성). 비임베드(직접 /hub)면 기존 새 탭.
+function fpmOpenInShell(ev, a) {
+  if (window.top === window.self) return true;   // 비임베드 → 기존 target=_blank 동작
+  ev.preventDefault();
+  var url = a.getAttribute('href') || '';
+  var t = a.getAttribute('data-title') || '';
+  var sid = a.getAttribute('data-sid') || '';
+  var ct = /_b_/.test(url) ? 'form' : (/_c_/.test(url) ? 'dashboard' : 'response');
+  try { window.parent.postMessage({type:'fpm-open-tab', view_url:url, title:t, sid:sid, content_type:ct}, '*'); }
+  catch (e) { return true; }
+  return false;
+}
+
 // Issue40: htm 스킬 단발 출력 문서 노출 (별도 섹션)
 function _htmCardHtml(d) {
-  // Issue69: z_htm 기본 경로는 생략, 파일명만 열기 버튼 옆에 표시
+  // Issue69: htm 폴더 기본 경로는 생략, 파일명만 열기 버튼 옆에 표시
   const fname = (d.path || '').split('/').pop();
+  // Issue169: '열기' 텍스트 → 열기 이모지(↗)만. title 로 의미 보강.
+  // Issue194: 임베드(/hub-shell) 시 onclick 으로 부모 쉘 내부 탭 라우팅.
   const openLink = d.view_url
-    ? `<a href="${escapeHtml(d.view_url)}" target="_blank">열기 ↗</a>`
-    : `<span class="no-dash" title="htm 파일 없음 (missing)">📂 ${escapeHtml(fname)}</span>`;
+    ? `<a class="doc-open" href="${escapeHtml(d.view_url)}" target="_blank" data-title="${escapeHtml(d.title || fname)}" data-sid="${escapeHtml(d.sid || '')}" onclick="return fpmOpenInShell(event,this)" title="{T:htmDocs.openDocShort}">↗</a>`
+    : `<span class="no-dash" title="{T:htmDocs.missing}">📂 ${escapeHtml(fname)}</span>`;
+  // Issue169: 🆚 세션 — 이 문서를 만든 세션 탭으로 VSCode 포커스 (/open-session).
+  //   sid 는 서버가 HTML 본문에서 추출. 없으면 버튼 미표시.
+  const sessLink = d.sid
+    ? `<a class="doc-sess" href="#" title="{T:htmDocs.focusSessionTitle}"`
+      + ` onclick="event.preventDefault();event.stopPropagation();openSession('${escapeHtml(d.cwd)}','${escapeHtml(d.sid)}')">🆚</a>`
+    : '';
   // B모드(ask 폼)만 API 응답 성공/실패 아이콘 표시. 비-B모드는 아이콘 없음.
   const qaIcon = d.is_ask
     ? (d.answered
-        ? `<span class="qa-icon ok" title="B모드 Q&amp;A 응답 수신 성공">✓</span>`
+        ? `<span class="qa-icon ok" title="{T:msg.qaOk}">✓</span>`
         : d.qa_failed
-          ? `<span class="qa-icon err" title="B모드 Q&amp;A 응답 미수신 (회수 만료)">✗</span>`
-          : `<span class="qa-icon pending" title="B모드 Q&amp;A 응답 대기 중">⋯</span>`)
+          ? `<span class="qa-icon err" title="{T:msg.qaErr}">✗</span>`
+          : `<span class="qa-icon pending" title="{T:msg.qaPending}">⋯</span>`)
     : '';
   // Issue68: 본문 문서제목에서 중복 프로젝트명 접두사 제거 (헤드에 이미 표시)
   let cleanTitle = d.title || '';
@@ -5468,19 +8653,19 @@ function _htmCardHtml(d) {
   return `<div class="${cardCls}" style="cursor:pointer" data-htmpath="${escapeHtml(d.path)}">
     <div class="card-head" style="background:${escapeHtml(d.color)}">
       <span class="name">${escapeHtml(d.emoji || '📁')} ${escapeHtml(d.name)}</span>
-      <span class="head-right">${d.mtime ? `<span class="card-date">${escapeHtml(d.mtime)}</span>` : ''}${qaIcon}<button class="card-close" onclick="closeCard('htm','${escapeHtml(d.path)}',this)" title="hub 목록에서만 제거 — 실제 파일은 보존" aria-label="닫기">✕</button></span>
+      <span class="head-right">${d.mtime ? `<span class="card-date">${escapeHtml(d.mtime)}</span>` : ''}${qaIcon}<button class="card-close" onclick="closeCard('htm','${escapeHtml(d.path)}',this)" title="{T:htmDocs.removeFromListTitle}" aria-label="{T:common.close}">✕</button></span>
     </div>
     <div class="card-body">
       <div class="dash-title">${escapeHtml(cleanTitle)}</div>
       ${d.summary ? `<div class="card-summary">${escapeHtml(d.summary)}</div>` : ''}
-      <div class="actions">${openLink}<span class="doc-fname" title="${escapeHtml(d.path_display)}">${escapeHtml(fname)}</span></div>
+      <div class="actions">${openLink}${sessLink}<span class="doc-fname" title="${escapeHtml(d.path_display)}">${escapeHtml(fname)}</span></div>
     </div>
   </div>`;
 }
 
 function _htmFilterOptions() {
   const names = [...new Set(allHtmDocs.map(d => d.name).filter(Boolean))].sort();
-  htmPrjFilter.innerHTML = '<option value="">+ 프로젝트 필터</option>' +
+  htmPrjFilter.innerHTML = '<option value="">{T:htmDocs.filterAdd}</option>' +
     names.filter(n => !htmSelectedProjects.has(n))
          .map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('');
 }
@@ -5489,7 +8674,7 @@ function _htmRenderChips() {
   const chips = document.getElementById('htm-filter-chips');
   if (!chips) return;
   chips.innerHTML = [...htmSelectedProjects].map(n =>
-    `<span class="htm-chip">${escapeHtml(n)}<button class="htm-chip-rm" data-prjname="${escapeHtml(n)}" onclick="htmRemoveChip(this.dataset.prjname)" title="필터 제거" aria-label="필터 제거">✕</button></span>`
+    `<span class="htm-chip">${escapeHtml(n)}<button class="htm-chip-rm" data-prjname="${escapeHtml(n)}" onclick="htmRemoveChip(this.dataset.prjname)" title="{T:htmDocs.filterRemove}" aria-label="{T:htmDocs.filterRemove}">✕</button></span>`
   ).join('');
 }
 
@@ -5574,12 +8759,33 @@ function renderHtmDocs(list) {
 const feedList = document.getElementById('feed-list');
 const feedCount = document.getElementById('feed-count');
 const hubFeed = document.getElementById('hub-feed');
-const feedToggle = document.getElementById('feed-toggle');
-const feedStrip = document.getElementById('feed-strip');
+const feedVisToggle = document.getElementById('feed-vis-toggle');
 const feedCollapseAll = document.getElementById('feed-collapse-all');
 const feedKeep = document.getElementById('feed-keep');
 const feedClear = document.getElementById('feed-clear');
 const FEED_KEEP_N = 20;  // "20개만" 버튼이 보존하는 최신 항목 수
+
+// Issue279: 새 피드 도착 시 헤더 토글 아이콘 깜빡임 (기본 on, 고급옵션 feed_blink_on_new 으로 off)
+let FEED_BLINK_ON_NEW = true;
+let feedTopId = null;      // 직전 렌더의 최신(top) 항목 id — 변하면 신규 도착
+let feedBlinkTimer = null;
+function feedStateEmoji() { return hubFeed.classList.contains('hidden') ? '🙈' : '🙉'; }
+function blinkFeedToggle() {
+  if (!feedVisToggle) return;
+  if (feedBlinkTimer) { clearInterval(feedBlinkTimer); feedBlinkTimer = null; }
+  const alt = hubFeed.classList.contains('hidden') ? '🙉' : '🙈';  // 현재 상태의 반대
+  let n = 0;
+  feedBlinkTimer = setInterval(() => {
+    const on = (n % 2 === 0);  // 켜진 프레임 = alt 이모지 + 녹색 배경 + 15% 확대
+    feedVisToggle.textContent = on ? alt : feedStateEmoji();
+    feedVisToggle.classList.toggle('blinking', on);
+    if (++n >= 6) {  // 3회 깜빡(6스텝×120ms≈720ms)
+      clearInterval(feedBlinkTimer); feedBlinkTimer = null;
+      feedVisToggle.classList.remove('blinking');
+      feedVisToggle.textContent = feedStateEmoji();  // 상태 아이콘 복원
+    }
+  }, 120);
+}
 
 // 펼친 detail 항목 일괄 접기
 feedCollapseAll.addEventListener('click', () => {
@@ -5609,7 +8815,7 @@ feedKeep.addEventListener('click', async () => {
 // confirmModal 사용 — 네이티브 confirm() 은 Firefox '추가 대화상자 차단' 시 무조건
 // false 를 반환해 버튼이 조용히 죽는다 (Issue79 대칭 수정).
 feedClear.addEventListener('click', async () => {
-  if (!await confirmModal('활동 피드의 모든 항목을 비웁니다. 진행할까요?')) return;
+  if (!await confirmModal(t('feed.clearConfirm'))) return;
   feedClear.disabled = true;
   try {
     const r = await fetch('/feed-clear', {method: 'POST'});
@@ -5668,13 +8874,13 @@ function impDismiss(text) {
   });
   const el = document.getElementById('hub-important');
   if (el && !el.querySelector('.imp-chip-wrap'))
-    el.innerHTML = '<span class="imp-none">✅ 주의 필요 항목 없음</span>';
+    el.innerHTML = '<span class="imp-none">{T:msg.noImportant}</span>';
 }
 // Issue87 후속: chip 본문 click → 활동 피드 해당 항목으로 스크롤 + 펼침
 function impFocusFeed(feedId) {
   if (!feedId) return;
   const item = document.querySelector(`.feed-item[data-id="${CSS.escape(feedId)}"]`);
-  if (!item) { toast('해당 활동 항목을 찾을 수 없음', 'err'); return; }
+  if (!item) { toast(t('msg.itemNotFound'), 'err'); return; }
   openFeedItems.add(feedId);
   item.classList.add('open');
   item.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -5687,7 +8893,7 @@ function renderImportant(list) {
   const el = document.getElementById('hub-important');
   const visible = (list || []).filter(ev => !_impIsSnoozed(ev.text || ''));
   if (!visible.length) {
-    el.innerHTML = '<span class="imp-none">✅ 주의 필요 항목 없음</span>';
+    el.innerHTML = '<span class="imp-none">{T:msg.noImportant}</span>';
     return;
   }
   el.innerHTML = visible.map(ev => {
@@ -5699,11 +8905,11 @@ function renderImportant(list) {
       chip = `<a class="imp-chip imp-${lvl}" href="${escapeHtml(ev.link)}" target="_blank" title="${escapeHtml(ev.text || '')}">${inner} ↗</a>`;
     } else if (ev.feed_id) {
       const fid = escapeHtml(String(ev.feed_id));
-      chip = `<span class="imp-chip imp-${lvl}" title="자세한 내역 보기" onclick="impFocusFeed('${fid}')">${inner}</span>`;
+      chip = `<span class="imp-chip imp-${lvl}" title="{T:msg.viewDetail}" onclick="impFocusFeed('${fid}')">${inner}</span>`;
     } else {
       chip = `<span class="imp-chip imp-${lvl}" title="${escapeHtml(ev.text || '')}">${inner}</span>`;
     }
-    return `<span class="imp-chip-wrap" data-imptext="${textAttr}">${chip}<button class="imp-dismiss" onclick="impDismiss(this.closest('[data-imptext]').dataset.imptext)" title="30분 숨기기" aria-label="숨기기">✕</button></span>`;
+    return `<span class="imp-chip-wrap" data-imptext="${textAttr}">${chip}<button class="imp-dismiss" onclick="impDismiss(this.closest('[data-imptext]').dataset.imptext)" title="{T:msg.hide30min}" aria-label="{T:common.hideLabel}">✕</button></span>`;
   }).join('');
 }
 
@@ -5712,8 +8918,12 @@ const FEED_SHOW_EMOJI = {FEED_SHOW_PROJECT_EMOJI};
 const FEED_SHOW_NAME = {FEED_SHOW_PROJECT_NAME};
 function renderFeed(list) {
   feedCount.textContent = list.length;
+  // Issue279: 최신 항목 id 변화 = 신규 도착 → 헤더 토글 깜빡 (첫 렌더는 skip)
+  const newTop = list.length ? list[0].id : null;
+  if (FEED_BLINK_ON_NEW && feedTopId !== null && newTop && newTop !== feedTopId) blinkFeedToggle();
+  feedTopId = newTop;
   if (!list.length) {
-    feedList.innerHTML = '<div class="feed-empty">아직 활동 없음</div>';
+    feedList.innerHTML = '<div class="feed-empty">{T:feed.empty}</div>';
     return;
   }
   feedList.innerHTML = list.map(it => {
@@ -5722,18 +8932,18 @@ function renderFeed(list) {
     const summaryText = it.htm_title || it.summary || it.event;
     // Issue65: detail 에 제목 포함 — 한 줄 클램프로 잘린 전체 제목 복구 경로
     const detail = ['event: ' + (it.event || ''), 'cwd: ' + (it.cwd || ''),
-                    '제목: ' + (summaryText || ''),
-                    (it.detail || '(detail 없음)')].map(escapeHtml).join('\\n');
+                    t('feed.titlePrefix') + (summaryText || ''),
+                    (it.detail || t('feed.noDetail'))].map(escapeHtml).join('\\n');
     // Issue42_2: htm view_url 있으면 열기 아이콘
     const openIcon = it.htm_view_url
-      ? `<a class="feed-open" href="${escapeHtml(it.htm_view_url)}" target="_blank" title="hub 문서 열기">↗</a>`
+      ? `<a class="feed-open" href="${escapeHtml(it.htm_view_url)}" target="_blank" title="{T:htmDocs.openDoc}">↗</a>`
       : '';
     // Issue67: 항목 배경에 프로젝트색 좌→우 그래디언트 (좌측만 옅게, 우측은 카드 배경 수렴)
     const feedStyle = `border-left-color:${escapeHtml(it.color)};background:linear-gradient(to right, color-mix(in srgb, ${escapeHtml(it.color)} 22%, var(--bg)), var(--bg))`;
     return `<div class="feed-item${isOpen ? ' open' : ''}" data-id="${escapeHtml(it.id)}" style="${feedStyle}">
       <div class="feed-item-head">
-        ${(FEED_SHOW_EMOJI && it.emoji) ? `<span class="feed-proj-emoji" data-cwd="${escapeHtml(it.cwd)}" title="클릭 → VSCode 로 열기">${escapeHtml(it.emoji)}</span>` : ''}
-        ${FEED_SHOW_NAME ? `<a class="feed-title" data-cwd="${escapeHtml(it.cwd)}" title="클릭 → VSCode 로 열기">${escapeHtml(it.name)}</a>` : ''}
+        ${(FEED_SHOW_EMOJI && it.emoji) ? `<span class="feed-proj-emoji" data-cwd="${escapeHtml(it.cwd)}" title="{T:common.openVscodeTitle}">${escapeHtml(it.emoji)}</span>` : ''}
+        ${FEED_SHOW_NAME ? `<a class="feed-title" data-cwd="${escapeHtml(it.cwd)}" title="{T:common.openVscodeTitle}">${escapeHtml(it.name)}</a>` : ''}
         <span class="feed-summary" title="${escapeHtml(summaryText)}">${escapeHtml(summaryText)}</span>
         ${openIcon}
         <span class="feed-age">${relTime(it.ts)}</span>
@@ -5762,7 +8972,7 @@ feedList.addEventListener('click', (e) => {
 });
 
 async function openProject(cwd) {
-  if (!cwd) { toast('cwd 없음', 'err'); return; }
+  if (!cwd) { toast(t('msg.noCwd'), 'err'); return; }
   try {
     const r = await fetch('/open-project', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -5770,7 +8980,9 @@ async function openProject(cwd) {
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
-    toast('✅ VSCode 열기: ' + cwd, 'ok');
+    // Issue237: 원격 응답이면 클라이언트측 vscode-remote:// URI 를 브라우저가 발사.
+    if (j.uri) { window.location.href = j.uri; return; }
+    toast(t('msg.vscodeOpened', {cwd: cwd}), 'ok');
   } catch (e) {
     toast('❌ ' + e.message, 'err');
   }
@@ -5779,7 +8991,7 @@ async function openProject(cwd) {
 // Issue131: 활성 세션 행 클릭 → 해당 Claude Code 세션 탭으로 포커스
 //   (vscode://anthropic.claude-code/open?session=<sid>). 워크스페이스(cwd)가 열려 있어야 포커스됨.
 async function openSession(cwd, sid) {
-  if (!cwd || !sid) { toast('cwd/sid 없음', 'err'); return; }
+  if (!cwd || !sid) { toast(t('msg.noCwdSid'), 'err'); return; }
   try {
     const r = await fetch('/open-session', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -5787,20 +8999,42 @@ async function openSession(cwd, sid) {
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
-    toast('✅ VSCode 세션 탭 열기', 'ok');
+    // Issue237: 원격 응답이면 folder_uri 로 Remote-SSH 창 보장 후 세션 URI 로 탭 포커스.
+    if (j.uri) {
+      if (j.folder_uri) { try { window.open(j.folder_uri); } catch (e2) {} }
+      window.location.href = j.uri; return;
+    }
+    toast(t('msg.sessionTabOpened'), 'ok');
   } catch (e) {
     toast('❌ ' + e.message, 'err');
   }
 }
 
+// Issue219: 터미널(CLI) 세션 클릭 → JSONL transcript 뷰어(/s/{h}/{sid}?token=) 열기.
+//   VSCode 포커스 불가 세션도 대화 내용 확인 가능. 임베드(hub-shell) 시 부모 쉘 내부 탭으로,
+//   비임베드(직접 /hub)면 새 탭. 뷰어 SPA 는 origin 무관하게 jsonl 을 읽어 렌더한다.
+function openSessionViewer(url, title) {
+  if (!url) { toast('세션 뷰어 URL 없음 (transcript 미해석)', 'err'); return; }
+  if (window.top !== window.self) {
+    try {
+      window.parent.postMessage({type:'fpm-open-tab', view_url:url, title:(title||'세션'), content_type:'response'}, '*');
+      return;
+    } catch (e) { /* fall through to new tab */ }
+  }
+  window.open(url, '_blank');
+}
+
 // 사이드바 숨김/보기 — localStorage 우선, 없으면 hub_setting.yml 기본값
-function applyFeedVisible(visible) { hubFeed.classList.toggle('hidden', !visible); }
+function applyFeedVisible(visible) {
+  hubFeed.classList.toggle('hidden', !visible);
+  // 헤더 토글 아이콘: 현재 상태 표현 — 보임=🙉(눈 뜸) / 숨김=🙈(눈 가림)
+  if (feedVisToggle) feedVisToggle.textContent = visible ? '🙉' : '🙈';
+}
 function setFeedVisible(visible) {
   applyFeedVisible(visible);
   localStorage.setItem('hubFeedVisible', visible ? '1' : '0');
 }
-feedToggle.addEventListener('click', () => setFeedVisible(false));
-feedStrip.addEventListener('click', () => setFeedVisible(true));
+feedVisToggle.addEventListener('click', () => setFeedVisible(hubFeed.classList.contains('hidden')));
 (function initFeedVisible() {
   const stored = localStorage.getItem('hubFeedVisible');
   const def = {FEED_DEFAULT_VISIBLE};
@@ -5854,7 +9088,7 @@ function renderProjects(projects) {
   for (const it of filtered) {
     const p = it.proj, d = it.dash;
     if (!d) {
-      cards.push(`<div class="card"><div class="card-head" style="background:${escapeHtml(p.color)}"><span class="name">${escapeHtml(p.emoji || '📁')} ${escapeHtml(p.name)}</span></div><div class="card-body"><div class="no-dash">활성 dashboard 없음</div></div></div>`);
+      cards.push(`<div class="card"><div class="card-head" style="background:${escapeHtml(p.color)}"><span class="name">${escapeHtml(p.emoji || '📁')} ${escapeHtml(p.name)}</span></div><div class="card-body"><div class="no-dash">{T:dashboard.empty}</div></div></div>`);
       continue;
     }
     const pct = (typeof d.progress === 'number') ? Math.max(0, Math.min(100, d.progress)) : null;
@@ -5867,8 +9101,8 @@ function renderProjects(projects) {
     // Issue32/Issue39: 가상 프로젝트 (system/___pm-tmp) 는 token 없음 → stop/open 비활성
     const stopBtn = (d.pid && p.token && !isVirtual && d.runner_alive && !isTerminal) ? `<button class="stop" onclick="stopRunner('${escapeHtml(p.cwd)}','${escapeHtml(p.token)}',${d.pid},this)">⏹ stop pid=${d.pid}</button>` : '';
     const openLink = (d.view_url && p.token && !isVirtual)
-      ? `<a href="${escapeHtml(d.view_url)}" target="_blank">열기 ↗</a>`
-      : `<span class="no-dash" title="외부 dash — view 불가 (token 미발급)">📂 ${escapeHtml(d.path_display || d.path)}</span>`;
+      ? `<a href="${escapeHtml(d.view_url)}" target="_blank">{T:common.open}</a>`
+      : `<span class="no-dash" title="{T:dashboard.externalNoView}">📂 ${escapeHtml(d.path_display || d.path)}</span>`;
     const key = dashKey(p, d);
     newSnap[key] = {progress: pct, mtime: d.mtime};
     const prev = lastSnap[key];
@@ -5883,7 +9117,7 @@ function renderProjects(projects) {
     cards.push(`<div class="card${changed ? ' diff-recent' : ''}${isVirtual ? ' virtual' : ''}">
       <div class="card-head" style="background:${escapeHtml(p.color)}">
         <span class="name">${escapeHtml(p.emoji || '📁')} ${escapeHtml(p.name)}</span>
-        <span class="head-right">${d.status ? `<span class="badge">${escapeHtml(d.status)}</span>` : ''}<button class="card-close" onclick="closeCard('dash','${escapeHtml(d.path)}',this)" title="hub 목록에서만 제거 — 실제 파일은 보존" aria-label="닫기">✕</button></span>
+        <span class="head-right">${d.status ? `<span class="badge">${escapeHtml(d.status)}</span>` : ''}<button class="card-close" onclick="closeCard('dash','${escapeHtml(d.path)}',this)" title="{T:htmDocs.removeFromListTitle}" aria-label="{T:common.close}">✕</button></span>
       </div>
       <div class="card-body">
         <div class="dash-title">${escapeHtml(d.title || d.path.split('/').pop())}</div>
@@ -5895,7 +9129,7 @@ function renderProjects(projects) {
       </div>
     </div>`);
   }
-  grid.innerHTML = cards.join('') || '<div class="empty">filter 결과 0건</div>';
+  grid.innerHTML = cards.join('') || '<div class="empty">{T:dashboard.filterEmpty}</div>';
   lastSnap = newSnap;
 }
 
@@ -5905,7 +9139,7 @@ sortSel.addEventListener('change', reload);
 // Issue137: 빈(프롬프트 전) 좀비 claude 세션 일괄 종료 + 새로고침.
 //   서버가 titled/dashboard 는 제외하고 빈 live 세션의 live_pid 만 SIGTERM.
 async function killEmptyLive(btn) {
-  if (!confirm('빈(프롬프트 입력 전) 좀비 claude 세션을 모두 종료합니다.\\n작업 중(제목 있는) 세션·dashboard 는 보존됩니다.\\n계속할까요?')) return;
+  if (!confirm(t('liveSessions.zombieConfirm'))) return;
   if (btn) btn.disabled = true;
   try {
     const r = await fetch('/kill-empty-live', {method: 'POST', headers: {'Content-Type': 'application/json'}});
@@ -5967,7 +9201,7 @@ async function removeQueueDash(cwd, token, supervisorPid, sid, btn) {
     });
     const j = await r.json();
     if (r.ok) {
-      const statusMsg = j.status === 'already_dead' ? `이미 종료됨 (pid ${supervisorPid})` : `제거 중 (pid ${supervisorPid})`;
+      const statusMsg = j.status === 'already_dead' ? t('liveSessions.alreadyDead', {pid: supervisorPid}) : t('liveSessions.removing', {pid: supervisorPid});
       toast(`✅ ${statusMsg}`, 'ok');
       setTimeout(reload, 800);
     } else {
@@ -5985,7 +9219,7 @@ async function removeQueueDash(cwd, token, supervisorPid, sid, btn) {
 // Issue132: live(claude) 세션 카드 수동 dismiss — 프로세스 kill 아님, 카드(sessions entry)만 제거.
 //   VSCode 가 세션 종료 후에도 claude 프로세스를 살려둬 빈 카드가 잔존할 때 수동 정리용.
 async function dismissSession(cwd, token, sid, btn) {
-  if (!confirm('이 세션 카드를 hub 목록에서 숨깁니다. (claude 프로세스는 종료하지 않음)\\n계속할까요?')) return;
+  if (!confirm(t('liveSessions.dismissConfirm'))) return;
   const orig = btn.innerHTML;
   btn.disabled = true;
   try {
@@ -5997,7 +9231,7 @@ async function dismissSession(cwd, token, sid, btn) {
     });
     const j = await r.json();
     if (r.ok) {
-      toast(j.pruned ? '✅ 세션 카드 숨김' : 'ℹ️ 이미 제거됨', 'ok');
+      toast(j.pruned ? t('msg.cardHidden') : t('msg.alreadyRemoved'), 'ok');
       setTimeout(reload, 400);
     } else {
       toast(`❌ ${j.error || 'fail'}`, 'err');
@@ -6013,7 +9247,7 @@ async function dismissSession(cwd, token, sid, btn) {
 
 // Issue66 Phase 7: 큐 dashboard 승인 게이트 — waiting_approval 항목 진행 승인
 async function approveQueueItem(cwd, token, sid, item, btn) {
-  if (!confirm(`승인 대기 항목 '${item}' 의 진행을 승인합니다. 계속할까요?`)) return;
+  if (!confirm(t('liveSessions.approveConfirm', {item: item}))) return;
   const orig = btn.innerHTML;
   btn.disabled = true;
   try {
@@ -6025,7 +9259,7 @@ async function approveQueueItem(cwd, token, sid, item, btn) {
     });
     const j = await r.json();
     if (r.ok) {
-      toast(`✅ '${item}' 승인됨`, 'ok');
+      toast(t('msg.approved', {item: item}), 'ok');
       setTimeout(reload, 800);
     } else {
       toast(`❌ ${j.error || 'fail'}`, 'err');
@@ -6086,16 +9320,16 @@ function confirmModal(msg) {
 // Issue41: clear 는 registry 항목만 제거 — 실제 파일은 보존
 const clearBtn = document.getElementById('btn-clear-done');
 clearBtn.addEventListener('click', async () => {
-  if (!await confirmModal('status가 done/stopped/stale 인 dashboard 를 hub 목록에서 제거합니다.\\n실제 .dash.*/.html 파일은 삭제되지 않습니다. 진행할까요?')) return;
+  if (!await confirmModal(t('dashboard.clearConfirm'))) return;
   clearBtn.disabled = true;
   const origLabel = clearBtn.textContent;
-  clearBtn.textContent = '정리 중...';
+  clearBtn.textContent = t('common.cleaning');
   try {
     const r = await fetch('/clear-done', {method: 'POST'});
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
     if (j.removed_count === 0) {
-      toast('done/stopped/stale 상태 dashboard 없음', 'ok');
+      toast(t('dashboard.noClearTarget'), 'ok');
     } else {
       toast(`✅ ${j.removed_count}개 목록에서 제거 (파일 보존)`, 'ok');
     }
@@ -6117,7 +9351,7 @@ const rescanBtn = document.getElementById('btn-rescan');
 rescanBtn.addEventListener('click', async () => {
   rescanBtn.disabled = true;
   const origLabel = rescanBtn.textContent;
-  rescanBtn.textContent = '스캔 중...';
+  rescanBtn.textContent = t('statusbar.scanning');
   try {
     const r = await fetch('/hub-rescan', {method: 'POST'});
     const j = await r.json();
@@ -6125,7 +9359,7 @@ rescanBtn.addEventListener('click', async () => {
     const a = j.added || {};
     const total = (a.htm || 0) + (a.dash || 0);
     if (total === 0) {
-      toast('새로 수거할 산출물 없음 (registry 최신)', 'ok');
+      toast(t('statusbar.noRescan'), 'ok');
     } else {
       toast(`✅ registry 수거 — hub ${a.htm || 0} / dash ${a.dash || 0}`, 'ok');
     }
@@ -6144,13 +9378,13 @@ async function clearHtmDocs(keep, btn) {
                    document.getElementById('btn-htm-clear')];
   const labels = allBtns.map(b => b.textContent);
   allBtns.forEach(b => b.disabled = true);
-  btn.textContent = '정리 중...';
+  btn.textContent = t('common.cleaning');
   try {
     const r = await fetch('/clear-htm-docs?keep=' + keep, {method: 'POST'});
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
     if (j.removed_count === 0) {
-      toast('제거할 hub 문서 없음', 'ok');
+      toast(t('htmDocs.noClearTarget'), 'ok');
     } else {
       toast(`✅ hub 문서 ${j.removed_count}개 목록에서 제거 (${j.total}개 중, 파일 보존)`, 'ok');
     }
@@ -6180,12 +9414,12 @@ document.getElementById('htm-grid').addEventListener('click', e => {
 });
 document.getElementById('btn-htm-keep').addEventListener('click', async (e) => {
   const btn = e.currentTarget;
-  if (!await confirmModal('mtime 최신 12개를 제외한 hub 문서를 hub 목록에서 제거합니다.\\n실제 .html 파일은 삭제되지 않습니다. 진행할까요?')) return;
+  if (!await confirmModal(t('htmDocs.keepConfirm'))) return;
   clearHtmDocs(12, btn);
 });
 document.getElementById('btn-htm-clear').addEventListener('click', async (e) => {
   const btn = e.currentTarget;
-  if (!await confirmModal('모든 hub 문서를 hub 목록에서 제거합니다.\\n실제 .html 파일은 삭제되지 않습니다. 진행할까요?')) return;
+  if (!await confirmModal(t('htmDocs.clearConfirm'))) return;
   clearHtmDocs(0, btn);
 });
 
@@ -6199,7 +9433,7 @@ async function closeCard(type, path, btn) {
       + '&path=' + encodeURIComponent(path), {method: 'POST'});
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
-    toast(j.removed ? '✅ hub 목록에서 제거 (파일 보존)' : '이미 제거된 항목', 'ok');
+    toast(j.removed ? t('htmDocs.removed') : t('htmDocs.alreadyRemoved'), 'ok');
     setTimeout(reload, 200);
   } catch (e) {
     toast('❌ ' + e.message, 'err');
@@ -6213,12 +9447,12 @@ const plModal = document.getElementById('pl-modal');
 const plBody = document.getElementById('pl-body');
 
 function renderProjectList(list) {
-  if (!list.length) { plBody.innerHTML = '<div class="empty">프로젝트 없음</div>'; return; }
+  if (!list.length) { plBody.innerHTML = '<div class="empty">{T:projectList.empty}</div>'; return; }
   const rows = list.map(p => {
     const off = !!p.htm_off;
-    const reason = off ? (p.htm_reason || 'hub off') : 'hub on (자동 렌더 활성)';
-    return `<tr data-path="${escapeHtml(p.path)}"${off ? ' class="htm-off"' : ''} data-htm-reason="${escapeHtml(reason)}" title="행 클릭 → VSCode 로 ${escapeHtml(p.name)} 열기">
-    <td class="pl-toggle"><button type="button" class="htm-tgl ${off ? 'off' : 'on'}" data-path="${escapeHtml(p.path)}" role="switch" aria-checked="${off ? 'false' : 'true'}" aria-label="hub ${off ? 'off' : 'on'} — ${escapeHtml(p.name)}" title="${escapeHtml(reason)} — 클릭으로 토글"><span class="htm-tgl-knob"></span></button></td>
+    const reason = off ? (p.htm_reason || 'hub off') : t('projectList.reasonOn');
+    return `<tr data-path="${escapeHtml(p.path)}"${off ? ' class="htm-off"' : ''} data-htm-reason="${escapeHtml(reason)}" title="${escapeHtml(t('projectList.rowTitle', {name: p.name}))}">
+    <td class="pl-toggle"><button type="button" class="htm-tgl ${off ? 'off' : 'on'}" data-path="${escapeHtml(p.path)}" role="switch" aria-checked="${off ? 'false' : 'true'}" aria-label="${escapeHtml(t('projectList.toggleAria', {state: off ? 'off' : 'on', name: p.name}))}" title="${escapeHtml(t('projectList.toggleTitle', {reason: reason}))}"><span class="htm-tgl-knob"></span></button></td>
     <td class="pl-id">${escapeHtml(p.id)}</td>
     <td>${escapeHtml(p.emoji || '')} ${escapeHtml(p.name)}</td>
     <td>${escapeHtml(p.domain)}</td>
@@ -6232,16 +9466,16 @@ function renderProjectList(list) {
   const masterCls = offCnt === 0 ? 'on' : (offCnt === list.length ? 'off' : 'mixed');
   // mixed/off → 클릭 시 전체 on, on → 전체 off
   const masterTarget = masterCls === 'on' ? 'off' : 'on';
-  const masterTitle = masterCls === 'mixed' ? `혼합 (off ${offCnt}/${list.length}) — 클릭으로 전체 ${masterTarget}`
-    : (masterCls === 'on' ? '전체 on — 클릭으로 전체 off' : '전체 off — 클릭으로 전체 on');
+  const masterTitle = masterCls === 'mixed' ? t('projectList.masterMixed', {off: offCnt, total: list.length, target: masterTarget})
+    : (masterCls === 'on' ? t('projectList.masterAllOn') : t('projectList.masterAllOff'));
   plBody.innerHTML = `<table class="pl-table"><thead><tr>
-    <th class="pl-toggle" title="hub 자동 렌더 on/off"><button type="button" id="htm-tgl-all" class="htm-tgl ${masterCls}" data-target="${masterTarget}" role="switch" aria-checked="${masterCls === 'on' ? 'true' : 'false'}" aria-label="전체 hub 토글" title="${escapeHtml(masterTitle)}"><span class="htm-tgl-knob"></span></button><div class="pl-toggle-lbl">hub</div></th><th>번호</th><th>프로젝트명</th><th>Domain</th><th>경로</th><th>설명</th><th>색</th>
+    <th class="pl-toggle" title="{T:projectList.toggleColTitle}"><button type="button" id="htm-tgl-all" class="htm-tgl ${masterCls}" data-target="${masterTarget}" role="switch" aria-checked="${masterCls === 'on' ? 'true' : 'false'}" aria-label="{T:projectList.masterAria}" title="${escapeHtml(masterTitle)}"><span class="htm-tgl-knob"></span></button><div class="pl-toggle-lbl">hub</div></th><th>{T:projectList.col.id}</th><th>{T:projectList.col.name}</th><th>Domain</th><th>{T:projectList.col.path}</th><th>{T:projectList.col.desc}</th><th>{T:projectList.col.color}</th>
   </tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 async function openProjectList() {
   plModal.hidden = false;
-  plBody.innerHTML = '<div class="empty">로딩 중...</div>';
+  plBody.innerHTML = '<div class="empty">{T:common.loading}</div>';
   try {
     const r = await fetch('/projects-list?_=' + Date.now(), {cache: 'no-store'});
     if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -6277,9 +9511,9 @@ plBody.addEventListener('click', async (e) => {
       // 응답으로 모든 행 토글 + 헤더 마스터 재계산. 가장 간단·정확: 재조회 후 재렌더
       const lr = await fetch('/projects-list?_=' + Date.now(), {cache: 'no-store'});
       renderProjectList((await lr.json()).projects || []);
-      plFootStatus.textContent = (target === 'off' ? '🚫 ' : '✅ ') + '전체 hub ' + target + ' (' + j.count + '개)';
+      plFootStatus.textContent = t('projectList.masterResult', {icon: (target === 'off' ? '🚫' : '✅'), target: target, count: j.count});
     } catch (err) {
-      plFootStatus.textContent = '❌ 전체 토글 실패: ' + err.message;
+      plFootStatus.textContent = t('projectList.toggleAllFail', {err: err.message});
       allTgl.disabled = false;
     }
     return;
@@ -6293,16 +9527,16 @@ plBody.addEventListener('click', async (e) => {
         body: JSON.stringify({path: tgl.dataset.path})});
       const j = await r.json();
       if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
-      const off = !!j.htm_off, reason = off ? (j.htm_reason || 'hub off') : 'hub on (자동 렌더 활성)';
+      const off = !!j.htm_off, reason = off ? (j.htm_reason || 'hub off') : t('projectList.reasonOn');
       tgl.classList.toggle('on', !off); tgl.classList.toggle('off', off);
       tgl.setAttribute('aria-checked', off ? 'false' : 'true');
-      tgl.title = reason + ' — 클릭으로 토글';
+      tgl.title = t('projectList.toggleTitle', {reason: reason});
       const tr = tgl.closest('tr');
       tr.classList.toggle('htm-off', off);
       tr.dataset.htmReason = reason;
       plFootStatus.textContent = (off ? '🚫 ' : '✅ ') + reason + ' (state=' + j.state + ')';
     } catch (err) {
-      plFootStatus.textContent = '❌ 토글 실패: ' + err.message;
+      plFootStatus.textContent = t('projectList.toggleFail', {err: err.message});
     } finally { tgl.disabled = false; }
     return;
   }
@@ -6312,7 +9546,7 @@ plBody.addEventListener('click', async (e) => {
     plBody.querySelectorAll('tr.pl-sel').forEach(r => r.classList.remove('pl-sel'));
     tr.classList.add('pl-sel');
     plSelectedPath = tr.dataset.path;
-    plFootStatus.textContent = '✅ 선택: ' + plSelectedPath + ' — 더블클릭/버튼으로 VSCode 열기';
+    plFootStatus.textContent = t('projectList.selected', {path: plSelectedPath});
   }
 });
 
@@ -6331,12 +9565,20 @@ document.getElementById('live-grid').addEventListener('click', (e) => {
       const expanded = card.classList.toggle('expanded');
       if (expanded) expandedCards.add(cwd); else expandedCards.delete(cwd);
       const topic = moreRow.querySelector('.live-topic');
-      if (topic) topic.textContent = expanded ? '접기 ▴' : ('외 ' + (moreRow.dataset.more || '') + '개 더 ▾');
+      if (topic) topic.textContent = expanded ? t('liveSessions.collapse') : t('liveSessions.moreCount', {n: (moreRow.dataset.more || '')});
     }
     return;
   }
   const row = e.target.closest('.live-item[data-sid]');
   if (row && row.dataset.sid) {
+    // Issue177: 터미널(CLI) 세션은 VSCode 로 포커스 불가 → openSession(vscode URI) 호출 안 함.
+    //   기존엔 출처 무관하게 openSession 을 호출해 iTerm 세션도 VSCode 가 잘못 열렸음.
+    // Issue219: 터미널 세션은 포커스 대신 JSONL transcript 뷰어(/s/{h}/{sid})로 대화 내용 표시.
+    if (row.dataset.origin === 'terminal') {
+      const topicEl = row.querySelector('.live-topic');
+      openSessionViewer(row.dataset.url, topicEl ? topicEl.textContent : '세션');
+      return;
+    }
     openSession(row.dataset.cwd, row.dataset.sid);
     return;
   }
@@ -6364,19 +9606,278 @@ plBody.addEventListener('focusout', () => { plFootStatus.textContent = plFootDef
 
 // 'VSCode로 열기' — 선택된 프로젝트를 VSCode 로 열기 (더블클릭과 동일)
 document.getElementById('pl-edit').addEventListener('click', () => {
-  if (!plSelectedPath) { toast('먼저 프로젝트 행을 클릭해 선택하세요', 'err'); return; }
+  if (!plSelectedPath) { toast(t('projectList.selectFirst'), 'err'); return; }
   openProject(plSelectedPath);
 });
 
-document.getElementById('btn-settings').addEventListener('click', async () => {
+// Issue168: 설정 모달 (3탭) — ⚙️ 클릭 시 GET /api/settings → 폼 렌더 → 변경 diff 저장
+const setModal = document.getElementById('set-modal');
+let setSchema = [], setInitial = {}, setValues = {}, setDefaults = {}, setMtime = 0;
+// 모달 뷰 언어 (기본=서버 language). 저장값 미변경 — 다국어 "보기" 전용.
+let setLang = (window.__lang === 'ko' || window.__lang === 'en') ? window.__lang : 'en';
+// 모달 텍스트 번역: 주입된 양쪽 카탈로그(window.__i18n_all)에서 setLang 조회, fb 폴백.
+function ttf(key, fb) {
+  const c = (window.__i18n_all && window.__i18n_all[setLang]) || window.__i18n || {};
+  return (c[key] != null) ? c[key] : (fb != null ? fb : key);
+}
+
+function setEsc(html) {
+  return String(html).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function setBadge(apply) {
+  const m = {auto: ['b-auto', ttf('settings.applyBadge.auto')], hook: ['b-hook', ttf('settings.applyBadge.hook')], restart: ['b-restart', ttf('settings.applyBadge.restart')]}[apply] || ['',''];
+  const tipMap = {auto: 'settings.apply.auto', hook: 'settings.apply.hook', restart: 'settings.apply.restart'};
+  const tip = (apply && tipMap[apply]) ? ttf(tipMap[apply]) : '';
+  return `<span class="set-badge ${m[0]}" data-tip="${setEsc(tip)}">${m[1]}</span>`;
+}
+function setReadKey(key) {
+  const s = setSchema.find(x => x.key === key); if (!s) return undefined;
+  const el = document.getElementById('setf-' + key); if (!el) return undefined;
+  if (s.widget === 'toggle') return el.classList.contains('on');
+  if (s.widget === 'number') return parseInt(el.value, 10) || 0;
+  if (s.widget === 'select') {
+    if (el.value === '__custom__') { const c = document.getElementById('setf-' + key + '-c'); return c ? c.value.trim() : ''; }
+    return el.value;
+  }
+  return el.value.trim();
+}
+// 연필(✏️ 기본값 대비 변경) 라이브 갱신
+function setRefreshPencil(key) {
+  const el = document.getElementById('setf-' + key); if (!el) return;
+  const row = el.closest('.set-row'); if (!row) return;
+  const lab = row.querySelector('.set-key'); if (!lab) return;
+  const changed = JSON.stringify(setReadKey(key)) !== JSON.stringify(setDefaults[key]);
+  const p = lab.querySelector('.set-pencil');
+  if (changed && !p) lab.insertAdjacentHTML('beforeend', ` <span class="set-pencil" title="${setEsc(ttf('settings.changedFromDefault', setLang === 'ko' ? '기본값에서 변경됨' : 'Changed from default'))}">✏️</span>`);
+  else if (!changed && p) p.remove();
+}
+function setRenderField(s, val) {
+  const id = 'setf-' + s.key;
+  if (s.widget === 'toggle') {
+    const on = val === true;
+    return `<button type="button" class="set-sw ${on?'on':''}" id="${id}" data-key="${s.key}" data-type="toggle" role="switch" aria-checked="${on}"><span class="set-sw-knob"></span></button>`;
+  }
+  if (s.widget === 'select') {
+    const opts = s.options.slice();
+    const isCustom = s.allow_custom && val && !opts.includes(val);
+    let html = `<select id="${id}" data-key="${s.key}" data-type="select">`;
+    for (const o of opts) html += `<option value="${setEsc(o)}" ${o===val?'selected':''}>${setEsc(o)}</option>`;
+    if (s.allow_custom) html += `<option value="__custom__" ${isCustom?'selected':''}>${ttf('settings.customApp')}</option>`;
+    html += '</select>';
+    if (s.allow_custom) html += ` <input type="text" id="${id}-c" data-key="${s.key}" data-type="custom" value="${isCustom?setEsc(val):''}" placeholder="/Applications/X.app" style="${isCustom?'':'display:none'};width:13em">`;
+    return html;
+  }
+  if (s.widget === 'number') {
+    return `<input type="number" id="${id}" data-key="${s.key}" data-type="number" min="${s.min||0}" value="${setEsc(val)}">`;
+  }
+  return `<input type="text" id="${id}" data-key="${s.key}" data-type="text" value="${setEsc(val)}" placeholder="${s.optional?ttf('settings.optional'):''}">`;
+}
+function setRenderForm() {
+  for (const tab of ['basic','session','advanced']) {
+    const pane = document.getElementById('set-pane-' + tab);
+    // advanced 탭은 경고 배너 보존 → 배너 이후만 재구성
+    const warn = pane.querySelector('.set-warn');
+    pane.innerHTML = '';
+    if (warn) pane.appendChild(warn);
+    for (const s of setSchema.filter(x => x.tab === tab)) {
+      const row = document.createElement('div');
+      row.className = 'set-row' + (s.deprecated ? ' set-deprecated' : '');
+      if (s.deprecated) row.style.opacity = '0.55';
+      const changed = JSON.stringify(setValues[s.key]) !== JSON.stringify(setDefaults[s.key]);
+      const pencil = changed ? ` <span class="set-pencil" title="${setEsc(ttf('settings.changedFromDefault', setLang === 'ko' ? '기본값에서 변경됨' : 'Changed from default'))}">✏️</span>` : '';
+      // 라벨: ko 카탈로그에 settings.label.<key> 있으면 한국어 표시, 없으면(=en 뷰·미번역) 원본 키
+      //   (원본 키는 `_` 숨김 + 복붙 시 실제 키 보존 — Issue208)
+      const koLbl = ttf('settings.label.' + s.key, '');
+      const keyHtml = koLbl ? setEsc(koLbl) : setEsc(s.key).replaceAll('_','<span class="set-us">_</span>');
+      row.innerHTML = `<label class="set-key" for="setf-${s.key}" title="${setEsc(s.key + ' — ' + (s.comment||''))}">${keyHtml}${pencil}${s.deprecated?' <span style="font-size:0.75em;color:#c60">(deprecated)</span>':''}</label>`
+        + `<span class="set-input">${setRenderField(s, setValues[s.key])}</span>`
+        + `<span class="set-desc" data-tip="${setEsc(s.comment||'')}">?</span>`
+        + setBadge(s.apply);
+      pane.appendChild(row);
+    }
+  }
+  // 토글 스위치 클릭
+  setModal.querySelectorAll('.set-sw').forEach(b => b.addEventListener('click', () => {
+    // Issue272: browser_tab_reuse 는 Chrome/Edge/Safari 전용 — 미지원 브라우저면 토글 차단 + 팝업 안내
+    if (b.dataset.key === 'browser_tab_reuse' && !setTabReuseSupported()) {
+      toast(setTabReuseGateMsg(), 'err');
+      return;
+    }
+    const on = !b.classList.contains('on');
+    b.classList.toggle('on', on); b.setAttribute('aria-checked', on);
+    setRefreshPencil(b.dataset.key);
+  }));
+  // 사용자 지정 select → 텍스트 토글
+  setModal.querySelectorAll('select[data-type="select"]').forEach(sel => sel.addEventListener('change', () => {
+    const c = document.getElementById('setf-' + sel.dataset.key + '-c');
+    if (c) c.style.display = sel.value === '__custom__' ? '' : 'none';
+  }));
+  // 연필(기본값 대비) 라이브 갱신 — 토글 외 입력/선택/커스텀
+  setModal.querySelectorAll('#set-modal [data-key]').forEach(el => {
+    const k = el.dataset.key;
+    el.addEventListener('input', () => setRefreshPencil(k));
+    el.addEventListener('change', () => setRefreshPencil(k));
+    // Issue272: default_browser 변경 시 browser_tab_reuse 게이트 라이브 재판정
+    if (k === 'default_browser') {
+      el.addEventListener('input', setGateTabReuse);
+      el.addEventListener('change', setGateTabReuse);
+    }
+  });
+  setGateTabReuse();
+  // Issue153: advanced 경고 배너는 위험 조합일 때만 표시 (정적 상시노출 → 조건부)
+  ['bind_host', 'advertise_host'].forEach(k => {
+    const el = document.getElementById('setf-' + k);
+    if (el) el.addEventListener('input', setUpdateWarn);
+  });
+  setUpdateWarn();
+}
+// Issue272: browser_tab_reuse 게이팅 — AppleScript 탭 제어는 Chrome/Edge/Safari 만 지원
+//   (Firefox·커스텀 .app 은 탭 제어 사전 부재 → helper 가 open 폴백 = 재사용 무의미).
+//   미지원 브라우저 선택 시 토글을 시각적 비활성(dim) + 클릭 시 toast 팝업 안내.
+function setTabReuseSupported() {
+  const v = String(setReadKey('default_browser') || '').toLowerCase();
+  return v === 'chrome' || v === 'edge' || v === 'safari';
+}
+function setTabReuseGateMsg() {
+  return ttf('settings.tabReuseGate', setLang === 'ko'
+    ? 'browser_tab_reuse 는 Chrome/Edge/Safari 에서만 활성화됩니다 — 현재 브라우저는 탭 제어(AppleScript) 미지원'
+    : 'browser_tab_reuse is only available for Chrome/Edge/Safari — current browser has no tab-control scripting');
+}
+function setGateTabReuse() {
+  const sw = document.getElementById('setf-browser_tab_reuse');
+  if (!sw) return;
+  const ok = setTabReuseSupported();
+  sw.style.opacity = ok ? '' : '0.35';
+  sw.style.cursor = ok ? '' : 'not-allowed';
+  sw.title = ok ? '' : setTabReuseGateMsg();
+}
+// Issue153: bind_host 에 0.0.0.0 포함 + advertise_host 빈값일 때만 경고 표시.
+function setUpdateWarn() {
+  const warn = document.querySelector('#set-pane-advanced .set-warn');
+  if (!warn) return;
+  const bh = (document.getElementById('setf-bind_host') || {}).value || '';
+  const ah = ((document.getElementById('setf-advertise_host') || {}).value || '').trim();
+  // bind_host 는 "0.0.0.0" 또는 "[127.0.0.1, 0.0.0.0]" 형태 — 구분자 정규화 후 토큰 일치
+  const bhNorm = ' ' + bh.split('[').join(' ').split(']').join(' ').split(',').join(' ') + ' ';
+  const hasAny = bhNorm.indexOf(' 0.0.0.0 ') >= 0;
+  warn.style.display = (hasAny && !ah) ? '' : 'none';
+}
+function setReadForm() {
+  // 현재 폼 값 수집 → {key: value}
+  const cur = {};
+  for (const s of setSchema) {
+    const el = document.getElementById('setf-' + s.key);
+    if (!el) continue;
+    if (s.widget === 'toggle') cur[s.key] = el.classList.contains('on');
+    else if (s.widget === 'number') cur[s.key] = parseInt(el.value, 10) || 0;
+    else if (s.widget === 'select') {
+      if (el.value === '__custom__') { const c = document.getElementById('setf-' + s.key + '-c'); cur[s.key] = c ? c.value.trim() : ''; }
+      else cur[s.key] = el.value;
+    } else cur[s.key] = el.value.trim();
+  }
+  return cur;
+}
+function setApplyLangButtons() {
+  document.querySelectorAll('#set-lang button').forEach(b => b.classList.toggle('active', b.dataset.lang === setLang));
+}
+async function openSettings() {
+  try {
+    const r = await fetch('/api/settings?lang=' + encodeURIComponent(setLang));
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    setSchema = j.schema; setInitial = j.values; setValues = Object.assign({}, j.values);
+    setDefaults = j.defaults || {}; setMtime = j.mtime;
+    setApplyLangButtons();
+    setRenderForm();
+    setModal.hidden = false;
+  } catch (e) { toast(t('settings.loadFail', {err: e.message}), 'err'); }
+}
+// KO/EN 뷰 토글 — 저장값 미변경. 현재 편집값 보존한 채 언어별 comment 재-fetch + 정적 chrome 재번역.
+async function switchLang(l) {
+  if (l === setLang || (l !== 'ko' && l !== 'en')) return;
+  const cur = setModal.hidden ? {} : setReadForm();
+  setLang = l; setApplyLangButtons();
+  setModal.querySelectorAll('[data-i18n]').forEach(el => { const k = el.getAttribute('data-i18n'); const v = ttf(k); if (v != null) el.textContent = v; });
+  try {
+    const r = await fetch('/api/settings?lang=' + encodeURIComponent(l));
+    const j = await r.json();
+    if (r.ok) { setSchema = j.schema; setDefaults = j.defaults || setDefaults; setValues = Object.assign({}, j.values, cur); setRenderForm(); }
+  } catch (e) { /* 폼 재-fetch 실패 시 정적 chrome 번역만 반영 */ }
+}
+function closeSettings() { setModal.hidden = true; }
+async function saveSettings() {
+  const cur = setReadForm();
+  const diff = {};
+  for (const k in cur) if (JSON.stringify(cur[k]) !== JSON.stringify(setInitial[k])) diff[k] = cur[k];
+  if (Object.keys(diff).length === 0) { toast(t('settings.noChange'), 'ok'); closeSettings(); return; }
+  try {
+    const r = await fetch('/api/settings', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({values: diff, mtime: setMtime})});
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    toast(t('settings.saved'), 'ok');
+    if (j.restart_required && j.restart_required.length)
+      toast(t('settings.restartNeeded', {keys: j.restart_required.join(', ')}), 'err');
+    closeSettings();
+  } catch (e) { toast(t('settings.saveFail', {err: e.message}), 'err'); }
+}
+// Issue168: 배지 hover → 즉시 풍선 도움말 (배지 위쪽, modal-body overflow 비절단)
+const setTip = document.getElementById('set-tip');
+function setTipShow(badge) {
+  const tip = badge.getAttribute('data-tip'); if (!tip) return;
+  setTip.textContent = tip; setTip.hidden = false;
+  const br = badge.getBoundingClientRect();
+  const tw = setTip.offsetWidth, th = setTip.offsetHeight, gap = 9;
+  let left = br.left + br.width/2 - tw/2;
+  left = Math.max(8, Math.min(left, window.innerWidth - tw - 8));
+  let top = br.top - th - gap;            // 기본: 배지 위쪽
+  if (top < 8) top = br.bottom + gap;     // 위 공간 부족 시에만 아래로
+  setTip.style.left = left + 'px';
+  setTip.style.top = top + 'px';
+  setTip.style.setProperty('--tip-arrow', (br.left + br.width/2 - left) + 'px');
+}
+function setTipHide() { setTip.hidden = true; }
+setModal.addEventListener('mouseover', e => { const b = e.target.closest('.set-badge, .set-desc'); if (b) setTipShow(b); });
+setModal.addEventListener('mouseout', e => { if (e.target.closest('.set-badge, .set-desc')) setTipHide(); });
+// Issue281: 활성 세션 카드의 🆚/모델 배지 툴팁 — .card{overflow:hidden}에 안 잘리게 body 직속 #live-tip 사용
+const liveTip = document.getElementById('live-tip');
+function liveTipShow(badge) {
+  const tip = badge.getAttribute('data-tip'); if (!tip) return;
+  liveTip.textContent = tip; liveTip.hidden = false;
+  const br = badge.getBoundingClientRect();
+  const tw = liveTip.offsetWidth, th = liveTip.offsetHeight, gap = 7;
+  let left = br.left + br.width/2 - tw/2;
+  left = Math.max(8, Math.min(left, window.innerWidth - tw - 8));
+  let top = br.top - th - gap;            // 기본: 배지 위쪽
+  if (top < 8) top = br.bottom + gap;     // 위 공간 부족 시에만 아래로
+  liveTip.style.left = left + 'px';
+  liveTip.style.top = top + 'px';
+}
+function liveTipHide() { liveTip.hidden = true; }
+document.addEventListener('mouseover', e => { const b = e.target.closest('.live-origin[data-tip], .live-model[data-tip]'); if (b) liveTipShow(b); });
+document.addEventListener('mouseout', e => { if (e.target.closest('.live-origin[data-tip], .live-model[data-tip]')) liveTipHide(); });
+document.getElementById('btn-settings').addEventListener('click', openSettings);
+document.getElementById('set-lang').addEventListener('click', e => {
+  const b = e.target.closest('button[data-lang]'); if (b) switchLang(b.dataset.lang);
+});
+document.getElementById('set-close').addEventListener('click', () => { setTipHide(); closeSettings(); });
+document.getElementById('set-cancel').addEventListener('click', closeSettings);
+document.getElementById('set-save').addEventListener('click', saveSettings);
+setModal.addEventListener('click', e => { if (e.target === setModal) closeSettings(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !setModal.hidden) closeSettings(); });
+document.getElementById('set-tabs').addEventListener('click', e => {
+  const t = e.target.closest('.set-tab'); if (!t) return;
+  setModal.querySelectorAll('.set-tab').forEach(x => x.classList.toggle('active', x === t));
+  setModal.querySelectorAll('.set-pane').forEach(p => p.classList.toggle('active', p.dataset.pane === t.dataset.tab));
+});
+document.getElementById('set-open-file').addEventListener('click', async () => {
   try {
     const r = await fetch('/open-settings-yml', {method: 'POST'});
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
-    toast('✅ VSCode 에서 hub_setting.yml 열기', 'ok');
-  } catch (e) {
-    toast('❌ ' + e.message, 'err');
-  }
+    toast(t('settings.fileOpened'), 'ok');
+    closeSettings();
+  } catch (e) { toast('❌ ' + e.message, 'err'); }
 });
 
 // Issue115: dashboard 데이터 파일 자동 리프레쉬 폴링
@@ -6425,7 +9926,7 @@ function applySecCollapse() {
     const on = !!st[btn.dataset.sec];
     sec.classList.toggle('sec-collapsed', on);
     btn.textContent = on ? '▸' : '▾';
-    btn.title = on ? '섹션 펼치기' : '섹션 접기';
+    btn.title = on ? t('common.expandSection') : t('common.collapseSection');
   });
 }
 document.querySelectorAll('.sec-toggle').forEach(btn => {
@@ -6466,6 +9967,12 @@ header.sess { background: {COLOR}; color: #1a1a1a; padding: 0.8rem 1.5rem; displ
 header.sess h1 { margin: 0; font-size: 1rem; }
 header.sess h1 code { color: var(--fg); background: rgba(255,255,255,0.92); padding: 0.05rem 0.35rem; border-radius: 3px; }
 header.sess .meta { font-size: 0.8em; opacity: 0.9; }
+/* Issue280: 세션 GC 버튼 (헤더+푸터 공용) */
+.gc-btn { background: #c33; color: #fff; border: 1px solid #a22; border-radius: 6px; padding: 0.25rem 0.7rem; cursor: pointer; font-size: 0.85rem; white-space: nowrap; }
+.gc-btn:hover { background: #a22; }
+.gc-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+header.sess .hdr-right { display: flex; align-items: center; gap: 0.6rem; }
+footer.sess-foot { padding: 0.8rem 1.5rem 1.4rem; display: flex; justify-content: flex-end; }
 .status { padding: 0.3rem 1.5rem; font-size: 0.8em; color: var(--muted); border-bottom: 1px solid var(--border); }
 .status.connected { color: var(--accent); }
 .status.polling { color: #d80; }
@@ -6476,6 +9983,17 @@ main#content code { background: var(--code-bg); padding: 0.1rem 0.3rem; border-r
 main#content table { border-collapse: collapse; width: 100%; }
 main#content th, main#content td { border: 1px solid var(--border); padding: 0.4rem 0.6rem; }
 main#content th { background: var(--code-bg); }
+/* Issue219: 터미널 세션 JSONL transcript */
+.transcript .ts-note { color: var(--muted); font-size: 0.85rem; font-style: italic; margin: 0 0 1rem; }
+.ts-turn { margin: 0 0 1rem; padding: 0.6rem 0.9rem; border-radius: 8px; border: 1px solid var(--border); }
+.ts-turn.ts-user { background: rgba(120,120,180,0.08); }
+.ts-turn.ts-asst { background: rgba(120,180,120,0.06); }
+.ts-role { font-weight: 600; font-size: 0.85rem; margin-bottom: 0.4rem; opacity: 0.8; }
+.ts-text { white-space: pre-wrap; word-break: break-word; background: transparent !important; padding: 0 !important; margin: 0.3rem 0; font-family: inherit; }
+.ts-think { margin: 0.3rem 0; font-size: 0.85rem; color: var(--muted); }
+.ts-think summary { cursor: pointer; }
+.ts-think pre { white-space: pre-wrap; word-break: break-word; }
+.ts-tool { font-family: ui-monospace, monospace; font-size: 0.82rem; color: var(--muted); margin: 0.15rem 0; }
 /* Issue18 Phase 2: form */
 .q-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.2rem; margin-bottom: 1rem; }
 .q-card .q-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.6rem; }
@@ -6517,7 +10035,7 @@ main#content th { background: var(--code-bg); }
 .q-field .q-hint { font-size: 0.8em; color: var(--muted); }
 .q-required-mark { color: var(--danger); margin-left: 0.2rem; }
 /* Issue19 Phase 3: dashboard widgets */
-.dash-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; }
+.dash-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; grid-auto-flow: row dense; align-items: start; }
 /* Issue77 (글로벌 .claude#Issue91 짝): width:full 위젯 — 그리드 전폭 1컬럼 행 점유 */
 .dash-grid > .w-full { grid-column: 1 / -1; }
 .widget { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.2rem; }
@@ -6586,9 +10104,10 @@ main#content th { background: var(--code-bg); }
 </style>
 </head>
 <body>
-<header class="sess"><h1>📁 {NAME} — session <code>{SID}</code></h1><span class="meta">mode <span id="mode-tag">?</span></span></header>
+<header class="sess"><h1>📁 {NAME} — session <code>{SID}</code></h1><span class="hdr-right"><span class="meta">mode <span id="mode-tag">?</span></span><button class="gc-btn" data-gc title="세션 GC — 세션·터미널 pane 강제 종료">🗑 세션 GC</button></span></header>
 <div class="status" id="status">초기 로드 중...</div>
 <main id="content"><em>대기 중...</em></main>
+<footer class="sess-foot"><button class="gc-btn" data-gc title="세션 GC — 세션·터미널 pane 강제 종료">🗑 세션 GC</button></footer>
 <script>
 const CWD_HASH = "{CWD_HASH}";
 const SID = "{SID}";
@@ -6647,6 +10166,8 @@ async function reload(force) {
       return;
     }
     lastSig = sig;
+    // Issue280: GC 대상 정보(live_pid/gc_meta) 없는 구세션은 버튼 비활성
+    if (typeof d.can_gc !== 'undefined') setGcEnabled(!!d.can_gc);
     modeEl.textContent = d.mode || '?';
     if (d.mode === 'A') {
       contentEl.innerHTML = d.content || '<em>(빈 응답)</em>';
@@ -6658,6 +10179,9 @@ async function reload(force) {
       contentEl.innerHTML = renderDashboard(d.content);
       // Issue29 Phase 6: progress 임계치 알림 (hysteresis)
       try { maybeNotifyProgress(parseJSON(d.content)); } catch (e) {}
+      // 디스크 전용 대시보드(runner 가 파일만 갱신, sessions 미push)는 SSE reload 이벤트가
+      // 발생하지 않아 SSE 정상 시 동결된다. dash interval 주기로 /data 를 자체 폴링해 라이브 유지.
+      try { ensureDashPoll((parseJSON(d.content) || {}).interval); } catch (e) {}
     } else {
       contentEl.innerHTML = `<em>unknown mode: ${esc(d.mode)}</em>`;
     }
@@ -6671,6 +10195,14 @@ async function reload(force) {
 reload();
 // Issue24 Phase 4: SSE-only + es.onerror polling fallback (status 표시 🟢🟡🔴)
 let pollingId = null;
+// 디스크 전용 대시보드 전용 주기 폴링 — SSE 연결 여부와 무관하게 dash interval 마다
+// /data 재fetch. reload() 의 sig 디듑으로 변화 없으면 재렌더 생략(저비용).
+let dashPollId = null;
+function ensureDashPoll(sec) {
+  if (PREVIEW || dashPollId) return;
+  const ms = Math.max(5, Number(sec) || 10) * 1000;
+  dashPollId = setInterval(() => reload(), ms);
+}
 function setStatus(state, text) {
   statusEl.classList.remove('connected', 'polling', 'error');
   let icon = '🔴';
@@ -6687,19 +10219,44 @@ function startPolling() {
 function stopPolling() {
   if (pollingId) { clearInterval(pollingId); pollingId = null; }
 }
-if (PREVIEW) {
-  setStatus('connected', 'PREVIEW (정적 · TTL ' + 60 + 's)');
-} else {
+// Issue258: Page Visibility 게이팅 — 백그라운드 탭은 SSE 연결을 반납한다.
+//   Chrome HTTP/1.1 호스트당 6연결 상한 → hub 탭 여러 개면 SSE 포화 → 렌더러 크래시.
+//   hidden = 연결 close(반납), visible 복귀 = 재연결 + reload(백그라운드 누락분 수거).
+//   "여러 탭" 대부분은 hidden → 활성 SSE ≈ hub-shell(1)+가시 doc(≈1) → 상한 도달 불가.
+let es = null;
+function openSSE() {
+  if (PREVIEW || es) return;
   try {
-    const es = new EventSource(SSE_URL);
+    es = new EventSource(SSE_URL);
     es.addEventListener('reload', () => reload(true));
     es.addEventListener('session_update', () => reload(true));
+    // Issue280: 다른 탭/hub 에서 이 세션이 GC 되면 즉시 terminated 표시
+    es.addEventListener('session_terminated', ev => {
+      let m = '';
+      try { m = (JSON.parse(ev.data) || {}).method || ''; } catch (e) {}
+      markTerminated(m);
+    });
     es.onopen = () => { setStatus('connected', 'SSE 연결됨'); stopPolling(); };
     es.onerror = () => { setStatus('error', 'SSE error — reconnect 대기'); startPolling(); };
   } catch (e) {
     console.warn('SSE failed, polling only:', e);
     startPolling();
   }
+}
+function closeSSE() {
+  if (es) { try { es.close(); } catch (_) {} es = null; }
+}
+if (PREVIEW) {
+  setStatus('connected', 'PREVIEW (정적 · TTL ' + 60 + 's)');
+} else {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') { closeSSE(); stopPolling(); }
+    else { openSSE(); reload(true); }
+  });
+  // Issue258(재수정): iframe 재네비/탭 닫기로 이 doc 이 폐기되기 직전 SSE·polling 을 명시적
+  //   반납. 노드 swap 과 함께 detached document 누수를 확정 차단(렌더러 CHECK abort 방지).
+  window.addEventListener('pagehide', () => { closeSSE(); stopPolling(); });
+  if (document.visibilityState !== 'hidden') { openSSE(); }
 }
 // Issue29 Phase 6: Notification API — progress widget 임계치(50/80/100%) hysteresis 알림
 const NOTIFY_THRESHOLDS = [50, 80, 100];
@@ -6745,6 +10302,46 @@ function tickTimers() {
   });
 }
 setInterval(tickTimers, 1000);
+// Issue280: 세션 GC 버튼 — action_type=terminate POST. GC 주목적(가비지 세션·pane 정리),
+//   memo 는 실전달 없이 서버 레코드(session-gc.jsonl·inbox)로만 저장(향후 분석용).
+let gcDone = false;
+function setGcEnabled(on) {
+  if (gcDone) return;
+  document.querySelectorAll('[data-gc]').forEach(b => {
+    b.disabled = !on;
+    b.title = on ? '세션 GC — 세션·터미널 pane 강제 종료'
+                 : 'GC 대상 정보 없음 (live_pid/gc_meta 미등록 구세션)';
+  });
+}
+function resetGcButtons() {
+  document.querySelectorAll('[data-gc]').forEach(b => { b.disabled = false; b.textContent = '🗑 세션 GC'; });
+}
+function markTerminated(method) {
+  gcDone = true;
+  document.querySelectorAll('[data-gc]').forEach(b => { b.disabled = true; b.textContent = '☠️ terminated'; });
+  setStatus('error', '☠️ 세션 종료됨' + (method ? ' (' + method + ')' : ''));
+  closeSSE(); stopPolling();
+}
+function gcSession() {
+  if (gcDone) return;
+  if (!window.confirm('이 세션과 터미널 pane 을 강제 종료(GC)할까요?\n' + NAME_LABEL)) return;
+  const memo = window.prompt('종료 메모 (선택 — 분석용 기록)', '') || '';
+  document.querySelectorAll('[data-gc]').forEach(b => { b.disabled = true; b.textContent = '⏳ GC 중...'; });
+  fetch(ACTION_URL, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({action_type: 'terminate', message: memo})
+  }).then(r => r.json().then(j => ({httpOk: r.ok, j})))
+    .then(({httpOk, j}) => {
+      if (httpOk && j.ok) { markTerminated(j.method); }
+      else { alert('GC 실패: ' + (j.error || JSON.stringify(j))); resetGcButtons(); }
+    })
+    .catch(e => { alert('GC 요청 실패: ' + e); resetGcButtons(); });
+}
+if (PREVIEW) {
+  document.querySelectorAll('[data-gc]').forEach(b => { b.style.display = 'none'; });
+} else {
+  document.querySelectorAll('[data-gc]').forEach(b => b.addEventListener('click', gcSession));
+}
 </script>
 </body>
 </html>
@@ -6797,28 +10394,126 @@ def main():
     load_feed()      # Issue42: hook 활동 피드 복원
 
     # Issue141: env 미설정 시 hub_setting.yml bind_host 적용 (env > yml > 기본).
-    global HOST
-    if _HOST_ENV is None:
-        HOST = (_load_hub_setting().get("bind_host") or "127.0.0.1").strip() or "127.0.0.1"
+    # bind_host 는 스칼라 또는 리스트 — 리스트면 각 주소에 개별 bind(멀티소켓).
+    global HOST, ALLOW_ALL, BIND_HOSTS
+    if _HOST_ENV is not None:
+        BIND_HOSTS = [_HOST_ENV.strip()]
+    else:
+        _bh = _load_hub_setting().get("bind_host")
+        if isinstance(_bh, list):
+            BIND_HOSTS = [h.strip() for h in _bh if h and h.strip()] or ["127.0.0.1"]
+        else:
+            BIND_HOSTS = [(_bh or "127.0.0.1").strip() or "127.0.0.1"]
+    # 순서 보존 dedup
+    _seen = set()
+    BIND_HOSTS = [h for h in BIND_HOSTS if not (h in _seen or _seen.add(h))]
+    HOST = BIND_HOSTS[0]  # primary — self-ip·pid·로그·advertise fallback 기준
+    # 개방 모드 = bind 주소 중 하나라도 비루프백 (멀티 bind 일반화).
+    _open_mode = any(h not in LOOPBACK_IPS for h in BIND_HOSTS)
 
-    # 개방 모드(HOST 가 루프백 아님)에서만 Servers.md allowlist 적재.
-    # 기본 127.0.0.1 이면 빈 set 유지 → 루프백만 통과(기존 동작 그대로).
-    if HOST not in LOOPBACK_IPS:
-        ALLOWED_IPS.update(_load_server_allowlist())
-        log(f"[allowlist] 개방 모드 — bind={HOST}, 허용 IP {len(ALLOWED_IPS)}개: "
-            f"{sorted(ALLOWED_IPS)} (+루프백)")
-        sys.stderr.write(
-            f"[hub] ⚠️ 외부 개방 모드 — bind={HOST}:{PORT}, "
-            f"allowlist {len(ALLOWED_IPS)} hosts (+loopback)\n")
+    # allow_server_list 분리: source-IP 게이트는 bind_host 와 독립 토글.
+    # 기본 True = Servers.md(check=O) 화이트리스트 + self 허용.
+    # False = bind_host(self) 만 허용 — 외부 source IP 전부 차단(가장 보수적).
+    _allow_server_list = bool(_load_hub_setting().get("allow_server_list", True))
+
+    def _resolve_self_ips() -> set:
+        """bind IP + 로컬 인터페이스 IP 집합 (루프백 제외). self 항상 허용용.
+        Servers.md 의 자기 호스트가 공개 도메인으로 resolve 되면 LAN self IP 와
+        불일치하여 로컬 브라우저·hook 이 403 당하던 문제도 함께 차단.
+        BIND_HOSTS 전체를 seed 해 모든 bind 인터페이스(예: tailscale IP)를 self 로 인식 —
+        advertise_host(tailscale MagicDNS)로 열린 로컬 iframe 이 자기 tailscale IP 로
+        도달할 때 allowlist 미포함으로 403 당하던 문제 차단(자기 자신은 항상 self)."""
+        _ips = set(BIND_HOSTS)
+        try:
+            _ips.update(socket.gethostbyname_ex(socket.gethostname())[2])
+        except (socket.gaierror, OSError):
+            pass
+        try:
+            _probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            _probe.connect(("192.168.255.255", 1))  # 라우팅만, 패킷 미전송
+            _ips.add(_probe.getsockname()[0])
+            _probe.close()
+        except OSError:
+            pass
+        return {ip for ip in _ips if ip and ip not in LOOPBACK_IPS}
+
+    # Issue200: allowlist 적재(DNS resolve 포함)를 bind 와 분리하여 백그라운드 데몬
+    # 스레드로 지연 실행. 개방 모드의 Servers.md gethostbyname / self gethostbyname_ex 는
+    # 호스트당 DNS 타임아웃(~5s) 까지 동기 블로킹 가능 → 그동안 bind 가 지연되어 재시작
+    # 다운타임을 유발했다. bind 는 BIND_HOSTS(스칼라 IP/호스트, DNS 불요)만 쓰므로 allowlist
+    # 적재를 미뤄도 bind 시각에 영향 없음. 적재 완료 전 window 동안 외부 source IP 는 일시
+    # 403 당할 수 있으나(self-correcting), 루프백은 _ip_allowed 에서 항상 허용 → 로컬 무영향.
+    def _populate_allowlist():
+        # 비루프백 bind + allow_server_list=false → bind_host(self) 만 허용.
+        # Servers.md 미적재. 외부 source IP 는 _ip_allowed 게이트에서 전부 403.
+        if _open_mode and not _allow_server_list:
+            _self_ips = _resolve_self_ips()
+            ALLOWED_IPS.update(_self_ips)
+            log(f"[allowlist] bind_host 전용 — bind={BIND_HOSTS}, allow_server_list=false → "
+                f"self 허용 {sorted(_self_ips)} (+루프백), 외부 source IP 전부 차단")
+            sys.stderr.write(
+                f"[hub] bind_host 전용 모드 — bind={BIND_HOSTS}:{PORT}, "
+                f"allow_server_list=false → self+루프백만 허용\n")
+
+        # 개방 모드(비루프백 bind + allow_server_list=true)에서만 Servers.md allowlist 적재.
+        # 기본 127.0.0.1 이면 빈 set 유지 → 루프백만 통과(기존 동작 그대로).
+        if _open_mode and _allow_server_list:
+            _ips, _nets = _load_server_allowlist()
+            ALLOWED_IPS.update(_ips)
+            ALLOWED_NETS.extend(_nets)
+            # 자기 자신은 항상 허용 — bind IP + 로컬 인터페이스 IP 자동 추가.
+            _self_ips = _resolve_self_ips()
+            ALLOWED_IPS.update(_self_ips)
+            log(f"[allowlist] self 자동 허용 — {sorted(_self_ips)}")
+            log(f"[allowlist] 개방 모드 — bind={BIND_HOSTS}, 허용 IP {len(ALLOWED_IPS)}개: "
+                f"{sorted(ALLOWED_IPS)}, CIDR {len(ALLOWED_NETS)}개: "
+                f"{[str(n) for n in ALLOWED_NETS]} (+루프백)")
+            sys.stderr.write(
+                f"[hub] ⚠️ 외부 개방 모드 — bind={BIND_HOSTS}:{PORT}, "
+                f"allowlist {len(ALLOWED_IPS)} hosts + {len(ALLOWED_NETS)} CIDR (+loopback)\n")
+
+        # allow_list (hub_setting.yml inline) — Servers.md 와 additive 병합. IP/CIDR 만(호스트명 미지원).
+        # 개방 모드에서만 의미. allow_server_list 토글과 독립 — 사용자가 명시한 추가 grant 이므로 항상 적용.
+        if _open_mode:
+            _inline = _load_hub_setting().get("allow_list") or []
+            _added_ips, _added_nets = [], []
+            for item in _inline:
+                if "/" in item:
+                    try:
+                        ALLOWED_NETS.append(ipaddress.ip_network(item, strict=False))
+                        _added_nets.append(item)
+                    except ValueError as e:
+                        log(f"[allowlist] inline allow_list CIDR 파싱 실패 skip — {item}: {e}")
+                else:
+                    try:
+                        ipaddress.ip_address(item)  # IP 검증(호스트명 미지원)
+                        ALLOWED_IPS.add(item)
+                        _added_ips.append(item)
+                    except ValueError:
+                        log(f"[allowlist] inline allow_list 항목 무시(IP/CIDR 아님) — {item}")
+            if _added_ips or _added_nets:
+                log(f"[allowlist] inline allow_list 적재 — IP {_added_ips}, CIDR {_added_nets}")
+
+    # 개방 모드에서만 백그라운드 적재 스레드 가동(루프백 전용 기본 모드는 적재 불요 → no-op).
+    if _open_mode:
+        threading.Thread(target=_populate_allowlist, name="allowlist-populate",
+                         daemon=True).start()
 
     # Issue59: bind 를 PID_FILE 기록보다 먼저 수행 — bind 실패 시 PID_FILE 미생성·미삭제.
     #          (실패 경로의 cleanup 이 살아있는 다른 서버의 pid 파일을 지우던 버그 차단)
-    try:
-        srv = ThreadingHTTPServer((HOST, PORT), Handler)
-    except OSError as e:
-        sys.stderr.write(f"[hub] bind failed on port {PORT}: {e}\n")
+    # 멀티 bind: BIND_HOSTS 의 각 주소에 ThreadingHTTPServer 1개. 첫 성공 전 전부 실패 시 종료.
+    servers = []
+    for _h in BIND_HOSTS:
+        try:
+            _s = ThreadingHTTPServer((_h, PORT), Handler)
+            _s.daemon_threads = True
+            servers.append((_h, _s))
+        except OSError as e:
+            sys.stderr.write(f"[hub] bind failed on {_h}:{PORT}: {e}\n")
+            log(f"[hub] bind failed on {_h}:{PORT}: {e}")
+    if not servers:
+        sys.stderr.write(f"[hub] all binds failed on port {PORT} — exiting\n")
         sys.exit(2)
-    srv.daemon_threads = True
 
     with open(PID_FILE, "w") as f:
         f.write(str(os.getpid()))
@@ -6826,10 +10521,14 @@ def main():
     signal.signal(signal.SIGTERM, cleanup)
     signal.signal(signal.SIGINT, cleanup)
 
-    log(f"started on http://{HOST}:{PORT} (pid={os.getpid()}, projects_restored={len(projects)})")
+    _bound = [h for h, _ in servers]
+    log(f"started on http://{_bound}:{PORT} (pid={os.getpid()}, projects_restored={len(projects)})")
 
+    # 2번째 이후 bind 는 데몬 스레드에서 serve, 첫 번째는 메인 스레드에서 blocking.
+    for _h, _s in servers[1:]:
+        threading.Thread(target=_s.serve_forever, name=f"serve-{_h}", daemon=True).start()
     try:
-        srv.serve_forever()
+        servers[0][1].serve_forever()
     except KeyboardInterrupt:
         cleanup()
 

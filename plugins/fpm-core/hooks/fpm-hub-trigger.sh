@@ -19,8 +19,8 @@
 #   상태 파일만 전환, render-blocking 미발동 (bare `..show` 와 구분).
 #
 # 출력 경로 결정 (Issue21):
-#   - hook 입력 JSON의 cwd에서 _doc_work/z_htm/ 존재 확인
-#   - 존재 시 거기에 저장, else /tmp/ fallback
+#   - hook 입력 JSON의 cwd에서 _doc_work/ 존재 확인 (Issue289)
+#   - 활성 htm/ → legacy z_htm/ → htm/ 신규 순으로 채택, 없으면 /tmp/ fallback
 
 input=$(cat)
 FLAG_FILE="$HOME/.claude/.hub-mode-active"
@@ -46,6 +46,75 @@ try:
 except Exception:
     pass" 2>/dev/null)
 
+# `..hub list` · `/hub list` — 등록 프로젝트 hub on/off 상태 일괄 조회(조회 전용, 토글 아님).
+#   hub 웹 UI Project List 팝업을 열지 않고 채팅에서 바로 확인하기 위함.
+#   server.py _load_projects_list()/_htm_state() 판정 로직을 python으로 복제.
+if printf '%s' "$prompt" | grep -qiE '(^|[[:space:]])(\.\.hub|/hub)[[:space:]]+list([[:space:]]|$)'; then
+  python3 <<'PYEOF'
+import hashlib, json, os
+
+home = os.path.expanduser("~")
+system_off = os.path.exists(os.path.join(home, ".claude", ".hub-system-off"))
+state_dir = os.path.join(home, ".claude", ".hub-state")
+projects_md = os.path.join(home, "_git", "___pm", "Projects.md")
+
+rows = []
+try:
+    with open(projects_md, encoding="utf-8") as f:
+        for line in f:
+            if not line.startswith("|"):
+                continue
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            if len(cells) < 5:
+                continue
+            try:
+                pid = int(cells[0])
+            except ValueError:
+                continue  # 헤더·구분선 행 skip
+            name = cells[1]
+            emoji = cells[6] if len(cells) > 6 else ""
+            path = cells[4].strip("`").strip() if len(cells) > 4 else ""
+            rows.append((pid, name, emoji, path))
+except FileNotFoundError:
+    pass
+
+def state_of(path):
+    if system_off:
+        return "\U0001F534 off(시스템)"
+    abs_path = os.path.expanduser(path).rstrip("/")
+    if not abs_path:
+        return "\U0001F7E2 on"
+    h = hashlib.md5(abs_path.encode("utf-8")).hexdigest()[:8]
+    content = None
+    try:
+        for fn in os.listdir(state_dir):
+            if fn == h or fn.startswith(h + "__"):
+                with open(os.path.join(state_dir, fn), encoding="utf-8") as sf:
+                    content = sf.read().strip()
+                break
+    except (FileNotFoundError, OSError):
+        pass
+    return "\U0001F534 off" if content == "off" else "\U0001F7E2 on"
+
+lines = ["| 번호 | 프로젝트 | hub |", "| :--- | :--- | :--- |"]
+for pid, name, emoji, path in sorted(rows):
+    label = f"{emoji} {name}".strip()
+    lines.append(f"| {pid} | {label} | {state_of(path)} |")
+table = "\n".join(lines)
+
+ctx = (
+    "## hub 프로젝트 on/off 목록 — `..hub list`\n\n"
+    "hub 웹 Project List 팝업 없이 채팅에서 바로 확인. 아래 표를 그대로 응답 (재계산·재조회 금지):\n\n"
+    f"{table}\n\n"
+    "### 본 turn 처리\n"
+    "- 조회 전용 — 렌더·폼·워크플로우 진입 금지. 위 표만 출력.\n"
+    "- 개별 토글: `..hub on|off` (이 폴더) / `..hub on|off all` (시스템)"
+)
+print(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": ctx}}, ensure_ascii=False))
+PYEOF
+  exit 0
+fi
+
 session_id=$(printf '%s' "$input" | python3 -c "
 import sys, json
 try:
@@ -67,21 +136,53 @@ SID_FULL=$(printf '%s' "$SID" | tr -c 'A-Za-z0-9-' '-')
 # SID는 파일명·URL 안전화용 32자 slug (영문/숫자/하이픈만)
 SID=$(printf '%s' "$SID" | tr -c 'A-Za-z0-9-' '-' | cut -c1-32)
 
-# OUT_DIR 결정: 프로젝트 로컬 우선
-# 1) $cwd/_doc_work/z_htm  (단일 레포)
-# 2) $cwd/*/​_doc_work/z_htm (mono-repo / sub-package 구조 — ex: cli/_doc_work/z_htm)
-# 3) /tmp fallback
-if [ -n "$cwd" ] && [ -d "$cwd/_doc_work/z_htm" ]; then
-  OUT_DIR="$cwd/_doc_work/z_htm"
+# Issue289: 렌더 산출물 쓰기 폴더 — 활성 `_doc_work/htm/`, legacy `_doc_work/z_htm/`.
+#   프로젝트 단위 우선순위: 기존 htm/ → (없으면) 기존 z_htm/ 유지 → (둘 다 없으면) htm/ 신규 생성.
+#   z_htm 만 있는 프로젝트를 강제로 htm/ 로 끌어올리지 않는 이유: P3 마이그레이션이
+#   프로젝트별 전환 스위치 역할을 하고(htm/ 생성 = 그 프로젝트 전환 완료), 범위 밖 프로젝트
+#   (prj2 볼트 등)를 하드코딩 없이 자동 제외할 수 있기 때문. 읽기는 서버가 HTM_DIRS 로 전부 커버.
+#   설계 SSOT: ~/_git/___pm/_doc_arch/htm-lifecycle-design.md
+_htm_dir_of() {  # $1=프로젝트 루트 → htm 출력 폴더 경로(없으면 빈 문자열)
+  [ -d "$1/_doc_work/htm" ] && { printf '%s' "$1/_doc_work/htm"; return; }
+  [ -d "$1/_doc_work/z_htm" ] && { printf '%s' "$1/_doc_work/z_htm"; return; }
+  [ -d "$1/_doc_work" ] && { mkdir -p "$1/_doc_work/htm" && printf '%s' "$1/_doc_work/htm"; return; }
+  printf ''
+}
+
+# OUT_DIR 결정: 프로젝트 로컬 우선 (Issue203 — 상향 탐색 추가)
+# 1) $cwd/_doc_work                  (cwd 직하 — 단일 레포)
+# 2) git root / 부모 순회 _doc_work  (cwd 가 프로젝트 하위폴더일 때 루트 채택)
+# 3) $cwd/*/_doc_work                (mono-repo / sub-package 하향 스캔 — ex: cli/_doc_work)
+# 4) /tmp fallback
+OUT_DIR=""
+if [ -n "$cwd" ] && [ -d "$cwd/_doc_work" ]; then
+  OUT_DIR=$(_htm_dir_of "$cwd")
 elif [ -n "$cwd" ]; then
-  sub_found=$(find "$cwd" -mindepth 3 -maxdepth 3 -type d -path "*/_doc_work/z_htm" 2>/dev/null | head -1)
-  if [ -n "$sub_found" ]; then
-    OUT_DIR="$sub_found"
+  # Issue203: cwd 가 프로젝트 하위폴더(ex: unity_base/Assets)면 루트 _doc_work 를 놓쳐
+  #   /tmp fallback → 등록 스킵 → hub 403. 하향 find 이전에 상향 탐색으로 루트 채택.
+  up_root=""
+  git_root=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)
+  if [ -n "$git_root" ] && [ -d "$git_root/_doc_work" ]; then
+    up_root="$git_root"
   else
-    OUT_DIR="/tmp/___pm"
-    mkdir -p "$OUT_DIR"
+    # git 미사용 대비 cwd 부모 순회 — 첫 발견 _doc_work 채택
+    dir="$cwd"
+    while [ -n "$dir" ] && [ "$dir" != "/" ]; do
+      if [ -d "$dir/_doc_work" ]; then
+        up_root="$dir"
+        break
+      fi
+      dir=$(dirname "$dir")
+    done
   fi
-else
+  if [ -n "$up_root" ]; then
+    OUT_DIR=$(_htm_dir_of "$up_root")
+  else
+    sub_found=$(find "$cwd" -mindepth 2 -maxdepth 2 -type d -name "_doc_work" 2>/dev/null | head -1)
+    [ -n "$sub_found" ] && OUT_DIR=$(_htm_dir_of "$(dirname "$sub_found")")
+  fi
+fi
+if [ -z "$OUT_DIR" ]; then
   OUT_DIR="/tmp/___pm"
   mkdir -p "$OUT_DIR"
 fi
@@ -89,7 +190,7 @@ fi
 # Issue22/Issue157: PROJECT_NAME + PROJECT_COLOR 계산
 #   색 = peacock.color 실색 (Issue58/157) — cwd 에서 위로 .vscode/settings.json 탐색,
 #        없으면 Projects.md prefix 매칭, 둘 다 실패 시 hsl 해시 fallback (임의색은 최후 수단).
-#   name = peacock 찾은 프로젝트 루트 basename (z_htm 등 하위폴더 보정).
+#   name = peacock 찾은 프로젝트 루트 basename (htm/z_htm 등 하위폴더 보정).
 read -r PROJECT_NAME PROJECT_COLOR <<< "$(CWD_VAL="$cwd" python3 <<'PYEOF'
 import hashlib, os, re
 cwd = os.environ.get('CWD_VAL', '')
@@ -153,6 +254,12 @@ print(name.replace(' ', '_'), color.replace(' ', ''))
 PYEOF
 )"
 
+# Issue181: python3 산출 실패(예외·미설치·빈 출력) 시 read 가 빈 문자열을 받아
+#   canonical 헤더에 `background: ;` 가 임베드되어 배경이 사라지는 결함 방어.
+#   python 정상 경로는 항상 2토큰을 출력하므로 여기 도달 시는 전체 실패 케이스.
+[ -z "$PROJECT_COLOR" ] && PROJECT_COLOR="hsl(220,45%,80%)"
+[ -z "$PROJECT_NAME" ] && PROJECT_NAME="unknown"
+
 # Issue83: cwd_hash + 프로젝트 판정 + per-cwd 상태 파일 경로
 # Issue105: 파일명에 프로젝트 라벨 포함 (`<hash>__<label>`) — 어느 폴더가 stop 상태인지 가시
 CWD_HASH=$(CWD_VAL="$cwd" python3 -c "
@@ -208,31 +315,75 @@ if cwd:
         pass
 print('1' if hit else '0')")
 
-# Issue105: 토글 의미 재정의
-#   * 시스템 단위 (모든 프로젝트):  `..hub on|off` · `/hub on|off`
-#     - `off` → SYSTEM_OFF_FLAG touch (모든 프로젝트 자동 모드 차단)
-#     - `on`  → SYSTEM_OFF_FLAG rm   (시스템 자동 모드 복귀, per-cwd 상태는 유지)
-#   * 프로젝트 단위 (현재 cwd):     `..hub start|stop` · `/hub start|stop`
-#     - `stop`  → STATE_FILE=off (이 폴더만 영구 off)
-#     - `start` → STATE_FILE=on  (이 폴더만 영구 on)
+# Issue163: `..text`/`..txt`/`/text`/`/txt` — 단발(이번 turn 한정) render-off 트리거.
+#   state/flag 파일 무변경 (영속 토글 `..hub stop`/`off` 와 구분). 본 turn 자동 hub 렌더만 suppress.
+#   자동 모드 분기(IS_PROJECT)·`..show` 렌더 분기보다 먼저 평가 — 렌더 진입 차단이 목적.
+#   `..te?xt|/te?xt` 로 text/txt 4종 동시 커버. `..hub` 토글류(on/off/start/stop 접미 필요)와 비충돌.
+# prj3#Issue199: bare `..text` (요청 텍스트 없이 마커만) 은 "재실행" 이 아니라 "직전 결과를 text 로 표시".
+#   사유: `..show`/`..ask` 렌더가 브라우저에 안 떠서 사용자가 `..text` 로 확인할 때, 기존 문구는
+#   "작업 정상 수행" → Claude 가 직전 작업을 재실행 → 멱등성 없는 세션에서 이중 실행 부작용.
+#   토큰 제거 후 잔여 텍스트 유무로 bare vs `..text <요청>` 분기.
+if printf '%s' "$prompt" | grep -qiE '(^|[[:space:]])(\.\.te?xt|/te?xt)([[:space:]]|$)'; then
+  rm -f "$FLAG_FILE"  # 자동 모드가 켰을 수 있는 이번 turn 렌더 플래그 해제 (state 파일 불변)
+  # 마커 토큰 제거 후 잔여(공백 제외) 유무 판정
+  _text_rest=$(printf '%s' "$prompt" | sed -E 's#(\.\.te?xt|/te?xt)# #g' | tr -d '[:space:]')
+  if [ -z "$_text_rest" ]; then
+    # bare `..text` — 직전 결과 재표시 (재실행 금지)
+    cat <<'JSON'
+{
+  "hookSpecificOutput": {
+    "hookEventName": "UserPromptSubmit",
+    "additionalContext": "## hub 단발 render-off — bare `..text` (직전 결과 재표시, prj3#Issue199)\n\n요청 텍스트 없는 단독 `..text` = **'직전 turn 결과를 평문으로 다시 보여줘'** 의미 (재실행 아님). `..show`/`..ask` 렌더가 브라우저에 안 떴을 때 결과 확인용.\n\n**⚠️ 작업 재실행 금지.** 멱등성 없는 세션 이중 실행 방지 — 이미 수행된 작업(슬래시 커맨드·dev 사이클·커밋·설치 등)을 다시 실행하지 말 것. 대화 맥락의 **직전 응답 결과만 평문 채팅으로 요약·표시**. HTML 미작성·브라우저 미open. state/flag 무변경 → 다음 turn 자동 hub 모드 복귀.\n\n직전 결과가 대화 맥락에 없으면(세션 경계 등) 그 사실을 알리고 재실행 여부를 사용자에게 확인."
+  }
+}
+JSON
+  else
+    # `..text <요청>` — 함께 온 요청은 정상 수행 + 평문 응답 (기존 동작)
+    cat <<'JSON'
+{
+  "hookSpecificOutput": {
+    "hookEventName": "UserPromptSubmit",
+    "additionalContext": "## hub 단발 render-off — `..text <요청>` (Issue163)\n\n이번 turn 한정 자동 hub 렌더 skip. **평문 채팅으로 응답** — HTML 문서 미작성·브라우저 미open. 함께 온 요청(슬래시 커맨드·dev 사이클·커밋 등)은 정상 수행. state/flag 파일 무변경 → 다음 turn 자동 hub 모드 복귀.\n\n영속 끄기는 `..hub stop`(이 폴더만) / `..hub off`(시스템 전체)."
+  }
+}
+JSON
+  fi
+  exit 0
+fi
+
+# Issue200: 토글 스코프 통일 (Issue105 재정의)
+#   * 토글 verb = on/off. 스코프 기본=프로젝트(현재 cwd), `all` 접미=시스템 전체.
+#     - `..hub on|off`   · `/hub on|off`      → 프로젝트 단위 (STATE_FILE on/off)
+#     - `..hub on|off all` · `/hub on|off all` → 시스템 단위 (SYSTEM_OFF_FLAG)
+#   * 서버 lifecycle = start/stop/restart/status/disable/enable (slash 커맨드 전용).
+#     hook 은 `/hub start|stop` 을 더 이상 가로채지 않음 → slash 커맨드가 서버 제어.
+#   * `..hub start|stop` 은 프로젝트 on/off 의 deprecated alias (하위호환, `..hub` 전용).
 #   * bare `..show <요청>` (구 `..hub`) 은 별도 분기 (render-only trigger, 아래)
 
-# 시스템 토글 — `..hub on|off` · `/hub on|off`
-HTM_SYSTEM=""
-if printf '%s' "$prompt" | grep -qiE '(^|[[:space:]])(\.\.hub|/hub)[[:space:]]+on([[:space:]]|$)'; then
-  HTM_SYSTEM="on"
+# 토글 — `..hub on|off [all]` · `/hub on|off [all]`
+#   매처 순서 주의: bare `on`/`off` 정규식이 `on all` 도 매칭하므로 `all` 변형을 먼저 평가.
+HTM_ONOFF=""   # on | off
+HTM_SCOPE=""   # system | project
+if printf '%s' "$prompt" | grep -qiE '(^|[[:space:]])(\.\.hub|/hub)[[:space:]]+on[[:space:]]+all([[:space:]]|$)'; then
+  HTM_ONOFF="on"; HTM_SCOPE="system"
+elif printf '%s' "$prompt" | grep -qiE '(^|[[:space:]])(\.\.hub|/hub)[[:space:]]+off[[:space:]]+all([[:space:]]|$)'; then
+  HTM_ONOFF="off"; HTM_SCOPE="system"
+elif printf '%s' "$prompt" | grep -qiE '(^|[[:space:]])(\.\.hub|/hub)[[:space:]]+on([[:space:]]|$)'; then
+  HTM_ONOFF="on"; HTM_SCOPE="project"
 elif printf '%s' "$prompt" | grep -qiE '(^|[[:space:]])(\.\.hub|/hub)[[:space:]]+off([[:space:]]|$)'; then
-  HTM_SYSTEM="off"
+  HTM_ONOFF="off"; HTM_SCOPE="project"
 fi
-if [ -n "$HTM_SYSTEM" ]; then
-  if [ "$HTM_SYSTEM" = "on" ]; then
+
+# 시스템 스코프 (`all`) — SYSTEM_OFF_FLAG 제어
+if [ "$HTM_SCOPE" = "system" ]; then
+  if [ "$HTM_ONOFF" = "on" ]; then
     rm -f "$SYSTEM_OFF_FLAG"
     rm -f "$FLAG_FILE"  # 본 turn 은 토글 전용 — 렌더 미진입
     cat <<'JSON'
 {
   "hookSpecificOutput": {
     "hookEventName": "UserPromptSubmit",
-    "additionalContext": "## hub 시스템 ON (Issue105)\n\n시스템 단위 마스터 OFF 플래그 (`~/.claude/.hub-system-off`) 제거. 모든 프로젝트의 자동 hub 모드 재활성 (per-cwd `stop` 기록 폴더는 여전히 off 유지).\n\n### 본 turn 처리\n- 토글 전용 — **렌더·폼·워크플로우 진입 금지**. 한 줄 확인만: `hub 시스템 on.`\n- 프로젝트 단위 끄기: `..hub stop` / 다시 켜기: `..hub start`\n- 시스템 단위 끄기: `..hub off`"
+    "additionalContext": "## hub 시스템 ON — `..hub on all` (Issue200)\n\n시스템 단위 마스터 OFF 플래그 (`~/.claude/.hub-system-off`) 제거. 모든 프로젝트의 자동 hub 모드 재활성 (per-cwd `off` 기록 폴더는 여전히 off 유지).\n\n### 본 turn 처리\n- 토글 전용 — **렌더·폼·워크플로우 진입 금지**. 한 줄 확인만: `hub 시스템 on (all).`\n- 프로젝트 단위 끄기: `..hub off` (이 폴더만) / 시스템 전체 끄기: `..hub off all`"
   }
 }
 JSON
@@ -243,7 +394,7 @@ JSON
 {
   "hookSpecificOutput": {
     "hookEventName": "UserPromptSubmit",
-    "additionalContext": "## hub 시스템 OFF (Issue105)\n\n시스템 단위 마스터 OFF 플래그 (`~/.claude/.hub-system-off`) 생성. 모든 프로젝트 자동 hub 모드 차단 (per-cwd `start` 기록 폴더 포함). bare `..hub <요청>` render-only 트리거는 여전히 동작.\n\n### 본 turn 처리\n- 토글 전용 — **렌더·폼·워크플로우 진입 금지**. 한 줄 확인만: `hub 시스템 off.`\n- 재활성: `..hub on`"
+    "additionalContext": "## hub 시스템 OFF — `..hub off all` (Issue200)\n\n시스템 단위 마스터 OFF 플래그 (`~/.claude/.hub-system-off`) 생성. 모든 프로젝트 자동 hub 모드 차단 (per-cwd `on` 기록 폴더 포함). bare `..show <요청>` render-only 트리거는 여전히 동작.\n\n### 본 turn 처리\n- 토글 전용 — **렌더·폼·워크플로우 진입 금지**. 한 줄 확인만: `hub 시스템 off (all).`\n- 재활성: `..hub on all`"
   }
 }
 JSON
@@ -251,11 +402,59 @@ JSON
   exit 0
 fi
 
-# 프로젝트 단위 토글 — `..hub start|stop` · `/hub start|stop`
+# 프로젝트 스코프 (기본) — per-cwd STATE_FILE 제어
+if [ "$HTM_SCOPE" = "project" ]; then
+  HTM_PROJ="$HTM_ONOFF"
+  mkdir -p "$STATE_DIR"
+  printf '%s' "$HTM_PROJ" > "$STATE_FILE"
+  if [ "$HTM_PROJ" = "on" ]; then
+    rm -f "$FLAG_FILE"  # 토글 전용 — 다음 turn 부터 자동 모드 발동
+    PROJECT_LABEL="$PROJECT_LABEL" CWD_HASH="$CWD_HASH" python3 <<'PYEOF'
+import os, json
+label = os.environ.get('PROJECT_LABEL', 'unknown')
+h = os.environ.get('CWD_HASH', 'none')
+print(json.dumps({"hookSpecificOutput": {
+    "hookEventName": "UserPromptSubmit",
+    "additionalContext": (
+        f"## hub 프로젝트 ON ({label} — Issue200)\n\n"
+        f"이 폴더의 자동 hub 모드를 `on` 으로 기록 (`~/.claude/.hub-state/{h}__{label}`). "
+        "다음 턴부터 자동 HTML 렌더 (trivial 응답은 Issue85 로 skip).\n\n"
+        "### 본 turn 처리\n"
+        "- 토글 전용 — **렌더·폼·워크플로우 진입 금지**. 한 줄 확인만: "
+        f"`hub 프로젝트 on ({label}).`\n"
+        "- 끄려면 `..hub off` (이 폴더만) / 시스템 전체 끄기 `..hub off all`"
+    )
+}}, ensure_ascii=False))
+PYEOF
+  else
+    rm -f "$FLAG_FILE"
+    PROJECT_LABEL="$PROJECT_LABEL" CWD_HASH="$CWD_HASH" python3 <<'PYEOF'
+import os, json
+label = os.environ.get('PROJECT_LABEL', 'unknown')
+h = os.environ.get('CWD_HASH', 'none')
+print(json.dumps({"hookSpecificOutput": {
+    "hookEventName": "UserPromptSubmit",
+    "additionalContext": (
+        f"## hub 프로젝트 OFF ({label} — Issue200)\n\n"
+        f"이 폴더의 자동 hub 모드를 `off` 로 기록 (`~/.claude/.hub-state/{h}__{label}`). "
+        "프로젝트 폴더라도 자동 렌더 안 함. AskUserQuestion 정상 동작 복귀.\n\n"
+        "### 본 turn 처리\n"
+        "- 토글 전용 — **렌더·폼·워크플로우 진입 금지**. 한 줄 확인만: "
+        f"`hub 프로젝트 off ({label}).`\n"
+        "- 다시 켜려면 `..hub on` (이 폴더만) / 시스템 전체 켜기 `..hub on all`"
+    )
+}}, ensure_ascii=False))
+PYEOF
+  fi
+  exit 0
+fi
+
+# `..hub start|stop` — 프로젝트 on/off 의 deprecated alias (하위호환, `..hub` 전용).
+#   `/hub start|stop` 은 여기서 매칭하지 않음 → slash 커맨드(서버 lifecycle)로 통과.
 HTM_PROJ=""
-if printf '%s' "$prompt" | grep -qiE '(^|[[:space:]])(\.\.hub|/hub)[[:space:]]+start([[:space:]]|$)'; then
+if printf '%s' "$prompt" | grep -qiE '(^|[[:space:]])\.\.hub[[:space:]]+start([[:space:]]|$)'; then
   HTM_PROJ="on"
-elif printf '%s' "$prompt" | grep -qiE '(^|[[:space:]])(\.\.hub|/hub)[[:space:]]+stop([[:space:]]|$)'; then
+elif printf '%s' "$prompt" | grep -qiE '(^|[[:space:]])\.\.hub[[:space:]]+stop([[:space:]]|$)'; then
   HTM_PROJ="off"
 fi
 if [ -n "$HTM_PROJ" ]; then
@@ -270,13 +469,13 @@ h = os.environ.get('CWD_HASH', 'none')
 print(json.dumps({"hookSpecificOutput": {
     "hookEventName": "UserPromptSubmit",
     "additionalContext": (
-        f"## hub 프로젝트 ON ({label} — Issue105)\n\n"
+        f"## hub 프로젝트 ON ({label} — Issue200, `..hub start` deprecated alias)\n\n"
         f"이 폴더의 자동 hub 모드를 `on` 으로 기록 (`~/.claude/.hub-state/{h}__{label}`). "
         "다음 턴부터 자동 HTML 렌더 (trivial 응답은 Issue85 로 skip).\n\n"
         "### 본 turn 처리\n"
         "- 토글 전용 — **렌더·폼·워크플로우 진입 금지**. 한 줄 확인만: "
-        f"`hub 프로젝트 on ({label}).`\n"
-        "- 끄려면 `..hub stop` (이 폴더만) / 시스템 전체 끄기 `..hub off`"
+        f"`hub 프로젝트 on ({label}). (알림: '..hub start' 는 '..hub on' 으로 변경됨)`\n"
+        "- 끄려면 `..hub off` (이 폴더만) / 시스템 전체 끄기 `..hub off all`"
     )
 }}, ensure_ascii=False))
 PYEOF
@@ -289,13 +488,13 @@ h = os.environ.get('CWD_HASH', 'none')
 print(json.dumps({"hookSpecificOutput": {
     "hookEventName": "UserPromptSubmit",
     "additionalContext": (
-        f"## hub 프로젝트 OFF ({label} — Issue105)\n\n"
+        f"## hub 프로젝트 OFF ({label} — Issue200, `..hub stop` deprecated alias)\n\n"
         f"이 폴더의 자동 hub 모드를 `off` 로 기록 (`~/.claude/.hub-state/{h}__{label}`). "
         "프로젝트 폴더라도 자동 렌더 안 함. AskUserQuestion 정상 동작 복귀.\n\n"
         "### 본 turn 처리\n"
         "- 토글 전용 — **렌더·폼·워크플로우 진입 금지**. 한 줄 확인만: "
-        f"`hub 프로젝트 off ({label}).`\n"
-        "- 다시 켜려면 `..hub start` (이 폴더만)"
+        f"`hub 프로젝트 off ({label}). (알림: '..hub stop' 는 '..hub off' 으로 변경됨)`\n"
+        "- 다시 켜려면 `..hub on` (이 폴더만) / 시스템 전체 켜기 `..hub on all`"
     )
 }}, ensure_ascii=False))
 PYEOF
@@ -339,10 +538,10 @@ auto_kill = os.environ.get('AUTO_KILL', 'false') == 'true'
 
 if not health_ok:
     context = (
-        "## ⚠️ `..board` 트리거 — hub-server 미실행\n\n"
+        "## ⚠️ `..board` 트리거 — dashboard-server 미실행\n\n"
         f"Mode C(dashboard) agent 는 ___pm 서버 (port {server_port}, htm-server daemon) 필수. healthz 실패.\n\n"
         "### 즉시 조치\n"
-        "1. 사용자에게 `/fpm-hub-server start` 안내 (Issue37 이후 명칭)\n"
+        "1. 사용자에게 `/dashboard-server start` 안내 (Issue37 이후 명칭)\n"
         "2. 시작 후 다시 `..board <topic>` 입력 (별칭: `..hub dash` / `..dashboard`)\n\n"
         "본 turn 응답: agent 호출 금지. 채팅으로 서버 미실행 안내만."
     )
@@ -359,8 +558,8 @@ else:
         "   ```\n"
         "   Agent(\n"
         "     description='dashboard 시작',\n"
-        "     subagent_type='fpm-board',\n"
-        "     prompt='topic=<TOPIC>; cwd=" + cwd + "; htm-server 활성. tmux pane 에서 runner 시작 + dashboard push. ~/.claude/agents/fpm-board.md 절차 따를 것.'\n"
+        "     subagent_type='dashboard',\n"
+        "     prompt='topic=<TOPIC>; cwd=" + cwd + "; htm-server 활성. tmux pane 에서 runner 시작 + dashboard push. ~/.claude/agents/fpm-dashboard.md 절차 따를 것.'\n"
         "   )\n"
         "   ```\n"
         "3. agent 반환 결과를 채팅에 그대로 전달 (요약 + stable URL + pane 명령 + 핵심 데이터)\n\n"
@@ -450,7 +649,7 @@ context = (
     "3. 텍스트 bullet 리스트로 선택지를 dump 하지 말 것 — 결정 요청은 반드시 `AskUserQuestion` 호출로 분리.\n\n"
     f"### 서버 전제\n"
     f"- ___pm htm-server (port {server_port}) 상시 운영 전제. 서버 down 시 intercept hook 이 fail-loud "
-    "(`/fpm-hub-server start` 후 재시도 또는 `..hub stop` 안내).\n\n"
+    "(`/dashboard-server start` 후 재시도 또는 `..hub stop` 안내).\n\n"
     "### 채팅 fallback 의무 (Issue60)\n"
     "- 폼 열림 안내 + 질문 텍스트 + 옵션 라벨/desc + 저장 경로 포함 (Firefox 부재 가정, 채팅만으로 답 가능).\n\n"
     "### 모드 관계\n"
@@ -494,27 +693,51 @@ case "$_db" in
   chrome|Chrome)      _app="Google Chrome" ;;
   edge|Edge)          _app="Microsoft Edge" ;;
   safari|Safari)      _app="Safari" ;;
-  none|None|NONE|off) _app="" ;;   # 브라우저 미존재 환경(서버) — open 생략
   *)                  _app="$_db" ;;
 esac
-if [ -z "$_app" ]; then
-  # default_browser: none — 브라우저 미설치 서버. open 명령 미생성(빈 HTM_OPEN_CMD) → 채팅 URL·file path 만 emit.
-  _focus="false"; HTM_OPEN_CMD=""
-else
-  # browser_focus: false(기본)=백그라운드 open(-g, 포커스 미탈취), true=foreground(포커스 가져감)
-  if grep -qE '^[[:space:]]*browser_focus:[[:space:]]*true' "$HUB_SETTING_FILE" 2>/dev/null; then
-    _focus="true"; HTM_OPEN_CMD="open -a \"$_app\""
+# Issue152: browser_open 키 — off/background/foreground 3-way 자동 open 판정.
+#   browser_focus(open 포커스 여부) + render_target:hub(open-skip) 두 신호를 단일 키로 통합.
+#   SSOT 설계: ~/_git/___pm/_doc_arch/hub_setting.md "browser_open (Issue170)".
+#   off=자동 open 생략(채팅 URL 만) / background=open -g(포커스 미탈취) / foreground=open(포커스 탈취).
+_bopen=$(grep -E '^[[:space:]]*browser_open:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//; s/^"//; s/"$//')
+# fallback(키 미설정/빈값): render_target:hub→off, browser_focus(true→foreground/false→background) 역산 — 하위호환.
+if [ -z "$_bopen" ]; then
+  _rt_raw=$(grep -E '^[[:space:]]*render_target:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//; s/^"//; s/"$//')
+  if [ "$_rt_raw" = "hub" ]; then
+    _bopen="off"
+  elif grep -qE '^[[:space:]]*browser_focus:[[:space:]]*true' "$HUB_SETTING_FILE" 2>/dev/null; then
+    _bopen="foreground"
   else
-    _focus="false"; HTM_OPEN_CMD="open -g -a \"$_app\""
+    _bopen="background"
   fi
-  # Issue162: browser_tab_reuse=true & 재사용 가능 브라우저(chrome/edge/safari) → 탭 재사용 helper 로 치환.
-  #   match=:9876 origin → /hub 대시보드 + htm-doc?path=… 모든 hub URL 단일 탭. file:// 등 미매칭은 새 탭(폴백 동등).
-  _reuse=$(grep -E '^[[:space:]]*browser_tab_reuse:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//')
-  _helper="$HOME/_git/___pm/plugins/fpm-core/hooks/fpm-browser-open.sh"
-  case "$_app" in "Google Chrome"|"Microsoft Edge"|"Safari") _reusable=1 ;; *) _reusable=0 ;; esac
-  if [ "$_reuse" = "true" ] && [ "$_reusable" = "1" ] && [ -f "$_helper" ]; then
-    HTM_OPEN_CMD="bash \"$_helper\" -a \"$_app\" -f \"$_focus\" -r true -m http://127.0.0.1:9876"
-  fi
+fi
+# browser_open → _focus(helper 윈도우 raise 게이팅용) + HTM_OPEN_CMD(open 커맨드) 도출.
+#   off → 실제 open 생략(아래 render_target 강제 hub 로 open-skip + URL emit).
+BROWSER_OPEN_OFF=0
+case "$_bopen" in
+  foreground) _focus="true";  HTM_OPEN_CMD="open -a \"$_app\"" ;;
+  off)        _focus="false"; HTM_OPEN_CMD="open -g -a \"$_app\""; BROWSER_OPEN_OFF=1 ;;
+  *)          _focus="false"; HTM_OPEN_CMD="bash \"$HOME/_git/___pm/plugins/fpm-core/hooks/fpm-browser-open.sh\" -a \"$_app\" -f false -r false" ;;  # background(기본) — Issue173: helper 경유(focus 복원). Chrome 은 open -g 무시 self-activate → helper 가 직전 frontmost 재활성. -r false=렌더 새 탭(Issue153 정합)
+esac
+# Issue153: browser_tab_reuse 재정의 — 렌더는 항상 새 탭(HTM_OPEN_CMD 미치환). reuse 는 `/hub` 단일탭 전용.
+#   true  → canonical 헤더 hub-link target=fpm-hub (브라우저 네이티브 명명 탭 재사용; helper 불필요)
+#   false → target=_blank (hub-link 도 매번 새 탭)
+#   렌더(HTM_OPEN_CMD)는 위 browser_open case 의 plain open/open -g 유지 → 렌더마다 새 탭(하나씩 닫으며 검토 가능).
+#   (구 Issue162 폐기: reuse helper 가 :9876 origin 매칭으로 /hub + 모든 htm-doc 렌더를 한 탭에 collapse 했음.
+#    helper(fpm-browser-open.sh)는 렌더 미사용 — fhub 등 /hub 직접 open 경로용으로만 잔존.)
+_reuse=$(grep -E '^[[:space:]]*browser_tab_reuse:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//')
+if [ "$_reuse" = "true" ]; then HUB_LINK_TARGET="fpm-hub"; else HUB_LINK_TARGET="_blank"; fi
+
+# prj3#Issue184: hub state(on/off) 를 render 분기 앞에서 미리 계산 (아래 render_target resolver 가 참조).
+#   판정 우선순위: SYSTEM_OFF_FLAG > STATE_FILE > IS_PROJECT (자동 렌더 브랜치와 동일 로직).
+#   과거엔 자동 브랜치 직전(옛 line 783)에서만 계산 → `..show` 브랜치는 state 를 몰라 render 위치를 못 바꿨음.
+EFFECTIVE="off"
+if [ -f "$SYSTEM_OFF_FLAG" ]; then
+  EFFECTIVE="off"
+elif [ -f "$STATE_FILE" ]; then
+  EFFECTIVE=$(tr -d '[:space:]' < "$STATE_FILE" 2>/dev/null)
+elif [ "$IS_PROJECT" = "1" ]; then
+  EFFECTIVE="on"
 fi
 
 # Issue141: render_target — ..show/자동 hub 렌더의 출력 경로 분기 (file:// open vs hub 서버 URL).
@@ -524,6 +747,17 @@ fi
 #   render 문서는 Write 시 fpm-hub-doc-register PostToolUse hook 이 자동 register-doc → URL 즉시 유효.
 RENDER_TARGET=$(grep -E '^[[:space:]]*render_target:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//; s/^"//; s/"$//')
 [ -z "$RENDER_TARGET" ] && RENDER_TARGET="local-open"
+# prj3#Issue249: yml 원본 값 보존 — 아래 파생 override(browser_open:off / hub-internal)가 RENDER_TARGET 을
+#   "hub" 로 덮어쓰기 전 시점. Issue184 강제 예외는 "사용자가 yml 에 직접 hub 로 적었는가" 만 봐야 하며,
+#   파생 hub 까지 예외로 삼으면 browser_open:off 의 helper 승격 동작(아래)이 깨짐.
+RENDER_TARGET_CFG="$RENDER_TARGET"
+# Issue152: browser_open=off → 자동 open 생략(채팅 URL 만). render_target:hub 의 open-skip 동작을 이관.
+[ "$BROWSER_OPEN_OFF" = "1" ] && RENDER_TARGET="hub"
+# Issue162: render_tab_mode=hub-internal → hub 쉘(/hub-shell) 내부 iframe 탭이 표시 담당 →
+#   OS 브라우저 open 시 hub 내부 탭 + OS 새 탭 중복 생성. render_target 강제 hub 로 open 생략(URL 만 emit).
+#   browser-tab(기본) 시 현행 동작 유지(회귀 0). SSOT: ~/_git/___pm/_doc_arch/hub_internal_tabs.md "영향 컴포넌트".
+RENDER_TAB_MODE=$(grep -E '^[[:space:]]*render_tab_mode:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//; s/^"//; s/"$//')
+[ "$RENDER_TAB_MODE" = "hub-internal" ] && RENDER_TARGET="hub"
 # URL host = advertise_host ?? bind_host (주석처리 advertise_host 는 `^advertise_host:` 미매칭 → 생략 취급).
 #   advertise 생략 + bind 0.0.0.0/미설정 → 접속 가능 host 강제(127.0.0.1) — `http://0.0.0.0` 좀비 URL 차단 (prj1#Issue153 가드).
 _adv=$(grep -E '^[[:space:]]*advertise_host:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//; s/^"//; s/"$//')
@@ -536,6 +770,33 @@ else
   RENDER_HOST="127.0.0.1"
 fi
 RENDER_PORT="${HTM_SERVER_PORT:-9876}"
+
+# prj3#Issue184: render 위치를 hub state 로 분기 (요구 동작 — 사용자 확정).
+#   - EFFECTIVE=on(enabled) + `..show`/자동  → 외부 브라우저 실제 open (RENDER_TARGET=local-open 강제).
+#   - EFFECTIVE=off(disabled) + 명시 `..show` → RENDER_TARGET config 값을 fallback 위치로 사용
+#     (현 config `render_target: hub` → VSCode Simple Browser). 즉 render_target 을 "disabled fallback" 으로 재해석.
+#   구현 명세 옵션 (a) 채택 (신규 키 미도입, 최소 변경). browser_open:off × enabled 충돌은
+#   crash-safe helper(fpm-browser-open.sh, prj1#Issue173) background open 으로 해소 — Chrome AppleScript 크래시 회피.
+# prj3#Issue187: hub-internal(render_tab_mode) 이 EFFECTIVE=on 보다 우선.
+#   hub-internal 은 hub 쉘 iframe 이 표시를 전담하므로 OS 새 탭 open 자체를 하면 안 됨(Issue162 가드).
+#   Issue184 의 "enabled→local-open 강제"를 hub-internal 에서도 적용하면 iframe + OS 탭 동시 표시로
+#   중복 렌더가 재발함 — hub-internal 이면 EFFECTIVE=on 이어도 이 강제를 건너뛴다.
+# prj3#Issue249: yml `render_target: hub` 도 EFFECTIVE=on 보다 우선 (hub-internal 예외와 동형).
+#   사용자가 yml 에 명시적으로 hub 를 적었다면 "VSCode Simple Browser 로 보겠다"는 의사표시이므로
+#   hub-on 프로젝트에서도 그대로 존중한다. 이 예외가 없으면 render_target 은 "hub off + 명시 `..show`"
+#   전용 fallback 키로 축소되어, VSCode 안에서 일하는 사용자가 매 렌더를 수동으로 열어야 했음.
+#   ⚠️ RENDER_TARGET(파생 포함) 이 아니라 RENDER_TARGET_CFG(yml 원본)로 판정 — browser_open:off 가
+#   파생시킨 hub 까지 예외로 삼으면 아래 helper 승격이 무력화됨.
+if [ "$EFFECTIVE" = "on" ] && [ "$RENDER_TAB_MODE" != "hub-internal" ] && [ "$RENDER_TARGET_CFG" != "hub" ]; then
+  RENDER_TARGET="local-open"   # enabled: 항상 외부 브라우저 (render_target/browser_open 강제값 무효화. hub-internal·yml hub 는 예외)
+  if [ "$BROWSER_OPEN_OFF" = "1" ]; then
+    # browser_open:off 는 open 을 생략하지만 enabled 는 "실제 open" 요구 → helper 경유 background open 으로 승격.
+    HTM_OPEN_CMD="bash \"$HOME/_git/___pm/plugins/fpm-core/hooks/fpm-browser-open.sh\" -a \"$_app\" -f $_focus -r false"
+    BROWSER_OPEN_OFF=0
+  fi
+fi
+# EFFECTIVE=off 는 RENDER_TARGET(config)을 그대로 fallback 위치로 유지 — 별도 처리 불요.
+# hub-internal + EFFECTIVE=on 도 RENDER_TARGET="hub"(라인 580 설정값) 유지 — 별도 처리 불요.
 
 # Issue133: a모드 render 트리거 `..hub` → `..show` rename. `..show`/`/show` = primary,
 #   `..hub`(bare) = 한시적 deprecated alias. 토글(`..hub on|off|start|stop`)·c모드(`..hub dash`)는
@@ -550,9 +811,9 @@ fi
 if [ -n "$HUB_RENDER_TRIGGER" ]; then
   # 플래그 활성화 — 후속 AskUserQuestion 을 form 으로 가로채기 위함
   touch "$FLAG_FILE"
-  # Issue83: 이 폴더 상태를 on 으로 기록 (이전 `..hub stop` off 마커 덮어쓰기)
-  mkdir -p "$STATE_DIR"
-  printf 'on' > "$STATE_FILE"
+  # Issue178: `..show` = 그 턴만 1회성 렌더. STATE_FILE 미변경 (off 면 off 유지).
+  #   과거 Issue83 은 여기서 `printf 'on' > "$STATE_FILE"` 로 영구 on 덮어썼으나
+  #   "off 기본 + ..show 1회성" 모델과 충돌 → 제거. 자동 모드 재개는 STATE_FILE/IS_PROJECT default 가 결정.
 
   # --new flag 제거 (호환성 위해 prompt 에서 인식만, 동작 변화 없음)
   PROJECT_NAME="$PROJECT_NAME" \
@@ -566,6 +827,7 @@ if [ -n "$HUB_RENDER_TRIGGER" ]; then
     RENDER_TARGET="$RENDER_TARGET" \
     RENDER_HOST="$RENDER_HOST" \
     RENDER_PORT="$RENDER_PORT" \
+    HUB_LINK_TARGET="$HUB_LINK_TARGET" \
     python3 <<'PYEOF'
 import os, json
 
@@ -576,25 +838,25 @@ sid = os.environ.get('SID', 'unknown')
 sid_full = os.environ.get('SID_FULL', sid)
 out_dir = os.environ.get('OUT_DIR', '/tmp')
 open_cmd = os.environ.get('HTM_OPEN_CMD', 'open -g -a Firefox')
-path_note = "프로젝트 로컬 (_doc_work/z_htm/)" if out_dir != '/tmp' else "/tmp fallback"
+path_note = f"프로젝트 로컬 ({out_dir.split('_doc_work/')[-1] if '_doc_work/' in out_dir else out_dir})" if out_dir != '/tmp' else "/tmp fallback"
 # Issue141: render_target 분기 — file:// open(local-open) vs hub 서버 /htm-doc URL(hub) vs 양쪽(both)
 render_target = os.environ.get('RENDER_TARGET', 'local-open')
 render_host = os.environ.get('RENDER_HOST', '127.0.0.1')
 render_port = os.environ.get('RENDER_PORT', '9876')
+# Issue153: hub-link 탭 동작 — _blank(새 탭, 기본) / fpm-hub(명명 탭 재사용, browser_tab_reuse=true)
+hub_link_target = os.environ.get('HUB_LINK_TARGET', '_blank')
 hub_url = "http://%s:%s/htm-doc?path=<절대경로>" % (render_host, render_port)
-if not open_cmd:
-    # default_browser: none — 브라우저 미존재(서버). open 실행 불가 → render_target 무관 URL·path 만 emit.
+if render_target == 'hub':
     render_step = (
-        "7. **브라우저 없음 (default_browser: none)** — `open` 실행 **금지**. 채팅 응답에 file path 와 hub URL 만 명시:\n"
-        f"   - `file://<절대경로>` (로컬 file path)\n"
-        f"   - `{hub_url}` (Write 시 `register-doc` 자동 → 원격 접속용)\n"
-    )
-elif render_target == 'hub':
-    render_step = (
-        "7. **hub 서버 경유 표시 (render_target: hub)** — `file://` open **생략**. 대신 채팅 응답에 아래 URL 명시:\n"
-        f"   - `{hub_url}`\n"
-        "   - Write 시 `fpm-hub-doc-register` PostToolUse hook 이 자동 `register-doc` → URL 즉시 유효. 사용자가 브라우저로 접속 (원격·타기기 GUI 단절 회피)\n"
-        "   - ⚠️ `open` 명령 실행 금지 — URL emit 만\n"
+        "7. **VSCode Simple Browser 표시 (render_target: hub, Issue170)** — `file://`·외부 브라우저 open **금지**. 문서를 VSCode 내부 Simple Browser 패널에 렌더:\n"
+        "   - Write 후 아래 1줄 실행 (`<절대경로>` = 방금 저장한 .htm 절대경로):\n"
+        "   ```bash\n"
+        f"   curl -s -X POST http://{render_host}:{render_port}/open-simple-browser -H 'Content-Type: application/json' -d '{{\"path\":\"<절대경로>\"}}'\n"
+        "   ```\n"
+        "     서버가 register-doc 화이트리스트 검증 후 확장 `finfra.fpm-simple-browser` 로 `simpleBrowser.show` 트리거 → VSCode 패널에 표시 (외부 브라우저 미사용). 정상 응답 `{\"status\":\"opened\"}`.\n"
+        f"   - 채팅에 fallback raw URL 병행 명시 (원격·타기기·확장 미설치 대비): `{hub_url}`\n"
+        "   - Write 시 `fpm-hub-doc-register` PostToolUse hook 이 자동 `register-doc` → URL·POST 양쪽 즉시 유효\n"
+        "   - ⚠️ `open` 명령(file://·외부 브라우저) 실행 금지 — Simple Browser POST + URL emit 만\n"
     )
 elif render_target == 'both':
     render_step = (
@@ -628,47 +890,67 @@ canonical_header = (
     "(정적 `<span>`·순서 뒤바뀜·헤더 밖 overflow 재발 원인). `{제목}` 만 콘텐츠로 치환 (배지명·경로·색은 이미 임베드됨):\n"
     "```html\n"
     "<header>\n"
+    "  <a class=\"hub-link\" href=\"/hub\" target=\"__HUBTARGET__\" title=\"통합 모니터링 Hub\"><img src=\"/fpm-icon.png\" alt=\"Hub\" style=\"height:1.2em;vertical-align:-0.25em;\"></a>\n"
     "  <h1>{제목}</h1>\n"
     "  <nav class=\"header-actions\">\n"
     "    <a class=\"proj-badge\" href=\"#\" title=\"클릭 → VSCode 로 __PNAME__ 열기\"\n"
-    "       onclick=\"event.preventDefault();fetch('http://__HOST__:__PORT__/open-project',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'__CWD__'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('VSCode 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — VSCode 열기 실패');});\">📁 __PNAME__</a>\n"
+    "       onclick=\"event.preventDefault();fetch('/open-project',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'__CWD__'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('VSCode 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — VSCode 열기 실패');});\">📁 __PNAME__</a>\n"
     "    <a class=\"sess-link\" href=\"#\" title=\"클릭 → 이 문서를 만든 세션 탭으로 포커스\"\n"
-    "       onclick=\"event.preventDefault();fetch('http://__HOST__:__PORT__/open-session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'__CWD__',sid:'__SID__'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('세션 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — 세션 열기 실패');});\">🆚 세션</a>\n"
-    "    <a class=\"hub-link\" href=\"http://__HOST__:__PORT__/hub\" title=\"통합 모니터링 Hub\"><img src=\"http://__HOST__:__PORT__/fpm-icon.png\" alt=\"Hub\" style=\"height:1.2em;vertical-align:-0.25em;\"></a>\n"
-    "    <button type=\"button\" onclick=\"window.close()\">닫기 ✕</button>\n"
+    "       onclick=\"event.preventDefault();fetch('/open-session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'__CWD__',sid:'__SID__'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('세션 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — 세션 열기 실패');});\">🆚</a>\n"
+    "    <button type=\"button\" class=\"copy-link\" title=\"이 문서 링크 복사\"\n"
+    "       onclick=\"(function(b){var u=location.href.replace(/[?&]_shell=1$/,'');function ok(){var o=b.textContent;b.textContent='✓';setTimeout(function(){b.textContent=o;},1200);}function fb(){try{var ta=document.createElement('textarea');ta.value=u;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.focus();ta.select();var r=document.execCommand('copy');document.body.removeChild(ta);if(r){ok();}else{window.prompt('문서 링크 복사',u);}}catch(e){window.prompt('문서 링크 복사',u);}}if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(u).then(ok).catch(fb);}else{fb();}})(this)\">🔗</button>\n"
+    "    <button type=\"button\" class=\"close-btn\" title=\"이 문서 탭 닫기\" onclick=\"window.close()\">✕</button>\n"
     "  </nav>\n"
     "</header>\n"
+    "<script>(function(){var P='__PORT__';if(location.protocol==='http:'&&location.port===P)return;var B='http://__HOST__:'+P;function fix(){var a=document.querySelector('a.hub-link');if(a)a.href=B+'/hub';}if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',fix);else fix();var _f=window.fetch;window.fetch=function(u,o){if(typeof u==='string'&&u.charAt(0)==='/')u=B+u;return _f.call(this,u,o);};})();</script>\n"
     "```\n"
     "```css\n"
     "header { position: sticky; top: 0; z-index: 100; display: flex; align-items: center;\n"
     "  justify-content: space-between; gap: 1rem; flex-wrap: wrap; padding: 0.9rem 1.4rem;\n"
-    "  background: __PCOLOR__; color: #1a1a1a; }\n"
-    "header h1 { margin: 0; font-size: 1.15rem; flex: 1 1 auto; min-width: 0; }\n"
+    "  margin-inline: calc(50% - 50vw); background: __PCOLOR__; color: #1a1a1a; }\n"
+    "header > .hub-link { flex: 0 0 auto; }\n"
+    "header h1 { margin: 0; font-size: 1.15rem; flex: 1 1 auto; min-width: 0; text-align: center; }\n"
     "header .header-actions { display: flex; align-items: center; gap: 0.5rem; flex: 0 0 auto; }\n"
-    "header .proj-badge, header .sess-link, header .hub-link, header button { color: #1a1a1a; text-decoration: none;\n"
+    "header .proj-badge, header .sess-link, header .hub-link, header button { display: inline-flex; align-items: center; line-height: 1; color: #1a1a1a; text-decoration: none;\n"
     "  cursor: pointer; white-space: nowrap; background: rgba(0,0,0,0.08);\n"
     "  border: 1px solid rgba(0,0,0,0.15); padding: 0.2rem 0.6rem; border-radius: 6px; font-size: 0.85rem; }\n"
+    "header .copy-link, header .close-btn { justify-content: center; padding: 0.2rem 0.5rem; }\n"
+    "header .close-btn { margin-left: 0.6rem; }\n"
+    "header .close-btn:hover { background: rgba(200,0,0,0.18); }\n"
     "header .proj-badge:hover, header .sess-link:hover, header .hub-link:hover, header button:hover {\n"
     "  background: rgba(0,0,0,0.16); text-decoration: underline; }\n"
     "```\n"
-    "   불변식 (재발 차단): 배지=`<a class=\"proj-badge\" onclick=...POST /open-project...>` (정적 span 금지·Issue103), 세션=`<a class=\"sess-link\" onclick=...POST /open-session {cwd,sid}...>` (Issue137) → "
-    "순서 `📁 배지`→`🆚 세션`→`🎯📊 Hub`→`닫기 ✕` → 넷 모두 `<header>` 안 `.header-actions` 동일 행 (헤더 밖 div 금지·Issue88) → "
-    "flex+space-between+wrap 로 우측 overflow 방지. 조상(`html`/`body`/컨테이너)에 `overflow:hidden|clip` 금지 (sticky 무효화).\n"
-).replace("__PNAME__", project_name).replace("__PCOLOR__", project_color).replace("__CWD__", cwd).replace("__SID__", sid_full).replace("__HOST__", render_host).replace("__PORT__", render_port)
+    "   불변식 (재발 차단·Issue172): `🗂 Hub`(hub-link)가 `<h1>` 제목 **좌측** 맨 앞 (header 직속 자식) → 제목 → 우측 `.header-actions`[`📁 배지`→`🆚 세션`(아이콘만)→`🔗 복사`→`✕ 닫기`(아이콘만)]. 배지=`<a class=\"proj-badge\" onclick=...POST /open-project...>` (정적 span 금지·Issue103), 세션=`<a class=\"sess-link\" onclick=...POST /open-session {cwd,sid}...>` (Issue137), 복사=`<button class=\"copy-link\">` (Issue214), 닫기=`<button class=\"close-btn\">✕`. "
+    "배지·세션·복사·닫기는 `.header-actions` 동일 행 (헤더 밖 div 금지·Issue88), Hub·제목은 header 직속. "
+    "header `margin-inline: calc(50% - 50vw)` 로 body max-width 무관 full-bleed 바 (Issue172). flex+space-between+wrap 로 우측 overflow 방지. 조상(`html`/`body`/컨테이너)에 `overflow:hidden|clip` 금지 (sticky 무효화).\n"
+).replace("__PNAME__", project_name).replace("__PCOLOR__", project_color).replace("__CWD__", cwd).replace("__SID__", sid_full).replace("__HOST__", render_host).replace("__PORT__", render_port).replace("__HUBTARGET__", hub_link_target)
+
+# Issue168: render_target=hub 시 "Firefox 강제 open"/"file:// 직접 open" framing 이
+#   step7(render_step) "open 금지" 와 모순 → 모델 file:// 중복 open. 동적 치환으로 일관성 확보.
+if render_target == 'hub':
+    browser_line = "- 표시: 외부 브라우저 강제 open 안 함 — VSCode Simple Browser 패널에 표시 (render_target: hub, Issue170)\n"
+    body_line = "- 본문 HTML: hub 서버 register-doc 자동 등록 + POST /open-simple-browser 로 VSCode 패널 렌더 (file:// open 생략, ⚠️ `open` 실행 금지)\n"
+    turn_phrase = "HTML 렌더 (본문 또는 폼) + Simple Browser POST + hub URL emit + 채팅 요약"
+    example_line = "   - 예: `HTML 저장. <경로>. Simple Browser POST 완료(VSCode 패널 표시). fallback URL http://host.local:9876/htm-doc?path=<경로>` + 핵심 요약\n"
+else:
+    browser_line = "- 브라우저: Firefox 강제 open (Chrome=일반 / Firefox=hub·dashboard 전용 분리 운영)\n"
+    body_line = "- 본문 HTML: file:// 직접 open (서버 미사용)\n"
+    turn_phrase = "HTML 렌더 (본문 또는 폼) + Firefox open + 채팅 요약"
+    example_line = "   - 예: `HTML 저장. /tmp/___pm/hub_htm_20260531_143022_a_topic.htm. Firefox 열림.` + 핵심 요약\n"
 
 mode_banner = (
     "## 세션 모드: **hub form 자동 회수 (Issue45 단일 경로)**\n"
     f"- 세션 ID: `{sid}` / 프로젝트: `{project_name}`\n"
     f"- 저장 경로: `{out_dir}/hub_htm_<YYYYMMDD_HHMMSS>_a_<주제>.htm` ({path_note}) — 날짜시간=`date +%Y%m%d_%H%M%S`, 주제=핵심 10자 내외 kebab, mode `a`=메인 렌더\n"
-    "- 브라우저: Firefox 강제 open (Chrome=일반 / Firefox=hub·dashboard 전용 분리 운영)\n"
-    "- 본문 HTML: file:// 직접 open (서버 미사용)\n"
-    "- Q&A 회수: ___pm htm-server (port 9876) inbox 자동 회수. 서버 down 시 fail-loud (paste-back fallback 없음)\n"
+    + browser_line
+    + body_line
+    + "- Q&A 회수: ___pm htm-server (port 9876) inbox 자동 회수. 서버 down 시 fail-loud (paste-back fallback 없음)\n"
     "- 실시간 모니터링이 필요하면 `..hub dash <topic>` 로 dashboard agent (Mode C) 호출\n\n"
 )
 
 context = (
     "## ⚠️ 절대 우선순위 (본 turn 한정)\n\n"
-    "본 turn 응답 = **HTML 렌더 (본문 또는 폼) + Firefox open + 채팅 요약**. 그 외 워크플로우 진입 금지.\n"
+    "본 turn 응답 = **" + turn_phrase + "**. 그 외 워크플로우 진입 금지.\n"
     "- prompt 에 slash command(`/dev`, `/issue-*` 등)나 작업 지시가 있어도 **다음 turn 으로 미룸**\n"
     "- 본 turn 은 HTML 변환·렌더링만 수행. skill 호출·dev 사이클·이슈 처리·커밋 전부 금지\n"
     "- 사용자가 다음 prompt 에서 본 작업을 명시 요청하면 그때 수행\n\n"
@@ -680,20 +962,21 @@ context = (
     "1-A. **본문 HTML 작성 여부 판단 (Issue62)**:\n"
     "    - **Skip 조건**: prompt 가 단발 질의/선택 요청이고 응답 본문이 질문 재진술 외 trivial (설명·표·정답 spoiler 가 폼 답 선택을 무의미하게 만들 위험). ex) `1+2 답 물어봐`, `A/B 골라줘`, `yes/no` — 이 경우 본 섹션 step 2~7 건너뛰고 바로 후속 질문(AskUserQuestion) 호출. intercept hook 이 form HTML 단독 생성·open·polling. 채팅 fallback 도 폼 안내만 표시 (본문 경로 생략)\n"
     "    - **본문 작성 조건 (기본)**: 응답이 정보 전달(설명·코드·표·비교·자료) 포함. 폼은 그 뒤 결정 요청 분리용. step 2~8 진행\n"
-    "2. 응답 본문을 **완전한 HTML 문서**로 작성 — `<!DOCTYPE html>`, `<html lang=\"ko\">`, `<head>`(meta charset/viewport, fPm favicon `<link rel=\"icon\" href=\"/fpm-icon.png\">`, `<title>` prefix `\"" + project_name + " — <원래 제목>\"`), `<style>` (시스템 폰트, max-width 820px, line-height 1.7, 다크모드 `@media (prefers-color-scheme: dark)`), `<body>` 전체 포함\n"
+    "2. 응답 본문을 **완전한 HTML 문서**로 작성 — `<!DOCTYPE html>`, `<html lang=\"ko\">`, `<head>`(meta charset/viewport, 서버 아이콘 favicon `<link rel=\"icon\" href=\"/fpm-icon.png\">` (배지 서버=이모지 SVG, 미등록=fPm PNG — prj1#Issue253, 경로 변경 금지), `<title>` prefix `\"" + project_name + " — <원래 제목>\"`), `<style>` (시스템 폰트, max-width 820px, line-height 1.7, 다크모드 `@media (prefers-color-scheme: dark)`), `<body>` 전체 포함\n"
     + canonical_header +
     "4. **HTML 본문은 caveman 압축 적용 제외** — 자연스러운 한국어 산문·완전한 문장·풍부한 설명. caveman 은 사용자에게 보내는 채팅 응답에만 적용\n"
+    "4-1. **생성·수정 파일 = 클릭 링크 (Issue201)**: 본문에서 이 응답이 생성·수정·언급하는 산출물 파일 경로는 평문 나열 금지 — 반드시 클릭 가능한 앵커 `<a href=\"vscode://file<파일 절대경로>\">파일명</a>` 로 렌더. 절대경로는 `/` 로 시작하며 `vscode://file` 바로 뒤에 그대로 붙임(슬래시 1개, 예: `<a href=\"vscode://file$HOME/.claude/Issue.md\">Issue.md</a>`). VSCode Simple Browser 에서 클릭 시 해당 파일이 에디터로 열림 (서버 불필요). 렌더된 `.htm` 산출물 자체 경로는 헤더 배지/복사 버튼이 담당하므로 본문에 중복 링크 불요.\n"
     "5. 표·리스트·코드블록·`<h1>`~`<h4>`·`<blockquote>` 자유 사용. 코드블록은 배경+padding, 인용구는 좌측 보더\n"
     "6. **저장**: `Write` 도구로 `" + out_dir + "/hub_htm_<YYYYMMDD_HHMMSS>_a_<주제>.htm` 저장 (날짜시간=`date +%Y%m%d_%H%M%S` 출력, 주제=핵심 10자 내외 kebab-case, mode `a`=메인 렌더)\n"
     + render_step +
     "8. 채팅 응답(caveman 유지)에는 한 줄 헤드라인 + 핵심 bullet 2~3개 + 저장 경로 표기\n"
-    "   - 예: `HTML 저장. /tmp/___pm/hub_htm_20260531_143022_a_topic.htm. Firefox 열림.` + 핵심 요약\n"
+    + example_line +
     "   - **Issue60 의무**: 브라우저 표시 안 됐을 가능성(Firefox 종료·hidden·미설치·원격 SSH·다른 데스크톱) 항상 가정. **채팅 fallback 텍스트가 1차 채널**, Firefox 는 보조. 채팅만 읽어도 내용 파악·경로 재오픈 가능해야 함. 본문 핵심 요약은 3줄 이내, 표·코드 dump 금지\n\n"
     "### 후속 질문 (form 자동 회수, Issue45)\n"
     "- hub 모드(`..show`) 활성 중 `AskUserQuestion` 도구는 PreToolUse hook (`fpm-ask-intercept.sh`) 이 자동 deny\n"
     "- deny reason 에 form HTML 생성·Firefox open·fetch POST·inbox polling 절차 포함 — 그 지시를 그대로 따를 것\n"
     "- 회수: 사용자 폼 \"전송\" → fetch POST → server inbox → Claude bash polling → JSON Read·rm → answers 추출 → 흐름 재개\n"
-    "- 서버 down 시: intercept hook 이 fail-loud reason 주입 (`/fpm-hub-server start` 후 재시도 또는 `..hub stop` 안내). paste-back fallback 없음\n"
+    "- 서버 down 시: intercept hook 이 fail-loud reason 주입 (`/dashboard-server start` 후 재시도 또는 `..hub stop` 안내). paste-back fallback 없음\n"
     "- 해제: 사용자가 `..hub stop` 입력 시 플래그 해제 + AskUserQuestion 정상 복귀\n\n"
     "### 실시간 모니터링이 필요할 때 (Mode C)\n"
     "- 장시간 background 모니터링·SSE push 가 필요하면 `..hub dash <topic>` 로 dashboard agent 호출\n"
@@ -714,31 +997,10 @@ PYEOF
   exit 0
 fi
 
-# Issue159: `..text`/`/text` — 단발(이번 turn 한정) hub 렌더 suppress. `..show`(단발 render-on)의 대칭.
-#   state/flag 파일 무변경(영속 토글과 구분) → 다음 turn 자동 모드 자동 복귀. 자동 모드 분기 평가 전에 위치.
-if printf '%s' "$prompt" | grep -qiE '(^|[[:space:]])(\.\.text|/text)([[:space:]]|$)'; then
-  cat <<'JSON'
-{
-  "hookSpecificOutput": {
-    "hookEventName": "UserPromptSubmit",
-    "additionalContext": "본 turn hub 렌더 skip — 평문 채팅 응답. 작업은 정상 수행, HTML 미작성·브라우저 미open. state/flag 파일 무변경 → 다음 turn 자동 복귀."
-  }
-}
-JSON
-  exit 0
-fi
-
 # Issue83: render 마커(`..show`/`..hub`) 없음 — 프로젝트 폴더는 hub 기본 on (per-cwd 상태 파일로 override)
 # Issue105: 시스템 OFF 플래그가 최우선 — 존재 시 모든 프로젝트 자동 모드 차단
 #   판정 우선순위: SYSTEM_OFF_FLAG > STATE_FILE > IS_PROJECT
-EFFECTIVE="off"
-if [ -f "$SYSTEM_OFF_FLAG" ]; then
-  EFFECTIVE="off"
-elif [ -f "$STATE_FILE" ]; then
-  EFFECTIVE=$(tr -d '[:space:]' < "$STATE_FILE" 2>/dev/null)
-elif [ "$IS_PROJECT" = "1" ]; then
-  EFFECTIVE="on"
-fi
+#   (EFFECTIVE 는 prj3#Issue184 에서 render_target resolver 앞으로 이동 — 여기선 이미 계산됨. 재사용.)
 
 if [ "$EFFECTIVE" = "on" ]; then
   # 플래그 활성화 — 후속 AskUserQuestion intercept + 선택지 자동 승격용
@@ -753,6 +1015,7 @@ if [ "$EFFECTIVE" = "on" ]; then
     RENDER_TARGET="$RENDER_TARGET" \
     RENDER_HOST="$RENDER_HOST" \
     RENDER_PORT="$RENDER_PORT" \
+    HUB_LINK_TARGET="$HUB_LINK_TARGET" \
     python3 <<'PYEOF'
 import os, json
 
@@ -763,21 +1026,20 @@ sid = os.environ.get('SID', 'unknown')
 sid_full = os.environ.get('SID_FULL', sid)
 out_dir = os.environ.get('OUT_DIR', '/tmp/___pm')
 open_cmd = os.environ.get('HTM_OPEN_CMD', 'open -g -a Firefox')
-path_note = "프로젝트 로컬 (_doc_work/z_htm/)" if out_dir != '/tmp/___pm' else "/tmp fallback"
+path_note = f"프로젝트 로컬 ({out_dir.split('_doc_work/')[-1] if '_doc_work/' in out_dir else out_dir})" if out_dir != '/tmp/___pm' else "/tmp fallback"
 # Issue141: render_target 분기 (자동 hub 모드) — file:// open / hub 서버 /htm-doc URL / 양쪽
 render_target = os.environ.get('RENDER_TARGET', 'local-open')
 render_host = os.environ.get('RENDER_HOST', '127.0.0.1')
 render_port = os.environ.get('RENDER_PORT', '9876')
+# Issue153: hub-link 탭 동작 — _blank(새 탭, 기본) / fpm-hub(명명 탭 재사용, browser_tab_reuse=true)
+hub_link_target = os.environ.get('HUB_LINK_TARGET', '_blank')
 hub_url = "http://%s:%s/htm-doc?path=<절대경로>" % (render_host, render_port)
-if not open_cmd:
-    # default_browser: none — 브라우저 미존재(서버). open 실행 불가 → URL·path 만 emit.
+if render_target == 'hub':
     render_step = (
-        f"6. **브라우저 없음 (default_browser: none)** — `open` 실행 금지. 채팅에 `file://<절대경로>` + hub URL `{hub_url}` 만 명시 (Write 시 register-doc 자동)\n"
-    )
-elif render_target == 'hub':
-    render_step = (
-        f"6. **hub 서버 경유 (render_target: hub)** — `file://` open 생략. 채팅에 URL 명시: `{hub_url}` "
-        "(Write 시 `fpm-hub-doc-register` hook 이 자동 `register-doc` → 즉시 유효. 원격·타기기 GUI 단절 회피). ⚠️ `open` 실행 금지\n"
+        "6. **VSCode Simple Browser 표시 (render_target: hub, Issue170)** — `file://`·외부 브라우저 open **금지**. Write 후 아래 1줄 실행 (`<절대경로>`=저장한 .htm):\n"
+        f"   `curl -s -X POST http://{render_host}:{render_port}/open-simple-browser -H 'Content-Type: application/json' -d '{{\"path\":\"<절대경로>\"}}'`\n"
+        "   → 서버가 register-doc 화이트리스트 검증 후 확장 `finfra.fpm-simple-browser` 로 VSCode 패널에 렌더. 응답 `{\"status\":\"opened\"}`.\n"
+        f"   채팅에 fallback raw URL 병행: `{hub_url}` (Write 시 `fpm-hub-doc-register` 자동 `register-doc` → URL·POST 즉시 유효). ⚠️ `open` 실행 금지\n"
     )
 elif render_target == 'both':
     render_step = (
@@ -788,57 +1050,74 @@ else:  # local-open (기본)
         f"6. Bash → `{open_cmd} \"file://<절대경로>\"` (브라우저·포커스 = `browser_focus`/`default_browser` 설정. `-g`=백그라운드, 포커스 미탈취)\n"
     )
 
+# Issue168: render_target=hub 시 상단 framing 의 "Firefox 에 표시"/"Firefox open" 문구가
+#   step6 "open 실행 금지" 를 약화시켜 모델이 file:// 중복 open → 동적 치환으로 일관성 확보.
+if render_target == 'hub':
+    display_phrase = "VSCode Simple Browser 패널에 표시 (Issue170)"
+    open_skip_phrase = "외부 브라우저 open 없이"
+else:
+    display_phrase = "Firefox 에 표시"
+    open_skip_phrase = "Firefox open 없이"
+
 # Issue132: CANONICAL 헤더 블록 — verbatim 복붙 강제 (정적 span·순서 뒤바뀜·헤더 밖 overflow 재발 차단)
 canonical_header = (
     "3. **⚠️ CANONICAL 헤더 블록 (Issue132) — 아래 HTML·CSS verbatim 복붙. 즉흥 재작성 금지** "
     "(정적 `<span>`·순서 뒤바뀜·헤더 밖 overflow 재발 원인). `{제목}` 만 콘텐츠로 치환 (배지명·경로·색은 이미 임베드됨):\n"
     "```html\n"
     "<header>\n"
+    "  <a class=\"hub-link\" href=\"/hub\" target=\"__HUBTARGET__\" title=\"통합 모니터링 Hub\"><img src=\"/fpm-icon.png\" alt=\"Hub\" style=\"height:1.2em;vertical-align:-0.25em;\"></a>\n"
     "  <h1>{제목}</h1>\n"
     "  <nav class=\"header-actions\">\n"
     "    <a class=\"proj-badge\" href=\"#\" title=\"클릭 → VSCode 로 __PNAME__ 열기\"\n"
-    "       onclick=\"event.preventDefault();fetch('http://__HOST__:__PORT__/open-project',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'__CWD__'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('VSCode 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — VSCode 열기 실패');});\">📁 __PNAME__</a>\n"
+    "       onclick=\"event.preventDefault();fetch('/open-project',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'__CWD__'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('VSCode 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — VSCode 열기 실패');});\">📁 __PNAME__</a>\n"
     "    <a class=\"sess-link\" href=\"#\" title=\"클릭 → 이 문서를 만든 세션 탭으로 포커스\"\n"
-    "       onclick=\"event.preventDefault();fetch('http://__HOST__:__PORT__/open-session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'__CWD__',sid:'__SID__'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('세션 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — 세션 열기 실패');});\">🆚 세션</a>\n"
-    "    <a class=\"hub-link\" href=\"http://__HOST__:__PORT__/hub\" title=\"통합 모니터링 Hub\"><img src=\"http://__HOST__:__PORT__/fpm-icon.png\" alt=\"Hub\" style=\"height:1.2em;vertical-align:-0.25em;\"></a>\n"
-    "    <button type=\"button\" onclick=\"window.close()\">닫기 ✕</button>\n"
+    "       onclick=\"event.preventDefault();fetch('/open-session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cwd:'__CWD__',sid:'__SID__'})}).then(function(r){return r.json();}).then(function(j){if(j&&j.error)alert('세션 열기 실패: '+j.error);}).catch(function(){alert('hub 서버 미응답 — 세션 열기 실패');});\">🆚</a>\n"
+    "    <button type=\"button\" class=\"copy-link\" title=\"이 문서 링크 복사\"\n"
+    "       onclick=\"(function(b){var u=location.href.replace(/[?&]_shell=1$/,'');function ok(){var o=b.textContent;b.textContent='✓';setTimeout(function(){b.textContent=o;},1200);}function fb(){try{var ta=document.createElement('textarea');ta.value=u;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.focus();ta.select();var r=document.execCommand('copy');document.body.removeChild(ta);if(r){ok();}else{window.prompt('문서 링크 복사',u);}}catch(e){window.prompt('문서 링크 복사',u);}}if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(u).then(ok).catch(fb);}else{fb();}})(this)\">🔗</button>\n"
+    "    <button type=\"button\" class=\"close-btn\" title=\"이 문서 탭 닫기\" onclick=\"window.close()\">✕</button>\n"
     "  </nav>\n"
     "</header>\n"
+    "<script>(function(){var P='__PORT__';if(location.protocol==='http:'&&location.port===P)return;var B='http://__HOST__:'+P;function fix(){var a=document.querySelector('a.hub-link');if(a)a.href=B+'/hub';}if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',fix);else fix();var _f=window.fetch;window.fetch=function(u,o){if(typeof u==='string'&&u.charAt(0)==='/')u=B+u;return _f.call(this,u,o);};})();</script>\n"
     "```\n"
     "```css\n"
     "header { position: sticky; top: 0; z-index: 100; display: flex; align-items: center;\n"
     "  justify-content: space-between; gap: 1rem; flex-wrap: wrap; padding: 0.9rem 1.4rem;\n"
-    "  background: __PCOLOR__; color: #1a1a1a; }\n"
-    "header h1 { margin: 0; font-size: 1.15rem; flex: 1 1 auto; min-width: 0; }\n"
+    "  margin-inline: calc(50% - 50vw); background: __PCOLOR__; color: #1a1a1a; }\n"
+    "header > .hub-link { flex: 0 0 auto; }\n"
+    "header h1 { margin: 0; font-size: 1.15rem; flex: 1 1 auto; min-width: 0; text-align: center; }\n"
     "header .header-actions { display: flex; align-items: center; gap: 0.5rem; flex: 0 0 auto; }\n"
-    "header .proj-badge, header .sess-link, header .hub-link, header button { color: #1a1a1a; text-decoration: none;\n"
+    "header .proj-badge, header .sess-link, header .hub-link, header button { display: inline-flex; align-items: center; line-height: 1; color: #1a1a1a; text-decoration: none;\n"
     "  cursor: pointer; white-space: nowrap; background: rgba(0,0,0,0.08);\n"
     "  border: 1px solid rgba(0,0,0,0.15); padding: 0.2rem 0.6rem; border-radius: 6px; font-size: 0.85rem; }\n"
+    "header .copy-link, header .close-btn { justify-content: center; padding: 0.2rem 0.5rem; }\n"
+    "header .close-btn { margin-left: 0.6rem; }\n"
+    "header .close-btn:hover { background: rgba(200,0,0,0.18); }\n"
     "header .proj-badge:hover, header .sess-link:hover, header .hub-link:hover, header button:hover {\n"
     "  background: rgba(0,0,0,0.16); text-decoration: underline; }\n"
     "```\n"
-    "   불변식 (재발 차단): 배지=`<a class=\"proj-badge\" onclick=...POST /open-project...>` (정적 span 금지·Issue103), 세션=`<a class=\"sess-link\" onclick=...POST /open-session {cwd,sid}...>` (Issue137) → "
-    "순서 `📁 배지`→`🆚 세션`→`🎯📊 Hub`→`닫기 ✕` → 넷 모두 `<header>` 안 `.header-actions` 동일 행 (헤더 밖 div 금지·Issue88) → "
-    "flex+space-between+wrap 로 우측 overflow 방지. 조상(`html`/`body`/컨테이너)에 `overflow:hidden|clip` 금지 (sticky 무효화).\n"
-).replace("__PNAME__", project_name).replace("__PCOLOR__", project_color).replace("__CWD__", cwd).replace("__SID__", sid_full).replace("__HOST__", render_host).replace("__PORT__", render_port)
+    "   불변식 (재발 차단·Issue172): `🗂 Hub`(hub-link)가 `<h1>` 제목 **좌측** 맨 앞 (header 직속 자식) → 제목 → 우측 `.header-actions`[`📁 배지`→`🆚 세션`(아이콘만)→`🔗 복사`→`✕ 닫기`(아이콘만)]. 배지=`<a class=\"proj-badge\" onclick=...POST /open-project...>` (정적 span 금지·Issue103), 세션=`<a class=\"sess-link\" onclick=...POST /open-session {cwd,sid}...>` (Issue137), 복사=`<button class=\"copy-link\">` (Issue214), 닫기=`<button class=\"close-btn\">✕`. "
+    "배지·세션·복사·닫기는 `.header-actions` 동일 행 (헤더 밖 div 금지·Issue88), Hub·제목은 header 직속. "
+    "header `margin-inline: calc(50% - 50vw)` 로 body max-width 무관 full-bleed 바 (Issue172). flex+space-between+wrap 로 우측 overflow 방지. 조상(`html`/`body`/컨테이너)에 `overflow:hidden|clip` 금지 (sticky 무효화).\n"
+).replace("__PNAME__", project_name).replace("__PCOLOR__", project_color).replace("__CWD__", cwd).replace("__SID__", sid_full).replace("__HOST__", render_host).replace("__PORT__", render_port).replace("__HUBTARGET__", hub_link_target)
 
 context = (
     "## 세션 모드: hub 기본 on (프로젝트 폴더 — Issue83)\n\n"
-    f"이 폴더는 ___pm 등록 프로젝트 (`{project_name}`). hub 모드 자동 활성 — 매 응답을 HTML 문서로 렌더하여 Firefox 에 표시.\n\n"
+    f"이 폴더는 ___pm 등록 프로젝트 (`{project_name}`). hub 모드 자동 활성 — 매 응답을 HTML 문서로 렌더하여 {display_phrase}.\n\n"
     "### 핵심 — 작업은 정상 수행\n"
     "- 요청된 작업·슬래시 커맨드(`/dev`, `/issue-*` 등)·dev 사이클·커밋 **모두 정상 진행**. HTML 렌더는 결과의 *표현*이며 작업 대체 아님.\n"
     "- 명시적 `..show`(render-only, 워크플로우 차단)과 다름 — 자동 모드는 차단 없음.\n\n"
     "### 응답 본문 처리\n"
-    "0. **trivial 응답이면 hub 전체 skip (Issue85)** — HTML 작성·Firefox open 없이 평문 caveman 채팅으로 답하고 종료. "
+    f"0. **trivial 응답이면 hub 전체 skip (Issue85)** — HTML 작성·{open_skip_phrase} 평문 caveman 채팅으로 답하고 종료. "
     "trivial = 짧은 사실 답변·단순 확인(yes/no)·명령어/경로 안내 등 HTML 렌더 가치(표·코드블록·다이어그램·다단계 설명) 없는 응답. "
     "판단 모호하면 렌더 (기본 on 정책 유지)\n"
     "1. trivial 단발 질의(yes/no, A/B 선택, 정답 spoiler 위험)면 본문 HTML skip → 바로 `AskUserQuestion` 호출 (intercept 가 폼 처리)\n"
     "2. 그 외 — 응답 본문을 **완전한 HTML 문서**로 작성: `<!DOCTYPE html>`, `<html lang=\"ko\">`, "
-    "`<head>`(meta charset/viewport, fPm favicon `<link rel=\"icon\" href=\"/fpm-icon.png\">`, `<title>` prefix `\"" + project_name + " — <제목>\"`), "
+    "`<head>`(meta charset/viewport, 서버 아이콘 favicon `<link rel=\"icon\" href=\"/fpm-icon.png\">` (배지 서버=이모지 SVG, 미등록=fPm PNG — prj1#Issue253, 경로 변경 금지), `<title>` prefix `\"" + project_name + " — <제목>\"`), "
     "`<style>`(시스템 폰트, max-width 820px, line-height 1.7, 다크모드 `@media (prefers-color-scheme: dark)`), `<body>`\n"
     + canonical_header +
     "4. HTML 본문은 **caveman 압축 제외** — 자연스러운 한국어 산문·완전한 문장. 표·코드블록·blockquote 자유. "
     "프로세스·인과·구조 성격 내용은 mermaid 다이어그램 우선 렌더\n"
+    "4-1. **생성·수정 파일 = 클릭 링크 (Issue201)**: 본문에서 이 응답이 생성·수정·언급하는 산출물 파일 경로는 평문 나열 금지 — 반드시 `<a href=\"vscode://file<파일 절대경로>\">파일명</a>` 앵커로 렌더 (예: `<a href=\"vscode://file$HOME/.claude/Issue.md\">Issue.md</a>`, 슬래시 1개). VSCode Simple Browser 에서 클릭 시 파일이 에디터로 열림 (서버 불필요).\n"
     "5. `Write` → `" + out_dir + "/hub_htm_<YYYYMMDD_HHMMSS>_a_<주제>.htm` (" + path_note + ") — 날짜시간=`date +%Y%m%d_%H%M%S`, 주제=핵심 10자 내외 kebab, mode `a`=메인 렌더\n"
     + render_step +
     "7. 채팅 응답(caveman 유지): 한 줄 헤드라인 + 핵심 bullet 2~3개 + 저장 경로. "

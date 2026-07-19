@@ -1,0 +1,45 @@
+# hub_setting_org.yml — hub 설정 설치 템플릿 (machine-agnostic 안전 기본값)
+#
+# install.sh 가 hub_setting.yml 부재 시 본 파일을 복사하여 생성한다(멱등, 기존 보존).
+# 실제 운영 파일은 data/hub_setting.yml — 본 템플릿이 아니라 그쪽을 자신의 환경으로 편집할 것.
+# data/hub_setting.yml 은 개인 환경값(bind_host·advertise_host 등)을 담아 공개 미러에서 제외됨(publishable exclude).
+# 📖 각 키 상세·소비처·규칙: _doc_arch/hub_setting.md (SSOT)
+# 키 순서 = 설정창(⚙️ 3탭) UI 순서 (HUB_SETTING_SCHEMA 미러)
+#
+# 형식 규칙 (에러 방지):
+#   - server.py(기동+mtime 재로드) + 글로벌 hook 이 grep. flat key:value only (중첩·리스트 들여쓰기 금지).
+#   - 미설정 키는 server.py 내장 기본값으로 fallback → 잘 모르는 키는 지워도 안전.
+#   - bool 은 true/false, 숫자는 따옴표 없이. `#` 뒤는 주석.
+
+# ── 탭 1: 기본 (basic) — 브라우저·렌더 표시·언어 ──
+default_browser: chrome    # 렌더 브라우저 — firefox/chrome/edge/safari 또는 .app 절대경로 / none(open 생략, 채팅 URL만 emit). chrome 권장(탭 재사용 가능)
+browser_open: background   # 렌더 브라우저 자동 open — off=자동 open 안 함(채팅 URL만) / background=백그라운드 open(포커스 미탈취, 권장. Chromium 은 AppleScript 로 전면화 회피) / foreground=포커스 탈취
+browser_tab_reuse: true    # hub 탭 재사용 — true=fpm-hub 명명 탭 재사용 / false=매번 새 탭. Chrome/Edge/Safari 전용(AppleScript 탭 제어) — firefox·커스텀 앱은 설정창 토글 비활성 (Issue272)
+render_tab_mode: browser-tab # 렌더 표시 방식 — browser-tab(기본·OS 탭) / hub-internal(/hub-shell 내부 iframe 탭, OS 새 탭 미생성)
+language: en               # hub UI 언어 — en(영어, 기본) / ko(한국어). 공개 미러 국제 사용자 대비 en 기본. 설계: _doc_arch/localization.md
+
+# ── 탭 2: 세션관리 (session) — 세션·카드·피드 표시 (전부 server.py 소비 → 저장 즉시 반영) ──
+live_session_limit: 6      # 세션 카드(프로젝트 그룹)당 최대 행, 초과 시 "외 N개 더" (0=무제한)
+live_session_order: project # 활성세션 정렬 — updated(최근갱신순) / created(세션 시작순 고정) / project(Projects.md 번호순)
+live_session_show_empty: false # 명령(프롬프트) 전 빈 live 세션 표시 — false=전체 숨김 / true=프로젝트당 최신 1개
+card_limit: 120            # htm 카드 최대 표시 수, mtime 최신순 (0=무제한)
+search_limit: 120          # 디스크 재스캔 디렉토리당 파일 상한 (0=무제한)
+feed_default_visible: true # 피드 사이드바 최초 표시 여부 (런타임 토글은 localStorage)
+feed_limit: 300            # 피드 보관·표시 최대 항목 수 (deque maxlen)
+feed_poll_interval: 5      # 피드 폴링 주기(초, 참고값 — /boards 폴링 편승)
+feed_show_project_emoji: true  # 피드 항목 프로젝트 이모지 표시
+feed_show_project_name: false  # 피드 항목 프로젝트명 표시
+
+# ── 탭 3: 고급 (advanced) — 렌더 경로·내부 탭 세부·네트워크 (⚠️ 네트워크 변경 시 서버 restart. 기본은 루프백 전용 = 가장 안전) ──
+render_target: both          # ..show 표시 경로 — local-open(file:// 직접 open, 서버 불요·오프라인 안전) / hub(open 생략, URL 만 채팅 emit) / both(open + URL)
+simple_browser_focus: gate   # 자동 렌더가 Simple Browser 를 열며 VSCode 창을 전면화할지 — gate(기본)=다른 프로젝트 VSCode 창에서 작업 중이면 open skip(포커스 탈취 방지) / always=항상 전면화 / never=자동 오픈 안 함(등록·채팅 URL 만). hub 페이지 버튼 클릭 경로는 무관
+tab_close_shortcut: alt+w    # hub 내부 탭 닫기 단축키 ([ctrl+][alt+][shift+][meta+]<key>). ⚠️ ctrl+w/meta+w 는 브라우저가 OS 탭 닫기로 선점 가능
+hub_single_window: true      # 호스트(source-IP)당 hub 쉘 창 1개 강제 — true=2번째 창 takeover 안내 / false=다중 창 허용
+hub_lease_ttl: 30            # hub 쉘 리스 heartbeat 만료(초). SSE keepalive 미수신이 이 시간 초과 시 리스 회수
+bind_host: 127.0.0.1       # hub 서버 listen 인터페이스 — 127.0.0.1=루프백 전용(외부 차단, allowlist/DNS 부담 없음) / 0.0.0.0=전 인터페이스 / 특정 IP / [a, b]=멀티 bind
+# advertise_host: 192.168.1.5  # render_target=hub|both 일 때 URL host. 생략 시 bind_host fallback. ⚠️ bind_host=0.0.0.0 이면 생략 금지. tailnet 외부기기(폰) 접근 시 LAN IP 대신 MagicDNS hostname({host}.{tailnet}.ts.net) 권장 — IP 무관 고정. 단 macOS 자기해석은 /etc/resolver/{tailnet}.ts.net→100.100.100.100 필요 (Issue267, setup 문서)
+# allow_server_list: true  # source-IP allowlist 게이트 (비루프백 bind 시만 의미). true=Servers.md(check=O)+self 허용 / false=self 만 허용. 루프백 전용이면 생략 가능
+# allow_list: [192.168.0.5, 192.168.0.0/24]  # inline allowlist (IP/CIDR 만, yml 전용 — 설정 UI 미노출). Servers.md 와 additive 병합
+
+# ── yml 전용 (설정 UI 미노출) ──
+log_level: CRITICAL            # Issue258: 서버 로그 상세도 — VERBOSE/DEBUG/INFO(기본)/WARNING/ERROR/CRITICAL. 값 미만 레벨 억제. 크래시 진단 시 VERBOSE 상향

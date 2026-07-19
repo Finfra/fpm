@@ -183,7 +183,7 @@ extract_completion_hash() {
 * hash 추출 패턴: `Issue<N>:.*commit: <hash>.*✅`
 * hash 없이 ✅만 있으면 hash 자리에 `noHash` 반환 후 사용자 안내
 
-# 사용자 승인 (Opus 4.7 실행 제약)
+# 사용자 승인 (Opus 4.8 실행 제약)
 
 호출 직전 출력 후 컨펌:
 
@@ -232,9 +232,9 @@ extract_completion_hash() {
 * `~/_git/___pm/Projects.md` — 번호↔경로↔Domain SSOT
 * `~/.bin/pm-do` — bash 호출용 래퍼 (비-Claude 컨텍스트)
 
-# Opus 4.7 실행 제약
+# Opus 4.8 실행 제약
 
-공통 제약은 [`~/.claude/rules/opus-4-7-execution-rules.md`](~/.claude/rules/opus-4-7-execution-rules.md) 참조. 이 skill 특화:
+공통 제약은 [`~/.claude/rules/opus-4-8-execution-rules.md`](~/.claude/rules/opus-4-8-execution-rules.md) 참조. 이 skill 특화:
 
 * 재귀 위임 depth 상한: 3 (무한 루프 방지)
 * 폴링 횟수 상한: `TIMEOUT / POLL_INTERVAL` (기본 30회)

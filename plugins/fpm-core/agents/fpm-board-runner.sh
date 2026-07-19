@@ -3,7 +3,7 @@
 #
 # ⚠️ 글로벌 SCAR 변경 가드 (Issue46): 본 runner는 모든 프로젝트가 공유. cwd ≠ ~/.claude
 #   면 즉시 수정 금지 → ~/.claude/Issue.md 이슈 등록 후 처리. 설계 SSOT:
-#   ~/.claude/_doc_arch/dashboard.md, ~/_git/___pm/_doc_arch/hub_board_tmux_design.md
+#   ~/.claude/_doc_arch/board.md, ~/_git/___pm/_doc_arch/hub_board_tmux_design.md
 #   절차: ~/.claude/rules/global-scar-change-rules.md
 #
 # tmux pane에서 실행됨. data 파일을 주기 갱신 (HTTP 없음, 파일 기반).
@@ -102,6 +102,18 @@ refresh_signal() {
   [[ -n "$SLEEP_PID" ]] && kill "$SLEEP_PID" 2>/dev/null || true
 }
 
+# dash hub 등록 (Issue197): 기동 시 1회 register-doc POST — dash-registry 미등록 시
+# dashboard 가 hub 목록에 영구 미노출되는 사각 차단. 명시 등록은 DASH_CLEARED tombstone
+# 해제(recover) 의미 포함 (prj1#Issue254 서버측 /notify auto-register 와 병행 이중 방어).
+# 서버 down 시 무시 (fail-soft) — dashboard 본연 동작은 서버와 무관.
+register_dash() {
+  local payload
+  payload=$(python3 -c "import json,sys; print(json.dumps({'type':'dash','path':sys.argv[1],'cwd':sys.argv[2],'title':sys.argv[3]}))" \
+    "$DATA_FILE" "$PWD" "$TOPIC" 2>/dev/null) || return 0
+  curl -s --max-time 3 -X POST http://127.0.0.1:9876/register-doc \
+    -H 'Content-Type: application/json' -d "$payload" >/dev/null 2>&1 || true
+}
+
 trap cleanup TERM INT HUP
 trap refresh_signal USR1
 
@@ -112,6 +124,9 @@ echo "[runner] PID=$MY_PID start at $(date -Iseconds)"
   data=$(echo "$data" | python3 -c "import json,sys; d=json.load(sys.stdin); d['pid']=$MY_PID; d['status']='running'; print(json.dumps(d))")
   write_data "$data"
 }
+
+# Startup: dash hub 등록 (Issue197, fail-soft)
+register_dash
 
 SLEEP_PID=
 
