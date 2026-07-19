@@ -1551,14 +1551,27 @@ _issue_map_lock = threading.Lock()
 #   의존 간선이 0 이면 관계도가 노드 나열에 그쳐 열 가치가 없다(아이콘만 늘어남).
 #   포맷 SSOT: `~/.claude/rules/issue-g.md` 규칙2 — `* depends: Issue<M>` / `prj<N>#Issue<M>`.
 _ISSUE_DEPENDS_RE = re.compile(r"^\s*\*\s*depends:\s*\S")
+# Issue284_3: 이슈 헤더(`## Issue1: …` / `### Issue1_2: …`) 줄이 `✅` 로 끝나면 완료 —
+#   issue-map 스킬(build_issue_map.py)의 done 판정과 동일 신호(섹션명 하드코딩 없음).
+_ISSUE_HEADER_RE = re.compile(r"^#{2,3}\s+Issue")
 
 
 def _issue_md_has_depends(issue_md: str) -> bool:
-    """Issue.md 에 유효한 `* depends:` 줄이 1개 이상 있으면 True. 첫 매치에서 조기 종료."""
+    """Issue.md 에 **미완료** 이슈가 선언한 유효한 `* depends:` 줄이 1개 이상 있으면 True.
+
+    완료 이슈(헤더 줄이 `✅` 로 끝남)만 선언한 depends 는 세지 않는다 — issue-map 스킬은
+    "자신+후행 모두 완료"인 이슈를 관계도에서 제외하므로, 그런 depends 만 있는 프로젝트는
+    실제 맵이 빈 관계도(생략 안내문)를 렌더하면서도 카드엔 🗺️ 가 뜨는 불일치가 있었다
+    (Issue284_3). 첫 매치에서 조기 종료.
+    """
     try:
+        current_done = False
         with open(issue_md, encoding="utf-8", errors="replace") as f:
             for line in f:
-                if _ISSUE_DEPENDS_RE.match(line):
+                if _ISSUE_HEADER_RE.match(line):
+                    current_done = line.rstrip().endswith("✅")
+                    continue
+                if not current_done and _ISSUE_DEPENDS_RE.match(line):
                     return True
     except OSError:
         return False

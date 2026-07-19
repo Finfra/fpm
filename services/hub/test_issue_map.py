@@ -107,6 +107,22 @@ open(_DEP_EMPTY, "w").write("* depends:\n* depends:   \n")
 check("depends 파서: 값 없는 `* depends:` 는 미인정",
       server._issue_md_has_depends(_DEP_EMPTY) is False)
 
+# Issue284_3 — 완료(헤더 ✅ 접미) 이슈에만 달린 depends 는 미카운트
+_DEP_DONE_ONLY = os.path.join(TMP, "dep-done-only.md")
+open(_DEP_DONE_ONLY, "w").write(
+    "## Issue1: a (해결) ✅\n* depends: Issue0\n\n"
+    "### Issue1_2: a sub (해결) ✅\n* depends: Issue0\n"
+)
+check("depends 파서(Issue284_3): 완료 이슈만의 depends → False",
+      server._issue_md_has_depends(_DEP_DONE_ONLY) is False)
+_DEP_MIXED = os.path.join(TMP, "dep-mixed.md")
+open(_DEP_MIXED, "w").write(
+    "## Issue1: a (해결) ✅\n* depends: Issue0\n\n"
+    "## Issue2: b\n* depends: Issue1\n"
+)
+check("depends 파서(Issue284_3): 완료+미완료 혼재 → 미완료 쪽으로 True",
+      server._issue_md_has_depends(_DEP_MIXED) is True)
+
 # TTL 캐시 — 첫 조회 후 파일을 지워도 캐시 유효기간 내엔 같은 값
 _clear_cache()
 first = server._issue_map_path(PRJ_A)
