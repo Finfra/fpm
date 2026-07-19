@@ -2900,6 +2900,10 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/projects-map":
             self._handle_projects_map(parsed)
             return
+        # Issue294: 맵 노드 클릭 → VSCode 열기 브리지 (GET, prj 번호만 받음)
+        if parsed.path == "/open-prj":
+            self._handle_open_prj(parsed)
+            return
         if parsed.path == "/boards":
             self._handle_dashboards(parsed)
             return
@@ -5069,6 +5073,52 @@ __WARN__
             return
         log(f"POST /open-project — cwd={cwd} open_cwd={open_cwd}")
         self._send_json(200, {"status": "opened", "cwd": open_cwd})
+
+    def _handle_open_prj(self, parsed):
+        """Issue294: 프로젝트 맵 노드 클릭 → VSCode 로 그 프로젝트 열기 (GET 브리지).
+
+        왜 POST `/open-project` 를 쓰지 않고 GET 을 새로 두는가 — 맵은 mermaid 가
+        렌더하는 SVG 이고, 노드 링크는 `<a href>` 하나로만 표현된다(폼·JS 훅 없음).
+        게다가 mermaid 는 `securityLevel: strict` 라 `vscode://` 같은 커스텀 스킴을
+        sanitize 하므로 http 앵커여야 한다 — `/ob` 브리지와 같은 해법.
+
+        입력면: **prj 번호 하나뿐**. 경로는 서버가 `projects/<id>` 인덱스에서 조회하므로
+        클라이언트가 경로를 넘길 방법이 없다(traversal 불가). `/ob` 와 같이 호스트에서
+        `open` 을 실행하는 등급이라 loopback 전용으로 묶는다.
+        """
+        client_ip = self.client_address[0] if self.client_address else ""
+        if client_ip not in LOOPBACK_IPS:
+            self._send_json(403, {"error": "loopback only"})
+            return
+        qs = parse_qs(parsed.query or "")
+        raw = (qs.get("id", [""])[0] or "").strip()
+        if not raw.isdigit():
+            self._send_json(400, {"error": "numeric id required"})
+            return
+        idx = os.path.join(REPO_ROOT, "projects", raw)
+        if not os.path.isfile(idx):
+            self._send_json(404, {"error": f"prj{raw} not registered"})
+            return
+        try:
+            with open(idx, encoding="utf-8") as f:
+                target = os.path.expanduser(f.read().strip()).rstrip("/")
+        except OSError as e:
+            self._send_json(500, {"error": f"index read failed: {e}"})
+            return
+        if not target or not os.path.isdir(target):
+            self._send_json(404, {"error": f"path not found: {target}"})
+            return
+        try:
+            subprocess.Popen(["open", "-a", "Visual Studio Code", target],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            self._send_json(500, {"error": f"spawn failed: {e}"})
+            return
+        log(f"GET /open-prj — id={raw} → {target}")
+        # 새 탭이 열린 채 남지 않도록 본문 없이 204 — 맵 페이지는 그대로 유지된다.
+        self.send_response(204)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _handle_open_session(self, parsed):
         """Issue131: 활성 세션 카드 행 클릭 → VSCode 의 해당 Claude Code 세션 탭으로 포커스.
@@ -8358,8 +8408,8 @@ section.sec-collapsed .htm-bar-right { display: none; }
   <div class="header-actions">
     <button class="btn-project-list" id="btn-project-list" title="{T:projectList.openTitle}">📋 Projects</button>
     <a class="btn-project-list" id="btn-projects-map" href="/projects-map" target="_blank"
-       data-title="Project Tree" onclick="return fpmOpenInShell(event,this)"
-       title="{T:projectsMap.openTitle}">🌳 Tree</a>
+       data-title="Project Map" onclick="return fpmOpenInShell(event,this)"
+       title="{T:projectsMap.openTitle}">🗺️ Map</a>
     <button class="btn-settings" id="btn-settings" title="{T:settings.openBtnTitle}">⚙️</button>
   </div>
 </header>

@@ -3,8 +3,16 @@
 
 설계 SSOT: _doc_arch/projects-map-design.md
 표(### 📋 프로젝트) = 속성(id·경로·이모지·색) SSOT.
-트리(# 프로젝트 트리) = 계층(소속) SSOT.
-외부 의존 없음(표준 라이브러리만). Mermaid/mmdc 비의존 — 순수 HTML 트리.
+트리(# Project Map) = 계층(소속) SSOT.
+
+Issue294: 표현을 mermaid flowchart 로 전환. mmdc 프리렌더는 쓰지 않는다 —
+정적 SVG 는 `click ... href` 를 앵커로 만들지 않아(실측: `class="clickable"` 만 부여)
+링크가 죽는다. hub 가 주입하는 canonical UMD 런타임으로 브라우저에서 렌더해야 `<a>` 가 생긴다.
+그 런타임은 `securityLevel: strict` 이라 `vscode://` 같은 커스텀 스킴은 sanitize 되므로,
+노드 링크는 상대경로 http 브리지(`/open-prj?id=N`)를 쓴다(`/ob` 브리지와 같은 해법).
+mermaid 런타임 <script> 는 여기서 저작하지 않는다 — hub `_normalize_mermaid_runtime` 이 주입한다.
+
+외부 의존 없음(표준 라이브러리만).
 """
 
 import argparse
@@ -16,6 +24,10 @@ import urllib.parse
 from pathlib import Path
 
 MISC_LABEL = "미분류"
+
+# Issue294: 계층 소스 섹션 헤딩. 현행은 `# Project Map` 이며, 완전 일치 하드코딩이
+#   헤딩 rename 한 번에 생성 실패로 이어졌으므로(회귀) 구 표기도 함께 받아 준다.
+TREE_HEADINGS = {"# Project Map", "# Project Tree", "# 프로젝트 트리"}
 
 TABLE_ROW_RE = re.compile(
     r"^\|\s*(\d+)\s*\|([^|]*)\|([^|]*)\|([^|]*)\|([^|]*)\|([^|]*)\|([^|]*)\|([^|]*)\|\s*$"
@@ -74,7 +86,7 @@ def parse_tree(md_text):
     lines = md_text.splitlines()
     start = None
     for i, line in enumerate(lines):
-        if line.strip() == "# 프로젝트 트리":
+        if line.strip() in TREE_HEADINGS:
             start = i
             break
     if start is None:
@@ -141,6 +153,109 @@ def enforce_completeness(roots, table):
             misc["children"].append({"id": pid, "label": table[pid]["name"], "children": []})
         roots.append(misc)
     return missing
+
+
+# ── mermaid 렌더 (Issue294) ─────────────────────────────────────────────
+_MMD_UNSAFE = str.maketrans({'"': "'", "`": "'", "[": "(", "]": ")",
+                             "{": "(", "}": ")", "|": "/", "\n": " "})
+
+
+def mmd_label(text):
+    """mermaid 라벨 안전화 — 따옴표·대괄호·백틱은 파서를 깨뜨린다.
+    백틱은 특히 markdown-string("`...`") 으로 오인되어 노드가 통째로 사라진다."""
+    return text.translate(_MMD_UNSAFE).strip()
+
+
+def mmd_id(prefix, key):
+    """mermaid 노드 id — 영숫자·언더스코어만 허용."""
+    return prefix + re.sub(r"[^A-Za-z0-9_]", "_", str(key))
+
+
+def text_on(color):
+    """배경색 luminance 로 대비되는 글자색 선택 (어두운 peacock 색 위 검정 글씨 방지)."""
+    m = re.fullmatch(r"#([0-9a-fA-F]{6})", (color or "").strip())
+    if not m:
+        return "#1a1a1a"
+    r, g, b = (int(m.group(1)[i:i + 2], 16) for i in (0, 2, 4))
+    return "#ffffff" if (0.299 * r + 0.587 * g + 0.114 * b) < 140 else "#1a1a1a"
+
+
+def walk_tree(nodes, table, out_nodes, out_edges, parent_id=None, group=None):
+    """트리를 순회하며 (노드 정의, 부모→자식 간선) 수집.
+
+    id 없는 노드 = 그룹(번호 대역) → subgraph 로 접히고 자신은 링크 대상이 아니다.
+    그룹이 중첩되면 안쪽 그룹이 이깁니다(가장 가까운 그룹에 귀속).
+    """
+    for n in nodes:
+        if n["id"] is None:
+            gid = mmd_id("G", len(out_nodes["groups"]))
+            out_nodes["groups"].append({"gid": gid, "label": mmd_label(n["label"])})
+            walk_tree(n["children"], table, out_nodes, out_edges,
+                      parent_id=None, group=gid)
+            continue
+
+        pid = n["id"]
+        meta = table.get(pid)
+        nid = mmd_id("P", pid)
+        if meta is None:
+            out_nodes["projects"].append({
+                "nid": nid, "id": pid, "group": group, "dead": True,
+                "label": f'{pid}. {mmd_label(n["label"])} (표에 없음)',
+                "color": "", "path": "",
+            })
+        else:
+            path = os.path.expanduser(meta["path"])
+            out_nodes["projects"].append({
+                "nid": nid, "id": pid, "group": group,
+                "dead": not os.path.exists(path),
+                "label": f'{mmd_label(meta["emoji"])} {mmd_label(meta["name"])} #{pid}',
+                "color": meta["color"] or "", "path": path,
+            })
+        if parent_id:
+            out_edges.append((parent_id, nid))
+        walk_tree(n["children"], table, out_nodes, out_edges,
+                  parent_id=nid, group=group)
+
+
+def render_mermaid(roots, table):
+    """트리 → mermaid flowchart 소스. 각 프로젝트 노드는 `/open-prj?id=N` 으로 링크된다."""
+    collected = {"groups": [], "projects": []}
+    edges = []
+    walk_tree(roots, table, collected, edges)
+
+    lines = ["flowchart TD"]
+    by_group = {}
+    for p in collected["projects"]:
+        by_group.setdefault(p["group"], []).append(p)
+
+    for g in collected["groups"]:
+        members = by_group.get(g["gid"], [])
+        if not members:
+            continue
+        lines.append(f'  subgraph {g["gid"]}["{g["label"]}"]')
+        lines.append("    direction TB")
+        for p in members:
+            lines.append(f'    {p["nid"]}["{p["label"]}"]')
+        lines.append("  end")
+    # 그룹에 속하지 않은 프로젝트(트리 최상위에 바로 놓인 경우)
+    for p in by_group.get(None, []):
+        lines.append(f'  {p["nid"]}["{p["label"]}"]')
+
+    for src, dst in edges:
+        lines.append(f"  {src} --> {dst}")
+
+    for p in collected["projects"]:
+        if p["dead"]:
+            lines.append(f'  style {p["nid"]} fill:#e8e8e8,stroke:#bbb,color:#999,'
+                         f"stroke-dasharray:4 3")
+            continue
+        if p["color"]:
+            lines.append(f'  style {p["nid"]} fill:{p["color"]},stroke:#00000033,'
+                         f"color:{text_on(p['color'])}")
+        # Issue294: 커스텀 스킴은 mermaid strict 가 sanitize → 상대경로 http 브리지만 유효
+        lines.append(f'  click {p["nid"]} href "/open-prj?id={p["id"]}" '
+                     f'"{mmd_label(p["path"] or "경로 미상")}"')
+    return "\n".join(lines)
 
 
 def render_node(node, table, depth=0):
@@ -308,6 +423,9 @@ def main():
 
     missing = enforce_completeness(roots, table)
 
+    # Issue294: 표현은 mermaid flowchart. 텍스트 트리는 다이어그램이 못 뜨는 환경
+    #   (런타임 미주입·CSP 차단)의 fallback 으로 <details> 안에 함께 싣는다.
+    mermaid_src = render_mermaid(roots, table)
     tree_html = "<ul>" + "".join(render_node(n, table) for n in roots) + "</ul>"
 
     existing_notes = extract_existing_notes(out_path)
@@ -317,11 +435,18 @@ def main():
         HTML_HEAD,
         f'<div class="meta">프로젝트 {len(table)}건'
         + (f" · 미분류 편입 {len(missing)}건" if missing else "")
-        + "</div>",
+        + " · 노드 클릭 → VSCode 로 열기</div>",
+        "<!-- PROJECTS-MAP:MERMAID -->",
+        '<pre class="mermaid">',
+        html.escape(mermaid_src),
+        "</pre>",
+        "<!-- /PROJECTS-MAP:MERMAID -->",
+        '<details id="text-tree"><summary>텍스트 트리 (필터·복사)</summary>',
         '<input id="filter" type="text" placeholder="프로젝트명 필터…">',
         "<!-- PROJECTS-MAP:TREE -->",
         tree_html,
         "<!-- /PROJECTS-MAP:TREE -->",
+        "</details>",
         '<div id="notes">',
         "<!-- PROJECTS-MAP:NOTES -->",
         notes_body,

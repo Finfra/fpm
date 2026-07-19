@@ -17,7 +17,7 @@
   "projectList.col.color": "Color",
   "projectList.toggleColTitle": "hub auto-render on/off",
   "projectList.openTitle": "View Projects.md project list",
-  "projectsMap.openTitle": "Open the project tree map rendered from the Project Tree section of Projects.md",
+  "projectsMap.openTitle": "Open the project map rendered from the Project Map section of Projects.md (click a node to open it in VSCode)",
   "projectList.footStatus": "hub toggle → auto-render on/off · click row → select · double-click/button → open in VSCode · ESC · ✕ · click outside to close",
   "projectList.openSelectedTitle": "Open selected project in VSCode",
   "projectList.openVscode": "✏️ Open in VSCode",
