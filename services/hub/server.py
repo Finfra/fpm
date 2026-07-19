@@ -1706,6 +1706,57 @@ def _resolve_project_root(abs_cwd: str) -> dict:
     return best
 
 
+def _frontmost_app_window() -> tuple:
+    """macOS 최전면 프로세스명 + 그 프로세스의 front window 제목 (Issue288).
+
+    반환 ("Code", "Issue.md — ___pm") 형태. 실패(비-macOS·접근성 권한 부재·osascript
+    오류·timeout)면 ("", "") — 호출자는 **fail-open**(기존 동작 유지) 할 것. 조용히
+    기능을 무력화하지 않기 위해 실패는 WARNING 으로 남긴다."""
+    script = ('tell application "System Events"\n'
+              '  set pname to name of first process whose frontmost is true\n'
+              '  try\n'
+              '    set wname to name of front window of process pname\n'
+              '  on error\n'
+              '    set wname to ""\n'
+              '  end try\n'
+              '  return pname & tab & wname\n'
+              'end tell')
+    try:
+        r = subprocess.run(["osascript", "-e", script], capture_output=True,
+                           text=True, timeout=3)
+    except Exception as e:
+        log(f"_frontmost_app_window failed: {e}", "WARNING")
+        return ("", "")
+    if r.returncode != 0:
+        log(f"_frontmost_app_window osascript rc={r.returncode}: "
+            f"{(r.stderr or '').strip()[:200]}", "WARNING")
+        return ("", "")
+    parts = (r.stdout or "").strip().split("\t", 1)
+    return (parts[0].strip(), parts[1].strip() if len(parts) > 1 else "")
+
+
+def _simple_browser_focus_skip(mode: str, front_proc: str, front_win: str,
+                               target_cwd: str) -> str:
+    """Issue288 포커스 게이트 판정 (순수 함수 — 부수효과 없음, 단위검증용).
+
+    반환: skip 사유 문자열, 빈 문자열이면 진행(=open 실행).
+      - never       → 항상 skip
+      - always/미지 → 항상 진행 (구 동작)
+      - gate        → VSCode 가 전면이고 그 창이 owner 프로젝트가 아니면 skip.
+                      VSCode 가 전면이 아니면(iTerm 등) 진행 — 그 세션과 상호작용
+                      중일 가능성이 높다. 판정 실패(front_proc="")도 fail-open."""
+    if mode == "never":
+        return "focus-never"
+    if mode != "gate":
+        return ""
+    if front_proc not in ("Code", "Electron"):
+        return ""
+    owner_base = os.path.basename(target_cwd) if target_cwd else ""
+    if owner_base and owner_base in front_win:
+        return ""
+    return "not-frontmost"
+
+
 def project_meta(cwd: str) -> dict:
     h = cwd_hash(cwd)
     # Issue28: Projects.md peacock.color 우선, 없으면 hsl fallback
@@ -1772,6 +1823,11 @@ HUB_SETTING_DEFAULTS = {"feed_limit": 100, "feed_default_visible": True, "feed_p
                         #   Remote-SSH 창을 재사용해 연다. 빈 문자열(기본)=원격 분기 비활성(host-local open 폴백).
                         #   값=클라이언트 ~/.ssh/config 의 이 서버 Host alias (예: gl).
                         "ssh_remote_alias": "",
+                        # Issue288: 자동 렌더(hook 경로)의 Simple Browser 전면화 가드.
+                        #   gate(기본)=다른 프로젝트 VSCode 창이 전면이면 open skip(포커스 탈취 방지)
+                        #   / always=구 동작(항상 전면화) / never=자동 오픈 안 함(등록·채팅 URL 만).
+                        #   hub 페이지 클릭 경로(/open-project·/open-session)는 이 설정과 무관.
+                        "simple_browser_focus": "gate",
                         # Issue258: 서버 로그 상세도 — VERBOSE/DEBUG/INFO(기본)/WARNING/ERROR/CRITICAL.
                         #   값 미만 레벨 로그 억제. Chrome AX 크래시 직전 이벤트 타임라인 수집 시 VERBOSE 로 상향.
                         "log_level": "INFO"}
@@ -1904,6 +1960,10 @@ HUB_SETTING_SCHEMA = [
     {"key": "render_target", "tab": "advanced", "widget": "select",
      "options": ["local-open", "hub", "both"],
      "apply": "hook", "comment": "Claude Code(렌더 hook)가 ..show 렌더 결과를 표시하는 경로 — local-open=로컬 file:// 로 직접 열기 / hub=hub 서버 URL 로 열기 / both=둘 다"},
+    # Issue288: 자동 렌더의 VSCode 전면화 가드 (클릭 경로 /open-project·/open-session 은 무관)
+    {"key": "simple_browser_focus", "tab": "advanced", "widget": "select",
+     "options": ["gate", "always", "never"],
+     "apply": "auto", "comment": "Claude Code 자동 렌더가 Simple Browser 패널을 열며 VSCode 창을 전면화할지 — gate(기본)=사용자가 다른 프로젝트 VSCode 창에서 작업 중이면 열지 않음(타이핑 중 포커스 탈취 방지) / always=항상 전면화(구 동작) / never=자동 오픈 안 함(문서 등록·채팅 URL 만). hub 페이지 버튼 클릭으로 여는 경로는 이 설정과 무관하게 항상 열림"},
     {"key": "tab_close_shortcut", "tab": "advanced", "widget": "text",
      "apply": "auto", "comment": "hub 화면 내부 탭을 닫는 단축키 ([ctrl+][alt+][shift+][meta+]<key>). ⚠️ ctrl+w/meta+w 는 브라우저가 선점할 수 있음"},
     # Issue194: hub 내부 탭 모드(render_tab_mode=hub-internal) 단일 창 강제
@@ -5093,6 +5153,26 @@ __WARN__
                 target_cwd = resolved_cwd
             elif owner_cwd in allowed:
                 target_cwd = owner_cwd
+        # Issue288: 포커스 탈취 가드. 본 엔드포인트는 클라이언트 JS 호출자가 0건 —
+        #   전량 hook 자동 렌더 경로(사용자 제스처 없음)인데 클릭 경로(/open-session)의
+        #   전면화 패턴을 그대로 이식해, 백그라운드 세션의 렌더가 사용자가 타이핑 중인
+        #   다른 프로젝트 VSCode 창에서 포커스를 빼앗았다. hub 페이지 버튼(/open-project·
+        #   /open-session)은 별도 엔드포인트라 이 가드와 무관(전면화 유지가 맞음).
+        #   skip 해도 register-doc 등록은 이미 끝나 hub-shell 탭·폴링(Issue199)·채팅
+        #   fallback URL 로 수거 가능 → 정보 유실 0.
+        focus_mode = (_load_hub_setting().get("simple_browser_focus") or "gate").strip()
+        front_proc, front_win = ("", "")
+        if focus_mode == "gate":
+            front_proc, front_win = _frontmost_app_window()
+        skip = _simple_browser_focus_skip(focus_mode, front_proc, front_win, target_cwd)
+        if skip:
+            log(f"POST /open-simple-browser SKIP — {skip} "
+                f"(mode={focus_mode} front='{front_proc}|{front_win}' "
+                f"owner='{os.path.basename(target_cwd) if target_cwd else '-'}') path={abs_path}")
+            self._send_json(200, {"status": f"skipped-{skip}", "front": front_win,
+                                  "owner": os.path.basename(target_cwd) if target_cwd else "",
+                                  "path": abs_path})
+            return
         try:
             if target_cwd:
                 subprocess.Popen(

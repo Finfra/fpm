@@ -32,6 +32,7 @@ feed_show_project_name: false  # 피드 항목 프로젝트명 표시
 
 # ── 탭 3: 고급 (advanced) — 렌더 경로·내부 탭 세부·네트워크 (⚠️ 네트워크 변경 시 서버 restart. 기본은 루프백 전용 = 가장 안전) ──
 render_target: both          # ..show 표시 경로 — local-open(file:// 직접 open, 서버 불요·오프라인 안전) / hub(open 생략, URL 만 채팅 emit) / both(open + URL)
+simple_browser_focus: gate   # 자동 렌더가 Simple Browser 를 열며 VSCode 창을 전면화할지 — gate(기본)=다른 프로젝트 VSCode 창에서 작업 중이면 open skip(포커스 탈취 방지) / always=항상 전면화 / never=자동 오픈 안 함(등록·채팅 URL 만). hub 페이지 버튼 클릭 경로는 무관
 tab_close_shortcut: alt+w    # hub 내부 탭 닫기 단축키 ([ctrl+][alt+][shift+][meta+]<key>). ⚠️ ctrl+w/meta+w 는 브라우저가 OS 탭 닫기로 선점 가능
 hub_single_window: true      # 호스트(source-IP)당 hub 쉘 창 1개 강제 — true=2번째 창 takeover 안내 / false=다중 창 허용
 hub_lease_ttl: 30            # hub 쉘 리스 heartbeat 만료(초). SSE keepalive 미수신이 이 시간 초과 시 리스 회수
