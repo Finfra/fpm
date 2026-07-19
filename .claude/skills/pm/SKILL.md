@@ -276,12 +276,12 @@ status: {success|partial|failed|cancelled}
 | `noteForHuman.md`       | 보존                                                | 템플릿 생성                      |
 | `PROMPTS.md`            | 보존                                                | 템플릿 생성                      |
 | `Harness.md`            | 보존                                                | 템플릿 + global layer 자동 채움  |
-| `_doc_work/{plan,tasks,report,z_done,z_htm}`, `_doc_arch` | 없는 서브폴더만 생성   | 전체 생성                        |
+| `_doc_work/{plan,tasks,report,z_done,z_done/htm,htm}`, `_doc_arch` | 없는 서브폴더만 생성   | 전체 생성                        |
 | `.vscode/settings.json` | **peacock 동기화** (아래 절차)                      | 템플릿 컬러·이모지 자동 선택     |
 | initial commit          | **스킵**. 변경분만 별도 커밋(사용자 컨펌)           | initial commit                   |
 
 * nPTiR 산출물·로컬 문서가 `.gitignore` 정책상 ignore 대상이면 `.gitkeep` 불필요 — 폴더만 생성
-* **`z_htm` 필수 사유**: hub 렌더(`..show`/`..ask` 등)는 `$cwd/_doc_work/z_htm/` 존재 시 거기 저장하고, 그때만 register 훅(`fpm-hub-doc-register`, z_htm 경로 매칭)이 hub registry 에 자동 등록한다. 부재 시 `/tmp/___pm` fallback → 등록 스킵 → `/htm-doc` 403 dead link. 따라서 신규·adopt 프로젝트는 `z_htm` 을 함께 생성한다 (pm 스킬은 fpm 컨텍스트 전용이라 가드 자동 충족 — 글로벌 wrapper·nptir-rules 는 `[ -d ~/_git/___pm ] || command -v fpm` 가드로 비-fpm 환경 제외).
+* **`htm` 필수 사유 (Issue289 — 구 `z_htm`)**: hub 렌더(`..show`/`..ask` 등)는 `$cwd/_doc_work/htm/` 존재 시 거기 저장하고, 그때만 register 훅(`fpm-hub-doc-register`)이 hub registry 에 자동 등록한다. 부재 시 `/tmp/___pm` fallback → 등록 스킵 → `/htm-doc` 403 dead link. 따라서 신규·adopt 프로젝트는 `htm` 을 함께 생성한다 (pm 스킬은 fpm 컨텍스트 전용이라 가드 자동 충족 — 글로벌 wrapper·nptir-rules 는 `[ -d ~/_git/___pm ] || command -v fpm` 가드로 비-fpm 환경 제외). 아카이브 대상은 `z_done/htm/` 이며 legacy `z_htm/` 은 읽기만 지원. 수명주기 SSOT: `_doc_arch/htm-lifecycle-design.md`
 
 ## .vscode/settings.json peacock 동기화 (필수 — 누락 빈발 지점)
 
