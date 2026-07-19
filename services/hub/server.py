@@ -1563,6 +1563,13 @@ def _load_projects_list() -> list:
 #   찾도록 상위로 최대 _ISSUE_MAP_MAX_UP 단계 거슬러 올라가며 Issue.md 보유 디렉토리를 찾는다.
 #   파일명은 `Issue_map.htm` 고정 (prj1#Issue286 / prj3#Issue246 합의 — 후보 목록 없음).
 ISSUE_MAP_NAME = "Issue_map.htm"
+# Issue293: 프로젝트 트리 맵(`Projects_map.htm`) — `Projects.md` 의 `# Project Tree` 섹션을
+#   projects-map 생성기(.claude/skills/projects-map/build_projects_map.py)가 렌더한 산출물.
+#   이슈맵과 달리 **___pm 루트에 1개만** 존재하므로 cwd 파라미터가 없고 경로는 서버 고정 —
+#   클라이언트 입력면이 0 이라 traversal 게이트 자체가 성립하지 않는다(진입점 `_ip_allowed()` 만 적용).
+#   gitignore 대상(재생성물)이라 부재가 정상 상태일 수 있어 404 는 재생성 안내로 응답한다.
+PROJECTS_MAP_NAME = "Projects_map.htm"
+PROJECTS_MAP_BUILDER = ".claude/skills/projects-map/build_projects_map.py"
 _ISSUE_MAP_MAX_UP = 6
 _ISSUE_MAP_TTL = 30.0            # 탐지 결과 캐시 수명(초) — /hub 폴링 5s 대비 stat 6배 절감
 _issue_map_cache: dict = {}      # cwd(str) -> (expire_ts, path|None, has_deps: bool)
@@ -2888,6 +2895,10 @@ class Handler(BaseHTTPRequestHandler):
         # Issue284: 프로젝트 이슈맵(Issue_map.htm) serve — cwd 로 서버측 경로 재계산
         if parsed.path == "/issue-map":
             self._handle_issue_map(parsed)
+            return
+        # Issue293: 프로젝트 트리 맵(Projects_map.htm) serve — 경로는 REPO_ROOT 고정
+        if parsed.path == "/projects-map":
+            self._handle_projects_map(parsed)
             return
         if parsed.path == "/boards":
             self._handle_dashboards(parsed)
@@ -6362,6 +6373,59 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             return
         self._send_htm_html(body, path)
 
+    def _handle_projects_map(self, parsed):
+        """Issue293: 프로젝트 트리 맵(`Projects_map.htm`) serve.
+
+        `/issue-map` 과 같은 등급(문서를 읽어 돌려줌)이라 게이트도 같다 — 진입점 공통
+        `_ip_allowed()` 만 적용한다. 다만 이 맵은 ___pm 루트에 1개뿐이라 cwd 를 받지 않고
+        경로를 `REPO_ROOT` 로 고정하므로, 이슈맵이 필요로 했던 cwd 화이트리스트·상향 탐색
+        재검증·traversal 방어가 **입력면 부재로 불필요**하다.
+
+        파일은 `Projects.md` 로부터 재생성되는 gitignore 산출물이라 부재가 정상일 수 있다.
+        그 경우 raw 404 JSON 대신 재생성 커맨드를 담은 안내 HTML 을 돌려준다.
+        """
+        path = os.path.join(REPO_ROOT, PROJECTS_MAP_NAME)
+        try:
+            with open(path, "rb") as f:
+                body = f.read()
+        except OSError:
+            log(f"GET /projects-map — not built yet: {path}")
+            self._send_projects_map_hint(path)
+            return
+        self._send_htm_html(body, path)
+
+    def _send_projects_map_hint(self, path: str):
+        """Issue293: 트리 맵 미생성 시 원인·재생성 커맨드 안내 HTML (raw JSON 404 대체)."""
+        cmd = f"cd {REPO_ROOT} && python3 {PROJECTS_MAP_BUILDER}"
+        html = (
+            "<!doctype html><html lang=ko><head><meta charset=utf-8>"
+            "<meta name=viewport content='width=device-width,initial-scale=1'>"
+            "<title>프로젝트 트리 맵 미생성</title><style>"
+            "body{font:15px/1.6 -apple-system,system-ui,sans-serif;max-width:760px;"
+            "margin:3rem auto;padding:0 1.2rem;color:#222}"
+            "h1{font-size:1.3rem}code{background:#f2f2f5;padding:.15em .4em;border-radius:4px}"
+            "pre{background:#1e1e24;color:#e8e8ee;padding:1rem;border-radius:8px;overflow-x:auto}"
+            ".box{background:#fff7e6;border:1px solid #f0c36d;border-radius:8px;padding:1rem 1.2rem;margin:1.2rem 0}"
+            "@media(prefers-color-scheme:dark){body{background:#16161a;color:#ddd}"
+            "code{background:#2a2a33}.box{background:#2b2410;border-color:#7a5c1e}}"
+            "</style></head><body>"
+            f"<h1>🌳 <code>{PROJECTS_MAP_NAME}</code> 가 아직 생성되지 않았습니다</h1>"
+            "<p>이 맵은 <code>Projects.md</code> 의 <code># Project Tree</code> 섹션으로부터 "
+            "생성되는 산출물이며 git 추적 대상이 아닙니다(재생성물). 클론 직후이거나 "
+            "정리된 뒤에는 없는 것이 정상입니다.</p>"
+            "<div class=box><b>재생성</b>"
+            f"<pre>{cmd}</pre>"
+            "생성 후 이 페이지를 새로고침하면 트리가 표시됩니다.</div>"
+            f"<p style=color:#888>기대 경로: <code>{path}</code></p>"
+            "</body></html>"
+        )
+        body = html.encode("utf-8")
+        self.send_response(404)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _handle_view(self, parsed):
         """Issue16_2: dashboard·form HTML을 동일 origin(http://127.0.0.1)으로 serve.
         Chrome/Safari가 file://+http 조합 fetch를 CORS로 거부하는 문제 해결."""
@@ -7959,6 +8023,8 @@ span.imp-chip:hover { filter: brightness(1.12); }
 .btn-project-list { flex: none; background: rgba(255,255,255,0.18); border: 1px solid rgba(255,255,255,0.55);
   color: white; padding: 0.5rem 0.95rem; border-radius: 6px; font-size: 0.85em; cursor: pointer; white-space: nowrap; }
 .btn-project-list:hover { background: rgba(255,255,255,0.34); }
+/* Issue293: 🌳 Tree 는 <a>(fpmOpenInShell 경유) — <button> 과 높이·정렬을 맞춘다. */
+a.btn-project-list { text-decoration: none; display: inline-flex; align-items: center; line-height: 1.2; }
 .header-actions { display: flex; align-items: center; gap: 0.4rem; flex-shrink: 0; }
 .btn-settings { flex: none; background: transparent; border: none;
   color: white; padding: 0.4rem 0.5rem; border-radius: 6px; font-size: 1.1em; cursor: pointer; line-height: 1; }
@@ -8291,6 +8357,9 @@ section.sec-collapsed .htm-bar-right { display: none; }
   </div>
   <div class="header-actions">
     <button class="btn-project-list" id="btn-project-list" title="{T:projectList.openTitle}">📋 Projects</button>
+    <a class="btn-project-list" id="btn-projects-map" href="/projects-map" target="_blank"
+       data-title="Project Tree" onclick="return fpmOpenInShell(event,this)"
+       title="{T:projectsMap.openTitle}">🌳 Tree</a>
     <button class="btn-settings" id="btn-settings" title="{T:settings.openBtnTitle}">⚙️</button>
   </div>
 </header>

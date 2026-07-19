@@ -17,6 +17,7 @@
   "projectList.col.color": "색",
   "projectList.toggleColTitle": "hub 자동 렌더 on/off",
   "projectList.openTitle": "Projects.md 프로젝트 목록 보기",
+  "projectsMap.openTitle": "Projects.md 의 Project Tree 섹션을 렌더한 프로젝트 트리 맵 열기",
   "projectList.footStatus": "hub 토글 → 자동 렌더 on/off · 행 클릭 → 선택 · 더블클릭/버튼 → VSCode 로 열기 · ESC · ✕ · 바깥 클릭으로 닫기",
   "projectList.openSelectedTitle": "선택한 프로젝트를 VSCode 로 열기",
   "projectList.openVscode": "✏️ VSCode로 열기",
