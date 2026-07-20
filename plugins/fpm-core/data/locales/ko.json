@@ -150,7 +150,7 @@
   "settings.field.browser_open": "Claude Code(렌더 hook)가 렌더 후 브라우저를 자동으로 열지 — off=열지 않고 채팅에 URL만 표시 / background=열되 포커스 미탈취(open -g) / foreground=열고 포커스 이동",
   "settings.field.browser_focus": "[deprecated → browser_open] Claude Code(렌더 hook)가 브라우저를 열 때 포커스를 가져올지. browser_open 미설정 시에만 fallback 으로 참조됨",
   "settings.field.browser_tab_reuse": "Claude Code(렌더 hook)가 /hub 페이지를 열 때 OS 브라우저의 기존 fpm-hub 명명 탭을 재사용할지 — on=기존 탭 재사용 / off=매번 새 탭. ⚠️ OS 브라우저 탭 전용 — hub 내부 탭바('렌더 표시 방식')와 무관. 렌더(..show/..ask) 결과는 값과 무관하게 항상 새 탭",
-  "settings.field.render_target": "Claude Code(렌더 hook)가 ..show 렌더 결과를 표시하는 경로 — local-open=로컬 file:// 로 직접 열기 / hub=hub 서버 URL 로 열기 / both=둘 다",
+  "settings.field.render_target": "Claude Code(렌더 hook)가 ..show 렌더 결과를 표시하는 경로 — local-open=로컬 file:// 를 외부 브라우저로 열기 / hub=hub 서버 http URL 을 외부 브라우저로 열기 / vscode=외부 브라우저 열지 않고 VSCode Simple Browser 패널에 렌더(+채팅 URL fallback) / both=local-open + hub URL 병기. ⚠️ URL 형식(file:// vs http)과 표면(외부 브라우저 vs VSCode 패널)은 별개 축 — vscode 만 표면을 바꿈",
   "settings.field.language": "hub 서버가 hub UI 를 그릴 때 쓰는 언어 — en(영어, 기본)/ko(한국어). 저장 후 페이지 reload 시 반영",
   "settings.field.feed_default_visible": "hub 화면 첫 접속 시 피드 사이드바를 펼쳐 보일지",
   "settings.field.live_session_limit": "hub 화면 활성 세션 카드 1장에 표시할 최대 행 수 (0=무제한)",

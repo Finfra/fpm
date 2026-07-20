@@ -51,8 +51,7 @@ echo "~/_git/myproj-cli"          > 51
 echo "~/work/client-a"            > 81
 ```
 # Project Map
-```
-```
+
 # Reference
 
 * Domain 컬럼: `g`(global), `w`(web), `m`(macOS), `g(cli)` 등 — `Harness.md` 참조

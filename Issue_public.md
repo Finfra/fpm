@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: 673fb1105fe091e153897294c71d9ec428c3dda48e0c41986a845101ca3c20e4
+source_sha: 002e980e84f49448a9292d44839a867ef8d7d5bedd5b601b4618911ae5923cae
 ---
 
 # 안내
@@ -18,26 +18,26 @@ source_sha: 673fb1105fe091e153897294c71d9ec428c3dda48e0c41986a845101ca3c20e4
 
 # 이슈 근거
 
-## Issue296: Issue.md 비공개 전환 — exclude + 파생 digest + 과거 유출분 history 정리
-* 목적: `Issue.md` 3,822줄이 fpm 공개 미러(github.com/Finfra/fpm)로 전량 공개되어 개인정보(실사용 호스트명·사설 IP·tailnet ID·홈 경로·세션 ID)가 노출됨. 비공개로 전환하되, 2026-06-21 Issue187 이 "소스코드 수정시 근거 없어서 오작동 가능성" 을 이유로 폐기했던 실패를 반복하지 않도록 **근거 보전 장치를 함께 도입**함.
+## Issue298: 프로젝트 맵 v2 — 확정 표기 파서 구현 + 소스 정합화 ✅
+* 목적: 맵 표기 규약(펜스 제거·Main/Sub Map·`:`목적·`@`담당주체·`"참조"`)이 확정됐으나 파서가 따라오지 못해 **맵 생성이 멈춰 있다**. 파서를 확정 표기에 맞추고 소스 정합 결함을 해소해 지도를 되살린다.
+* depends: Issue294
 * 구현 명세:
-    - **계층 1**: `data/publishable-policy.yml` `exclude[]` 에 `Issue.md` 등록 (통째 제외).
-    - **계층 2**: `fpm-issue-digest.sh` 신설 — `Issue.md` → `Issue_public.md` 화이트리스트 추출(제목·`* 목적`·`* 구현 명세`·`* depends`). `___pm` 에서 생성·커밋하여 사람 리뷰 게이트 확보. `git archive HEAD` 특성상 미커밋분은 반출 불가.
-    - **신선도 게이트**: `Issue_public.md` frontmatter `source_sha` ↔ 현재 `Issue.md` 해시 대조. 불일치 시 forward 중단(fail-loud). 자동 재생성 금지(리뷰 우회 방지).
-    - **파이프라인 무수정**: digest 는 평범한 tracked 파일로 기존 sanitize→gitleaks→guard 를 그대로 통과. `fpm-sync.sh` 변경 없음.
-    - **과거분 정리** (사용자 결정 2026-07-19, 과거분 포함): `git filter-repo --path Issue.md --invert-paths` + `--replace-text` 로 외주 클라이언트 리터럴 치환 → `git push --force`. 사전 `git clone --mirror` 백업 필수. **force push 직전 사용자 승인 재확인 게이트** (설계 확정 ≠ 실행 승인).
-    - **재유출 방지**: `.gitleaks.toml` 에 tailnet 호스트명 등 내용 룰 추가. exclude 적용 후 TMP2 dry-run 으로 오탐 0 확인 후 활성(선행 활성 시 forward 영구 차단 위험).
-    - 복잡도: **복잡** — 파괴적 원격 작업 + 정책 변경이 후속 공개 운영 전반에 영향.
+    - **P1 파서 개정** — ① 펜스 의존 제거, `## Main Map`·`### {맵}` 헤딩 단위 수집(반환을 `{맵: [루트]}` 로 확장) ② `- "맵이름"` 을 참조 노드로 인식 ③ `:` 뒤를 `purpose` 로 분리(라벨 제외, 툴팁 병기) ④ `@` 접두·중위 양쪽 관용 파싱 ⑤ 완전성을 전 맵 **합집합**으로. 렌더는 참조를 **간선으로 환원**(참조 노드 생성 금지 — 한 장 통합·순환 무한전개 방지), Sub Map 헤딩을 `subgraph` 제목/루트로 승격
+    - **P2 감지 확장** — `detect_dead_loops()` 를 참조 환원 그래프 기준으로. 참조발 다중 부모는 **정상**(실물 1회 + 참조면 중복 아님), 자기 참조는 즉시 결함
+    - **P3 소스 정합화** — 헤딩 따옴표 제거 · 중복 3건 해소 · `:` 설명 3건을 목적으로 · `## "fApp"` → `### fApp` · 분류 라벨 교체. **감지기 경고를 근거로** 진행
+    - **P4 커버리지(선택)** — 목적이 분명한데 빠진 것 배치(`81·82`·`45~47`·`60~62·71·58`·`7`). 나머지는 미분류로 두어 "목적 미할당" 신호 유지
+    - **순서 제약**: P1 → P2 → P3. P3 를 먼저 하면 파서가 소스를 못 읽는 상태라 **고쳤는지 검증할 수단이 없다**
+    - mermaid 라벨은 `숫자.` 로 시작시키지 않는다(`videoMaker #41`) — Issue204/242 오파싱
 
-## Issue295: render_target 의미 드리프트 — 표면(surface) 축 분리로 직교성 복원
-* 목적: `render_target` 이 원설계상 **URL 형식**(file:// vs hub http)만 담당하는 직교 키였는데(prj1#Issue170 "render_target 은 URL 형식만 담당(직교)"), prj3#Issue170 에서 `hub` 값이 **표면 선택**(VSCode Simple Browser 패널 + 외부 open 금지)으로 재정의되며 두 축이 한 키에 눌려 담김. 결과로 "hub 서버 URL 로 **브라우저**에 열기" 조합이 **어떤 값으로도 표현 불가**해짐. 표면 축을 값으로 분리해 직교성 복원.
-* depends: prj3#Issue263
+## Issue297: `default_browser` 설정 밖의 Chrome 유입 3경로 정리 ✅
+* 목적: `hub_setting.yml` 의 `default_browser: firefox` 를 지정해도 hub 대시보드·터미널 경로는 계속 Chrome 으로 열림. 원인이 설정 무시가 아니라 **설정의 적용 범위 밖에 있는 3개 경로**임을 확인했으므로, 각 경로를 설정 SSOT 로 수렴시키거나 최소한 문서화해 재혼란을 막는다.
+* depends: Issue295
 * 구현 명세:
-    - `services/hub/server.py` HUB_SETTING_SCHEMA `render_target`: options `["local-open", "hub", "vscode", "both"]` 로 확장, comment 를 4값 기준으로 재작성 (`hub`=hub 서버 http URL 로 외부 브라우저 open / `vscode`=VSCode Simple Browser 패널, 외부 open 금지)
-    - `data/hub_setting.yml`: 주석 4값 기준 갱신 + 현재 값 `hub` → `vscode` 로 변경(현행 동작 무변경 보존). **prj3 hook 반영 후에만 수행**
-    - `_doc_arch/hub_setting.md` SSOT 미러 갱신
-    - 본 파일 1696행 prj1#Issue170 기록에 "prj3#Issue170 에서 재정의됨 → Issue295 에서 축 분리" 각주 추가 (stale 기록 교정)
-    - 검증: `python3 -m py_compile services/hub/server.py` + 서버 재기동 후 설정창 고급 탭에서 4값 노출 확인 + 각 값으로 1회씩 `..show` 실행하여 표면 확인
+    - `sh/fpm_function.sh` `fhub()` 의 `*) db=chrome ;;` 강제 치환 제거 → firefox 는 firefox 로 열되 탭 재사용 포기(helper 가 Firefox 탭 제어 불가 → 매 호출 새 탭 누적). 트레이드오프를 주석에 명시
+    - KM 매크로 "fPm hub page Open" 을 AppleScript 하드코딩 대신 `fhub` 셸 호출로 교체 → 설정 SSOT 단일화. ①은 ② 수정 후에만 의미 있음
+    - `fpm-browser-open.sh` helper 기본값 `app_raw="chrome"` → `firefox` 또는 필수 인자화 검토(직접 호출 시 함정 제거)
+    - ③ OS 기본 브라우저는 **코드로 해결 불가** — 사용자 판단 영역. `CLAUDE.md` 의 "Chrome=일반 / Firefox=hub 전용 분리" 운영 모델과 충돌하므로 변경 권고하지 않고, 대신 `_doc_arch/hub_setting.md` 에 "설정이 커버하지 않는 경로" 절을 추가해 명문화
+    - 검증: `fhub` 실행 시 Firefox 로 열리는지 + KM 매크로 실행 결과 동일 확인
 
 ## Issue288: 백그라운드 세션 자동 렌더가 VSCode 포커스를 탈취 ✅
 * 목적: 사용자가 A 프로젝트 VSCode 창에서 타이핑 중인데, 다른(백그라운드) 프로젝트 세션이 hub 문서를 자동 렌더하면 그 프로젝트 창이 강제 전면화되어 포커스·키 입력을 빼앗기는 문제 제거. 사용자 클릭 기반 전면화(정상 동작)는 보존.
@@ -49,18 +49,29 @@ source_sha: 673fb1105fe091e153897294c71d9ec428c3dda48e0c41986a845101ca3c20e4
     - 한계(명시): iTerm/tmux 세션은 프로세스명만으로 어느 pane 의 세션인지 식별 불가 → iTerm frontmost 상태에서의 백그라운드 세션 렌더는 여전히 전환됨
     - 검증: `python3 -m py_compile` + 서버 재기동 healthz + 실제 POST 로 gate/always/never 3분기 로그 확인
 
-## Issue297: `default_browser` 설정 밖의 Chrome 유입 3경로 정리
-* 목적: `hub_setting.yml` 의 `default_browser: firefox` 를 지정해도 hub 대시보드·터미널 경로는 계속 Chrome 으로 열림. 원인이 설정 무시가 아니라 **설정의 적용 범위 밖에 있는 3개 경로**임을 확인했으므로, 각 경로를 설정 SSOT 로 수렴시키거나 최소한 문서화해 재혼란을 막는다.
-* depends: Issue295
-* 구현 명세:
-    - `sh/fpm_function.sh` `fhub()` 의 `*) db=chrome ;;` 강제 치환 제거 → firefox 는 firefox 로 열되 탭 재사용 포기(helper 가 Firefox 탭 제어 불가 → 매 호출 새 탭 누적). 트레이드오프를 주석에 명시
-    - KM 매크로 "fPm hub page Open" 을 AppleScript 하드코딩 대신 `fhub` 셸 호출로 교체 → 설정 SSOT 단일화. ①은 ② 수정 후에만 의미 있음
-    - `fpm-browser-open.sh` helper 기본값 `app_raw="chrome"` → `firefox` 또는 필수 인자화 검토(직접 호출 시 함정 제거)
-    - ③ OS 기본 브라우저는 **코드로 해결 불가** — 사용자 판단 영역. `CLAUDE.md` 의 "Chrome=일반 / Firefox=hub 전용 분리" 운영 모델과 충돌하므로 변경 권고하지 않고, 대신 `_doc_arch/hub_setting.md` 에 "설정이 커버하지 않는 경로" 절을 추가해 명문화
-    - 검증: `fhub` 실행 시 Firefox 로 열리는지 + KM 매크로 실행 결과 동일 확인
-
-## Issue292: `test_i18n_parity.py` 가 상시 FAIL — `t()` 참조 키 정규식이 `split(".")` 을 오탐 (!)
+## Issue292: `test_i18n_parity.py` 가 상시 FAIL — `t()` 참조 키 정규식이 `split(".")` 을 오탐 (!) ✅
 * 목적: hub 테스트 13종 중 1종이 항상 실패해 회귀 감지력이 죽어 있음. 실패 원인이 실제 i18n 누락이 아니라 테스트 자체의 정규식 오탐이므로, 이 상태로는 진짜 i18n 키 누락이 생겨도 구분되지 않는다.
+
+## Issue296: Issue.md 비공개 전환 — exclude + 파생 digest + 과거 유출분 history 정리 ✅
+* 목적: `Issue.md` 3,822줄이 fpm 공개 미러(github.com/Finfra/fpm)로 전량 공개되어 개인정보(실사용 호스트명·사설 IP·tailnet ID·홈 경로·세션 ID)가 노출됨. 비공개로 전환하되, 2026-06-21 Issue187 이 "소스코드 수정시 근거 없어서 오작동 가능성" 을 이유로 폐기했던 실패를 반복하지 않도록 **근거 보전 장치를 함께 도입**함.
+* 구현 명세:
+    - **계층 1**: `data/publishable-policy.yml` `exclude[]` 에 `Issue.md` 등록 (통째 제외).
+    - **계층 2**: `fpm-issue-digest.sh` 신설 — `Issue.md` → `Issue_public.md` 화이트리스트 추출(제목·`* 목적`·`* 구현 명세`·`* depends`). `___pm` 에서 생성·커밋하여 사람 리뷰 게이트 확보. `git archive HEAD` 특성상 미커밋분은 반출 불가.
+    - **신선도 게이트**: `Issue_public.md` frontmatter `source_sha` ↔ 현재 `Issue.md` 해시 대조. 불일치 시 forward 중단(fail-loud). 자동 재생성 금지(리뷰 우회 방지).
+    - **파이프라인 무수정**: digest 는 평범한 tracked 파일로 기존 sanitize→gitleaks→guard 를 그대로 통과. `fpm-sync.sh` 변경 없음.
+    - **과거분 정리** (사용자 결정 2026-07-19, 과거분 포함): `git filter-repo --path Issue.md --invert-paths` + `--replace-text` 로 외주 클라이언트 리터럴 치환 → `git push --force`. 사전 `git clone --mirror` 백업 필수. **force push 직전 사용자 승인 재확인 게이트** (설계 확정 ≠ 실행 승인).
+    - **재유출 방지**: `.gitleaks.toml` 에 tailnet 호스트명 등 내용 룰 추가. exclude 적용 후 TMP2 dry-run 으로 오탐 0 확인 후 활성(선행 활성 시 forward 영구 차단 위험).
+    - 복잡도: **복잡** — 파괴적 원격 작업 + 정책 변경이 후속 공개 운영 전반에 영향.
+
+## Issue295: render_target 의미 드리프트 — 표면(surface) 축 분리로 직교성 복원 ✅
+* 목적: `render_target` 이 원설계상 **URL 형식**(file:// vs hub http)만 담당하는 직교 키였는데(prj1#Issue170 "render_target 은 URL 형식만 담당(직교)"), prj3#Issue170 에서 `hub` 값이 **표면 선택**(VSCode Simple Browser 패널 + 외부 open 금지)으로 재정의되며 두 축이 한 키에 눌려 담김. 결과로 "hub 서버 URL 로 **브라우저**에 열기" 조합이 **어떤 값으로도 표현 불가**해짐. 표면 축을 값으로 분리해 직교성 복원.
+* depends: prj3#Issue263
+* 구현 명세:
+    - `services/hub/server.py` HUB_SETTING_SCHEMA `render_target`: options `["local-open", "hub", "vscode", "both"]` 로 확장, comment 를 4값 기준으로 재작성 (`hub`=hub 서버 http URL 로 외부 브라우저 open / `vscode`=VSCode Simple Browser 패널, 외부 open 금지)
+    - `data/hub_setting.yml`: 주석 4값 기준 갱신 + 현재 값 `hub` → `vscode` 로 변경(현행 동작 무변경 보존). **prj3 hook 반영 후에만 수행**
+    - `_doc_arch/hub_setting.md` SSOT 미러 갱신
+    - 본 파일 1696행 prj1#Issue170 기록에 "prj3#Issue170 에서 재정의됨 → Issue295 에서 축 분리" 각주 추가 (stale 기록 교정)
+    - 검증: `python3 -m py_compile services/hub/server.py` + 서버 재기동 후 설정창 고급 탭에서 4값 노출 확인 + 각 값으로 1회씩 `..show` 실행하여 표면 확인
 
 ## Issue294: 프로젝트 맵을 mermaid 다이어그램으로 전환 + 버튼명 `Map` ✅
 * 목적: `Projects.md` 섹션명이 `# Project Map` 으로 바뀌면서 생성기가 파싱 대상을 못 찾아 **맵 생성이 실패**하고 있다(산출물 stale). 동시에 표현을 이슈맵과 같은 mermaid 다이어그램으로 통일해 계층·소속을 한눈에 보이게 하고, 노드에서 프로젝트로 바로 점프할 수 있게 한다.

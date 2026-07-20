@@ -8,7 +8,7 @@
 #   Firefox / reuse=false        = open 폴백 (Firefox 는 tab 제어 사전 부재 → 누적 감수)
 #
 # Usage: fpm-browser-open.sh [-a app] [-f focus] [-r reuse] [-m match] <url>
-#   -a app    chrome|safari|edge|firefox | 앱명 | .app 경로   (기본: chrome)
+#   -a app    chrome|safari|edge|firefox | 앱명 | .app 경로   (기본: firefox — Issue297)
 #   -f focus  true=포커스 가져옴 | false=백그라운드            (기본: true)
 #   -r reuse  true=탭 재사용 | false=항상 새 탭               (기본: true)
 #   -m match  탭 매칭 URL prefix                              (기본: url 의 scheme://host:port)
@@ -21,7 +21,11 @@
 # 해석은 호출자(hook 또는 fhub 함수) 책임. 그래야 인자만으로 단독 테스트 가능.
 set -euo pipefail
 
-app_raw="chrome"
+# Issue297: 기본값 chrome → firefox. 현행 hook 호출자는 전부 `-a "$_app"` 을 명시하므로
+#   이 기본값은 helper 직접 호출 시에만 발동하는 "조용한 Chrome 유입" 함정이었다.
+#   아래 case 의 `""` 분기가 이미 Firefox 로 매핑되어 있어, 기본값을 firefox 로 맞추면
+#   "인자 생략 = Firefox" 로 표기와 동작이 일치한다. 필수 인자화는 기존 호출 호환을 깨므로 채택하지 않음.
+app_raw="firefox"
 focus="true"
 reuse="true"
 match=""

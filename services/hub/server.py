@@ -2001,9 +2001,10 @@ HUB_SETTING_SCHEMA = [
     # 탭 3: 고급 — 렌더·탭 + 네트워크 (Issue197: render·tab 키 basic→advanced 이동,
     #   Issue268: render_tab_mode 는 basic 복귀 — 나머지 탭 세부 키는 잔류)
     # 렌더·탭 동작
+    # Issue295: 표면(surface) 축 분리 — vscode 값 신설, hub 는 원뜻(hub http URL + 외부 브라우저) 복원
     {"key": "render_target", "tab": "advanced", "widget": "select",
-     "options": ["local-open", "hub", "both"],
-     "apply": "hook", "comment": "Claude Code(렌더 hook)가 ..show 렌더 결과를 표시하는 경로 — local-open=로컬 file:// 로 직접 열기 / hub=hub 서버 URL 로 열기 / both=둘 다"},
+     "options": ["local-open", "hub", "vscode", "both"],
+     "apply": "hook", "comment": "Claude Code(렌더 hook)가 ..show 렌더 결과를 표시하는 경로 — local-open=로컬 file:// 를 외부 브라우저로 열기 / hub=hub 서버 http URL 을 외부 브라우저로 열기 / vscode=외부 브라우저 open 금지, VSCode Simple Browser 패널에 렌더(+채팅 URL fallback) / both=local-open + hub URL 병기. ⚠️ URL 형식(file:// vs http)과 표면(외부 브라우저 vs VSCode 패널)은 별개 축 — vscode 만 표면을 바꿈"},
     # Issue288: 자동 렌더의 VSCode 전면화 가드 (클릭 경로 /open-project·/open-session 은 무관)
     {"key": "simple_browser_focus", "tab": "advanced", "widget": "select",
      "options": ["gate", "always", "never"],

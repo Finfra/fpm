@@ -47,7 +47,7 @@ open Projects_map.htm
 
 # 완전성
 
-표의 모든 id 가 트리에 없으면 생성 시 자동으로 `미분류` 그룹 노드 하위에 편입되고 콘솔에 경고가 뜬다. `Issue.md` 존재 여부는 포함 조건과 무관 — 소스가 애초 `Projects.md` 이므로 이 조건 자체가 발생하지 않는다.
+표의 모든 id 가 트리에 없으면 생성 시 자동으로 `미할당` 그룹 노드 하위에 편입되고 콘솔에 경고가 뜬다. `Issue.md` 존재 여부는 포함 조건과 무관 — 소스가 애초 `Projects.md` 이므로 이 조건 자체가 발생하지 않는다.
 
 # 노드 링크
 
@@ -70,7 +70,7 @@ open Projects_map.htm
 1. `python3 .claude/skills/projects-map/build_projects_map.py` 가 오류 없이 종료하고 `프로젝트 N건` 을 출력
 2. `Projects_map.htm` 에 `href="http`·`src="http` 가 0건(외부 리소스 미사용)
 3. 이전 파일의 `PROJECTS-MAP:NOTES` 내용이 보존됨
-4. 표의 id 전부가 트리에 존재하거나(0건 미분류) 미분류 편입 건수가 출력됨
+4. 표의 id 전부가 트리에 존재하거나(0건 미할당) 미할당 편입 건수가 출력됨
 
 # 제약
 

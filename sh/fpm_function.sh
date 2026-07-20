@@ -874,11 +874,18 @@ server-check() {
 }
 
 # --- hub 브라우저 열기 ($FPM_BASE/plugins/fpm-core/hooks/fpm-browser-open.sh) ---
-# fhub : 터미널(iTerm 등)에서 hub 대시보드를 브라우저 탭 1개 재사용하며 열기 (Issue162).
+# fhub : 터미널(iTerm 등)에서 hub 대시보드를 브라우저로 열기 (Issue162).
 #   Keyboard Maestro 매크로 "fPm hub page Open" 의 CLI 버전.
-#   default_browser(hub_setting.yml)를 따르되 firefox(탭 재사용 불가)면 chrome 으로 강제.
-#   match=origin(:9876) → /hub·?path=… 모든 hub URL 을 단일 탭으로 재사용.
+#   default_browser(hub_setting.yml)를 그대로 따른다 — 강제 치환 없음 (Issue297).
+#   match=origin(:9876) → /hub·?path=… 모든 hub URL 을 단일 탭으로 재사용(재사용 가능 브라우저 한정).
 #   Usage: fhub [url]   ex) fhub  /  fhub http://127.0.0.1:9876/hub
+#
+# Issue297: 구 구현은 default_browser 를 읽고도 firefox 면 `db=chrome` 으로 강제 치환했다.
+#   사유는 "firefox 는 AppleScript 탭 제어 사전이 없어 탭 재사용 불가" 였으나, 그 결과
+#   `default_browser: firefox` 설정이 이 경로에서만 무시되어 "설정대로 안 열린다" 혼란을 낳았다.
+#   설정 SSOT 준수를 우선하여 치환을 제거한다. 트레이드오프 — firefox 는 helper 의 open 폴백을
+#   타므로 탭 재사용이 안 되고 호출마다 새 탭이 누적된다(누적 감수). 탭 재사용이 꼭 필요하면
+#   hub_setting.yml 의 default_browser 를 chrome/safari/edge 로 지정할 것.
 fhub() {
     local url="${1:-http://127.0.0.1:9876/hub}"
     local helper="$FPM_BASE/plugins/fpm-core/hooks/fpm-browser-open.sh"
@@ -886,11 +893,8 @@ fhub() {
     local db
     db=$(grep -E '^[[:space:]]*default_browser:' "$FPM_BASE/data/hub_setting.yml" 2>/dev/null \
          | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//; s/^"//; s/"$//')
-    case "$db" in
-        chrome|Chrome|safari|Safari|edge|Edge) ;;   # 탭 재사용 가능 → 그대로
-        *) db=chrome ;;                              # firefox/미설정 → chrome 강제
-    esac
-    bash "$helper" -a "$db" -f true -r true -m "http://127.0.0.1:9876" "$url"
+    # 키 부재·빈값이면 helper 기본값(firefox)에 위임 — 여기서 브라우저를 임의 선택하지 않는다.
+    bash "$helper" ${db:+-a "$db"} -f true -r true -m "http://127.0.0.1:9876" "$url"
 }
 
 # --- fpm : 설치본 셀프 관리 커맨드 (Issue224 T1) ---------------------------

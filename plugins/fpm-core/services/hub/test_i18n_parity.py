@@ -50,10 +50,20 @@ def main():
     ko_keys = set(ko)
 
     # 1. 키 대칭성 (Issue210 회귀) — 한쪽 누락 키 0
+    #    Issue292: `settings.label.*` 는 **의도적 ko 전용** 네임스페이스라 대칭 검사에서 면제한다.
+    #    설정창은 ko 카탈로그에 라벨이 있으면 한국어로, 없으면 원본 키를 그대로 보여준다
+    #    (server.py `koLbl = ttf('settings.label.' + s.key, '')` — en 뷰에서 원본 키 노출이 정상,
+    #     `_` 숨김 + 복붙 시 실제 키 보존이 목적, Issue208). en 쪽에 같은 키를 채우면 오히려
+    #    그 설계가 깨지므로, 여기서 FAIL 을 내는 것은 테스트의 오탐이다.
+    ONLY_KO_OK = ("settings.label.",)
     only_en = en_keys - ko_keys
-    only_ko = ko_keys - en_keys
+    only_ko = {k for k in ko_keys - en_keys if not k.startswith(ONLY_KO_OK)}
     check("en↔ko 키 대칭(en 전용 0)", not only_en, f"en 전용: {sorted(only_en)[:10]}")
-    check("en↔ko 키 대칭(ko 전용 0)", not only_ko, f"ko 전용: {sorted(only_ko)[:10]}")
+    check(
+        f"en↔ko 키 대칭(ko 전용 0, {'/'.join(ONLY_KO_OK)}* 면제)",
+        not only_ko,
+        f"ko 전용: {sorted(only_ko)[:10]}",
+    )
     check("catalog 비어있지 않음", len(en_keys) > 0 and len(ko_keys) > 0)
 
     # 2. en 값에 한글 혼입 0 (Issue210 핵심 — en 모드 한글 fallback 방지)
@@ -66,9 +76,12 @@ def main():
 
     # 4. 코드 참조 무결성 — server.py t('namespace.key') 호출 키가 catalog 에 존재.
     #    점(.) 포함 키만 i18n 키로 간주 (t('a')/t('div') 등 비-i18n 오탐 제외).
+    #    Issue292: negative lookbehind 로 접미 오탐 차단 — `split("...")`·`closest("...")` 처럼
+    #    식별자가 `t(` 로 끝나는 호출이 i18n 헬퍼로 오인되어 인자(ex: ".")를 키로 수집하던 버그.
+    #    `i18n.t(` 는 앞이 `.` 이라 lookbehind 를 통과하므로 정상 수집됨.
     with open(SERVER, encoding="utf-8") as f:
         src = f.read()
-    raw = set(re.findall(r"""t\(\s*['"]([A-Za-z0-9_.]+)['"]""", src))
+    raw = set(re.findall(r"""(?<![A-Za-z0-9_])t\(\s*['"]([A-Za-z0-9_.]+)['"]""", src))
     referenced = {k for k in raw if "." in k}
     missing = sorted(k for k in referenced if k not in en_keys)
     check(

@@ -700,10 +700,11 @@ esac
 #   SSOT 설계: ~/_git/___pm/_doc_arch/hub_setting.md "browser_open (Issue170)".
 #   off=자동 open 생략(채팅 URL 만) / background=open -g(포커스 미탈취) / foreground=open(포커스 탈취).
 _bopen=$(grep -E '^[[:space:]]*browser_open:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//; s/^"//; s/"$//')
-# fallback(키 미설정/빈값): render_target:hub→off, browser_focus(true→foreground/false→background) 역산 — 하위호환.
+# fallback(키 미설정/빈값): render_target:vscode→off, browser_focus(true→foreground/false→background) 역산 — 하위호환.
+#   Issue263: 표면 축 분리 — open-skip 을 함의하는 값은 이제 `vscode`(VSCode 패널). `hub` 는 외부 브라우저 open 이므로 여기서 제외.
 if [ -z "$_bopen" ]; then
   _rt_raw=$(grep -E '^[[:space:]]*render_target:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//; s/^"//; s/"$//')
-  if [ "$_rt_raw" = "hub" ]; then
+  if [ "$_rt_raw" = "vscode" ]; then
     _bopen="off"
   elif grep -qE '^[[:space:]]*browser_focus:[[:space:]]*true' "$HUB_SETTING_FILE" 2>/dev/null; then
     _bopen="foreground"
@@ -742,7 +743,10 @@ fi
 
 # Issue141: render_target — ..show/자동 hub 렌더의 출력 경로 분기 (file:// open vs hub 서버 URL).
 #   데이터 SSOT: ___pm data/hub_setting.yml (prj1#Issue153 신설). 키 부재 시 local-open 무해 fallback.
-#   local-open(기본)=현행 `open file://` / hub=서버 /htm-doc URL 만 채팅 emit (open 생략) / both=양쪽.
+#   local-open(기본)=`open file://` / hub=서버 /htm-doc URL 을 외부 브라우저로 open / vscode=VSCode Simple Browser 패널 / both=file://+URL.
+# Issue263: 표면(surface) 축 분리 — prj3#Issue170 이 `hub` 를 "VSCode 패널 + 외부 open 금지"로 재정의해
+#   "hub http URL 을 브라우저로 열기" 조합이 표현 불가였음. 그 표면 고정 동작을 신규 값 `vscode` 로 이관하고
+#   `hub` 는 원뜻(URL 형식 = 서버 http)으로 복원 → 표시 표면은 default_browser/browser_open 이 다시 결정.
 #   ⚠️ URL 라우트는 /htm-doc?path= (Issue50, register-doc 등록 htm 토큰없이 serve) — /view 는 cwd+token 전용이라 부적합.
 #   render 문서는 Write 시 fpm-hub-doc-register PostToolUse hook 이 자동 register-doc → URL 즉시 유효.
 RENDER_TARGET=$(grep -E '^[[:space:]]*render_target:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//; s/^"//; s/"$//')
@@ -751,13 +755,16 @@ RENDER_TARGET=$(grep -E '^[[:space:]]*render_target:' "$HUB_SETTING_FILE" 2>/dev
 #   "hub" 로 덮어쓰기 전 시점. Issue184 강제 예외는 "사용자가 yml 에 직접 hub 로 적었는가" 만 봐야 하며,
 #   파생 hub 까지 예외로 삼으면 browser_open:off 의 helper 승격 동작(아래)이 깨짐.
 RENDER_TARGET_CFG="$RENDER_TARGET"
-# Issue152: browser_open=off → 자동 open 생략(채팅 URL 만). render_target:hub 의 open-skip 동작을 이관.
-[ "$BROWSER_OPEN_OFF" = "1" ] && RENDER_TARGET="hub"
+# Issue263: open-skip 은 이제 render_target 값이 아니라 별도 플래그로 표현.
+#   구조상 `hub` 가 "URL 형식"과 "open 생략" 두 뜻을 겸하던 것을 분리 — hub 는 URL 형식만, skip 은 아래 파생 신호.
+HUB_OPEN_SKIP=0
+# Issue152: browser_open=off → 자동 open 생략(채팅 URL 만). hub URL 형식 + open-skip 조합으로 표현.
+[ "$BROWSER_OPEN_OFF" = "1" ] && { RENDER_TARGET="hub"; HUB_OPEN_SKIP=1; }
 # Issue162: render_tab_mode=hub-internal → hub 쉘(/hub-shell) 내부 iframe 탭이 표시 담당 →
 #   OS 브라우저 open 시 hub 내부 탭 + OS 새 탭 중복 생성. render_target 강제 hub 로 open 생략(URL 만 emit).
 #   browser-tab(기본) 시 현행 동작 유지(회귀 0). SSOT: ~/_git/___pm/_doc_arch/hub_internal_tabs.md "영향 컴포넌트".
 RENDER_TAB_MODE=$(grep -E '^[[:space:]]*render_tab_mode:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//; s/^"//; s/"$//')
-[ "$RENDER_TAB_MODE" = "hub-internal" ] && RENDER_TARGET="hub"
+[ "$RENDER_TAB_MODE" = "hub-internal" ] && { RENDER_TARGET="hub"; HUB_OPEN_SKIP=1; }   # Issue263: skip 을 명시 플래그로
 # URL host = advertise_host ?? bind_host (주석처리 advertise_host 는 `^advertise_host:` 미매칭 → 생략 취급).
 #   advertise 생략 + bind 0.0.0.0/미설정 → 접속 가능 host 강제(127.0.0.1) — `http://0.0.0.0` 좀비 URL 차단 (prj1#Issue153 가드).
 _adv=$(grep -E '^[[:space:]]*advertise_host:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//; s/^"//; s/"$//')
@@ -781,14 +788,25 @@ RENDER_PORT="${HTM_SERVER_PORT:-9876}"
 #   hub-internal 은 hub 쉘 iframe 이 표시를 전담하므로 OS 새 탭 open 자체를 하면 안 됨(Issue162 가드).
 #   Issue184 의 "enabled→local-open 강제"를 hub-internal 에서도 적용하면 iframe + OS 탭 동시 표시로
 #   중복 렌더가 재발함 — hub-internal 이면 EFFECTIVE=on 이어도 이 강제를 건너뛴다.
-# prj3#Issue249: yml `render_target: hub` 도 EFFECTIVE=on 보다 우선 (hub-internal 예외와 동형).
-#   사용자가 yml 에 명시적으로 hub 를 적었다면 "VSCode Simple Browser 로 보겠다"는 의사표시이므로
-#   hub-on 프로젝트에서도 그대로 존중한다. 이 예외가 없으면 render_target 은 "hub off + 명시 `..show`"
+# prj3#Issue249: yml `render_target: vscode` 는 EFFECTIVE=on 보다 우선 (hub-internal 예외와 동형).
+#   사용자가 yml 에 명시적으로 vscode 를 적었다면 "VSCode Simple Browser 로 보겠다"는 표면 고정 의사표시이므로
+#   hub-on 프로젝트에서도 그대로 존중한다. 이 예외가 없으면 그 값은 "hub off + 명시 `..show`"
 #   전용 fallback 키로 축소되어, VSCode 안에서 일하는 사용자가 매 렌더를 수동으로 열어야 했음.
+#   Issue263: 예외 조건을 `hub` → `vscode` 로 이전. `hub` 는 이제 외부 브라우저 open(표면 미고정)이라
+#   "enabled → 외부 브라우저" 강제와 모순되지 않음 → 예외로 둘 이유가 없음.
 #   ⚠️ RENDER_TARGET(파생 포함) 이 아니라 RENDER_TARGET_CFG(yml 원본)로 판정 — browser_open:off 가
 #   파생시킨 hub 까지 예외로 삼으면 아래 helper 승격이 무력화됨.
-if [ "$EFFECTIVE" = "on" ] && [ "$RENDER_TAB_MODE" != "hub-internal" ] && [ "$RENDER_TARGET_CFG" != "hub" ]; then
-  RENDER_TARGET="local-open"   # enabled: 항상 외부 브라우저 (render_target/browser_open 강제값 무효화. hub-internal·yml hub 는 예외)
+if [ "$EFFECTIVE" = "on" ] && [ "$RENDER_TAB_MODE" != "hub-internal" ] && [ "$RENDER_TARGET_CFG" != "vscode" ]; then
+  # Issue263: enabled 는 "실제 외부 open" 을 강제하지만 **URL 형식까지 뺏지는 않는다**.
+  #   CFG=hub → 형식(hub http URL) 유지한 채 외부 브라우저로 open. 여기서 local-open 으로 덮으면
+  #   "hub URL 을 브라우저로" 조합이 hub-on 프로젝트(등록 프로젝트 기본값)에서 다시 표현 불가가 되어
+  #   본 이슈의 목적(직교성 복원) 자체가 무효화됨. 표면 고정(open 금지)은 vscode 만의 역할.
+  if [ "$RENDER_TARGET_CFG" = "hub" ]; then
+    RENDER_TARGET="hub"        # 형식 유지 + 아래 skip 해제로 실제 open 보장
+  else
+    RENDER_TARGET="local-open" # local-open/both/미설정: 기존대로 file:// 외부 open
+  fi
+  HUB_OPEN_SKIP=0              # Issue263: 실제 open 요구 → 파생 skip(browser_open:off) 해제
   if [ "$BROWSER_OPEN_OFF" = "1" ]; then
     # browser_open:off 는 open 을 생략하지만 enabled 는 "실제 open" 요구 → helper 경유 background open 으로 승격.
     HTM_OPEN_CMD="bash \"$HOME/_git/___pm/plugins/fpm-core/hooks/fpm-browser-open.sh\" -a \"$_app\" -f $_focus -r false"
@@ -825,6 +843,7 @@ if [ -n "$HUB_RENDER_TRIGGER" ]; then
     HTM_OPEN_CMD="$HTM_OPEN_CMD" \
     HUB_RENDER_TRIGGER="$HUB_RENDER_TRIGGER" \
     RENDER_TARGET="$RENDER_TARGET" \
+    HUB_OPEN_SKIP="$HUB_OPEN_SKIP" \
     RENDER_HOST="$RENDER_HOST" \
     RENDER_PORT="$RENDER_PORT" \
     HUB_LINK_TARGET="$HUB_LINK_TARGET" \
@@ -839,16 +858,36 @@ sid_full = os.environ.get('SID_FULL', sid)
 out_dir = os.environ.get('OUT_DIR', '/tmp')
 open_cmd = os.environ.get('HTM_OPEN_CMD', 'open -g -a Firefox')
 path_note = f"프로젝트 로컬 ({out_dir.split('_doc_work/')[-1] if '_doc_work/' in out_dir else out_dir})" if out_dir != '/tmp' else "/tmp fallback"
-# Issue141: render_target 분기 — file:// open(local-open) vs hub 서버 /htm-doc URL(hub) vs 양쪽(both)
+# Issue141/Issue263: render_target 분기 — local-open=file:// open / hub=서버 URL 을 브라우저로 open
+#   / vscode=VSCode Simple Browser 패널(외부 open 금지) / both=양쪽
 render_target = os.environ.get('RENDER_TARGET', 'local-open')
+hub_open_skip = os.environ.get('HUB_OPEN_SKIP', '0') == '1'   # Issue263: browser_open:off·hub-internal 파생 open 생략
 render_host = os.environ.get('RENDER_HOST', '127.0.0.1')
 render_port = os.environ.get('RENDER_PORT', '9876')
 # Issue153: hub-link 탭 동작 — _blank(새 탭, 기본) / fpm-hub(명명 탭 재사용, browser_tab_reuse=true)
 hub_link_target = os.environ.get('HUB_LINK_TARGET', '_blank')
 hub_url = "http://%s:%s/htm-doc?path=<절대경로>" % (render_host, render_port)
-if render_target == 'hub':
+if render_target == 'hub' and hub_open_skip:
+    # Issue263: hub URL 형식 + open 생략 (browser_open:off 또는 render_tab_mode:hub-internal 파생)
     render_step = (
-        "7. **VSCode Simple Browser 표시 (render_target: hub, Issue170)** — `file://`·외부 브라우저 open **금지**. 문서를 VSCode 내부 Simple Browser 패널에 렌더:\n"
+        "7. **hub URL emit only (render_target: hub + open 생략)** — 자동 open 안 함 (`browser_open: off` 또는 `render_tab_mode: hub-internal`). 표시는 hub 쉘 내부 탭 또는 사용자 수동 클릭이 담당:\n"
+        f"   - 채팅에 hub URL 명시: `{hub_url}` (Write 시 `fpm-hub-doc-register` PostToolUse hook 이 자동 register-doc → URL 즉시 유효)\n"
+        "   - ⚠️ `open` 명령(file://·http) 실행 금지 — URL emit 만\n"
+    )
+elif render_target == 'hub':
+    # Issue263: hub = 서버 http URL 을 외부 브라우저로 open (원뜻 복원 — 표면은 default_browser/browser_open 이 결정)
+    render_step = (
+        "7. **hub 서버 URL 을 외부 브라우저로 표시 (render_target: hub, Issue263)** — `file://` 아닌 **http URL** 로 open:\n"
+        "   ```bash\n"
+        f"   {open_cmd} \"http://{render_host}:{render_port}/htm-doc?path=<절대경로>\"\n"
+        "   ```\n"
+        "   - 브라우저·포커스는 `default_browser`/`browser_open` 설정 따름\n"
+        "   - Write 시 `fpm-hub-doc-register` PostToolUse hook 이 자동 `register-doc` → URL 즉시 유효 (open 전 등록 완료)\n"
+        "   - ⚠️ `file://` 로 여는 것은 local-open 전용 — 여기선 http URL 만\n"
+    )
+elif render_target == 'vscode':
+    render_step = (
+        "7. **VSCode Simple Browser 표시 (render_target: vscode, Issue170/Issue263)** — `file://`·외부 브라우저 open **금지**. 문서를 VSCode 내부 Simple Browser 패널에 렌더:\n"
         "   - Write 후 아래 1줄 실행 (`<절대경로>` = 방금 저장한 .htm 절대경로):\n"
         "   ```bash\n"
         f"   curl -s -X POST http://{render_host}:{render_port}/open-simple-browser -H 'Content-Type: application/json' -d '{{\"path\":\"<절대경로>\"}}'\n"
@@ -925,18 +964,33 @@ canonical_header = (
     "header `margin-inline: calc(50% - 50vw)` 로 body max-width 무관 full-bleed 바 (Issue172). flex+space-between+wrap 로 우측 overflow 방지. 조상(`html`/`body`/컨테이너)에 `overflow:hidden|clip` 금지 (sticky 무효화).\n"
 ).replace("__PNAME__", project_name).replace("__PCOLOR__", project_color).replace("__CWD__", cwd).replace("__SID__", sid_full).replace("__HOST__", render_host).replace("__PORT__", render_port).replace("__HUBTARGET__", hub_link_target)
 
-# Issue168: render_target=hub 시 "Firefox 강제 open"/"file:// 직접 open" framing 이
-#   step7(render_step) "open 금지" 와 모순 → 모델 file:// 중복 open. 동적 치환으로 일관성 확보.
-if render_target == 'hub':
-    browser_line = "- 표시: 외부 브라우저 강제 open 안 함 — VSCode Simple Browser 패널에 표시 (render_target: hub, Issue170)\n"
+# Issue168: 표면이 file:// 외부 open 이 아닐 때 "Firefox 강제 open"/"file:// 직접 open" framing 이
+#   step7(render_step) 과 모순 → 모델 file:// 중복 open. 동적 치환으로 일관성 확보.
+# Issue263: 표면 축 분리에 맞춰 vscode(패널) / hub(http URL open) / hub+skip(URL emit) 3갈래로 분기.
+if render_target == 'vscode':
+    browser_line = "- 표시: 외부 브라우저 강제 open 안 함 — VSCode Simple Browser 패널에 표시 (render_target: vscode, Issue263)\n"
     body_line = "- 본문 HTML: hub 서버 register-doc 자동 등록 + POST /open-simple-browser 로 VSCode 패널 렌더 (file:// open 생략, ⚠️ `open` 실행 금지)\n"
     turn_phrase = "HTML 렌더 (본문 또는 폼) + Simple Browser POST + hub URL emit + 채팅 요약"
     example_line = "   - 예: `HTML 저장. <경로>. Simple Browser POST 완료(VSCode 패널 표시). fallback URL http://host.local:9876/htm-doc?path=<경로>` + 핵심 요약\n"
+    surface_phrase = "VSCode Simple Browser 패널"
+elif render_target == 'hub' and hub_open_skip:
+    browser_line = "- 표시: 자동 open 생략 — hub URL 만 채팅에 emit (browser_open:off / hub-internal)\n"
+    body_line = "- 본문 HTML: hub 서버 register-doc 자동 등록 + `/htm-doc?path=` URL emit (⚠️ `open` 실행 금지)\n"
+    turn_phrase = "HTML 렌더 (본문 또는 폼) + hub URL emit + 채팅 요약"
+    example_line = "   - 예: `HTML 저장. <경로>. hub URL http://host.local:9876/htm-doc?path=<경로>` + 핵심 요약\n"
+    surface_phrase = "hub URL emit"
+elif render_target == 'hub':
+    browser_line = "- 표시: hub 서버 http URL 을 외부 브라우저로 open (file:// 아님 — render_target: hub, Issue263)\n"
+    body_line = "- 본문 HTML: hub 서버 register-doc 자동 등록 후 `/htm-doc?path=` URL 을 브라우저로 open (file:// 미사용)\n"
+    turn_phrase = "HTML 렌더 (본문 또는 폼) + hub URL 브라우저 open + 채팅 요약"
+    example_line = "   - 예: `HTML 저장. <경로>. hub URL http://host.local:9876/htm-doc?path=<경로> 브라우저 열림.` + 핵심 요약\n"
+    surface_phrase = "hub URL 브라우저 open"
 else:
     browser_line = "- 브라우저: Firefox 강제 open (Chrome=일반 / Firefox=hub·dashboard 전용 분리 운영)\n"
     body_line = "- 본문 HTML: file:// 직접 open (서버 미사용)\n"
     turn_phrase = "HTML 렌더 (본문 또는 폼) + Firefox open + 채팅 요약"
     example_line = "   - 예: `HTML 저장. /tmp/___pm/hub_htm_20260531_143022_a_topic.htm. Firefox 열림.` + 핵심 요약\n"
+    surface_phrase = "file://"   # local-open·both — 기존 문구 유지
 
 mode_banner = (
     "## 세션 모드: **hub form 자동 회수 (Issue45 단일 경로)**\n"
@@ -955,7 +1009,8 @@ context = (
     "- 본 turn 은 HTML 변환·렌더링만 수행. skill 호출·dev 사이클·이슈 처리·커밋 전부 금지\n"
     "- 사용자가 다음 prompt 에서 본 작업을 명시 요청하면 그때 수행\n\n"
     + mode_banner + deprecation_note +
-    "## `..show` 트리거 감지 — Issue45 단일 경로 (본문 file:// + Q&A 자동 회수)\n\n"
+    # Issue263: 표면이 file:// 가 아닐 때(hub·vscode) 이 정적 헤딩이 step7 과 모순 → surface_phrase 로 동적 치환
+    f"## `..show` 트리거 감지 — Issue45 단일 경로 (본문 {surface_phrase} + Q&A 자동 회수)\n\n"
     "사용자 프롬프트에 `..show` 마커 포함 (deprecated `..hub` 도 동일 동작). `.hub-mode-active` 플래그 활성화됨. 다음 절차로 처리:\n\n"
     "### 응답 본문 (1회)\n"
     "1. 프롬프트에서 `..show`(또는 `..hub`) 마커 제거 후 본질 파악 (`--new` flag 있어도 동일 동작)\n"
@@ -1013,6 +1068,7 @@ if [ "$EFFECTIVE" = "on" ]; then
     OUT_DIR="$OUT_DIR" \
     HTM_OPEN_CMD="$HTM_OPEN_CMD" \
     RENDER_TARGET="$RENDER_TARGET" \
+    HUB_OPEN_SKIP="$HUB_OPEN_SKIP" \
     RENDER_HOST="$RENDER_HOST" \
     RENDER_PORT="$RENDER_PORT" \
     HUB_LINK_TARGET="$HUB_LINK_TARGET" \
@@ -1027,16 +1083,29 @@ sid_full = os.environ.get('SID_FULL', sid)
 out_dir = os.environ.get('OUT_DIR', '/tmp/___pm')
 open_cmd = os.environ.get('HTM_OPEN_CMD', 'open -g -a Firefox')
 path_note = f"프로젝트 로컬 ({out_dir.split('_doc_work/')[-1] if '_doc_work/' in out_dir else out_dir})" if out_dir != '/tmp/___pm' else "/tmp fallback"
-# Issue141: render_target 분기 (자동 hub 모드) — file:// open / hub 서버 /htm-doc URL / 양쪽
+# Issue141/Issue263: render_target 분기 (자동 hub 모드) — local-open / hub(서버 URL open) / vscode(패널) / both
 render_target = os.environ.get('RENDER_TARGET', 'local-open')
+hub_open_skip = os.environ.get('HUB_OPEN_SKIP', '0') == '1'   # Issue263: browser_open:off·hub-internal 파생 open 생략
 render_host = os.environ.get('RENDER_HOST', '127.0.0.1')
 render_port = os.environ.get('RENDER_PORT', '9876')
 # Issue153: hub-link 탭 동작 — _blank(새 탭, 기본) / fpm-hub(명명 탭 재사용, browser_tab_reuse=true)
 hub_link_target = os.environ.get('HUB_LINK_TARGET', '_blank')
 hub_url = "http://%s:%s/htm-doc?path=<절대경로>" % (render_host, render_port)
-if render_target == 'hub':
+if render_target == 'hub' and hub_open_skip:
+    # Issue263: hub URL 형식 + open 생략 (hub-internal iframe 이 표시 담당 / browser_open:off)
     render_step = (
-        "6. **VSCode Simple Browser 표시 (render_target: hub, Issue170)** — `file://`·외부 브라우저 open **금지**. Write 후 아래 1줄 실행 (`<절대경로>`=저장한 .htm):\n"
+        "6. **hub URL emit only** — 자동 open 안 함(`render_tab_mode: hub-internal` 또는 `browser_open: off`). 채팅에 URL 만 명시: "
+        f"`{hub_url}` (Write 시 `fpm-hub-doc-register` 자동 register-doc → URL 즉시 유효). ⚠️ `open` 실행 금지\n"
+    )
+elif render_target == 'hub':
+    # Issue263: hub = 서버 http URL 을 외부 브라우저로 open (원뜻 복원)
+    render_step = (
+        f"6. Bash → `{open_cmd} \"http://{render_host}:{render_port}/htm-doc?path=<절대경로>\"` — hub 서버 **http URL** 로 open "
+        "(`file://` 아님. 브라우저·포커스 = `default_browser`/`browser_open` 설정. Write 시 `fpm-hub-doc-register` 자동 register-doc → open 전 URL 유효)\n"
+    )
+elif render_target == 'vscode':
+    render_step = (
+        "6. **VSCode Simple Browser 표시 (render_target: vscode, Issue170/Issue263)** — `file://`·외부 브라우저 open **금지**. Write 후 아래 1줄 실행 (`<절대경로>`=저장한 .htm):\n"
         f"   `curl -s -X POST http://{render_host}:{render_port}/open-simple-browser -H 'Content-Type: application/json' -d '{{\"path\":\"<절대경로>\"}}'`\n"
         "   → 서버가 register-doc 화이트리스트 검증 후 확장 `finfra.fpm-simple-browser` 로 VSCode 패널에 렌더. 응답 `{\"status\":\"opened\"}`.\n"
         f"   채팅에 fallback raw URL 병행: `{hub_url}` (Write 시 `fpm-hub-doc-register` 자동 `register-doc` → URL·POST 즉시 유효). ⚠️ `open` 실행 금지\n"
@@ -1050,11 +1119,17 @@ else:  # local-open (기본)
         f"6. Bash → `{open_cmd} \"file://<절대경로>\"` (브라우저·포커스 = `browser_focus`/`default_browser` 설정. `-g`=백그라운드, 포커스 미탈취)\n"
     )
 
-# Issue168: render_target=hub 시 상단 framing 의 "Firefox 에 표시"/"Firefox open" 문구가
-#   step6 "open 실행 금지" 를 약화시켜 모델이 file:// 중복 open → 동적 치환으로 일관성 확보.
-if render_target == 'hub':
-    display_phrase = "VSCode Simple Browser 패널에 표시 (Issue170)"
+# Issue168: 상단 framing 의 "Firefox 에 표시"/"Firefox open" 문구가 step6 와 어긋나면
+#   모델이 file:// 를 중복 open → 동적 치환으로 일관성 확보. Issue263: 표면 3갈래 분기.
+if render_target == 'vscode':
+    display_phrase = "VSCode Simple Browser 패널에 표시 (Issue263)"
     open_skip_phrase = "외부 브라우저 open 없이"
+elif render_target == 'hub' and hub_open_skip:
+    display_phrase = "hub URL emit (자동 open 생략)"
+    open_skip_phrase = "브라우저 open 없이"
+elif render_target == 'hub':
+    display_phrase = "hub 서버 http URL 로 브라우저에 표시 (Issue263)"
+    open_skip_phrase = "file:// open 없이"
 else:
     display_phrase = "Firefox 에 표시"
     open_skip_phrase = "Firefox open 없이"
