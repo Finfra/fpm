@@ -21,6 +21,20 @@ PROJECTS_MD  = os.path.join(PM_ROOT, 'Projects.md')
 PROJECTS_DIR = os.path.join(PM_ROOT, 'projects')
 UPDATE_ITERM = os.path.join(PM_ROOT, 'sh', 'update-iterm-bg')
 
+# 프로젝트 id 정본 패턴 (Issue303): 정수 | 정수+소문자 | 정수+소문자+정수
+#   9 / 9a / 9a1 — 접미는 "9 의 하위 프로젝트" 소속만 나타냄.
+#   하이픈은 cdf 범위 문법(11-16)에 예약, 점은 정규식 메타문자라 둘 다 배제.
+#   설계 SSOT: _doc_arch/project-id-scheme.md
+PID_RE = re.compile(r'^([0-9]+)(?:([a-z])([0-9]*))?$')
+
+
+def pid_sort_key(pid):
+    """id 정렬키 — (정수부, 문자부, 하위정수부). 부모 정수 → 그 자식들 → 다음 정수 순."""
+    m = PID_RE.match(pid)
+    if not m:
+        return (float('inf'), '', 0)
+    return (int(m.group(1)), m.group(2) or '', int(m.group(3) or 0))
+
 
 def parse_table(content):
     rows = []
@@ -48,14 +62,15 @@ def parse_table(content):
 
         if in_table:
             pid = cols[idx['id']] if idx['id'] < len(cols) else ''
-            if not pid.isdigit():
+            if not PID_RE.match(pid):
                 continue
             path  = cols[idx['path']].strip('`')  if idx['path']  is not None and idx['path']  < len(cols) else ''
             emoji = cols[idx['emoji']]            if idx['emoji'] is not None and idx['emoji'] < len(cols) else ''
             color = cols[idx['color']]            if idx['color'] < len(cols) else ''
-            rows.append({'id': int(pid), 'path': path, 'emoji': emoji, 'color': color})
+            # id 는 문자열로 보존 — 접미 id(9a)는 int 로 못 담고, 파일명이 곧 id 다.
+            rows.append({'id': pid, 'path': path, 'emoji': emoji, 'color': color})
 
-    return sorted(rows, key=lambda r: r['id'])
+    return sorted(rows, key=lambda r: pid_sort_key(r['id']))
 
 
 def readable_fg(hexcolor):
@@ -75,13 +90,14 @@ def gen_projects(rows):
     """[1/3] projects/<id> 인덱스 파일 재생성 (기존 숫자 파일만 제거 후 재작성)."""
     os.makedirs(PROJECTS_DIR, exist_ok=True)
     for f in os.listdir(PROJECTS_DIR):
-        if f.isdigit():
+        # 인덱스 파일만 제거 — .frecency / .sync-stamp 등 부속 파일은 패턴 불일치로 보존됨.
+        if PID_RE.match(f):
             os.remove(os.path.join(PROJECTS_DIR, f))
     n = 0
     for r in rows:
         if not r['path']:
             continue
-        with open(os.path.join(PROJECTS_DIR, str(r['id'])), 'w') as fh:
+        with open(os.path.join(PROJECTS_DIR, r['id']), 'w') as fh:
             fh.write(r['path'] + '\n')
         n += 1
     print(f'[1/3] projects/ 인덱스 {n}개 재생성')

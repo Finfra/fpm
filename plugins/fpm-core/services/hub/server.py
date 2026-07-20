@@ -653,8 +653,31 @@ def _rewrite_relative_imgs(body: bytes, doc_abs: str, extra_query: str = "") -> 
 _MERMAID_SCRIPT_RE = re.compile(
     rb"<script\b[^>]*>.*?</script>", re.IGNORECASE | re.DOTALL
 )
+# Issue299: 제거 대상은 mermaid **런타임을 싣거나 초기화하는** 스크립트로 한정한다.
+#   종전 판정은 "블록 안에 mermaid 라는 문자열이 있는가"였고, 그 결과 다이어그램과 무관한
+#   페이지 스크립트가 주석에 mermaid 를 언급했다는 이유만으로 통째로 사라졌다. 스크립트가
+#   조용히 증발하므로 콘솔에도 아무 흔적이 없어 원인 추적이 어렵다(실측: Projects_map 의
+#   활성 세션 오버레이가 이 규칙에 먹혀 배지가 하나도 뜨지 않았다).
+#   Issue244 가 막으려던 것은 "페이지가 제각각 로드·초기화하는 mermaid 런타임"이므로,
+#   로드(src/import)·초기화(initialize/run/render/startOnLoad)·전역 접근(window.mermaid)
+#   신호가 있을 때만 지운다.
+_MERMAID_LOADER_RE = re.compile(
+    rb"<script\b[^>]*\bsrc\s*=\s*[\"'][^\"']*mermaid"
+    rb"|mermaid\s*\.\s*(?:initialize|run|render|mermaidAPI)"
+    rb"|window\s*\.\s*mermaid"
+    rb"|\bimport\b[^;]{0,200}?[\"'][^\"']*mermaid"
+    rb"|startOnLoad",
+    re.IGNORECASE,
+)
 # pinned UMD(동기) + mermaid.run() — startOnLoad race 없는 결정적 렌더.
 MERMAID_RUNTIME = (
+    # Issue302: 다이어그램은 `<pre class="mermaid">` 로 저작되므로 페이지의 코드블록 스타일
+    #   (`pre { background:#2d2d2d }`)을 그대로 상속한다. mermaid 가 그리는 SVG 는 배경이
+    #   투명하므로 검은 코드블록 배경이 그대로 비쳐, theme 이 neutral(밝음)로 정상 선택돼도
+    #   화면에는 밝은 노드 + 검은 캔버스라는 mismatch 가 남았다(Issue245 의 luminance 판정은
+    #   `document.body` 만 보므로 `<pre>` 자체 배경은 사정권 밖). 런타임이 컨테이너 배경까지
+    #   같은 자리에서 책임져 저작 실수와 무관하게 페이지와 일치시킨다.
+    b"<style>pre.mermaid,.mermaid{background:transparent;color:inherit;padding:0;}</style>"
     b'<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>'
     b"<script>(function(){"
     # Issue245: 테마는 OS prefers-color-scheme 가 아니라 **실제 페이지 배경 luminance** 로
@@ -725,7 +748,7 @@ def _normalize_mermaid_runtime(body: bytes) -> bytes:
         return body
 
     def _drop(m):
-        return b"" if b"mermaid" in m.group(0).lower() else m.group(0)
+        return b"" if _MERMAID_LOADER_RE.search(m.group(0)) else m.group(0)
 
     body = _MERMAID_SCRIPT_RE.sub(_drop, body)
     return _inject_before_body_end(body, MERMAID_RUNTIME)
@@ -1286,6 +1309,22 @@ PROJECTS_MD = os.path.join(FPM_BASE, "Projects.md")
 _projects_color_cache: dict = {}
 _projects_color_cache_mtime: float = 0.0
 
+# Issue303: 프로젝트 id 정본 패턴 — 정수 | 정수+소문자 | 정수+소문자+정수 (9 / 9a / 9a1).
+#   접미는 "9 의 하위 프로젝트" 소속을 나타냄. 하이픈은 cdf 범위 문법(11-16)에 예약,
+#   점은 정규식 메타문자라 둘 다 구분자에서 배제됨.
+#   ⚠️ id 를 int 로 캐스팅하지 말 것 — 접미 id 는 int 로 담기지 않으며, 그 행이 조용히
+#      스킵되면 등록은 됐는데 hub 목록에 안 보이는 상태가 된다.
+#   설계 SSOT: <FPM_BASE>/_doc_arch/project-id-scheme.md
+_PID_RE = re.compile(r"^([0-9]+)(?:([a-z])([0-9]*))?$")
+
+
+def _pid_sort_key(pid: str):
+    """id 정렬키 — (정수부, 문자부, 하위정수부). 부모 정수 → 그 자식들 → 다음 정수 순."""
+    m = _PID_RE.match(str(pid))
+    if not m:
+        return (float("inf"), "", 0)
+    return (int(m.group(1)), m.group(2) or "", int(m.group(3) or 0))
+
 # Issue141: Servers.md — 원격 접근 allowlist 소스. check=O 행만 신뢰 대상.
 # FPM_SERVERS_MD env 로 경로 override (플러그인 설치 위치 적응 — FPM_PROJECTS_MD 대칭).
 SERVERS_MD = os.environ.get("FPM_SERVERS_MD", os.path.join(REPO_ROOT, "Servers.md"))
@@ -1426,9 +1465,8 @@ def _load_projects_colors() -> dict:
                 cells = [c.strip() for c in line.strip().strip("|").split("|")]
                 if len(cells) < 8:
                     continue
-                try:
-                    int(cells[0])
-                except ValueError:
+                # Issue303: 접미 id(9a) 포함. 헤더·구분선 행은 패턴 불일치로 skip.
+                if not _PID_RE.match(cells[0]):
                     continue
                 path_cell = cells[4].strip("`").strip()
                 if not path_cell:
@@ -1468,9 +1506,8 @@ def _load_projects_emojis() -> dict:
                 cells = [c.strip() for c in line.strip().strip("|").split("|")]
                 if len(cells) < 8:
                     continue
-                try:
-                    int(cells[0])
-                except ValueError:
+                # Issue303: 접미 id(9a) 포함. 헤더·구분선 행은 패턴 불일치로 skip.
+                if not _PID_RE.match(cells[0]):
                     continue
                 path_cell = cells[4].strip("`").strip()
                 emoji_cell = cells[6].strip()
@@ -1533,9 +1570,9 @@ def _load_projects_list() -> list:
                 cells = [c.strip() for c in line.strip().strip("|").split("|")]
                 if len(cells) < 8:
                     continue
-                try:
-                    pid = int(cells[0])
-                except ValueError:
+                # Issue303: 접미 id(9a) 포함 — 문자열로 보존(int 캐스팅 금지).
+                pid = cells[0]
+                if not _PID_RE.match(pid):
                     continue  # 헤더·구분선 행 skip
                 color_cell = cells[7].strip()
                 if not re.fullmatch(r"#[0-9a-fA-F]{3,8}", color_cell):
@@ -1552,7 +1589,7 @@ def _load_projects_list() -> list:
     except Exception as e:
         log(f"_load_projects_list failed: {e}")
         return _projects_list_cache or []
-    rows.sort(key=lambda r: r["id"])
+    rows.sort(key=lambda r: _pid_sort_key(r["id"]))
     _projects_list_cache = rows
     _projects_list_cache_mtime = st.st_mtime
     return rows
@@ -5093,8 +5130,10 @@ __WARN__
             return
         qs = parse_qs(parsed.query or "")
         raw = (qs.get("id", [""])[0] or "").strip()
-        if not raw.isdigit():
-            self._send_json(400, {"error": "numeric id required"})
+        # Issue303: 정수 id + 접미 id(9a / 9a1). 패턴이 곧 traversal 방어 —
+        # `/`·`.` 이 문법에 없으므로 통과한 값은 경로 조각으로 안전하다.
+        if not _PID_RE.match(raw):
+            self._send_json(400, {"error": "id must match <int>[<letter>[<int>]] (e.g. 15 or 9a)"})
             return
         idx = os.path.join(REPO_ROOT, "projects", raw)
         if not os.path.isfile(idx):
@@ -5523,9 +5562,10 @@ __WARN__
             return
         prj = prj_vals[0].strip()
         issue_id = id_vals[0].strip()
-        # path traversal 방어 — prj 는 숫자만
-        if not re.fullmatch(r"\d+", prj):
-            self._send_json(400, {"error": "prj must be a number"})
+        # path traversal 방어 — prj 는 정수 id 또는 접미 id(9a / 9a1, Issue303).
+        # 문법에 `/`·`.` 이 없으므로 통과한 값은 경로 조각으로 안전하다.
+        if not _PID_RE.match(prj):
+            self._send_json(400, {"error": "prj must match <int>[<letter>[<int>]] (e.g. 15 or 9a)"})
             return
         # id 검증 — 숫자 또는 숫자_숫자(서브이슈) 형식만
         if not re.fullmatch(r"\d+(?:_\d+)*", issue_id):
@@ -8700,13 +8740,35 @@ function renderLiveSessions(list, limit, showCopy) {
 
 // Issue276: 세션 ID 클립보드 복사. isSecureContext 가드 + execCommand fallback + prompt 최종 폴백.
 //   HTTP 비-localhost(host.local 등 insecure context)에선 navigator.clipboard 미정의 → execCommand 경유.
+// Issue300(숨은 기능): 복사 직후 ✓ 녹색(.copied) 상태에서 한 번 더 클릭하면 그 세션의
+//   VSCode 세션 탭으로 이동한다(POST /open-session — Projects_map 활성 세션 🟢 아이콘과 동일 동작).
+//   버튼을 늘리지 않고 세션 이동을 얹기 위한 2단 클릭. 녹색 유지 시간은 두 번째 클릭 여유를
+//   위해 1.2s → 3s. 문서: noteForHuman.md "숨은 기능".
+//   ⚠️ origin=terminal 세션은 VSCode 로 포커스 불가(Issue177) → JSONL transcript 뷰어로 폴백.
 function copySid(sid, btn) {
+  // Issue300: 이미 녹색(copied) → 이번 클릭은 복사가 아니라 세션 이동
+  if (btn && btn.classList.contains('copied')) {
+    const row = btn.closest('.live-item[data-sid]');
+    if (btn._sidTimer) { clearTimeout(btn._sidTimer); btn._sidTimer = null; }
+    btn.textContent = '📋';
+    btn.classList.remove('copied');
+    if (row && row.dataset.origin === 'terminal') {
+      const topicEl = row.querySelector('.live-topic');
+      openSessionViewer(row.dataset.url || '', topicEl ? topicEl.textContent : '세션');
+    } else if (row) {
+      openSession(row.dataset.cwd, row.dataset.sid);
+    }
+    return;
+  }
   function ok() {
     if (!btn) return;
     const orig = btn.textContent;
     btn.textContent = '✓';
     btn.classList.add('copied');
-    setTimeout(() => { btn.textContent = orig; btn.classList.remove('copied'); }, 1200);
+    if (btn._sidTimer) clearTimeout(btn._sidTimer);
+    btn._sidTimer = setTimeout(() => {
+      btn.textContent = orig; btn.classList.remove('copied'); btn._sidTimer = null;
+    }, 3000);
   }
   function fb() {
     try {

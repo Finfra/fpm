@@ -1,6 +1,6 @@
 ---
 title: projects-map
-description: Projects.md 의 "# 프로젝트 트리" 섹션을 파싱해 프로젝트 간 관계도(Projects_map.htm)를 자립형 HTML 로 생성. Issue_map 의 프로젝트 버전, prj1(___pm) 로컬 전용
+description: "Projects.md 의 \"# 프로젝트 트리\" 섹션을 파싱해 프로젝트 간 관계도(Projects_map.htm)를 mermaid HTML 로 생성. hub 서버(/projects-map) 경유로 열어야 렌더됨. Issue_map 의 프로젝트 버전, prj1(___pm) 로컬 전용"
 date: 2026-07-19
 ---
 
@@ -29,11 +29,19 @@ python3 .claude/skills/projects-map/build_projects_map.py
 python3 .claude/skills/projects-map/build_projects_map.py --root ~/_git/___pm --projects Projects.md --out Projects_map.htm
 ```
 
-생성 후 확인:
+생성 후 확인 — 목적에 따라 셋 중 하나:
 
-```bash
-open Projects_map.htm
-```
+| 보고 싶은 곳 | 방법 |
+| :--- | :--- |
+| **VSCode 탐색기 클릭** | `Projects_map.md` 클릭 → `⌘⇧V` (미리보기). `bierner.markdown-mermaid` 가 직접 렌더 — 서버·CDN 불요 |
+| OS 브라우저 | `open "http://127.0.0.1:9876/projects-map"` |
+| VSCode Simple Browser 패널 | `open "vscode://finfra.fpm-simple-browser/open?url=http%3A%2F%2F127.0.0.1%3A9876%2Fprojects-map"` |
+
+`.md` 는 다이어그램·미할당 목록만 담은 읽기 전용 판이다. 필터·`cdf` 복사·활성 세션 배지가 필요하면 hub 판(`.htm`)을 열 것.
+
+> ⚠️ `open Projects_map.htm`(= `file://`)로 열지 말 것. 맵 본체가 mermaid **원시 소스 텍스트**로 보인다. 파일에는 mermaid 런타임 로더가 없고, hub 서버가 serve 시점에 pinned UMD 를 주입하기 때문이다(Issue244). 파일의 결함이 아니라 설계된 의존이다.
+>
+> `/htm-doc?path=…` 범용 라우트도 쓸 수 없다 — `Projects_map.htm` 은 `_doc_work/htm/` 이 아니라 프로젝트 루트에 생성되어 `/register-doc` 대상이 아니며 `403 not a registered htm doc` 이 난다. 전용 라우트 `/projects-map` 만 유효하다.
 
 # 토글
 
@@ -56,14 +64,27 @@ open Projects_map.htm
 | 프로젝트명 클릭 | `file://{경로}` — Finder(OS 기본 핸들러)로 오픈 |
 | 🆚 클릭 | `vscode://file{경로}` — VSCode 오픈(`cdfv` 대응) |
 | 📋 클릭 | `cdf {id}` 문자열 클립보드 복사(터미널 함수는 htm 안에서 직접 실행 불가) |
+| 🟢·📊 클릭 | 그 프로젝트의 **활성 Claude Code 세션**으로 VSCode 포커스(`POST /open-session`). 🟢=일반 세션 · 📊=dashboard |
 | 경로 없음(폴더 삭제·이동) | 링크 비활성화(취소선) + 툴팁 "경로 없음" |
+
+# 활성 세션 배지 (Issue299)
+
+노드·트리 항목·미할당 목록에 지금 살아 있는 세션을 아이콘으로 얹는다. 세션 1개 = 아이콘 1개이며, 제목은 hover 툴팁으로만 보여 준다(본문에 쓰면 노드가 부풀어 지도가 안 읽힘).
+
+* 데이터는 hub `GET /boards` 의 `live_sessions` — 페이지가 열려 있는 동안 5초마다 갱신
+* 빌드가 굽는 것은 `경로 → prj id` 매핑뿐. 세션 스냅샷은 박지 않는다(여는 즉시 stale)
+* **hub serve 전제** — `file://` 로 직접 열면 상대경로 fetch 가 실패해 배지가 없다. 배지뿐 아니라 **맵 본체(mermaid)도 렌더되지 않는다**(런타임을 hub 가 주입하므로 — "사용법" 경고 참조). `/open-prj` 노드 링크와 같은 제약
+* **배지가 흐려져 있으면** hub 응답이 2회 연속 끊긴 상태다(툴팁에 "최신 상태 아님"). 그 배지는 낡은 정보이므로 클릭해도 실패할 수 있다
+* **클릭 실패 진단** — alert 에 HTTP status·서버 문구·요청 origin 이 그대로 나온다. `POST /open-session` 줄이 `/tmp/___pm/claude-htm-server/stdout.log` 에 **있으면** 서버 처리분, **없으면** 요청이 닿지 않은 것(주소 해석·네트워크)
+* 설계 근거·SVG 오버레이 사유: [`_doc_arch/projects-map-design.md`](../../../_doc_arch/projects-map-design.md) "활성 세션 오버레이"
 
 # 산출물
 
-* `Projects_map.htm` — `Projects.md` 와 동일 폴더(`___pm` 루트)
+* `Projects_map.htm` — `Projects.md` 와 동일 폴더(`___pm` 루트). hub 판(상호작용 있음, 서버 경유 필수)
+* `Projects_map.md` — 같은 폴더의 형제 파일. VSCode 마크다운 미리보기용 읽기 전용 판(다이어그램 + 미할당 목록). 서버·CDN 의존 0
 * 마커 `PROJECTS-MAP:TREE`(교체) / `PROJECTS-MAP:NOTES`(재생성 시 보존 — 수기 메모는 이 구간에)
 * 생성 산출물이므로 git 비추적 — `.gitignore` 에 `Projects_map.htm` 등록됨(`Issue_map.htm` 과 동일 정책)
-* 외부 리소스 요청 0건(파일 하나로 완결) — Mermaid/`mmdc` 비의존
+* 페이지 자신은 외부 리소스를 요청하지 않는다(`href="http`·`src="http` 0건). 단 **자립 실행 파일은 아니다** — 맵 본체가 `<pre class="mermaid">` 로 저작되므로 hub 서버가 serve 시점에 주입하는 mermaid 런타임에 의존한다(Issue244). 빌드 타임 `mmdc` 비의존일 뿐 런타임 mermaid 의존이다
 
 # 완료 조건
 
@@ -71,6 +92,8 @@ open Projects_map.htm
 2. `Projects_map.htm` 에 `href="http`·`src="http` 가 0건(외부 리소스 미사용)
 3. 이전 파일의 `PROJECTS-MAP:NOTES` 내용이 보존됨
 4. 표의 id 전부가 트리에 존재하거나(0건 미할당) 미할당 편입 건수가 출력됨
+5. hub 로 열었을 때(`http://127.0.0.1:9876/projects-map`) 활성 세션이 있는 프로젝트 노드에 배지가 뜨고 클릭이 `POST /open-session` 을 부름
+6. 형제 `Projects_map.md` 가 함께 생성되고, VSCode 마크다운 미리보기(`⌘⇧V`)에서 다이어그램이 그려짐
 
 # 제약
 

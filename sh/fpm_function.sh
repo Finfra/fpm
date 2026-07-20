@@ -200,7 +200,11 @@ _cdf_base() {
         if _fpm_rematch "$token" '^([0-9]+)-([0-9]+)$'; then
             local from=$_M1 to=$_M2
             for ((i=from; i<=to; i++)); do indices+=("$i"); done
-            elif [[ "$token" =~ ^[0-9]+$ ]]; then
+            # 프로젝트 id (Issue303): 정수 | 정수+소문자 | 정수+소문자+정수 (9 / 9a / 9a1).
+            # 반드시 위 범위 검사 **뒤**에 둘 것 — 순서가 바뀌면 11-16 이 범위로 안 잡힘.
+            # 하이픈은 범위 문법에 영구 예약, 점은 regex 메타문자라 접미 구분자에서 배제.
+            # 설계 SSOT: _doc_arch/project-id-scheme.md
+            elif [[ "$token" =~ ^[0-9]+([a-z][0-9]*)?$ ]]; then
             indices+=("$token")
         else
             subfolder="${subfolder:+$subfolder/}$token"

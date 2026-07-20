@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: 002e980e84f49448a9292d44839a867ef8d7d5bedd5b601b4618911ae5923cae
+source_sha: 79ed652fdf753402cc27efd33222c661a4a0058ed0aacc27e173919340acf017
 ---
 
 # 안내
@@ -17,6 +17,74 @@ source_sha: 002e980e84f49448a9292d44839a867ef8d7d5bedd5b601b4618911ae5923cae
 `scripts/fpm-issue-digest.sh` 가 덮어쓴다.
 
 # 이슈 근거
+
+## Issue305: Projects_map 상단에 `_note.md` 렌더 — 하단 수기 `#notes` 블록 대체, 공개 빌드는 고정 문구 ✅
+* 목적: 프로젝트 맵을 열 때마다 보이는 "지금 신경 쓸 일"을 파일 하나(`_note.md`)로 관리하고, 맵 상단(부제 바로 아래)에 렌더한다. 현재 메모 창구인 하단 `#notes` HTML 구간은 재생성 보존 마커에 의존해 편집이 번거롭고 실사용 이력이 0이라 대체한다.
+* 구현 명세:
+    - `build_projects_map.py`:
+        - `NOTE_PLACEHOLDER = "_note.md의 내용"` 상수 신설
+        - `read_note(root)` — `{root}/_note.md` 를 읽어 마크다운 bullet(`* `/`- `)을 `<ul><li>` 로, 그 외 줄을 `<p>` 로 변환. 파일 부재·빈 내용이면 `NOTE_PLACEHOLDER` 반환
+        - 산출물 `<div class="meta">` 직후에 `<div id="note">` 삽입 (htm), md 판은 부제 다음 문단에 같은 내용 삽입
+        - 하단 `<div id="notes">`·`DEFAULT_NOTES`·`extract_existing_notes()` 제거 (보존 마커 소비처 소멸)
+    - `data/publishable-policy.yml` `exclude[]` 에 `_note.md` 추가 — 향후 ___pm 에서 tracked 로 전환되더라도 미러 유출 차단(방어적 이중화)
+    - 검증: `_note.md` 있는 상태 빌드 → 상단 렌더 확인 / 임시로 파일 치운 상태 빌드 → 고정 문구 `_note.md의 내용` 확인
+
+## Issue304: `render_target` 정본에 b모드(ask 폼) 표면 매핑 동기 ✅
+* 목적: prj3#Issue269 가 b모드 ask 폼의 표면을 `render_target` 2축 기준으로 이행했으나, 키 상세 **정본**인 prj1 `_doc_arch/hub_setting.md` 는 여전히 이 키를 "`..show`·자동 렌더(a모드)" 전용으로 서술 중이었다. 정본이 소비처 하나를 누락하면 다음 변경 때 같은 stale 매핑이 재발한다.
+* depends: prj3#Issue269 (완료 — commit <commit>)
+* 구현 명세:
+    - `_doc_arch/hub_setting.md`: 도입부에 b모드 포함 명시 + prj3#Issue269 인용 blockquote 신설 / 값 표 아래 "b모드 폼의 표면 매핑" 항목 추가(회수는 same-origin 상대경로라 표면 무관) / `simple_browser_focus` 절에 "적용 대상 축소" 항목 추가
+    - `_doc_arch/hub_htm.md`: Mode B 절의 `file://` 폼 서술 폐기 → 표면은 `render_target` 이 결정한다고 교정
+    - 복잡도 triage: 문서 2파일 + 방법 자명(선행 이슈 결과 반영) → **단순** (plan/task/report 없음)
+
+## Issue303: 하위 프로젝트 접미 id(`9a`) 도입 — 정수 전용 id 스킴 확장 ✅
+* 목적: 다른 프로젝트의 하위 자산인 폴더를 별도 프로젝트로 등록할 때, 소속을 번호 자체로 표현할 수단이 없었음. 기존 id 는 정수 전용이라 무관한 빈 정수를 배정하고 계층은 설명란에만 적어야 했음. 접미 id 를 도입해 `9a` 가 `9` 의 하위임을 번호만으로 드러냄
+* 구현 명세:
+    - id 정본 정규식 `^[0-9]+(?:[a-z][0-9]*)?$` 단일 패턴으로 전 소비처 통일. 정렬키 `(정수부, 문자부, 하위정수부)`
+    - `sh/fpm-projects-sync`: `parse_table` 의 `pid.isdigit()`/`int(pid)`, `gen_projects` 의 `f.isdigit()` 정리 로직, 정렬 `key=lambda r: r['id']`
+    - `sh/fpm_function.sh`: `_cdf_base` 토큰 판별 `^[0-9]+$` 확장. 범위 검사보다 **뒤**에 배치하여 `11-16` 보존. glob·case 는 무변경(이미 매칭)
+    - `sh/update-iterm-bg`: `proj_id.isdigit()`/`int(proj_id)` → alias `iterm-bg-9a`
+    - `plugins/fpm-core/services/hub/server.py`: 색·이모지·목록 캐시 3곳의 `int(cells[0])`, `/open-prj` 의 `raw.isdigit()`, `/issue-open` 의 `re.fullmatch(r"\d+", prj)`
+    - `plugins/fpm-core/hooks/fpm-hub-trigger.sh`: 프로젝트 판정의 `fn.isdigit()`
+    - `.claude/skills/projects-map/build_projects_map.py`: 표 행·트리 노드 regex 3곳
+    - `Projects.md`: `9a` 행 추가(부모 `9` 바로 아래) + 번호 대역 규칙에 접미 id 문법 명시 + Project Map 트리 노드
+    - 검증: `cdf 9a` 이동, `cdf 11-16` 범위 회귀 없음, `fpm-projects-sync` 로 `projects/9a` 생성, hub 목록 노출
+
+## Issue301: 맵 세션 배지 — 실패 원인 은폐·stale 방치 교정 ✅
+* 목적: 맵(`host.local:9876/projects-map`)에서 배지 클릭 시 "hub 서버 미응답 — 세션 열기 실패" alert. 서버 로그 대조 결과 **같은 시각 사용자 클릭 4건은 200 정상 처리**되었고 실패한 클릭만 **로그가 없다** — 요청이 hub 에 닿지 못한 클라이언트측 실패. Issue299 코드가 (1) 실패 원인을 한 문장으로 뭉개 진단을 막고 (2) 폴 실패를 조용히 삼켜 낡은 배지를 그대로 두는 것이 실제 결함.
+* depends: Issue299
+* 구현 명세:
+    - `openSession` 을 `r.text()` → JSON 파싱 시도로 바꿔 3분기 처리 — ① 서버 `error` 필드(HTTP status 병기) ② 비-JSON 오류 응답(원문 200자) ③ 전송 실패(`origin` + 예외 원문). `.local` mDNS 해석 실패가 "서버 미응답"으로 오인되던 경로 제거
+    - `poll` 에 `failStreak` 도입 — 2회 연속 실패 시 `setStale(true)`: 배지 `opacity .3` + `grayscale`, 툴팁 뒤에 "⚠️ hub 응답 없음 — 최신 상태 아님" 부착(HTML 배지=`title` 속성 / SVG 배지=자식 `<title>` 양쪽 처리), 콘솔 경고. 성공 시 원복
+    - `renderKey()` = 세션 집합(`cwd|sid|content_type` 정렬) + SVG 노드 수. 키 동일하면 `render()` 즉시 반환 → destroy/recreate 제거. 노드 수를 섞어 mermaid 렌더가 늦게 끝난 경우도 1회 잡음
+
+## Issue302: mermaid 다이어그램이 코드블록 배경(`pre`)을 상속 ✅
+* 목적: 밝은 hub 문서 위에 다이어그램만 검은 캔버스로 렌더되는 mismatch. 원인은 mermaid 테마가 아니라 페이지 CSS — 다이어그램이 `<pre class="mermaid">` 로 저작되므로 코드블록 스타일 `pre { background:#2d2d2d }` 를 그대로 상속하고, mermaid SVG 는 배경이 투명해 그 검정이 비쳐 보인다. Issue245 의 luminance 판정은 `document.body` 만 보므로 `<pre>` 자체 배경은 사정권 밖이었다(테마는 `neutral` 로 정상 선택됨 — 노드가 밝은 회색인 것이 증거).
+* 구현 명세:
+    - `services/hub/server.py` `MERMAID_RUNTIME` 선두에 `<style>pre.mermaid,.mermaid{background:transparent;color:inherit;padding:0;}</style>` 추가
+    - 런타임이 서브 시점에 주입되므로 **기존 문서에 소급 적용**. Issue244(서버가 mermaid 렌더의 단일 권위) 철학의 연장
+    - 검증: 위 m2slide 문서를 `/htm-doc` 로 재요청 → 주입된 규칙 확인
+
+## Issue300: 세션 📋 두 번 클릭 시 VSCode 세션으로 이동 (숨은 기능) ✅
+* 목적: hub 활성 세션 행에서 그 세션의 VSCode 탭으로 가는 조작을 하나 더 얹되(Projects_map 활성 세션 🟢 아이콘과 같은 동작), 버튼은 늘리지 않는다. 행은 이미 [행 클릭 = VSCode 포커스] + [📋 = sid 복사] + [✕ = dismiss] 로 차 있어 아이콘을 추가하면 좁은 행이 4개가 된다. 이미 있는 "복사됨(녹색)" 상태를 두 번째 클릭의 모드 구분자로 재사용한다.
+* 구현 명세:
+    - `services/hub/server.py` `copySid()` 진입부에서 `.copied` 클래스 검사로 분기 → `openSession(row.dataset.cwd, row.dataset.sid)` (= `POST /open-session`, 행 클릭·Projects_map 🟢 와 동일 경로)
+    - `origin=terminal` 세션은 VSCode 포커스 불가(Issue177) → `openSessionViewer(row.dataset.url)` 로 폴백
+    - 녹색 유지 1.2s → 3s (두 번째 클릭 여유). 타이머는 `btn._sidTimer` 보관 → 연타 시 중복 setTimeout 정리
+    - 신규 엔드포인트 없음 — 기존 `/open-session`(Issue131)·행 `data-url`(Issue219) 재사용
+    - `plugins/fpm-core` 번들 사본 동기화 (Issue291 게이트)
+    - 검증: 재기동된 hub(`/hub`)가 새 `copySid` 를 serve 하는지 curl grep 으로 확인 ✅
+
+## Issue299: 프로젝트 맵에 활성 세션 아이콘 + 클릭 시 VSCode 세션 포커스 ✅
+* 목적: `Projects_map.htm` 은 "무엇을 하려고 무엇이 필요한가"만 보여줄 뿐 **지금 어디가 살아 있는지**를 못 보여준다. 맵을 열어 놓고 작업하는 흐름에서 활성 세션을 보려면 hub 로 되돌아가야 한다. 맵 노드에 활성 세션 아이콘을 얹고 클릭으로 해당 VSCode Claude Code 세션 탭까지 바로 가게 한다.
+* 구현 명세:
+    - `build_projects_map.py` — `render_session_script()` 신설. 빌드는 `경로 → prj id` 매핑만 굽고, 세션은 페이지가 열려 있는 동안 `GET /boards` 의 `live_sessions` 를 5초 주기로 조회해 그린다(스냅샷을 박으면 여는 즉시 stale)
+    - 세션 `cwd` 가 서브폴더면 등록 루트까지 상향 탐색해 해석 — 서버 `_resolve_project_root` 와 같은 규칙 (`fSnippet/_public` → prj25, `videoMaker/lib/m2slide` → prj42 실측)
+    - 배지는 mermaid 라벨이 아니라 노드 `<g>` 의 SVG `<text>` 로 얹음 — `<foreignObject>` 는 렌더 시점 크기로 클리핑되어 나중에 덧붙인 요소가 안 보인다
+    - 노드 id 가 `mermaid-<ts>-flowchart-P{id}-{n}` 이라 prefix 매칭(`^=`) 불가 → 부분 매칭(`*=`) + 뒤의 `-` 로 `P1`/`P10` 분리
+    - 대상 3곳: mermaid 노드 · 텍스트 트리 `li` · 미할당 목록(그래프에 없다고 배지까지 빼면 "어디가 살아 있는가"에 구멍)
+    - 🟢 일반 세션 / 📊 dashboard, 툴팁 = 제목 · 종류 · sid 앞 8자. 클릭은 `preventDefault`+`stopPropagation` 로 노드 링크(`/open-prj`) 전이 차단
+    - **부수 수정** — `services/hub/server.py` `_normalize_mermaid_runtime` 의 스크립트 제거 판정을 "mermaid 문자열 포함"에서 "런타임 로드·초기화 신호"(`src`/`import` mermaid · `mermaid.initialize|run|render|mermaidAPI` · `window.mermaid` · `startOnLoad`)로 축소. 종전 규칙이 주석의 mermaid 언급만으로 이 오버레이 스크립트를 통째로 삭제했고, 조용히 증발해 콘솔에 흔적이 없어 추적이 어려웠다. 번들 미러 `plugins/fpm-core/services/hub/server.py` 동시 반영
 
 ## Issue298: 프로젝트 맵 v2 — 확정 표기 파서 구현 + 소스 정합화 ✅
 * 목적: 맵 표기 규약(펜스 제거·Main/Sub Map·`:`목적·`@`담당주체·`"참조"`)이 확정됐으나 파서가 따라오지 못해 **맵 생성이 멈춰 있다**. 파서를 확정 표기에 맞추고 소스 정합 결함을 해소해 지도를 되살린다.

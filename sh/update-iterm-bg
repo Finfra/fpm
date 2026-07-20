@@ -17,6 +17,18 @@ FPM_BASE      = os.environ.get('FPM_BASE') or os.path.dirname(os.path.dirname(os
 PROJECTS_MD   = os.path.join(FPM_BASE, 'Projects.md')
 ITERM_BG_FILE = os.path.join(FPM_BASE, 'sh', 'fpm_aliases_iterm-bg.sh')
 
+# 프로젝트 id 정본 패턴 (Issue303) — 정수 | 정수+소문자 | 정수+소문자+정수 (9 / 9a / 9a1).
+# 설계 SSOT: _doc_arch/project-id-scheme.md
+PID_RE = re.compile(r'^([0-9]+)(?:([a-z])([0-9]*))?$')
+
+
+def pid_sort_key(pid):
+    """id 정렬키 — (정수부, 문자부, 하위정수부). 부모 정수 → 그 자식들 → 다음 정수 순."""
+    m = PID_RE.match(pid)
+    if not m:
+        return (float('inf'), '', 0)
+    return (int(m.group(1)), m.group(2) or '', int(m.group(3) or 0))
+
 
 def parse_table(content):
     projects = []
@@ -45,10 +57,11 @@ def parse_table(content):
             proj_id = cols[id_idx]
             name    = cols[name_idx] if name_idx is not None else ''
             color   = cols[color_idx]
-            if proj_id.isdigit() and re.match(r'#[0-9a-fA-F]{3,6}', color):
-                projects.append((int(proj_id), name, color))
+            if PID_RE.match(proj_id) and re.match(r'#[0-9a-fA-F]{3,6}', color):
+                # id 는 문자열 보존 — 접미 id(9a)는 int 로 못 담고 alias 이름이 곧 id 다.
+                projects.append((proj_id, name, color))
 
-    return sorted(projects)
+    return sorted(projects, key=lambda p: pid_sort_key(p[0]))
 
 
 def generate_file(projects):

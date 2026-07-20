@@ -16,7 +16,9 @@ mermaid 런타임 <script> 는 여기서 저작하지 않는다 — hub `_normal
 """
 
 import argparse
+import datetime
 import html
+import json
 import os
 import re
 import sys
@@ -29,11 +31,26 @@ MISC_LABEL = "미할당"
 #   헤딩 rename 한 번에 생성 실패로 이어졌으므로(회귀) 구 표기도 함께 받아 준다.
 TREE_HEADINGS = {"# Project Map", "# Project Tree", "# 프로젝트 트리"}
 
+# Issue303: 프로젝트 id = 정수 | 정수+소문자 | 정수+소문자+정수 (9 / 9a / 9a1).
+#   접미는 "9 의 하위 프로젝트" 소속을 나타낸다. `\d+` 로 두면 접미 id 행·노드가 조용히
+#   누락되어 맵에서 사라진다. 설계 SSOT: _doc_arch/project-id-scheme.md
+PID_PAT = r"[0-9]+(?:[a-z][0-9]*)?"
+PID_RE = re.compile(rf"^([0-9]+)(?:([a-z])([0-9]*))?$")
+
+
+def pid_sort_key(pid):
+    """id 정렬키 — (정수부, 문자부, 하위정수부). 부모 정수 → 그 자식들 → 다음 정수 순."""
+    m = PID_RE.match(str(pid))
+    if not m:
+        return (float("inf"), "", 0)
+    return (int(m.group(1)), m.group(2) or "", int(m.group(3) or 0))
+
+
 TABLE_ROW_RE = re.compile(
-    r"^\|\s*(\d+)\s*\|([^|]*)\|([^|]*)\|([^|]*)\|([^|]*)\|([^|]*)\|([^|]*)\|([^|]*)\|\s*$"
+    rf"^\|\s*({PID_PAT})\s*\|([^|]*)\|([^|]*)\|([^|]*)\|([^|]*)\|([^|]*)\|([^|]*)\|([^|]*)\|\s*$"
 )
 TREE_NODE_RE = re.compile(r"^(?P<indent>\s*)-\s+(?P<rest>.+?)\s*$")
-ID_NODE_RE = re.compile(r"^(?P<id>\d+)\.\s+(?P<emoji>\S+)\s+(?P<name>.+)$")
+ID_NODE_RE = re.compile(rf"^(?P<id>{PID_PAT})\.\s+(?P<emoji>\S+)\s+(?P<name>.+)$")
 
 
 def find_root(explicit):
@@ -86,7 +103,7 @@ def parse_table(md_text):
 #   담당 주체  `- @{id}. {name} : {목적}`  또는 구 표기 `- {id}.{name}@{맵} : {목적}`
 #   참조      `- "{맵이름}"`
 #   그룹      `- {label} : {목적}`
-ID_NODE_LOOSE_RE = re.compile(r"^(?P<at>@)?(?P<id>\d+)\.\s*(?P<rest>.+)$")
+ID_NODE_LOOSE_RE = re.compile(rf"^(?P<at>@)?(?P<id>{PID_PAT})\.\s*(?P<rest>.+)$")
 REF_NODE_RE = re.compile(r'^"(?P<ref>[^"]+)"$')
 MAP_HEAD_RE = re.compile(r"^(?P<level>#{2,3})\s+(?P<name>.+?)\s*$")
 SUBMAP_CONTAINER = {"Sub Map", "Main Map"}
@@ -223,7 +240,7 @@ def enforce_completeness(maps, table):
     tree_ids = set()
     for roots in maps.values():
         tree_ids |= collect_tree_ids(roots)
-    missing = sorted((set(table.keys()) - tree_ids), key=int)
+    missing = sorted((set(table.keys()) - tree_ids), key=pid_sort_key)
     if missing:
         maps[MISC_LABEL] = [
             {"id": pid, "label": table[pid]["name"], "kind": "project",
@@ -362,7 +379,7 @@ def format_dead_loop_report(report):
     for cyc in report["cycles"]:
         lines.append("데드 루프: " + " → ".join(cyc) + "  (서로를 요구해 착수 불가)")
     for pid, purposes in sorted(report.get("purpose_conflicts", {}).items(),
-                                key=lambda kv: int(kv[0])):
+                                key=lambda kv: pid_sort_key(kv[0])):
         lines.append(f"목적 충돌(정보): #{pid} 에 서로 다른 목적이 적힘 — "
                      + " | ".join(purposes))
     return lines
@@ -601,12 +618,16 @@ def render_node(node, table, depth=0):
     children_block = f"<ul>{children_html}</ul>" if children_html else ""
 
     return (
-        f'<li data-name="{html.escape(meta["name"].lower())}">'
+        f'<li data-name="{html.escape(meta["name"].lower())}" '
+        f'data-prj="{html.escape(pid)}">'
         f"{swatch}{main_link} "
         f'<span class="id-tag">#{html.escape(pid)}</span> '
         f'<a class="mini-link" href="{vscode_href}" title="VSCode 로 열기">🆚</a> '
         f'<button type="button" class="copy-btn" data-copy="cdf {html.escape(pid)}" '
         f'title="cdf {html.escape(pid)} 복사">📋</button>'
+        # Issue299: 활성 세션 배지가 런타임에 채워지는 자리. 빌드 시점엔 비어 있다 —
+        #   세션은 초 단위로 바뀌므로 스냅샷을 박으면 열자마자 거짓이 된다.
+        f'<span class="sess-slot" data-prj="{html.escape(pid)}"></span>'
         f"{children_block}</li>"
     )
 
@@ -639,7 +660,22 @@ HTML_HEAD = """<!doctype html>
     background: none; cursor: pointer; opacity: 0.6; }
   .mini-link:hover, .copy-btn:hover { opacity: 1; }
   li.hidden { display: none; }
-  #notes { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #ccc; }
+  /* Issue299: 활성 세션 배지 — 아이콘만. 세션 제목을 본문에 그리면 노드가 부풀어
+     맵의 가독성이 무너지므로 설명은 title 툴팁으로만 둔다. */
+  .sess-badge { cursor: pointer; font-size: 0.85em; line-height: 1;
+    margin-left: 0.15em; user-select: none; }
+  .sess-badge:hover { filter: brightness(1.35); }
+  /* Issue301: hub 응답이 끊기면 배지는 더 이상 현재 상태가 아니다 — 눈에 보이게 표시 */
+  .sess-badge.stale { opacity: 0.3; filter: grayscale(1); }
+  .sess-slot:not(:empty) { margin-left: 0.25em; }
+  /* Issue305: 맵을 열자마자 눈에 들어와야 하는 수기 메모(_note.md). 부제 바로 아래
+     고정 위치 — 아래로 밀면 스크롤해야 보여서 "열 때마다 상기" 목적이 깨진다. */
+  #note { margin: 0 0 1.2rem; padding: 0.7rem 1.1rem; border-left: 4px solid #c9a227;
+    border-radius: 0 8px 8px 0; background: #fdf9e8; font-size: 0.95rem; }
+  #note p { margin: 0.25rem 0; }
+  #note ul { list-style: disc; padding-left: 1.3rem; margin: 0.25rem 0; }
+  #note li { margin: 0.15rem 0; }
+  #note.placeholder { color: #999; font-style: italic; }
   .deadloop { background: #fdf1f0; border: 1px solid #e0a49c; border-left: 4px solid #c0392b;
     border-radius: 8px; padding: 0.8rem 1.1rem; margin: 1rem 0; }
   .deadloop ul { list-style: disc; padding-left: 1.4rem; margin: 0.5rem 0; }
@@ -652,7 +688,8 @@ HTML_HEAD = """<!doctype html>
   .misc-list li { margin: 0; }
   @media (prefers-color-scheme: dark) {
     body { background: #1e1e1e; color: #ddd; }
-    #notes { border-top-color: #444; }
+    #note { background: #26230f; border-left-color: #a8871f; }
+    #note.placeholder { color: #8a8a8a; }
     .deadloop { background: #2a1614; border-color: #7a3a32; }
     .deadloop small { color: #d9a49c; }
     #misc { background: #202024; border-color: #3a3b40; }
@@ -701,19 +738,267 @@ document.querySelectorAll('.copy-btn').forEach(function (btn) {
 </html>
 """
 
-DEFAULT_NOTES = "\n(여기에 수기 메모를 남기세요 — 재생성 시 이 구간만 보존됩니다)\n"
+# Issue305: 수기 메모의 출처는 `{root}/_note.md` 하나뿐이다. 예전에는 산출물 안의
+#   `<!-- PROJECTS-MAP:NOTES -->` 구간을 재생성 때 보존하는 방식이었는데, 편집하려면
+#   자동 생성물을 열어 마커 사이를 고쳐야 해서 실사용 이력이 0이었다. 파일로 옮기면
+#   에디터에서 바로 고칠 수 있고, 산출물은 순수 생성물로 남는다.
+#
+#   고정 문구는 파일이 없을 때의 폴백이다. 공개 미러(fpm)에는 `_note.md` 가 실리지
+#   않으므로(untracked + exclude), 공개측에서 빌더를 돌리면 자동으로 이 문구가 뜬다.
+#   별도 `--public` 플래그를 두지 않는 이유 — 호출부마다 플래그를 넘겨야 하는데,
+#   파일 부재만으로 이미 같은 결과가 나온다.
+NOTE_PLACEHOLDER = "_note.md의 내용"
 
 
-def extract_existing_notes(out_path):
-    if not out_path.exists():
-        return None
-    text = out_path.read_text(encoding="utf-8")
-    m = re.search(
-        r"<!-- PROJECTS-MAP:NOTES -->(.*?)<!-- /PROJECTS-MAP:NOTES -->", text, re.DOTALL
-    )
-    if m:
-        return m.group(1)
-    return None
+# ── 활성 세션 오버레이 (Issue299) ────────────────────────────────────────
+# 왜 런타임 주입인가 — 맵은 `Projects.md` 가 바뀔 때만 재생성되는 산출물인데 세션은 초
+# 단위로 뜨고 진다. 빌드 시점 스냅샷을 박으면 파일을 여는 순간 이미 거짓이다. 그래서
+# 배지는 항상 hub 에서 그때그때 받아 그린다.
+#
+# 왜 mermaid 라벨이 아니라 SVG `<text>` 오버레이인가 — mermaid 의 라벨은 크기가 렌더
+# 시점에 확정된 `<foreignObject>` 안에 들어 있고, 브라우저는 그 경계 밖을 잘라낸다.
+# 렌더가 끝난 뒤 라벨에 배지를 덧붙이면 보이지 않을 수 있다. 노드 `<g>` 에 직접 얹으면
+# 클리핑 대상이 아니라 안전하다.
+#
+# 데이터 소스는 기존 `GET /boards` 의 `live_sessions` 를 그대로 쓴다 — 이 맵 하나 때문에
+# hub 에 신규 엔드포인트를 늘리지 않는다. 클릭은 Issue131 의 `POST /open-session`.
+SESSION_SCRIPT_TMPL = """
+<script>
+(function () {
+  var PRJ_PATHS = __PRJ_PATHS__;
+  var POLL_MS = 5000;
+  var SVG_NS = 'http://www.w3.org/2000/svg';
+
+  function normPath(p) { return String(p || '').replace(/\\/+$/, ''); }
+
+  // 세션 cwd 는 프로젝트 서브폴더일 수 있다 — 등록 루트를 만날 때까지 상향 탐색한다
+  // (서버 _resolve_project_root 와 같은 규칙).
+  function prjOf(cwd) {
+    var p = normPath(cwd);
+    while (p) {
+      if (PRJ_PATHS[p]) return PRJ_PATHS[p];
+      var i = p.lastIndexOf('/');
+      if (i <= 0) return null;
+      p = p.slice(0, i);
+    }
+    return null;
+  }
+
+  // Issue301: 실패 원인을 뭉개지 않는다. 전송 실패·HTTP 오류·JSON 파싱 실패는 서로
+  // 다른 사건이고, 한 문장으로 묶으면 어디를 봐야 하는지 알 수 없다(실측: 서버 로그엔
+  // 요청 자체가 없는데 화면은 "hub 서버 미응답"만 말해 클라이언트 실패인지 서버
+  // 거절인지 구분이 안 됐다).
+  function openSession(cwd, sid) {
+    fetch('/open-session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cwd: cwd, sid: sid })
+    }).then(function (r) {
+      return r.text().then(function (t) {
+        var j = null;
+        try { j = JSON.parse(t); } catch (e) { /* 비-JSON 응답 — 원문을 그대로 보여 준다 */ }
+        return { status: r.status, ok: r.ok, j: j, text: t };
+      });
+    }).then(function (res) {
+      if (res.j && res.j.error) {
+        alert('세션 열기 실패 (HTTP ' + res.status + ')\\n' + res.j.error);
+        return;
+      }
+      if (!res.ok) {
+        alert('세션 열기 실패 (HTTP ' + res.status + ')\\n' + String(res.text).slice(0, 200));
+        return;
+      }
+      // 원격 클라이언트는 서버가 host 에서 열어 줄 수 없다 — 브라우저가 URI 로 직접 연다.
+      if (res.j && res.j.status === 'remote') {
+        if (res.j.folder_uri) { location.href = res.j.folder_uri; }
+        setTimeout(function () { location.href = res.j.uri; }, 600);
+      }
+    }).catch(function (e) {
+      // 여기까지 오면 요청이 hub 에 닿지 못한 것 — 서버 로그에도 흔적이 없다.
+      // origin 을 함께 보여 준다(`.local` mDNS 해석 실패 등이 이 경로로 나타난다).
+      console.error('[projects-map] /open-session 요청 실패', e);
+      alert('세션 열기 실패 — hub 에 요청이 닿지 않았습니다.\\n'
+        + 'origin: ' + location.origin + '\\n' + e);
+    });
+  }
+
+  function glyph(s) { return s.content_type === 'dashboard' ? '\\u{1F4CA}' : '\\u{1F7E2}'; }
+
+  // 설명은 툴팁에만 둔다 — 맵 본문에 세션 제목을 그리면 노드가 부풀어 지도가 읽히지 않는다.
+  function tip(s) {
+    var t = s.title || s.name || '';
+    var kind = s.content_type === 'dashboard' ? 'dashboard' : 'session';
+    return (t ? t + ' \\u00b7 ' : '') + kind + ' \\u00b7 ' + String(s.sid || '').slice(0, 8);
+  }
+
+  function makeBadge(s) {
+    var b = document.createElement('span');
+    b.className = 'sess-badge';
+    b.textContent = glyph(s);
+    b.title = tip(s);
+    b.addEventListener('click', function (e) {
+      e.preventDefault(); e.stopPropagation();
+      openSession(s.cwd, s.sid);
+    });
+    return b;
+  }
+
+  function attachToMermaid(g, sessions) {
+    var box;
+    try { box = g.getBBox(); } catch (e) { return; }
+    sessions.forEach(function (s, i) {
+      var t = document.createElementNS(SVG_NS, 'text');
+      t.setAttribute('class', 'sess-badge sess-badge-mmd');
+      t.setAttribute('x', String(box.x + box.width - 4 - i * 15));
+      t.setAttribute('y', String(box.y + 15));
+      t.setAttribute('text-anchor', 'end');
+      t.setAttribute('font-size', '13');
+      t.style.cursor = 'pointer';
+      t.textContent = glyph(s);
+      var ttl = document.createElementNS(SVG_NS, 'title');
+      ttl.textContent = tip(s);
+      t.appendChild(ttl);
+      t.addEventListener('click', function (e) {
+        e.preventDefault(); e.stopPropagation();
+        openSession(s.cwd, s.sid);
+      });
+      g.appendChild(t);
+    });
+  }
+
+  function clearBadges() {
+    document.querySelectorAll('.sess-badge').forEach(function (n) { n.remove(); });
+  }
+
+  // Issue301: 폴 실패를 조용히 삼키면 화면의 배지가 "지금 상태"인 척한다. 실패가
+  // 이어지면 흐리게 만들고 툴팁에 사실을 적어, 클릭해서 실패하기 전에 알 수 있게 한다.
+  var STALE_NOTE = ' \\u00b7 \\u26a0\\ufe0f hub \\uc751\\ub2f5 \\uc5c6\\uc74c \\u2014 \\ucd5c\\uc2e0 \\uc0c1\\ud0dc \\uc544\\ub2d8';
+
+  function setStale(on) {
+    document.querySelectorAll('.sess-badge').forEach(function (b) {
+      b.classList.toggle('stale', on);
+      // 툴팁 위치가 둘이다 — HTML 배지는 title 속성, SVG 배지는 자식 <title> 엘리먼트
+      var child = b.querySelector ? b.querySelector('title') : null;
+      var base = b.getAttribute('data-tip');
+      if (base === null) {
+        base = child ? child.textContent : (b.getAttribute('title') || '');
+        b.setAttribute('data-tip', base);
+      }
+      var txt = on ? base + STALE_NOTE : base;
+      if (child) { child.textContent = txt; } else { b.setAttribute('title', txt); }
+    });
+  }
+
+  // Issue301: 5초마다 전 배지를 지웠다 새로 만들면, 하필 그 순간을 누른 클릭이 사라진
+  // 요소 대신 노드 링크(/open-prj)로 새어 나간다. 세션 집합이 실제로 바뀔 때만 다시
+  // 그린다. 노드 수를 키에 섞어 mermaid 렌더가 늦게 끝난 경우도 한 번은 잡는다.
+  var lastKey = null;
+
+  function renderKey(sessions) {
+    return sessions.map(function (s) {
+      return s.cwd + '|' + s.sid + '|' + s.content_type;
+    }).sort().join(',') + '#' + document.querySelectorAll('svg g.node').length;
+  }
+
+  function render(sessions) {
+    var key = renderKey(sessions);
+    if (key === lastKey) { return; }
+    lastKey = key;
+    clearBadges();
+    var byPrj = {};
+    sessions.forEach(function (s) {
+      var id = prjOf(s.cwd);
+      if (!id) return;
+      (byPrj[id] = byPrj[id] || []).push(s);
+    });
+    Object.keys(byPrj).forEach(function (id) {
+      var list = byPrj[id];
+      // 같은 프로젝트가 여러 맵에 나오면 노드도 여럿 — 전부에 찍는다.
+      document.querySelectorAll('.sess-slot[data-prj="' + id + '"]').forEach(function (slot) {
+        list.forEach(function (s) { slot.appendChild(makeBadge(s)); });
+      });
+      // 노드 id 는 `mermaid-<ts>-flowchart-P{id}-{n}` 형태다 — 앞의 렌더 고유 접두가
+      // 붙으므로 prefix 매칭으로는 안 잡힌다. 뒤의 `-` 가 P1 과 P10 을 갈라 준다.
+      document.querySelectorAll('svg g.node[id*="flowchart-P' + id + '-"]')
+        .forEach(function (g) { attachToMermaid(g, list); });
+    });
+  }
+
+  var failStreak = 0;
+
+  function poll() {
+    fetch('/boards', { cache: 'no-store' })
+      .then(function (r) {
+        if (!r.ok) { throw new Error('HTTP ' + r.status); }
+        return r.json();
+      })
+      .then(function (d) {
+        if (failStreak > 0) { failStreak = 0; setStale(false); }
+        render(d.live_sessions || []);
+      })
+      .catch(function (e) {
+        // hub 밖(file:// 직접 열람)이면 첫 폴부터 실패하고 배지도 없다 — 정상 동작.
+        // 배지가 이미 떠 있는데 실패가 이어지면 그 배지는 낡은 것이다.
+        failStreak += 1;
+        console.warn('[projects-map] 활성 세션 조회 실패 (' + failStreak + '회):', e);
+        if (failStreak >= 2) { setStale(true); }
+      });
+  }
+
+  // mermaid 렌더 완료 시점을 이 스크립트가 알 수 없다 — 초반엔 촘촘히, 이후엔 주기적으로
+  // 다시 그린다. 매 회 배지를 지우고 새로 만들므로 늦게 뜬 SVG 도 다음 회차에 잡힌다.
+  [300, 1200, 2500].forEach(function (ms) { setTimeout(poll, ms); });
+  setInterval(function () { if (!document.hidden) poll(); }, POLL_MS);
+})();
+</script>
+"""
+
+
+def render_session_script(table):
+    """활성 세션 오버레이 스크립트 — 경로→id 매핑만 빌드 시점에 박는다."""
+    paths = {}
+    for pid, meta in table.items():
+        p = os.path.expanduser(meta["path"]).rstrip("/")
+        if p:
+            paths[p] = pid
+    return SESSION_SCRIPT_TMPL.replace("__PRJ_PATHS__", json.dumps(paths, ensure_ascii=False))
+
+
+def read_note(root):
+    """Issue305: `{root}/_note.md` 를 읽어 (htm, md) 두 판을 돌려준다.
+
+    파일이 없거나 내용이 비면 고정 문구로 폴백한다 — 공개 미러가 이 경로를 탄다.
+    마크다운 전부를 지원하지 않는다: 메모는 bullet 과 짧은 문장이 전부이고,
+    파서를 들이면 자동 생성물에 외부 의존이 생긴다. bullet 과 문단만 처리한다.
+    """
+    path = Path(root) / "_note.md"
+    raw = ""
+    if path.exists():
+        raw = path.read_text(encoding="utf-8").strip()
+    if not raw:
+        return (f'<div id="note" class="placeholder">{html.escape(NOTE_PLACEHOLDER)}</div>',
+                NOTE_PLACEHOLDER)
+
+    parts, bullets = [], []
+
+    def flush():
+        if bullets:
+            parts.append("<ul>" + "".join(f"<li>{b}</li>" for b in bullets) + "</ul>")
+            bullets.clear()
+
+    for line in raw.splitlines():
+        s = line.strip()
+        if not s:
+            flush()
+            continue
+        m = re.match(r"^[*\-]\s+(.*)$", s)
+        if m:
+            bullets.append(html.escape(m.group(1)))
+        else:
+            flush()
+            parts.append(f"<p>{html.escape(s)}</p>")
+    flush()
+    return ('<div id="note">' + "".join(parts) + "</div>", raw)
 
 
 def main():
@@ -770,8 +1055,7 @@ def main():
         for name, roots in maps.items()
     )
 
-    existing_notes = extract_existing_notes(out_path)
-    notes_body = existing_notes if existing_notes is not None else DEFAULT_NOTES
+    note_html, note_md = read_note(root)
 
     # Issue298 P1-6: 미할당는 그래프 밖 리스트로. 링크는 유지해 바로 열 수 있게 한다.
     misc_html = ""
@@ -780,8 +1064,11 @@ def main():
         for pid in missing:
             meta = table.get(pid) or {}
             nm = html.escape(f'{meta.get("emoji","")} {meta.get("name", pid)}'.strip())
+            # Issue299: 미할당도 세션은 뜬다 — 그래프에 없다고 배지까지 빠지면
+            #   "지금 어디가 살아 있는가"에 구멍이 생긴다.
             items.append(f'<li><a href="/open-prj?id={html.escape(pid)}">{nm}</a> '
-                         f'<span class="id-tag">#{html.escape(pid)}</span></li>')
+                         f'<span class="id-tag">#{html.escape(pid)}</span>'
+                         f'<span class="sess-slot" data-prj="{html.escape(pid)}"></span></li>')
         misc_html = ('<div id="misc"><b>미할당 ' + str(len(missing)) + '건</b> — '
                      "아직 어느 목적에도 붙지 않은 프로젝트입니다. 결함이 아니라 "
                      "<b>목적 미할당 신호</b>이므로, 목적이 생기면 맵에 넣고 없으면 그대로 둡니다."
@@ -803,6 +1090,7 @@ def main():
         f'<div class="meta">프로젝트 {len(table)}건'
         + (f" · 미할당 편입 {len(missing)}건" if missing else "")
         + " · 노드 클릭 → VSCode 로 열기</div>",
+        note_html,                      # Issue305: 부제 바로 아래 고정 — 열자마자 보이게
         "<!-- PROJECTS-MAP:MERMAID -->",
         '<pre class="mermaid">',
         html.escape(mermaid_src),
@@ -815,16 +1103,59 @@ def main():
         tree_html,
         "<!-- /PROJECTS-MAP:TREE -->",
         "</details>",
-        '<div id="notes">',
-        "<!-- PROJECTS-MAP:NOTES -->",
-        notes_body,
-        "<!-- /PROJECTS-MAP:NOTES -->",
-        "</div>",
+        render_session_script(table),   # Issue299: 활성 세션 오버레이 (</body> 앞)
         HTML_TAIL_SCRIPT,
     ]
     out_path.write_text("\n".join(body), encoding="utf-8")
 
+    # Issue303: VSCode 탐색기에서 클릭 한 번으로 보기 위한 형제 .md.
+    #   .htm 은 hub 서버가 serve 시점에 mermaid 런타임을 주입해야 그려지므로(Issue244)
+    #   탐색기 클릭(= 텍스트 에디터)으로는 원시 소스만 보인다. .md 는 VSCode 기본
+    #   마크다운 미리보기가 `bierner.markdown-mermaid` 로 직접 렌더하므로 서버·CDN 이
+    #   모두 불필요하다. 상호작용(필터·복사·세션 배지)은 .htm 전용으로 남는다.
+    md_path = out_path.with_suffix(".md")
+    md_body = [
+        "---",
+        f"name: {md_path.stem}",
+        'description: "Projects.md 트리에서 생성된 프로젝트 관계도 (자동 생성 — 직접 편집 금지)"',
+        f"date: {datetime.date.today().isoformat()}",
+        "---",
+        "",
+        f"> 자동 생성물입니다. 편집하지 마세요 — 소스는 [Projects.md](Projects.md) 의 `# 프로젝트 트리` 섹션이며,",
+        f"> `python3 .claude/skills/projects-map/build_projects_map.py` 로 재생성됩니다.",
+        ">",
+        "> 필터·복사·활성 세션 배지가 필요하면 hub 판을 여세요 — <http://127.0.0.1:9876/projects-map>",
+        "",
+        f"프로젝트 {len(table)}건"
+        + (f" · 미할당 편입 {len(missing)}건" if missing else ""),
+        "",
+        # Issue305: htm 판과 같은 자리(부제 아래)에 `_note.md` 를 싣는다. 인용 블록으로
+        #   감싸 자동 생성 본문과 수기 메모를 눈으로 구분한다.
+        "\n".join(f"> {ln}" if ln.strip() else ">" for ln in note_md.splitlines()),
+        "",
+        "```mermaid",
+        mermaid_src,
+        "```",
+        "",
+    ]
+    if loop_lines:
+        md_body += [f"# ⚠️ 확인 필요 {len(loop_lines)}건", ""]
+        md_body += [f"* {x}" for x in loop_lines]
+        md_body += [""]
+    if missing:
+        md_body += [f"# 미할당 {len(missing)}건", "",
+                    "아직 어느 목적에도 붙지 않은 프로젝트입니다. 결함이 아니라 목적 미할당 신호입니다.",
+                    ""]
+        for pid in missing:
+            meta = table.get(pid) or {}
+            nm = f'{meta.get("emoji","")} {meta.get("name", pid)}'.strip()
+            path = meta.get("path", "")
+            md_body.append(f"* {nm} `#{pid}`" + (f" — [{path}](vscode://file{path})" if path else ""))
+        md_body += [""]
+    md_path.write_text("\n".join(md_body), encoding="utf-8")
+
     print(f"Projects_map.htm 생성 완료 — 프로젝트 {len(table)}건, 미할당 편입 {len(missing)}건")
+    print(f"  형제 md: {md_path} (VSCode 탐색기 클릭 → 미리보기로 렌더)")
     if loop_lines:
         print(f"  ⚠️ 확인 필요 {len(loop_lines)}건:", file=sys.stderr)
         for x in loop_lines:

@@ -239,8 +239,12 @@ elif [ -n "$_bind" ] && [ "$_bind" != "0.0.0.0" ]; then RENDER_HOST="$_bind"
 else RENDER_HOST="127.0.0.1"; fi
 
 # Issue180: render_target 인지 — 폼(b모드)도 본문(fpm-hub-trigger.sh a모드)과 동일 표면 사용.
-#   hub → POST /open-simple-browser (VSCode 패널, 외부 open 금지) / local-open|both → 외부 open 유지.
 #   과거엔 폼이 render_target 무관 항상 외부 `open` 지시 → 본문(Simple Browser 패널)과 표면 불일치(이중 지시).
+# prj3#Issue269: 값 매핑을 prj1#Issue295(축 분리) 기준으로 갱신.
+#   Issue295 이전엔 `hub` 자체가 "외부 open 금지 + Simple Browser" 를 뜻해 hub→패널이 옳았으나,
+#   이후 `render_target` 은 URL 형식 × 표면 2축으로 분리됨 → 패널 표면은 `vscode` 값이 전담.
+#   vscode → POST /open-simple-browser (VSCode 패널, 외부 open 금지) / hub|local-open|both → 외부 open.
+#   a모드(fpm-hub-trigger.sh)는 이미 RENDER_TARGET_CFG = vscode 로 판정 중 — 본 갱신으로 a/b 표면 재일치.
 RENDER_TARGET=$(grep -E '^[[:space:]]*render_target:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//; s/^"//; s/"$//')
 [ -z "$RENDER_TARGET" ] && RENDER_TARGET="local-open"
 
@@ -282,11 +286,12 @@ path_note = (f"프로젝트 로컬 (_doc_work/{out_dir.split('_doc_work/')[-1]}/
 render_host = os.environ.get('RENDER_HOST', '127.0.0.1')
 hub_doc_url = f"http://{render_host}:{server_port}/htm-doc?path=<절대경로>"
 # Issue180: 폼 표면 지시를 render_target 에 맞춰 본문(fpm-hub-trigger.sh)과 통일 (이중 지시 제거).
-#   hub → POST /open-simple-browser (VSCode 패널, 외부 open 금지) / local-open|both → 외부 open 유지.
+# prj3#Issue269: 판정값 hub → vscode (prj1#Issue295 축 분리 반영 — 패널 표면은 vscode 전담).
+#   vscode → POST /open-simple-browser (VSCode 패널, 외부 open 금지) / hub|local-open|both → 외부 open 유지.
 render_target = os.environ.get('RENDER_TARGET', 'local-open')
-if render_target == 'hub':
+if render_target == 'vscode':
     open_step_2 = (
-        "**2. 저장 + VSCode Simple Browser 표시 (render_target: hub, Issue170/180)** — `file://`·외부 브라우저 open **금지**:\n"
+        "**2. 저장 + VSCode Simple Browser 표시 (render_target: vscode, Issue170/180/269)** — `file://`·외부 브라우저 open **금지**:\n"
         "   - 먼저 `Write` 로 폼 저장 → `fpm-hub-doc-register` PostToolUse hook 이 자동 `register-doc` (mode b 포함, Issue80) → `/htm-doc?path=` 즉시 유효.\n"
         "   - 그 다음 아래 1줄 실행 (`<절대경로>`=저장한 폼 .htm). 본문 렌더와 동일 단일 표면(VSCode 패널)로 통일 — 외부 브라우저 open 금지 (Issue180 이중 표면 제거):\n"
         "   ```bash\n"
