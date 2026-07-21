@@ -425,7 +425,7 @@ if [ "$FOUND_COUNT" -eq "$pane_count" ]; then
 
   # WIN_NAME 추출 (pm:fapp2.0 → fapp2)
   REUSE_WIN=$(echo "${FOUND_TARGETS[1]}" | /usr/bin/sed 's/pm://;s/\..*//')
-  /usr/bin/say "session ready"
+  if [ -x "$HOME/.claude/hooks/hook-say.sh" ]; then "$HOME/.claude/hooks/hook-say.sh" session_ready "session ready"; else /usr/bin/say "session ready"; fi
   echo "WIN_NAME=$REUSE_WIN"
 
 else
@@ -459,7 +459,7 @@ else
   # 완료 보고 (신규)
   /bin/sleep 1
   $TMUX list-panes -t "pm:$WIN_NAME" -F '  pane #P: #{pane_current_path}'
-  /usr/bin/say "session ready"
+  if [ -x "$HOME/.claude/hooks/hook-say.sh" ]; then "$HOME/.claude/hooks/hook-say.sh" session_ready "session ready"; else /usr/bin/say "session ready"; fi
   echo "WIN_NAME=$WIN_NAME"
 fi
 ```

@@ -1,12 +1,12 @@
 ---
 title: projects-map
-description: "Projects.md 의 \"# 프로젝트 트리\" 섹션을 파싱해 프로젝트 간 관계도(Projects_map.htm)를 mermaid HTML 로 생성. hub 서버(/projects-map) 경유로 열어야 렌더됨. Issue_map 의 프로젝트 버전, prj1(___pm) 로컬 전용"
+description: "Projects.md 의 \"# Project Map\" 섹션(구 표기 \"# 프로젝트 트리\" 도 허용)을 파싱해 프로젝트 간 관계도(Projects_map.htm)를 mermaid HTML 로 생성. hub 서버(/projects-map) 경유로 열어야 렌더됨. Issue_map 의 프로젝트 버전, prj1(___pm) 로컬 전용"
 date: 2026-07-19
 ---
 
 # 목적
 
-`Projects.md` 는 전 프로젝트를 나열하지만 **어떤 프로젝트가 어디에 속하는지**는 표만으로 파악하기 어렵다. 본 스킬은 `Projects.md` 의 신설 `# 프로젝트 트리` 섹션(텍스트 인덴트 트리)을 소스로 `Projects_map.htm` 을 생성한다.
+`Projects.md` 는 전 프로젝트를 나열하지만 **어떤 프로젝트가 어디에 속하는지**는 표만으로 파악하기 어렵다. 본 스킬은 `Projects.md` 의 `# Project Map` 섹션(Issue294 rename — 구 `# Project Tree`·`# 프로젝트 트리` 도 파서 허용, 텍스트 인덴트 트리)을 소스로 `Projects_map.htm` 을 생성한다.
 
 설계 근거는 [`_doc_arch/projects-map-design.md`](../../../_doc_arch/projects-map-design.md) 가 SSOT — 문법·완전성·토글·링크 사양 변경은 그 문서를 먼저 갱신할 것.
 
@@ -16,7 +16,7 @@ date: 2026-07-19
 
 * `python3 .claude/skills/projects-map/build_projects_map.py` 직접 실행
 * "프로젝트 맵 갱신해줘", "Projects_map 다시 그려줘" (자연어, ___pm 루트에서)
-* `Projects.md` 의 `# 프로젝트 트리` 섹션 갱신 직후
+* `Projects.md` 의 `# Project Map` 섹션 갱신 직후
 
 # 실행
 
@@ -50,7 +50,7 @@ python3 .claude/skills/projects-map/build_projects_map.py --root ~/_git/___pm --
 # 입력 규약 (Projects.md)
 
 * **속성 SSOT**: `### 📋 프로젝트` 표 — id·이름·경로·이모지·color
-* **계층 SSOT**: `# 프로젝트 트리` 섹션의 fenced code block(````markdown` ... ` ``` `) — 2-space 인덴트, `- {id}. {emoji} {name}` (프로젝트 노드) 또는 `- {label}` (그룹 노드, id 없음)
+* **계층 SSOT**: `# Project Map` 섹션의 **펜스 없는** Main/Sub Map 마크다운 리스트 (Issue298 — 파서가 코드펜스를 무시하므로 펜스 유무 무관) — 2-space 인덴트, `- {id}. {emoji} {name}` (프로젝트 노드) 또는 `- {label}` (그룹 노드, id 없음)
 * 트리 노드의 이모지·이름은 사람이 소스를 읽을 때를 위한 표기일 뿐 — 실제 렌더는 항상 표를 재조회함(트리와 표가 어긋나도 표가 이김)
 
 # 완전성
@@ -82,7 +82,7 @@ python3 .claude/skills/projects-map/build_projects_map.py --root ~/_git/___pm --
 
 * `Projects_map.htm` — `Projects.md` 와 동일 폴더(`___pm` 루트). hub 판(상호작용 있음, 서버 경유 필수)
 * `Projects_map.md` — 같은 폴더의 형제 파일. VSCode 마크다운 미리보기용 읽기 전용 판(다이어그램 + 미할당 목록). 서버·CDN 의존 0
-* 마커 `PROJECTS-MAP:TREE`(교체) / `PROJECTS-MAP:NOTES`(재생성 시 보존 — 수기 메모는 이 구간에)
+* 마커 `PROJECTS-MAP:TREE`(교체). 수기 메모는 루트 `_note.md` 파일 SSOT (Issue305 — 구 `PROJECTS-MAP:NOTES` 보존 마커 폐기, 부재 시 고정 문구 폴백)
 * 생성 산출물이므로 git 비추적 — `.gitignore` 에 `Projects_map.htm` 등록됨(`Issue_map.htm` 과 동일 정책)
 * 페이지 자신은 외부 리소스를 요청하지 않는다(`href="http`·`src="http` 0건). 단 **자립 실행 파일은 아니다** — 맵 본체가 `<pre class="mermaid">` 로 저작되므로 hub 서버가 serve 시점에 주입하는 mermaid 런타임에 의존한다(Issue244). 빌드 타임 `mmdc` 비의존일 뿐 런타임 mermaid 의존이다
 
@@ -90,14 +90,14 @@ python3 .claude/skills/projects-map/build_projects_map.py --root ~/_git/___pm --
 
 1. `python3 .claude/skills/projects-map/build_projects_map.py` 가 오류 없이 종료하고 `프로젝트 N건` 을 출력
 2. `Projects_map.htm` 에 `href="http`·`src="http` 가 0건(외부 리소스 미사용)
-3. 이전 파일의 `PROJECTS-MAP:NOTES` 내용이 보존됨
+3. 루트 `_note.md` 내용이 부제 아래 `<div id="note">` 로 렌더됨 (파일 부재 시 고정 문구 — Issue305)
 4. 표의 id 전부가 트리에 존재하거나(0건 미할당) 미할당 편입 건수가 출력됨
 5. hub 로 열었을 때(`http://127.0.0.1:9876/projects-map`) 활성 세션이 있는 프로젝트 노드에 배지가 뜨고 클릭이 `POST /open-session` 을 부름
 6. 형제 `Projects_map.md` 가 함께 생성되고, VSCode 마크다운 미리보기(`⌘⇧V`)에서 다이어그램이 그려짐
 
 # 제약
 
-* 파서는 `Projects.md` 의 표(8열: id·명·한글명·Dmn·경로·설명·이모지·color)와 `# 프로젝트 트리` fenced block 형식을 신뢰한다 — 열 순서·펜스 여부가 바뀌면 파싱 실패
+* 파서는 `Projects.md` 의 표(8열: id·명·한글명·Dmn·경로·설명·이모지·color)와 `# Project Map` 인덴트 리스트 형식을 신뢰한다 — 열 순서·인덴트 규칙이 바뀌면 파싱 실패 (코드펜스는 무시하므로 펜스 유무는 무관 — Issue298)
 * 외부 의존 없음(Python 표준 라이브러리만)
 
 # 참조

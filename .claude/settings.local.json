@@ -24,7 +24,7 @@
       "Bash(TMUX=/opt/homebrew/bin/tmux)",
       "Bash(/bin/sleep 1)",
       "Bash($TMUX list-panes:*)",
-      "Bash(/usr/bin/say \"session ready\")",
+      "Bash(~/.claude/hooks/hook-say.sh session_ready:*)",
       "Bash(ls $HOME/.claude/skills/cdf*)",
       "Bash(find $HOME/_git/___pm -name *.md -not -path */.git/*)",
       "Bash(head -20 find $HOME/.openclaw -name cdf*)"

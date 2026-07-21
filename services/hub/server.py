@@ -73,6 +73,16 @@ HTM_DIRS = ["htm", "z_done/htm", "z_htm"]
 def _htm_dirs_for(cwd: str) -> list:
     """Issue289: 프로젝트 cwd 하위 htm 읽기 경로 목록(우선순위 순, 존재 여부 무관)."""
     return [os.path.join(cwd, "_doc_work", *d.split("/")) for d in HTM_DIRS]
+
+
+def _htm_output_stem(name: str) -> str:
+    """Issue311: htm 단발 출력 파일명에서 확장자를 뗀 stem. 구 `claude-htm-*.html` /
+    현행 `hub_htm_*.htm` 둘 다 인식 — 매치 안 되면 빈 문자열(호출측이 skip)."""
+    if name.startswith("claude-htm-") and name.endswith(".html"):
+        return name[:-len(".html")]
+    if name.startswith("hub_htm_") and name.endswith(".htm"):
+        return name[:-len(".htm")]
+    return ""
 TOKENS_FILE = f"{STATE_DIR}/tokens.json"
 SESSIONS_FILE = f"{STATE_DIR}/sessions.json"  # Issue17 Phase 1
 PIDS_FILE = f"{STATE_DIR}/pids.json"  # Issue63: runner PID 등록분 영속화
@@ -1705,6 +1715,83 @@ def _issue_map_visible(cwd: str) -> bool:
     return bool(path) and has_deps
 
 
+# Issue316: 카드 배지 — "활성 세션 수" 대신 "미완료 이슈 수"를 보여준다(세션 수는 카드 바디의
+#   live-list 에 이미 목록으로 표시되어 정보 손실 없음). Issue_map.htm 존재 여부와 무관하게
+#   Issue.md 자체 경로가 필요하므로 `_issue_map_scan`(맵 파일 기준)과 별도 탐색을 둔다.
+_ISSUE_OPEN_COUNT_TTL = 30.0     # _issue_map_cache 와 동일 TTL — /hub 폴링 5s 대비 stat 절감
+_issue_open_count_cache: dict = {}  # cwd(str) -> (expire_ts, count)
+_issue_open_count_lock = threading.Lock()
+# build_issue_map.py DONE_SECTIONS 미러. `_issue_md_has_depends()` 는 "헤더 줄 끝 ✅" 만으로
+# done 을 판정하는데, 이 저장소 Issue.md 실측 결과 구식 이슈(Issue230/232/236 등)는 ✅ 접미사 없이
+# `✅ 완료` 섹션 소속만으로 완료 표시됨 — 섹션 판정을 1차 신호로, 헤더 접미사를 보강 신호로 둔다
+# (프로젝트가 다른 완료 섹션명을 쓰는 경우 대비).
+_ISSUE_DONE_SECTIONS = {"✅ 완료"}
+
+
+def _find_issue_md(cwd: str) -> str | None:
+    """cwd 기준 상위로 최대 _ISSUE_MAP_MAX_UP 단계 거슬러 올라가며 Issue.md 경로를 찾는다.
+    `_issue_map_scan` 과 동일한 탐색 규약이나, Issue_map.htm 존재 여부와 무관하게
+    Issue.md 자체 경로를 반환한다."""
+    if not cwd:
+        return None
+    try:
+        d = os.path.realpath(os.path.expanduser(cwd))
+        home = os.path.realpath(os.path.expanduser("~"))
+        for _ in range(_ISSUE_MAP_MAX_UP):
+            issue_md = os.path.join(d, "Issue.md")
+            if os.path.isfile(issue_md):
+                return issue_md
+            parent = os.path.dirname(d)
+            if parent == d or d == home:
+                break
+            d = parent
+    except OSError:
+        return None
+    return None
+
+
+def _count_open_issues(issue_md: str) -> int:
+    """Issue.md 의 미완료 이슈 개수 — 완료(헤더 줄 끝 ✅)·⏸️ 보류·🚫 취소 섹션을 제외한
+    이슈 헤더(`## Issue1:` / `### Issue1_2:`) 개수. `_issue_md_has_depends()` 와 동일한
+    섹션 추적 순회를 재사용한다."""
+    count = 0
+    try:
+        section_done = False
+        excluded_section = False
+        with open(issue_md, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                m_sec = _ISSUE_SECTION_RE.match(line)
+                if m_sec:
+                    sec = m_sec.group(1)
+                    section_done = sec in _ISSUE_DONE_SECTIONS
+                    excluded_section = sec in _ISSUE_EXCLUDED_SECTIONS
+                    continue
+                if _ISSUE_HEADER_RE.match(line):
+                    done = section_done or line.rstrip().endswith("✅")
+                    if not done and not excluded_section:
+                        count += 1
+                    continue
+    except OSError:
+        return 0
+    return count
+
+
+def _issue_open_count(cwd: str) -> int:
+    """cwd 기준 미완료 이슈 개수. Issue.md 없으면 0. TTL 캐시."""
+    if not cwd:
+        return 0
+    now = time.time()
+    with _issue_open_count_lock:
+        hit = _issue_open_count_cache.get(cwd)
+        if hit and hit[0] > now:
+            return hit[1]
+    issue_md = _find_issue_md(cwd)
+    count = _count_open_issues(issue_md) if issue_md else 0
+    with _issue_open_count_lock:
+        _issue_open_count_cache[cwd] = (now + _ISSUE_OPEN_COUNT_TTL, count)
+    return count
+
+
 def _htm_state(path: str) -> tuple:
     """프로젝트 경로의 htm 자동 모드 effective off 여부 + 사유 계산.
     htm-trigger.sh 판정 우선순위 복제: SYSTEM_OFF_FLAG > per-cwd STATE_FILE > 프로젝트 default(on).
@@ -2281,6 +2368,7 @@ IMPORTANT_RESPONSE_CRIT_SEC = 1800   # 응답 정체 critical 승격 (30분)
 IMPORTANT_RESPONSE_ABANDON_SEC = 21600  # Issue100: 6h+ 미해소 wait 는 방치(abandoned)로 간주, R2 배제
 IMPORTANT_STALE_CARD_MIN = 5         # dashboard 카드 정리 권고 임계
 IMPORTANT_HTM_DOC_MIN = 200          # htm 문서 정리 권고 임계
+DASH_STATUS_NONE_GRACE_SEC = 120     # status 필드 없는(첫 write 전) dash 파일을 stale 로 강등하는 유예시간
 # R2 응답 정체 판정 대상 이벤트 — 사용자 입력을 기다리는 hook 이벤트
 IMPORTANT_WAIT_EVENTS = ("AskUserQuestion", "Notification")
 
@@ -3412,8 +3500,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _scan_htm_docs_in(self, directory: str, skip: set = None,
                           limit: int = 0) -> list:
-        """Issue40: directory 에서 htm 스킬 단발 출력(claude-htm-*.html) 스캔.
-        동반 .dash.{json,yaml,yml} 형제가 있는 .html 은 dashboard 산출물 → 제외.
+        """Issue40: directory 에서 htm 스킬 단발 출력(구 claude-htm-*.html / 현행
+        hub_htm_*.htm, Issue311) 스캔. 동반 .dash.{json,yaml,yml} 형제가 있는 파일은
+        dashboard 산출물 → 제외.
         Issue55: skip set 의 path 는 후보에서 제외 — title 추출(파일 열람) 비용 회피.
         limit>0 이면 파일명 내 unixtime 최신순 N개만 stat+title 추출 (search_limit)."""
         results = []
@@ -3427,9 +3516,9 @@ class Handler(BaseHTTPRequestHandler):
         skip = skip or set()
         candidates = []
         for name in entries:
-            if not (name.startswith("claude-htm-") and name.endswith(".html")):
+            stem = _htm_output_stem(name)
+            if not stem:
                 continue
-            stem = name[:-len(".html")]
             if any(f"{stem}.dash.{ext}" in entry_set for ext in ("json", "yaml", "yml")):
                 continue
             abs_path = os.path.join(directory, name)
@@ -3479,7 +3568,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _all_disk_htm_paths(self) -> set:
         """Issue92: clear tombstone 용 — 등록 프로젝트 htm 폴더(Issue289: HTM_DIRS 전체) + /tmp/___pm 의
-        claude-htm-*.html 절대경로 전수(set). title 추출 없이 path 만 수집
+        htm 단발 출력(구 claude-htm-*.html / 현행 hub_htm_*.htm, Issue311) 절대경로
+        전수(set). title 추출 없이 path 만 수집
         (dash 동반 .html 제외). _scan_htm_docs_in 과 동일 후보 규칙이나
         파일 열람·limit 없이 경로만 — clear 가 디스크에 권위적이도록.
         registry 미등록 orphan(register-doc 실패분·구버전 파일)도 포함되어
@@ -3500,9 +3590,9 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 continue
             for name in names:
-                if not (name.startswith("claude-htm-") and name.endswith(".html")):
+                stem = _htm_output_stem(name)
+                if not stem:
                     continue
-                stem = name[:-len(".html")]
                 if any(f"{stem}.dash.{ext}" in names
                        for ext in ("json", "yaml", "yml")):
                     continue
@@ -4139,6 +4229,7 @@ class Handler(BaseHTTPRequestHandler):
                 #   부족하고 `Issue.md` 에 `* depends:` 간선이 있어야 노출(관계도 가치 有).
                 #   경로는 노출하지 않는다(/issue-map 이 cwd 로 서버측 재계산 — 경로 조작 차단).
                 "issue_map": _issue_map_visible(p.get("cwd", "")),
+                "open_issue_count": _issue_open_count(p.get("cwd", "")),  # Issue316: 카드 배지 — 미완료 이슈 수
                 "mode": entry.get("mode"),
                 "content_type": entry.get("content_type"),
                 "origin": origin,         # Issue177: "vscode" | "terminal" (카드 배지·클릭 분기)
@@ -4614,6 +4705,14 @@ __WARN__
                 pid = d.get("worker_pid")
             if isinstance(pid, int) and not _pid_alive(pid):
                 return "stale"
+        elif status is None:
+            # runner 가 첫 write 전에 죽으면(crash-loop) status 필드 자체가 없어
+            # 'running'도 'done류'도 아니라 clear-done 이 영구 무시함(정리 버튼 무반응).
+            # grace 경과 시 stale 로 강등해 정리 대상에 포함시킴.
+            mtime_ts = d.get("mtime_ts")
+            if isinstance(mtime_ts, (int, float)) and \
+                    (time.time() - mtime_ts) > DASH_STATUS_NONE_GRACE_SEC:
+                return "stale"
         return status
 
     @staticmethod
@@ -4675,6 +4774,10 @@ __WARN__
                     "error": "dash path outside serve-root (cwd subtree or /tmp/___pm)",
                     "path": path})
                 return
+            # Issue309: dash stored path 를 realpath 로 통일. _auto_register_dash(/notify)
+            #   가 realpath 저장이라, abspath 로 저장하면 macOS /tmp↔/private/tmp symlink
+            #   에서 표기가 갈려 dedup 이 실패 → 같은 파일이 카드 2장으로 뜬다.
+            path = path_real
         reg_path = HTM_REGISTRY if kind == "htm" else DASH_REGISTRY
         tomb_path = HTM_CLEARED if kind == "htm" else DASH_CLEARED
         with registry_lock:
@@ -5121,12 +5224,19 @@ __WARN__
         sanitize 하므로 http 앵커여야 한다 — `/ob` 브리지와 같은 해법.
 
         입력면: **prj 번호 하나뿐**. 경로는 서버가 `projects/<id>` 인덱스에서 조회하므로
-        클라이언트가 경로를 넘길 방법이 없다(traversal 불가). `/ob` 와 같이 호스트에서
-        `open` 을 실행하는 등급이라 loopback 전용으로 묶는다.
+        클라이언트가 경로를 넘길 방법이 없다(traversal 불가).
+
+        Issue317(Issue284_2 재발): 애초 `/ob`·`/open-session` 과 같은 loopback 전용
+        등급으로 묶었으나, `/open-project`(Issue42/237)는 동일하게 host-local `open`
+        을 실행하면서도 `_ip_allowed()`(bind self·allowlist 포함) + 비루프백일 때
+        `ssh_remote_alias` 원격 URI 폴백을 쓴다. bind_host 를 비루프백(예: host.local
+        LAN IP)으로 연 사용자가 `/projects-map` 페이지 자체는 `_ip_allowed()` 로 열람
+        가능한데, 정작 노드 클릭(`/open-prj`)만 strict loopback 이라 403 — 페이지는
+        뜨고 클릭만 죽는 오작동. `/open-project` 와 동일한 게이트+폴백으로 통일한다.
         """
         client_ip = self.client_address[0] if self.client_address else ""
-        if client_ip not in LOOPBACK_IPS:
-            self._send_json(403, {"error": "loopback only"})
+        if not _ip_allowed(client_ip):
+            self._send_json(403, {"error": "localhost only"})
             return
         qs = parse_qs(parsed.query or "")
         raw = (qs.get("id", [""])[0] or "").strip()
@@ -5148,6 +5258,18 @@ __WARN__
         if not target or not os.path.isdir(target):
             self._send_json(404, {"error": f"path not found: {target}"})
             return
+        # Issue317: /open-project(Issue237) 와 동일 — 비루프백(LAN self bind 등) +
+        #   alias 설정 시 host-local open 대신 vscode-remote:// URI 로 응답.
+        if client_ip not in LOOPBACK_IPS:
+            alias = (_load_hub_setting().get("ssh_remote_alias") or "").strip()
+            if alias:
+                uri = _ssh_remote_uri(target, alias)
+                log(f"GET /open-prj — remote client={client_ip} id={raw} → {uri}")
+                self.send_response(302)
+                self.send_header("Location", uri)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
         try:
             subprocess.Popen(["open", "-a", "Visual Studio Code", target],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -8297,7 +8419,7 @@ main { padding: 1.5rem; max-width: 1600px; margin: 0 auto; display: flex; gap: 1
 .section-title .btn-zombie { margin-left: 0.6rem; background: #8a4; color: #fff; border: 1px solid #693; border-radius: 4px; padding: 0.2rem 0.6rem; font-size: 0.82em; cursor: pointer; font-weight: 600; }
 .section-title .btn-zombie:hover { background: #693; }
 .section-title .btn-zombie:disabled { background: var(--muted); border-color: var(--muted); cursor: not-allowed; }
-.dash-section-bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.4rem; }
+.dash-section-bar { display: flex; align-items: center; justify-content: space-between; margin: 0.5rem 0 0.4rem; }
 .dash-section-bar .section-title { margin: 0; }
 .dash-controls { display: flex; gap: 0.8rem; align-items: center; }
 .dash-controls label { font-size: 0.85em; color: var(--muted); }
@@ -8661,11 +8783,13 @@ function renderLiveSessions(list, limit, showCopy) {
   const groups = new Map();
   for (const s of list) {
     const key = s.cwd || s.name;
-    if (!groups.has(key)) groups.set(key, {cwd: s.cwd, name: s.name, color: s.color, emoji: s.emoji, issueMap: false, items: []});
+    if (!groups.has(key)) groups.set(key, {cwd: s.cwd, name: s.name, color: s.color, emoji: s.emoji, issueMap: false, openIssueCount: 0, items: []});
     const g = groups.get(key);
     g.items.push(s);
     // Issue284: 그룹 내 한 세션이라도 이슈맵 보유면 카드에 🗺️ 노출
     if (s.issue_map) g.issueMap = true;
+    // Issue316: 같은 cwd 세션은 동일 값 — 그대로 그룹에 복사(마지막 세션 값으로 덮여도 동일).
+    g.openIssueCount = s.open_issue_count || 0;
   }
   const rowHtml = (s, extraCls) => {
     // Issue66: 큐 dashboard(supervisor_pid 존재)는 graceful remove, 일반은 stop
@@ -8730,7 +8854,7 @@ function renderLiveSessions(list, limit, showCopy) {
     return `<div class="card live${expCls}" data-cwd="${escapeHtml(g.cwd)}" title="{T:common.openVscodeTitle}">
       <div class="card-head" style="background:${escapeHtml(g.color)}">
         <span class="name">${escapeHtml(g.emoji || '📁')} ${escapeHtml(g.name)}</span>
-        <span class="head-right">${mapLink}<span class="live-badge">${g.items.length}</span></span>
+        <span class="head-right">${mapLink}<span class="live-badge" data-tip="미완료 이슈 ${g.openIssueCount}개 · 세션 ${g.items.length}개">${g.openIssueCount}</span></span>
       </div>
       <div class="card-body"><ul class="live-list">${rows}</ul></div>
     </div>`;
@@ -10036,8 +10160,8 @@ function liveTipShow(badge) {
   liveTip.style.top = top + 'px';
 }
 function liveTipHide() { liveTip.hidden = true; }
-document.addEventListener('mouseover', e => { const b = e.target.closest('.live-origin[data-tip], .live-model[data-tip]'); if (b) liveTipShow(b); });
-document.addEventListener('mouseout', e => { if (e.target.closest('.live-origin[data-tip], .live-model[data-tip]')) liveTipHide(); });
+document.addEventListener('mouseover', e => { const b = e.target.closest('.live-origin[data-tip], .live-model[data-tip], .live-badge[data-tip]'); if (b) liveTipShow(b); });
+document.addEventListener('mouseout', e => { if (e.target.closest('.live-origin[data-tip], .live-model[data-tip], .live-badge[data-tip]')) liveTipHide(); });
 document.getElementById('btn-settings').addEventListener('click', openSettings);
 document.getElementById('set-lang').addEventListener('click', e => {
   const b = e.target.closest('button[data-lang]'); if (b) switchLang(b.dataset.lang);

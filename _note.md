@@ -1,0 +1,1 @@
+* This file (_note.md) is shown in Project_map.(이 파일(_note.md)은 Project_map에서 보여짐.)

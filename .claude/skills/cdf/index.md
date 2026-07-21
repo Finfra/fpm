@@ -10,7 +10,7 @@ date: 2026-04-18
 
 ## cdft 우선 호출 규칙
 
-`~/.zsh_functions`에 `cdft()` 함수가 존재함. **query 모드를 제외한 모든 모드**(setup, send, list, kill, capture)는 `cdft`를 bash에서 직접 실행하여 처리할 것.
+`sh/fpm_function.sh`(부트스트랩 `sh/fpm.sh` 가 source)에 `cdft()` 함수가 존재함. **query 모드를 제외한 모든 모드**(setup, send, list, kill, capture)는 `cdft`를 bash에서 직접 실행하여 처리할 것.
 
 ```bash
 # query 모드 판별
@@ -425,7 +425,7 @@ if [ "$FOUND_COUNT" -eq "$pane_count" ]; then
 
   # WIN_NAME 추출 (pm:fapp2.0 → fapp2)
   REUSE_WIN=$(echo "${FOUND_TARGETS[1]}" | /usr/bin/sed 's/pm://;s/\..*//')
-  /usr/bin/say "session ready"
+  if [ -x "$HOME/.claude/hooks/hook-say.sh" ]; then "$HOME/.claude/hooks/hook-say.sh" session_ready "session ready"; else /usr/bin/say "session ready"; fi
   echo "WIN_NAME=$REUSE_WIN"
 
 else
@@ -459,7 +459,7 @@ else
   # 완료 보고 (신규)
   /bin/sleep 1
   $TMUX list-panes -t "pm:$WIN_NAME" -F '  pane #P: #{pane_current_path}'
-  /usr/bin/say "session ready"
+  if [ -x "$HOME/.claude/hooks/hook-say.sh" ]; then "$HOME/.claude/hooks/hook-say.sh" session_ready "session ready"; else /usr/bin/say "session ready"; fi
   echo "WIN_NAME=$WIN_NAME"
 fi
 ```
