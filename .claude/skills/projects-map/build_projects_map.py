@@ -485,9 +485,15 @@ def collect_map(nodes, table, maps_ctx, parent_nid=None, map_name=""):
                 })
             else:
                 path = os.path.expanduser(meta["path"])
+                # Issue###: 이모지 복원 + 겹침 방지 — 한 줄 유지. 이모지를 고정폭 span 에
+                #   담아(inline-block + margin) 글리프 실폭이 달라도 이름과의 간격이 일정.
+                #   별도 줄(<br/>)은 노드 상단에서 이모지가 잘려 회피.
+                emoji = mmd_label(meta["emoji"])
+                label_parts = (f'<span style="display:inline-block;margin-right:0.4em">'
+                               f'{emoji}</span>{mmd_label(meta["name"])} #{pid}')
                 maps_ctx["nodes"].append({
                     "nid": nid, "id": pid,
-                    "label": f'{mmd_label(meta["emoji"])} {mmd_label(meta["name"])} #{pid}',
+                    "label": label_parts,
                     "purpose": n.get("purpose"), "actor": n.get("actor", False),
                     "dead": not os.path.exists(path),
                     "color": meta["color"] or "", "path": path,
@@ -642,7 +648,14 @@ HTML_HEAD = """<!doctype html>
   :root { color-scheme: light dark; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     max-width: 900px; margin: 2rem auto; padding: 0 1rem; line-height: 1.6; }
-  h1 { font-size: 1.4rem; }
+  #topbar { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+  h1 { font-size: 1.4rem; margin: 0; padding: 0.35rem 0.9rem; border-radius: 8px;
+    display: inline-block; }
+  .quick-btn { font-size: 1.25rem; line-height: 1; border: none; background: none;
+    cursor: pointer; padding: 0.2rem 0.4rem; border-radius: 6px; opacity: 0.75; }
+  .quick-btn:hover { opacity: 1; background: rgba(127,127,127,0.15); }
+  #note { cursor: pointer; }
+  #map-canvas { cursor: pointer; }
   .meta { color: #777; font-size: 0.85rem; margin-bottom: 1rem; }
   input#filter { width: 100%; box-sizing: border-box; padding: 0.5rem; font-size: 1rem;
     margin-bottom: 1rem; }
@@ -671,7 +684,7 @@ HTML_HEAD = """<!doctype html>
   /* Issue305: 맵을 열자마자 눈에 들어와야 하는 수기 메모(_note.md). 부제 바로 아래
      고정 위치 — 아래로 밀면 스크롤해야 보여서 "열 때마다 상기" 목적이 깨진다. */
   #note { margin: 0 0 1.2rem; padding: 0.7rem 1.1rem; border-left: 4px solid #c9a227;
-    border-radius: 0 8px 8px 0; background: #fdf9e8; font-size: 0.95rem; }
+    border-radius: 0 8px 8px 0; background: #fdf9e8; font-size: 0.67rem; }
   #note p { margin: 0.25rem 0; }
   #note ul { list-style: disc; padding-left: 1.3rem; margin: 0.25rem 0; }
   #note li { margin: 0.15rem 0; }
@@ -697,7 +710,6 @@ HTML_HEAD = """<!doctype html>
 </style>
 </head>
 <body>
-<h1>Projects_map</h1>
 """
 
 HTML_TAIL_SCRIPT = """
@@ -822,13 +834,20 @@ SESSION_SCRIPT_TMPL = """
     });
   }
 
-  function glyph(s) { return s.content_type === 'dashboard' ? '\\u{1F4CA}' : '\\u{1F7E2}'; }
+  // Issue273 hub 와 동일한 model_tier 신호등: 🟣 opus / 🔵 sonnet / 🟢 haiku / 🟠 fable.
+  // model_tier 미상이면 🟢 로 폴백(구 동작 유지). dashboard 는 model 무관 📊.
+  var MODEL_DOT = { opus: '\\u{1F7E3}', sonnet: '\\u{1F535}', haiku: '\\u{1F7E2}', fable: '\\u{1F7E0}' };
+  function glyph(s) {
+    if (s.content_type === 'dashboard') { return '\\u{1F4CA}'; }
+    return MODEL_DOT[s.model_tier] || '\\u{1F7E2}';
+  }
 
   // 설명은 툴팁에만 둔다 — 맵 본문에 세션 제목을 그리면 노드가 부풀어 지도가 읽히지 않는다.
   function tip(s) {
     var t = s.title || s.name || '';
     var kind = s.content_type === 'dashboard' ? 'dashboard' : 'session';
-    return (t ? t + ' \\u00b7 ' : '') + kind + ' \\u00b7 ' + String(s.sid || '').slice(0, 8);
+    var mdl = s.model_tier ? ' \\u00b7 ' + (s.model_id || s.model_tier) : '';
+    return (t ? t + ' \\u00b7 ' : '') + kind + mdl + ' \\u00b7 ' + String(s.sid || '').slice(0, 8);
   }
 
   function makeBadge(s) {
@@ -896,7 +915,7 @@ SESSION_SCRIPT_TMPL = """
 
   function renderKey(sessions) {
     return sessions.map(function (s) {
-      return s.cwd + '|' + s.sid + '|' + s.content_type;
+      return s.cwd + '|' + s.sid + '|' + s.content_type + '|' + (s.model_tier || '');
     }).sort().join(',') + '#' + document.querySelectorAll('svg g.node').length;
   }
 
@@ -952,6 +971,49 @@ SESSION_SCRIPT_TMPL = """
 })();
 </script>
 """
+
+
+def vscode_href(path):
+    """절대경로 → `vscode://file{인코딩}` 링크. render_node 의 vscode_href 산출과 동일 규약."""
+    quoted = urllib.parse.quote(os.path.expanduser(str(path)), safe="/")
+    return "vscode://file" + quoted
+
+
+CLICK_SCRIPT_TMPL = """
+<script>
+(function () {
+  var NOTE_HREF = "__NOTE_HREF__";
+  var PROJECTS_HREF = "__PROJECTS_HREF__";
+
+  document.getElementById('btn-note').addEventListener('click', function () {
+    location.href = NOTE_HREF;
+  });
+  document.getElementById('btn-projects-md').addEventListener('click', function () {
+    location.href = PROJECTS_HREF;
+  });
+
+  // Issue305 연장: note 박스 자체를 눌러도 _note.md 를 바로 연다.
+  document.getElementById('note').addEventListener('click', function () {
+    location.href = NOTE_HREF;
+  });
+
+  // 맵(다이어그램)의 빈 배경 클릭 → Projects.md. 노드 링크(<a>) 위 클릭은 그 링크가 처리하므로 제외.
+  var canvas = document.getElementById('map-canvas');
+  if (canvas) {
+    canvas.addEventListener('click', function (e) {
+      if (e.target.closest('a')) { return; }
+      location.href = PROJECTS_HREF;
+    });
+  }
+})();
+</script>
+"""
+
+
+def render_click_script(note_href, projects_href):
+    return (CLICK_SCRIPT_TMPL
+            .replace("__NOTE_HREF__", note_href)
+            .replace("__PROJECTS_HREF__", projects_href))
 
 
 def render_session_script(table):
@@ -1057,6 +1119,20 @@ def main():
 
     note_html, note_md = read_note(root)
 
+    # 제목 배경색 — prj1(이 저장소 자체) peacock color 를 그대로 쓴다. 하드코딩 대신
+    # table 조회로 얻어, Projects.md 의 color 가 바뀌면 제목도 함께 따라간다.
+    title_color = (table.get("1") or {}).get("color") or "#ffffdd"
+    note_href = vscode_href(Path(root) / "_note.md")
+    projects_href = vscode_href(projects_path)
+    topbar_html = (
+        '<div id="topbar">'
+        f'<h1 style="background:{html.escape(title_color)};'
+        f'color:{text_on(title_color)}">Projects_map</h1>'
+        f'<button type="button" class="quick-btn" id="btn-note" title="_note.md 열기 (VSCode)">📝</button>'
+        f'<button type="button" class="quick-btn" id="btn-projects-md" title="Projects.md 열기 (VSCode)">🗂️</button>'
+        '</div>'
+    )
+
     # Issue298 P1-6: 미할당는 그래프 밖 리스트로. 링크는 유지해 바로 열 수 있게 한다.
     misc_html = ""
     if missing:
@@ -1086,15 +1162,18 @@ def main():
 
     body = [
         HTML_HEAD,
+        topbar_html,
         warn_html,
         f'<div class="meta">프로젝트 {len(table)}건'
         + (f" · 미할당 편입 {len(missing)}건" if missing else "")
-        + " · 노드 클릭 → VSCode 로 열기</div>",
+        + " · 노드 클릭 → VSCode 로 열기 · 맵 빈 곳 클릭 → Projects.md · note 박스 클릭 → _note.md</div>",
         note_html,                      # Issue305: 부제 바로 아래 고정 — 열자마자 보이게
         "<!-- PROJECTS-MAP:MERMAID -->",
+        '<div id="map-canvas">',
         '<pre class="mermaid">',
         html.escape(mermaid_src),
         "</pre>",
+        "</div>",
         "<!-- /PROJECTS-MAP:MERMAID -->",
         misc_html,
         '<details id="text-tree"><summary>텍스트 트리 (필터·복사)</summary>',
@@ -1104,6 +1183,7 @@ def main():
         "<!-- /PROJECTS-MAP:TREE -->",
         "</details>",
         render_session_script(table),   # Issue299: 활성 세션 오버레이 (</body> 앞)
+        render_click_script(note_href, projects_href),  # note/Projects.md 클릭 오픈
         HTML_TAIL_SCRIPT,
     ]
     out_path.write_text("\n".join(body), encoding="utf-8")
