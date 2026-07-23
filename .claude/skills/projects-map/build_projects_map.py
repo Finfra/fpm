@@ -648,7 +648,7 @@ HTML_HEAD = """<!doctype html>
   :root { color-scheme: light dark; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     max-width: 900px; margin: 2rem auto; padding: 0 1rem; line-height: 1.6; }
-  #topbar { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+  /* 헤더는 body 직속 <header> 로 방출 → 서버가 canonical full-bleed CSS 주입 (전체 폭). */
   h1 { font-size: 1.4rem; margin: 0; padding: 0.35rem 0.9rem; border-radius: 8px;
     display: inline-block; }
   .quick-btn { font-size: 1.25rem; line-height: 1; border: none; background: none;
@@ -1124,13 +1124,36 @@ def main():
     title_color = (table.get("1") or {}).get("color") or "#ffffdd"
     note_href = vscode_href(Path(root) / "_note.md")
     projects_href = vscode_href(projects_path)
+    # Issue: 서버 합성 헤더(<div id=topbar> 안에 <header> 승격)는 flex 자식이라 절반 폭에
+    #   그친다. builder 가 body 직속 canonical <header> 를 직접 방출하면 서버 합성이 no-op
+    #   되고(전체 폭 full-bleed CSS 는 _normalize_hub_header_css 가 주입), 🔗 복사·닫기·hub
+    #   링크 shim 은 클래스 기반이라 그대로 동작한다. 📝🗂️ 는 header-actions 우측에 배치.
+    proj_label = html.escape(os.path.basename(str(root)))
+    proj_cwd = html.escape(str(root))
+    badge_onclick = (
+        "event.preventDefault();fetch('/open-project',{method:'POST',"
+        "headers:{'Content-Type':'application/json'},"
+        f"body:JSON.stringify({{cwd:'{proj_cwd}'}})}})"
+        ".then(function(r){return r.json();}).then(function(j){if(j&&j.error)"
+        "alert('VSCode 열기 실패: '+j.error);})"
+        ".catch(function(){alert('hub 서버 미응답 — VSCode 열기 실패');});"
+    )
     topbar_html = (
-        '<div id="topbar">'
-        f'<h1 style="background:{html.escape(title_color)};'
-        f'color:{text_on(title_color)}">Projects_map</h1>'
-        f'<button type="button" class="quick-btn" id="btn-note" title="_note.md 열기 (VSCode)">📝</button>'
-        f'<button type="button" class="quick-btn" id="btn-projects-md" title="Projects.md 열기 (VSCode)">🗂️</button>'
-        '</div>'
+        '<header>'
+        '<a class="hub-link" href="/hub" target="fpm-hub" title="통합 모니터링 Hub">'
+        '<img src="/fpm-icon.png" alt="Hub" style="height:1.2em;vertical-align:-0.25em;"></a>'
+        f'<h1 style="background:{html.escape(title_color)};color:{text_on(title_color)};'
+        'flex:0 0 auto;margin-right:auto;text-align:left;padding:0.25rem 0.7rem;'
+        'border-radius:6px">Projects_map</h1>'
+        '<nav class="header-actions">'
+        '<button type="button" class="quick-btn" id="btn-note" title="_note.md 열기 (VSCode)">📝</button>'
+        '<button type="button" class="quick-btn" id="btn-projects-md" title="Projects.md 열기 (VSCode)">🗂️</button>'
+        f'<a class="proj-badge" href="#" title="클릭 → VSCode 로 {proj_label} 열기" '
+        f'onclick="{badge_onclick}">\U0001F4C1 {proj_label}</a>'
+        '<button type="button" class="close-btn" title="이 문서 탭 닫기" '
+        'onclick="window.close()">✕</button>'
+        '</nav>'
+        '</header>'
     )
 
     # Issue298 P1-6: 미할당는 그래프 밖 리스트로. 링크는 유지해 바로 열 수 있게 한다.

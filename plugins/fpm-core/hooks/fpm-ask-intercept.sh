@@ -281,7 +281,7 @@ cwd_q = urllib.parse.quote(cwd) if cwd else ''
 project_root = cwd.split('/_doc_work/')[0] if cwd and '/_doc_work/' in cwd else cwd
 
 ask_path = f"{out_dir}/hub_htm_<YYYYMMDD_HHMMSS>_b_<주제>.htm"  # 날짜시간=`date +%Y%m%d_%H%M%S`, 주제=질문 핵심 10자 내외 kebab, mode b=ask 폼
-path_note = (f"프로젝트 로컬 (_doc_work/{out_dir.split('_doc_work/')[-1]}/)" if '_doc_work/' in out_dir else f"프로젝트 로컬 ({out_dir})") if not out_dir.startswith('/tmp') else "/tmp/___pm fallback"
+path_note = (f"프로젝트 로컬 (_doc_work/{out_dir.split('_doc_work/')[-1]}/)" if '_doc_work/' in out_dir else f"프로젝트 로컬 ({out_dir})") if not out_dir.startswith('/tmp') else f"/tmp/___pm fallback → 프로젝트: {project_name} · 생성: cd {cwd} && mkdir -p _doc_work/htm"  # Issue276
 # Issue172: 폼 open URL = hub 서버 /htm-doc?path=<절대경로> (:9876 register-doc 경유). file:// 폐기.
 render_host = os.environ.get('RENDER_HOST', '127.0.0.1')
 hub_doc_url = f"http://{render_host}:{server_port}/htm-doc?path=<절대경로>"

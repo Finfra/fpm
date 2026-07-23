@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: e4e3e70898d86558962b4a49d5171a3209585d8ef9325d2cfd8d07870d665682
+source_sha: a9691a46386ae88433740b06151a296c524295d1b3470ad6831aa32ae7ef2723
 ---
 
 # 안내
@@ -17,6 +17,30 @@ source_sha: e4e3e70898d86558962b4a49d5171a3209585d8ef9325d2cfd8d07870d665682
 `scripts/fpm-issue-digest.sh` 가 덮어쓴다.
 
 # 이슈 근거
+
+## Issue320: projects-map 헤더가 절반 폭만 렌더 + 아이콘 좌측 정렬 ✅
+* 목적: `host.local:9876/projects-map` 상단 헤더(보라 바)가 뷰포트 절반 폭에만 그려지고 액션 아이콘(📝🗂️)이 제목 옆 좌측에 붙음. 원인은 builder 가 `<div id="topbar">` 안에 `<h1>` 만 방출 → 서버 `_synthesize_hub_header` 가 그 `<h1>` 을 `<header>` 로 승격하는데, 승격된 `<header>` 가 `#topbar` flex 컨테이너의 **자식(flex item)** 이라 content 폭(≈절반)으로 shrink. canonical full-bleed CSS(`margin-inline: calc(50% - 50vw)`)가 body 직속 블록을 전제하는데 flex 자식이라 미적용.
+* 구현 명세:
+    - `.claude/skills/projects-map/build_projects_map.py`: `#topbar` div 래퍼 제거 → builder 가 **body 직속 canonical `<header>`** 를 직접 방출. hub-link(좌) + h1(좌, `margin-right:auto`) + `nav.header-actions`(우: 📝 btn-note · 🗂️ btn-projects-md · 📁 proj-badge · ✕ close) 구조.
+    - 서버 `_synthesize_hub_header` 는 `<header>` 존재 시 no-op → 중복 승격 없음. `_normalize_hub_header_css` 는 `header{` 규칙 부재 시 canonical full-bleed CSS 주입 → **전체 폭**. 🔗 복사(COPY_LINK_SHIM)·닫기(CLOSE_SHIM)·hub 링크(HUB_LINK_SHIM) 는 클래스 셀렉터 기반이라 authored `<header>` 에도 그대로 동작.
+    - proj-badge onclick 은 서버 합성본과 동형(`/open-project` fetch + fail-loud alert). 제목 좌측 정렬은 h1 inline `text-align:left;margin-right:auto` 로 canonical 중앙정렬 override.
+    - 검증: 재빌드 `Projects_map.htm` 에 `<header>` 방출 확인, `header{` css 규칙 0건(서버 주입 조건 충족), `<div id=topbar>` 소멸. htm/md 는 빌드 산출물(git 미추적).
+
+## Issue319: fpm-projects-sync — projects/ 에 실물 디렉토리 침입 시 침묵 실패 (경로 파일 재생성 불가) ✅
+* 목적: `projects/9a` 가 경로 한 줄 파일이 아니라 14MB 논문 프로젝트 실물 디렉토리(+`9a.bak` 중복)로 존재해 `cdf 9a` 등 index 가 깨짐. 원인은 실물 프로젝트(`Weighted_N-gram_TF-IDF_Paper`)가 타깃 `fSnippetData/_doc_base/` 대신 ___pm index 폴더에 잘못 배치됨(수동 mv/cp 또는 haiku 에이전트 실수 추정). `gen_projects` 는 디렉토리를 걸러내지 못해 `os.remove`(IsADirectoryError)·`open(...,'w')` 둘 다 실패, path 파일을 재생성하지 못하고 침묵 실패함.
+* 구현 명세:
+    - `sh/fpm-projects-sync` `gen_projects()`: 재생성 직전 `projects/<pid>` 중 디렉토리인 항목을 스캔하는 fail-loud 가드 추가. stray 발견 시 Projects.md 의 올바른 타깃 경로와 함께 stderr 출력 후 `sys.exit(2)`. 자동 rmtree 는 백업 없는 실물 삭제 위험이라 금지 — 수동 이동 안내만.
+    - 검증: 구문검사 통과, 정상 상태 `--index-only` 43개 재생성 성공, 임시 `projects/99z` 주입 시 exit=2 + 안내 메시지 정상.
+    - 현물: 실물은 이미 타깃(`~/Documents/finfra/fSnippetData/_doc_base/Weighted_N-gram_TF-IDF_Paper`, 2445 파일/14M)으로 이관됨, `9a.bak` 제거됨, `projects/9a` 는 경로 파일로 정상화.
+    - 한계: 실물이 index 에 들어오는 것 자체(상류 mv/cp)는 못 막음. sync 단계에서 침묵 오배치를 즉시 감지 가능한 에러로 전환하는 것이 본 이슈 범위.
+
+## Issue318: Projects_map 세션 배지 신호등 색이 model 무관 항상 🟢 — hub 와 불일치 ✅
+* 목적: `host.local:9876/projects-map` 노드 우상단 세션 배지가 모델 종류와 무관하게 항상 🟢 로 표시됨. hub(`/hub`)는 Issue273 에서 `model_tier` 별 신호등(🟣 opus / 🔵 sonnet / 🟢 haiku / 🟠 fable)을 이미 렌더하는데 맵만 구 단색이라 두 화면이 불일치. `/boards` live_sessions 는 `model_tier`·`model_id` 를 이미 제공(server.py:4236)하고 있어 맵 클라이언트만 미사용.
+* 구현 명세:
+    - `.claude/skills/projects-map/build_projects_map.py` `glyph(s)`: dashboard 는 📊 유지, session 은 `MODEL_DOT = {opus:🟣, sonnet:🔵, haiku:🟢, fable:🟠}[s.model_tier]` 분기 + 미상 폴백 🟢 (hub server.py:8821 매핑과 동일)
+    - `renderKey(s)`: 키에 `model_tier` 추가 — 같은 세션이 모델만 바뀌어도 배지 재렌더
+    - `tip(s)`: 툴팁에 `model_id` 표기 추가
+    - 검증: `/boards` live_sessions 14건 model_tier 정상(opus/sonnet/haiku 실측), 재빌드 `Projects_map.htm` 에 MODEL_DOT 반영 확인. htm/md 는 빌드 산출물(git 미추적)
 
 ## Issue315: `_doc_arch/Harness` pm-do stale — `fpm-pm-do` 리네임(Issue138) 미반영 死경로 교정 ✅
 * 목적: prj3#Issue272 감사에서 prj3 `_doc_arch/Harness/README.md` 의 `pm-do` 死경로가 발견됐으나, 그 상류 마스터인 본 repo(prj1) `_doc_arch/Harness/{Harness,hLayer}.md` 도 동일 stale 로 확인됨. `pm-do` 스킬은 Issue138(commit <commit>)에서 `fpm-pm-do` 로 리네임됐고 실제 스킬 경로는 `~/.claude/skills/fpm-pm-do/` 이나, 마스터 설계 문서가 구 명칭·死경로 `~/.claude/skills/pm-do/` 를 그대로 인용한다는 감사 결과였음.

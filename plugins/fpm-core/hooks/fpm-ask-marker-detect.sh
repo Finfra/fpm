@@ -392,7 +392,7 @@ cwd_q = urllib.parse.quote(cwd) if cwd else ''
 project_root = cwd.split('/_doc_work/')[0] if cwd and '/_doc_work/' in cwd else cwd
 
 ask_path = f"{out_dir}/hub_htm_<YYYYMMDD_HHMMSS>_c_<주제>.htm"  # 날짜시간=`date +%Y%m%d_%H%M%S`, 주제=핵심 10자 내외 kebab, mode c=auto 폼(Mode D, doc-register 제외)
-path_note = "프로젝트 로컬 (_doc_work/z_htm/)" if not out_dir.startswith('/tmp') else "/tmp/___pm fallback"
+path_note = "프로젝트 로컬 (_doc_work/z_htm/)" if not out_dir.startswith('/tmp') else f"/tmp/___pm fallback → 프로젝트: {project_name} · 생성: cd {cwd} && mkdir -p _doc_work/htm"  # Issue276
 # Issue208: same-origin 상대경로 — 외부 기기(tailnet)에서 폼 열어도 POST 가 페이지 host 로 회귀.
 # file:// 직접 열람만 폼 JS 의 AB(={LOOPBACK_BASE}) fallback 사용.
 answer_url = f"/answer?cwd={cwd_q}&token={server_token}&sid={sid}"

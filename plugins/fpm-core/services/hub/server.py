@@ -833,6 +833,55 @@ def _normalize_hub_header_css(body: bytes) -> bytes:
     return body[:idx] + HUB_HEADER_CSS + body[idx:]
 
 
+# 구 builder 산출 issue-map/projects-map 은 `<header>` 없이 `<h1>` 바만 방출했다(신 builder,
+#   prj3 Issue320 부터 canonical <header> 방출). 이미 생성된 stale 맵은 재생성 전까지 헤더
+#   아이콘이 없으므로, serve 시점에 첫 `<h1>` 을 canonical <header>(🗂hub-link + 📁proj-badge +
+#   ✕close)로 승격한다. 🔗 복사 버튼은 COPY_LINK_SHIM, header CSS 는 _normalize_hub_header_css
+#   가 후속으로 채운다. 이미 `<header>` 가 있으면(신 builder·authored) no-op.
+_H1_RE = re.compile(rb"<h1\b[^>]*>(.*?)</h1>", re.IGNORECASE | re.DOTALL)
+
+
+def _synthesize_hub_header(body: bytes, proj_cwd: str, proj_label: str) -> bytes:
+    """헤더 없는 builder 맵(issue-map/projects-map)에 canonical <header> 합성 주입.
+    첫 <h1> 을 헤더로 승격. proj_cwd 는 📁 proj-badge 의 /open-project 대상."""
+    if _HEADER_EL_RE.search(body):
+        return body
+    m = _H1_RE.search(body)
+    if not m:
+        return body
+    label = html.escape(proj_label)
+    cwd_esc = html.escape(proj_cwd)
+    onclick = (
+        "event.preventDefault();fetch('/open-project',{method:'POST',"
+        "headers:{'Content-Type':'application/json'},"
+        "body:JSON.stringify({cwd:'" + cwd_esc + "'})})"
+        ".then(function(r){return r.json();}).then(function(j){if(j&&j.error)"
+        "alert('VSCode 열기 실패: '+j.error);})"
+        ".catch(function(){alert('hub 서버 미응답 — VSCode 열기 실패');});"
+    )
+    pre = (
+        '<header>\n'
+        '  <a class="hub-link" href="/hub" target="fpm-hub" '
+        'title="통합 모니터링 Hub">'
+        '<img src="/fpm-icon.png" alt="Hub" '
+        'style="height:1.2em;vertical-align:-0.25em;"></a>\n'
+        '  <h1>'
+    ).encode("utf-8")
+    post = (
+        '</h1>\n'
+        '  <nav class="header-actions">\n'
+        '    <a class="proj-badge" href="#" '
+        'title="클릭 → VSCode 로 ' + label + ' 열기" '
+        'onclick="' + onclick + '">\U0001F4C1 ' + label + '</a>\n'
+        '    <button type="button" class="close-btn" '
+        'title="이 문서 탭 닫기" '
+        'onclick="window.close()">✕</button>\n'
+        '  </nav>\n'
+        '</header>'
+    ).encode("utf-8")
+    return body[:m.start()] + pre + m.group(1) + post + body[m.end():]
+
+
 pids_lock = threading.Lock()
 pids = {}  # cwd_hash -> set[int]  (Issue16: stop 제어 대상으로 등록된 runner PIDs)
 
@@ -6584,6 +6633,9 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         except OSError:
             self._send_json(404, {"error": "file not found"})
             return
+        # 구 builder stale 맵 헤더 합성 (신 builder 산출은 no-op). proj_cwd = 맵의 프로젝트 루트.
+        proj_root = os.path.dirname(path)
+        body = _synthesize_hub_header(body, proj_root, os.path.basename(proj_root))
         self._send_htm_html(body, path)
 
     def _handle_projects_map(self, parsed):
@@ -6605,6 +6657,8 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             log(f"GET /projects-map — not built yet: {path}")
             self._send_projects_map_hint(path)
             return
+        # 구 builder stale 맵 헤더 합성 (신 builder 산출·authored 는 no-op).
+        body = _synthesize_hub_header(body, REPO_ROOT, os.path.basename(REPO_ROOT))
         self._send_htm_html(body, path)
 
     def _send_projects_map_hint(self, path: str):

@@ -89,6 +89,27 @@ def readable_fg(hexcolor):
 def gen_projects(rows):
     """[1/3] projects/<id> 인덱스 파일 재생성 (기존 숫자 파일만 제거 후 재작성)."""
     os.makedirs(PROJECTS_DIR, exist_ok=True)
+
+    # 가드 (Issue319): projects/<pid> 는 반드시 "경로 한 줄" 파일이어야 함.
+    # 실물 프로젝트 디렉토리가 index 폴더에 잘못 들어오면(수동 mv/cp·에이전트 실수)
+    # os.remove/open 이 IsADirectoryError 로 침묵 실패 → path 파일 재생성 불가.
+    # 자동 rmtree 는 백업 없는 실물 삭제 위험이라 금지. fail-loud 중단만 함.
+    path_by_id = {r['id']: r['path'] for r in rows}
+    stray_dirs = [
+        f for f in os.listdir(PROJECTS_DIR)
+        if PID_RE.match(f) and os.path.isdir(os.path.join(PROJECTS_DIR, f))
+    ]
+    if stray_dirs:
+        print('Error: projects/ 인덱스 폴더에 디렉토리가 존재함 (경로 파일이어야 함).',
+              file=sys.stderr)
+        print('  실물 프로젝트가 index 폴더에 잘못 배치된 것으로 보임. 자동 삭제하지 않음.',
+              file=sys.stderr)
+        for d in sorted(stray_dirs):
+            target = path_by_id.get(d, '(Projects.md 에 정의 없음)')
+            print(f'  - projects/{d}  →  올바른 위치: {target}', file=sys.stderr)
+        print('  조치: 위 디렉토리 내용을 올바른 위치로 이동(mv) 후 재실행.', file=sys.stderr)
+        sys.exit(2)
+
     for f in os.listdir(PROJECTS_DIR):
         # 인덱스 파일만 제거 — .frecency / .sync-stamp 등 부속 파일은 패턴 불일치로 보존됨.
         if PID_RE.match(f):

@@ -857,7 +857,7 @@ sid = os.environ.get('SID', 'unknown')
 sid_full = os.environ.get('SID_FULL', sid)
 out_dir = os.environ.get('OUT_DIR', '/tmp')
 open_cmd = os.environ.get('HTM_OPEN_CMD', 'open -g -a Firefox')
-path_note = f"프로젝트 로컬 ({out_dir.split('_doc_work/')[-1] if '_doc_work/' in out_dir else out_dir})" if out_dir != '/tmp' else "/tmp fallback"
+path_note = f"프로젝트 로컬 ({out_dir.split('_doc_work/')[-1] if '_doc_work/' in out_dir else out_dir})" if out_dir != '/tmp' else f"/tmp fallback → 프로젝트: {project_name} · 생성: cd {cwd} && mkdir -p _doc_work/htm"  # Issue276
 # Issue141/Issue263: render_target 분기 — local-open=file:// open / hub=서버 URL 을 브라우저로 open
 #   / vscode=VSCode Simple Browser 패널(외부 open 금지) / both=양쪽
 render_target = os.environ.get('RENDER_TARGET', 'local-open')
@@ -1082,7 +1082,7 @@ sid = os.environ.get('SID', 'unknown')
 sid_full = os.environ.get('SID_FULL', sid)
 out_dir = os.environ.get('OUT_DIR', '/tmp/___pm')
 open_cmd = os.environ.get('HTM_OPEN_CMD', 'open -g -a Firefox')
-path_note = f"프로젝트 로컬 ({out_dir.split('_doc_work/')[-1] if '_doc_work/' in out_dir else out_dir})" if out_dir != '/tmp/___pm' else "/tmp fallback"
+path_note = f"프로젝트 로컬 ({out_dir.split('_doc_work/')[-1] if '_doc_work/' in out_dir else out_dir})" if out_dir != '/tmp/___pm' else f"/tmp fallback → 프로젝트: {project_name} · 생성: cd {cwd} && mkdir -p _doc_work/htm"  # Issue276
 # Issue141/Issue263: render_target 분기 (자동 hub 모드) — local-open / hub(서버 URL open) / vscode(패널) / both
 render_target = os.environ.get('RENDER_TARGET', 'local-open')
 hub_open_skip = os.environ.get('HUB_OPEN_SKIP', '0') == '1'   # Issue263: browser_open:off·hub-internal 파생 open 생략
