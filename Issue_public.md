@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: a5997ece8e9b7e966778ea84b79595ef3a6b3986eb2aaec8eaaa2d3d86e88cfc
+source_sha: d1b73454056120ebda0c1a09c8a1c9c119baac5b64de0e367a61cc73a0ed1b97
 ---
 
 # 안내
@@ -18,8 +18,14 @@ source_sha: a5997ece8e9b7e966778ea84b79595ef3a6b3986eb2aaec8eaaa2d3d86e88cfc
 
 # 이슈 근거
 
-## Issue323: prj 재번호 — 81=_wf 신규, <private-project> 81→82, <private-project> 등록 해제 ✅
-* 목적: `<private-path>` 를 prj81 로 신규 등록. 기존 <private-project> 를 82 로 이동하고, 82 를 점유하던 `<private-project>` 은 사용자 결정으로 Projects.md 적용 범위에서 제거 (요청: 2026-07-25 세션)
+## Issue324: Issue_public digest — 미참조 이슈·사설 경로 유출 차단 ✅
+* 목적: 공개 미러 digest 에 미러 소스가 참조하지 않는 이슈(내부 문서 감사·프로젝트 등록 결정 등)와 사설 경로·프로젝트명이 그대로 실려 나갔다. digest 의 존재 이유는 미러 코드 주석의 `(Issue{N})` 근거 제공 하나이므로, 참조되지 않는 항목은 공개 이득 없이 내부 사정만 노출한다.
+* 구현 명세:
+    - `scripts/fpm-issue-digest.sh` 코드 참조 필터 신설: `git grep` 으로 미러 반출 대상 소스의 `Issue{N}` 집합을 구해, 그 집합에 없는 이슈 블록을 digest 에서 제거. 참조 코퍼스에서 비반출·예제 경로(설계문서·작업문서·프로젝트 인덱스·템플릿 예제) 제외
+    - 포맷 드리프트 가드는 필터 **이전** 추출량(`PRE_FILTER_GOT`)으로 판정 — 필터의 정상 감소를 오탐하지 않도록
+    - scrub 규칙 추가: 홈 하위 개인 폴더 경로, 외장 볼륨(`<private-path>`) 경로 → `<private-path>`
+    - 정책 `sanitize[]` 리터럴을 검증뿐 아니라 **치환**에도 적용 (종전엔 fail-loud 만 → 수동 대응). 정책 파일은 self-exclude 라 리터럴 자체는 미러로 나가지 않음
+    - 검증: 재생성 결과 24→13 이슈, 잔존 PII grep 0건, `--check` 신선도 통과
 
 ## Issue321: hub_setting `unregistered_render` 키 신설 — 미등록 폴더 렌더 정책 ✅
 * 목적: 글로벌 hook 이 소비할 미등록 폴더(IS_PROJECT=0) 렌더 정책 키를 hub_setting SSOT 에 추가. prj3#Issue280 의 data 절반.
