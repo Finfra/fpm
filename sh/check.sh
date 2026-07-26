@@ -262,6 +262,33 @@ if [[ -n "${FPM_FLATFILE_SRC_REL_REPO:-}" && ${#FPM_FLATFILE_FILES[@]} -gt 0 ]];
     fi
 fi
 
+# ── 에디터 어댑터·런처 (Issue327) ─────────────────────────────
+if [[ -f "$REPO_DIR/sh/fpm_editors.sh" ]]; then
+    ok "sh/fpm_editors.sh 존재"
+    grep -q 'fpm_editors.sh' "$REPO_DIR/sh/fpm.sh" \
+        && ok "fpm.sh 가 fpm_editors.sh 를 source" \
+        || fail "fpm.sh 에 fpm_editors.sh source 라인 없음 → 런처(v/z) 미정의"
+    [[ -f "$REPO_DIR/data/editor.yml" ]] \
+        && ok "data/editor.yml 존재" \
+        || fail "data/editor.yml 없음 (data/editor_org.yml 복사 필요)"
+    # CLI 해석 — enabled_editors 각각. 미설치 에디터는 WARN(환경 의존)
+    _ed_list=$(grep -E '^[[:space:]]*enabled_editors[[:space:]]*:' "$REPO_DIR/data/editor.yml" 2>/dev/null \
+        | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//' | tr ',' ' ')
+    for _ed in ${_ed_list:-vscode}; do
+        if ( export FPM_BASE="$REPO_DIR"; . "$REPO_DIR/sh/fpm_editors.sh" >/dev/null 2>&1; _fpm_editor_bin "$_ed" >/dev/null 2>&1 ); then
+            ok "에디터 CLI 해석: $_ed"
+        else
+            warn "에디터 CLI 미발견: $_ed (미설치이거나 data/editor.yml 의 bin_${_ed} 지정 필요)"
+        fi
+    done
+    # 개인 dotfile 잔존 가드 — alias 가 남아 있으면 fpm 함수를 가림
+    if grep -qE "^[[:space:]]*alias[[:space:]]+(v|z|zn|za|zw)=" "$HOME/.zsh_aliases" 2>/dev/null; then
+        warn "~/.zsh_aliases 에 v/z 계열 alias 잔존 — fpm 런처를 가림. 제거 권장(Issue327)"
+    fi
+else
+    fail "sh/fpm_editors.sh 없음 — 경로 런처(v/z) 미제공"
+fi
+
 # ── 요약 ──────────────────────────────────────────────────────
 printf '\n────────────────────────────────────────────\n'
 printf '결과: \033[32mPASS %d\033[0m / \033[33mWARN %d\033[0m / \033[31mFAIL %d\033[0m\n' "$PASS_N" "$WARN_N" "$FAIL_N"

@@ -41,6 +41,8 @@ shell:
       org: Projects_org.md
     - real: data/hub_setting.yml
       org: data/hub_setting_org.yml
+    - real: data/editor.yml
+      org: data/editor_org.yml
 
 # ── 배포 페이로드 (두 경로) ──────────────────────────────────────────────────
 payloads:

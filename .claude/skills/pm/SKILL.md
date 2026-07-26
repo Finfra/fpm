@@ -47,7 +47,8 @@ ___pm/
     ├── Issue.md
     ├── noteForHuman.md
     ├── PROMPTS.md
-    └── vscode.json
+    ├── vscode.json
+    └── zed.json   # Issue327 — enabled_editors 에 zed 포함 시만 사용
 ```
 
 ## CLAUDE.md 템플릿 토큰 치환 (필수)
@@ -100,6 +101,8 @@ Commands: /issue-reg-m, /issue-fix-m, /issue-closer-m
 
 ```sh
 # 템플릿이 명시한 프로젝트 폴더 패턴 (현행 표준)
+# 에디터 폴더는 data/editor.yml 의 enabled_editors 종속 (Issue327).
+#   .zed/ 는 ~/.gitignore_global 에서 전역 ignore 되므로 프로젝트 .gitignore 필수 아님.
 EXPECTED_DIRS=(_doc_work _doc_arch .claude .vscode)
 
 # 신규 프로젝트의 .gitignore에서 위 패턴이 정확한 케이스로 등장하는지 확인
@@ -277,11 +280,25 @@ status: {success|partial|failed|cancelled}
 | `PROMPTS.md`            | 보존                                                | 템플릿 생성                      |
 | `Harness.md`            | 보존                                                | 템플릿 + global layer 자동 채움  |
 | `_doc_work/{plan,tasks,report,z_done,z_done/htm,htm}`, `_doc_arch` | 없는 서브폴더만 생성   | 전체 생성                        |
+| `_doc_base`             | 없으면 생성                                         | 생성                             |
 | `.vscode/settings.json` | **peacock 동기화** (아래 절차)                      | 템플릿 컬러·이모지 자동 선택     |
+| `.zed/settings.json`    | `sh/fpm-projects-sync` 가 단방향 생성 (역방향 없음) | `enabled_editors` 에 zed 포함 시 |
 | initial commit          | **스킵**. 변경분만 별도 커밋(사용자 컨펌)           | initial commit                   |
 
 * nPTiR 산출물·로컬 문서가 `.gitignore` 정책상 ignore 대상이면 `.gitkeep` 불필요 — 폴더만 생성
+* **`_doc_base` 무조건 생성 (사용자 지시, 2026-07-23)**: 구 규정은 원천 자료 필요 시만 생성하는 *선택 폴더*였으나, 신규·adopt 모두 항상 생성한다. gitignore 는 origin 기반 — remote origin 있는 repo 는 ignore·untrack(폴더만 로컬 존재), origin 없으면 추적. 판정 SSOT: `_doc_arch/doc-base-design.md` "# .gitignore — origin 기반 규칙"
 * **`htm` 필수 사유 (Issue289 — 구 `z_htm`)**: hub 렌더(`..show`/`..ask` 등)는 `$cwd/_doc_work/htm/` 존재 시 거기 저장하고, 그때만 register 훅(`fpm-hub-doc-register`)이 hub registry 에 자동 등록한다. 부재 시 `/tmp/___pm` fallback → 등록 스킵 → `/htm-doc` 403 dead link. 따라서 신규·adopt 프로젝트는 `htm` 을 함께 생성한다 (pm 스킬은 fpm 컨텍스트 전용이라 가드 자동 충족 — 글로벌 wrapper·nptir-rules 는 `[ -d ~/_git/___pm ] || command -v fpm` 가드로 비-fpm 환경 제외). 아카이브 대상은 `z_done/htm/` 이며 legacy `z_htm/` 은 읽기만 지원. 수명주기 SSOT: `_doc_arch/htm-lifecycle-design.md`
+
+## 에디터 폴더 조건화 (Issue327)
+
+`.vscode/`·`.zed/` 는 **`data/editor.yml` 의 `enabled_editors` 에 포함된 에디터만** 만든다.
+Zed 만 쓰는 프로젝트에 빈 `.vscode/` 를 만들지 말 것.
+
+* 색·이모지 실제 반영은 `sh/fpm-projects-sync` 가 담당 — pm 은 템플릿 배치까지만
+* Zed 는 `window.title` 대응 키가 없어 **이모지 미표시**가 정상 (능력 매트릭스 `title_emoji` 미지원)
+* ⚠️ Zed 는 신뢰하지 않은 워크트리의 프로젝트 설정을 무시한다(Restricted Mode) — 파일을 써도
+  사용자가 그 프로젝트를 1회 신뢰하기 전까지 색이 보이지 않음
+* 설계 SSOT: `_doc_arch/editor-abstraction-design.md`
 
 ## .vscode/settings.json peacock 동기화 (필수 — 누락 빈발 지점)
 

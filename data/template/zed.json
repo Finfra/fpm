@@ -1,0 +1,11 @@
+{
+  "experimental.theme_overrides": {
+    "background": "{{#color}}",
+    "editor.background": "{{#color}}",
+    "panel.background": "{{#color}}",
+    "tab_bar.background": "{{#color}}",
+    "title_bar.background": "{{#color}}",
+    "status_bar.background": "{{#color}}",
+    "toolbar.background": "{{#color}}"
+  }
+}

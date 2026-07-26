@@ -6,6 +6,11 @@ date: 2026-04-14
 
 # 개요
 
+> ⚠️ **VSCode 전용** (prj1#Issue327). 본 커맨드의 양방향 동기는 peacock 확장이 있는 VSCode 에만 적용된다.
+> Zed 에는 사람이 색을 고르는 UI 가 없어 **역방향 입력원이 될 수 없다** — Zed 의 `.zed/settings.json`
+> 은 `Projects.md`(SSOT) 로부터 단방향 생성만 하며, 그 쓰기는 `sh/fpm-projects-sync` 가 담당한다.
+
+
 `Projects.md`의 `peacock.color` 컬럼과 각 프로젝트 `.vscode/settings.json`의 `"peacock.color"` 값을 동기화한다.
 
 인자: `$ARGUMENTS`

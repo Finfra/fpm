@@ -301,19 +301,42 @@ cdfc() {
 #     macOS window tabbing=always 환경 대응: 첫 프로젝트를 열고 applescript
 #     "Move Tab to New Window" 로 새 창(W1)으로 분리(1회만). 이후 프로젝트는
 #     frontmost=W1 로 자동 병합 → 지정 프로젝트끼리 한 창에 모임.
+#   -e <editor> / --editor <editor> : 대상 에디터 지정 (vscode|zed). 미지정 시 data/editor.yml 의
+#     default_editor. `cdfz` 는 `cdfv -e zed` 의 별칭. (Issue327 — 어댑터 sh/fpm_editors.sh)
 cdfv() {
-    local new_window=0
-    if [[ "$1" == "-n" || "$1" == "--new-window" ]]; then
-        new_window=1; shift
-    fi
+    local new_window=0 editor=""
+    while :; do
+        case "$1" in
+            -n|--new-window) new_window=1; shift ;;
+            -e|--editor)     editor="$2"; shift 2 ;;
+            *) break ;;
+        esac
+    done
+    [[ -z "$editor" ]] && editor=$(_fpm_editor_default 2>/dev/null || echo vscode)
+
     _cdf_base "$@" || return 0
     _cdf_apply_subfolder
+
+    # Zed: 다중 경로 1회 호출 = 한 창 멀티루트(실측). AppleScript 병합 불필요.
+    if [[ "$editor" == "zed" ]]; then
+        local -a existing=()
+        for target in "${_CDF_TARGETS[@]}"; do
+            if [[ -e "$target" ]]; then echo "🚀 Opening (zed): $target"; existing+=("$target")
+            else echo "Warning: Path '$target' not found."; fi
+        done
+        (( ${#existing[@]} )) || return 0
+        if [[ $new_window -eq 1 ]]; then _fpm_editor_open zed new "${existing[@]}"
+        else _fpm_editor_open zed open "${existing[@]}"; fi
+        return
+    fi
+
+    # VSCode: macOS window tabbing 대응 — 첫 프로젝트만 새 창 분리 후 나머지 병합
     local nw_detached=0
     for target in "${_CDF_TARGETS[@]}"; do
         if [[ -e "$target" ]]; then
             echo "🚀 Opening: $target"
             if [[ $new_window -eq 1 ]]; then
-                /usr/local/bin/code -n "$target"
+                _fpm_editor_open vscode new "$target"
                 sleep 0.8   # 새 창(탭) 생성 대기
                 if [[ $nw_detached -eq 0 ]]; then
                     # 첫 프로젝트만 별도 창으로 분리 (이후 프로젝트는 이 창에 병합)
@@ -325,13 +348,16 @@ cdfv() {
                     sleep 0.2
                 fi
             else
-                vscode "$target" && sleep 0.1
+                _fpm_editor_open vscode open "$target" && sleep 0.1
             fi
         else
             echo "Warning: Path '$target' not found."
         fi
     done
 }
+
+# cdfz : cdfv 의 Zed 변형 (= cdfv -e zed)
+cdfz() { cdfv -e zed "$@"; }
 
 # --- CDF*N (이름 기반: 번호 대신 문자 부분일치) ---
 # _cdfn_resolve : 텍스트 부분일치 → 단일 프로젝트 id 를 stdout 으로 반환 (cdf 계열의 _cdf_base 대응)
@@ -395,6 +421,8 @@ fi
 #   필요 시 cdffn(Finder)·cdfcn(클립보드)도 동일 한 줄 패턴으로 추가 가능
 cdfn()  { [[ "$1" == [0-9]* ]] && { cdf  "$@"; return; }; local _id; _id=$(_cdfn_resolve "$1") || return; cdf  "$_id"; }
 cdfvn() { local _a="$1"; [[ "$_a" == "-n" || "$_a" == "--new-window" ]] && _a="$2"; [[ "$_a" == [0-9]* ]] && { cdfv "$@"; return; }; local _id; _id=$(_cdfn_resolve "$1") || return; cdfv "$_id"; }
+# cdfzn : cdfvn 의 Zed 변형 (이름검색 → zed)
+cdfzn() { local _id; [[ "$1" == [0-9]* ]] && { cdfz "$@"; return; }; _id=$(_cdfn_resolve "$1") || return; cdfz "$_id"; }
 
 # cdf-num : cdf 의 역방향 — 경로(기본 $PWD) → 등록 프로젝트 번호 조회
 #   ex) cdf-num             : 현재 디렉토리 기준 번호 출력
@@ -833,10 +861,19 @@ iterm-bg() {
 # chpwd : 디렉토리 이동 시 .vscode/settings.json 의 peacock.color 를 iTerm2 배경색으로 적용
 #   - peacock.color 없으면 기본값 복원. (zsh 훅 — bash 에선 미사용 함수로만 존재)
 chpwd() {
-    local settings="$PWD/.vscode/settings.json"
+    local hex settings
+    # 1) VSCode peacock
+    settings="$PWD/.vscode/settings.json"
     if [[ -f "$settings" ]]; then
-        local hex
         hex=$(grep -o '"peacock\.color"\s*:\s*"#[0-9a-fA-F]\{6\}"' "$settings" \
+            | grep -o '#[0-9a-fA-F]\{6\}' \
+        | head -1)
+        [[ -n "$hex" ]] && { iterm-bg "${hex#\#}"; return; }
+    fi
+    # 2) Zed theme_overrides (Issue327) — .vscode 없는 Zed 전용 프로젝트 대응
+    settings="$PWD/.zed/settings.json"
+    if [[ -f "$settings" ]]; then
+        hex=$(grep -o '"editor\.background"\s*:\s*"#[0-9a-fA-F]\{6\}"' "$settings" \
             | grep -o '#[0-9a-fA-F]\{6\}' \
         | head -1)
         [[ -n "$hex" ]] && { iterm-bg "${hex#\#}"; return; }

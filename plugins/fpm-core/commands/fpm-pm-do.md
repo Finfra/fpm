@@ -15,7 +15,13 @@ skill: "fpm-pm-do"
 /pm-do --status <prj번호>
 ```
 
+# 실행 모드 (Issue299)
+
+위임 실행은 **비대화 `-p` 가 기본**이다: `claude --dangerously-skip-permissions -p '<프롬프트>'`. 대화형 TUI 로 띄운 뒤 `send-keys` 로 프롬프트를 넣는 방식은 첫 실행 안내(Chrome 확장 등)·편집 승인 게이트에서 **진척 0 으로 멈춘다**(2026-07-26 실측). 사람이 쉘에서 손으로 띄울 땐 별칭 `cc -p '<프롬프트>'` 가 동일하나, **별칭은 대화형 쉘 전용**이라 스크립트·`send-keys`·cron 에서는 풀네임을 쓴다. 상세: [`skills/fpm-pm-do/SKILL.md`](../skills/fpm-pm-do/SKILL.md) "실행 모드".
+
 # 인자: $ARGUMENTS
+
+> ⚠️ **해석 게이트 (Issue286)**: 위임은 **명시 토큰 opt-in**. `pm-do`·`/pm-do`·`prj<N>`·"N번 프로젝트" 없이 bare 숫자로 시작하는 입력(`11 /dev`)은 **현재 프로젝트의 이슈 번호**로 해석하고 본 커맨드를 호출하지 말 것. 양쪽으로 읽히면 `AskUserQuestion` 1회 확인(수면 모드에서도 예외 — 타 prj 세션 기동은 현재 프로젝트 밖 부작용 = 크리티컬). 상세: [`rules/input-interpretation-rules.md`](../rules/input-interpretation-rules.md)
 
 # 처리 흐름
 

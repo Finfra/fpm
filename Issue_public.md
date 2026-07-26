@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: d1b73454056120ebda0c1a09c8a1c9c119baac5b64de0e367a61cc73a0ed1b97
+source_sha: 9e818ed2bb9d0d978ec84c82b1155d3d05b5be03816f727d12e9a141c9bc87cb
 ---
 
 # 안내
@@ -17,6 +17,50 @@ source_sha: d1b73454056120ebda0c1a09c8a1c9c119baac5b64de0e367a61cc73a0ed1b97
 `scripts/fpm-issue-digest.sh` 가 덮어쓴다.
 
 # 이슈 근거
+
+## Issue328: Zed·터미널 세션이 hub 활성 세션에 안 보임 — title 폴백 부재
+* 목적: Zed(ACP/sdk-ts) 세션이 살아있고 hub 에 register 도 되는데 활성 세션 목록에서 전부 사라짐. 세션 감지가 아니라 title 폴백 부재가 원인이므로 서버측 폴백을 넣어 Zed·터미널 세션을 정상 노출시킴
+* 구현 명세:
+    - `_collect_live_sessions` live 분기 title 결정 순서에 3단 폴백 추가: `ai_title` → `live_label` → **JSONL 첫 user 프롬프트 발췌**(신규 `_session_first_prompt(cwd, sid)`)
+    - `_session_first_prompt`: `_resolve_session_jsonl` 로 경로 해석 후 head 방향 스캔, `type=="user"` 첫 레코드의 텍스트 1줄 발췌(최대 60자, 개행·공백 정규화). mtime 캐시(`doc_cache`)로 재파싱 차단 — `_session_ai_title` 과 동일 패턴
+    - 폴백은 hook 변경 불요(prj1 단독). prj3 hook 의 `live_label` 전송은 별건으로 남김
+    - 검증: 서버 재시작 후 `/boards` live_sessions 에 `<commit>`(~/.claude, Zed) 세션이 프롬프트 발췌 제목으로 노출되는지 확인
+
+## Issue327: 에디터 추상화 — Zed 1급 지원 ✅
+* 목적: fpm 이 VSCode 를 유일 에디터로 가정하여, Zed 병행 사용 시 프로젝트 열기·색 동기·hub 표면·세션 배지가 전부 VSCode 로만 동작한다. 어댑터 계층으로 추상화해 두 에디터 병행을 정상 상태로 만든다
+* 구현 명세:
+    - P1: `data/editor.yml` + `_fpm_editor_bin`(CLI 해석 5단계, 하드코딩 제거) + `_fpm_editor_open` + `cdfv -e`/`cdfz`
+    - P1b: `sh/fpm_editors.sh` 신설(`v`/`z`/`zn`/`za`/`zw`/`vn`/`vw`) + `fpm.sh` source + dotfile 정리
+    - P2: `fpm-projects-sync` writer 다중화(`.zed/settings.json`) + `chpwd` 폴백 — Zed 색 키 확정 전 착수 불가
+    - P3: `server.py` 앱명 일원화 + 세션 배지 실제 로고 이미지 3값화(`zed.png` 추가) + 클릭 분기 + frontmost `Zed`
+    - P5: `pm` 스캐폴드 `.vscode` 조건화 + VSCode 전용 커맨드 명시
+    - P3g·P4(prj3 글로벌 hook): `origin=zed` 판정 + `render_target` 자동 강등 — 별건 위임
+
+## Issue325: 공개 미러 개인정보 유출 방지 — 태그 정합 게이트 + 사설 사전 + 반출 diff 승인 ✅
+* 목적: Issue324 에서 digest 참조 필터를 도입했으나, 곧바로 주석 태그 오기(무관 번호 `(Issue323)`) 하나로 사설 이슈가 공개 digest 에 실리는 사고가 났다. 현행 방어(정책 exclude·sanitize 리터럴·구조 패턴 VERIFY·참조 필터)는 모두 **작성자가 실수 없이 태깅·등록한다**는 가정 위에 서 있어, 가정이 깨지면 조용히 통과한다. 가정에 기대지 않는 게이트로 대체한다.
+* depends: Issue324
+* 구현 명세:
+    - **G1. 태그 정합 pre-commit 게이트** — `scripts/install-precommit-tagcheck.sh` 신설(기존 `install-precommit-scar.sh` 의 마커 블록 패턴·graceful skip 관례 그대로 따름, 마커 `# tagcheck-precommit-start`)
+        - 검사 대상: staged diff 의 **추가된 줄**에 새로 등장한 `Issue{N}` (삭제·기존 줄 무시)
+        - 조건 ①실존: `Issue.md` 에 `## Issue{N}:` 헤딩이 있을 것
+        - 조건 ②동시성: 그 `Issue{N}` 이 **같은 커밋에서 staged 된 `Issue.md` 변경분에도 등장**할 것 (= 이번 작업이 실제로 다룬 이슈)
+        - 위반 시 커밋 거부 + 해당 파일:라인·번호·해소 방법 출력. 우회는 `SKIP_TAGCHECK=1` 환경변수(의도적 예외만, 기록 남게 stderr 경고)
+        - 예외 화이트리스트: 이력 서술용 문맥(`Issue.md` 자신·`_doc_work/**`·`_doc_arch/**`) 은 검사 제외
+    - **G2. 사설 사전 자동 수집** — `scripts/fpm-issue-digest.sh` scrub 단계에 동적 사전 추가
+        - 소스: `Projects.md`(비공개, 미러 제외) 의 경로·프로젝트명 컬럼 → 미러 공개 대상이 아닌 항목의 **경로 마지막 세그먼트·프로젝트명 토큰**을 수집
+        - 수집 토큰 중 길이 4 이상·영숫자/언더스코어/하이픈 구성만 채택(일반 단어 오탐 억제용 stop-list 병행)
+        - 치환: `<private-project>` (기존 정책 리터럴 치환과 동일 지점, 정책 리터럴이 우선)
+        - 정책 `sanitize[]` 하드코딩은 백스톱으로 유지 — 사전이 못 잡는 표현(한글 클라이언트명 등) 담당
+    - **G3. 반출 diff 승인 게이트** — `scripts/fpm-sync.sh` forward 경로에 digest 변경 확인 단계 추가
+        - 스냅샷의 `Issue_public.md` 와 미러 현행본을 비교해 **새로 추가된 이슈 헤딩 목록**을 출력
+        - 대화형(TTY)이면 y/N 확인, 비대화면 `FPM_DIGEST_ACK=1` 없으면 abort(fail-loud)
+        - 승인 내역 1줄을 `data/hub/` 밖 로그가 아닌 stderr + 커밋 메시지 관행으로 남김(추가 상태 파일 신설 안 함)
+    - **G4. 문서화** — `_doc_arch/publishable-policy.md` 에 "유출 방지 4중 게이트(정책 exclude → scrub/사전 → 참조 필터 → 태그·반출 게이트)" 절 추가 + 사고 대응 런북(인지→제거 커밋→push→히스토리 재작성 판단(승인 필수)→재발 방지 이슈 등록)
+    - **검증**:
+        - G1: 무관 번호 태그를 넣은 임시 커밋이 거부되는지 / 정상 작업(같은 커밋에 Issue.md 동반 수정)이 통과하는지 / `Issue.md` 미존재 번호 거부
+        - G2: `Projects.md` 사설 프로젝트명을 임시로 이슈 본문에 넣고 digest 재생성 → `<private-project>` 치환 확인
+        - G3: 새 이슈가 추가된 상태에서 forward 를 비대화로 돌리면 abort, `FPM_DIGEST_ACK=1` 이면 통과
+        - 회귀: 현행 digest 13건 구성이 변하지 않을 것(사전 오탐으로 정상 코드 서술이 뭉개지지 않는지 확인)
 
 ## Issue324: Issue_public digest — 미참조 이슈·사설 경로 유출 차단 ✅
 * 목적: 공개 미러 digest 에 미러 소스가 참조하지 않는 이슈(내부 문서 감사·프로젝트 등록 결정 등)와 사설 경로·프로젝트명이 그대로 실려 나갔다. digest 의 존재 이유는 미러 코드 주석의 `(Issue{N})` 근거 제공 하나이므로, 참조되지 않는 항목은 공개 이득 없이 내부 사정만 노출한다.

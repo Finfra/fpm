@@ -43,4 +43,6 @@ unset _fpm_cache
 
 # --- 함수 + alias 로드 ---
 [ -f "$FPM_BASE/sh/fpm_function.sh" ] && . "$FPM_BASE/sh/fpm_function.sh"
+# fpm_editors.sh: 에디터 어댑터 + 경로 런처(v/z). cdfv 가 어댑터를 쓰므로 function 뒤 (Issue327)
+[ -f "$FPM_BASE/sh/fpm_editors.sh" ]  && . "$FPM_BASE/sh/fpm_editors.sh"
 [ -f "$FPM_BASE/sh/fpm_aliases.sh" ]  && . "$FPM_BASE/sh/fpm_aliases.sh"

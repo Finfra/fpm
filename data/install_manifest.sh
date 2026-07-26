@@ -26,6 +26,7 @@ FPM_ORG_FILES=(
     "Servers.md:Servers_org.md"
     "Projects.md:Projects_org.md"
     "data/hub_setting.yml:data/hub_setting_org.yml"
+    "data/editor.yml:data/editor_org.yml"
 )
 
 # ── [SCAR] fpm-core 플러그인 (공유 마켓 경유) ──

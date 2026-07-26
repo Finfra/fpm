@@ -1,0 +1,26 @@
+# sleep_mode.yml — 수면 모드(sleep on/off) 동작 정의 (Issue281)
+#
+# 사람이 직접 편집하는 원천 설정. prj3(~/.claude)의 hook 3종이 읽어서 집행한다.
+#   소비처: ~/.claude/hooks/sleep-state.sh (sleep-mode-trigger / hook-say / fpm-hub-trigger)
+#   설계:   ~/.claude/_doc_arch/sleep-mode-arch.md
+#
+# 이 파일이 없으면 아래 값과 동일한 하드코딩 기본값으로 동작한다(무비용 원칙).
+# 로컬 오버라이드가 필요하면 ~/.claude/data/sleep_mode.yml 에 같은 스키마로 둔다(우선순위 낮음).
+
+# 인자 없는 `sleep on` 의 스코프. project = 현재 폴더만, system = 전역
+#   `sleep on all` / `sleep off all` 은 이 값과 무관하게 항상 전역
+scope_default: project
+
+# 활동 로그 디렉토리 (sleep on 세션 로그 + 복귀 리뷰 원천)
+log_dir: ~/.claude/.sleep-log
+
+# 4대 규칙 개별 토글. false 로 두면 그 규칙만 꺼진다.
+rules:
+  # ① 권장형 진행 — 크리티컬 아니면 AskUserQuestion 없이 권장안 자율 진행
+  autonomous: true
+  # ② 새 hub tab 미개방 — 자동 hub 렌더/브라우저 open 억제
+  suppress_hub: true
+  # ③ say 무음 — 음성 알림 전 카테고리 차단
+  silence_say: true
+  # ④ 완료 후 당일 이슈 검토 — 요청 마무리 후 당일 이슈 검토 + 로그 append
+  daily_issue_review: true

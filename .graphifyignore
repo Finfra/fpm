@@ -1,0 +1,15 @@
+# graphify 제외 — 증가형·재생성 파일
+# 규칙 SSOT: ~/.claude/rules/graphify-rules.md "증가형·재생성 파일은 그래프 대상 아님"
+# 판정: "시간이 지나면 계속 늘어나는가?" → Yes 면 제외
+logs/
+*.log
+z_old/
+z_backup/
+z_past/
+.sleep-log/
+transcripts/
+scrap/
+cache/
+tmp/
+_doc_work/
+# _doc_arch/ · Issue.md 는 포함 유지 (설계 SSOT — 제외 금지)

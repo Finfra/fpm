@@ -6,7 +6,7 @@
 #   ~/.claude/_doc_arch/hub-mode-arch.md. 절차: ~/.claude/rules/global-scar-change-rules.md
 #
 # 프롬프트에 a모드 render 트리거 `..show` (Issue133, 구 `..hub` deprecated alias) 감지 시:
-#   1. .hub-mode-active 플래그 touch (Q&A intercept 활성화)
+#   1. .hub-mode-active-<md5(cwd)[:8]> 플래그 touch (Q&A intercept 활성화, Issue283 cwd 스코프)
 #   2. HTML 렌더링 + 기본 브라우저 표시 + 후속 질문 form 처리 지시문 주입
 # `..hub stop` 또는 `..hub off` 감지 시 플래그 해제 (단방향 모드 복귀 — 토글은 `..hub` 유지)
 # Issue133: render 트리거만 `..hub`→`..show` rename. 우산 토글(`..hub on|off|start|stop`)·
@@ -23,7 +23,9 @@
 #   - 활성 htm/ → legacy z_htm/ → htm/ 신규 순으로 채택, 없으면 /tmp/ fallback
 
 input=$(cat)
-FLAG_FILE="$HOME/.claude/.hub-mode-active"
+# Issue283: cwd 스코프 플래그. cwd 파싱 후 `.hub-mode-active-<hash>` 로 재할당됨(아래).
+#   전역 단일 파일 시절엔 hub on 세션 플래그를 off 세션 hook 이 주워 b모드 form 이 누수됨.
+FLAG_FILE="$HOME/.claude/.hub-mode-active-none"
 # Issue83: 프로젝트 폴더 hub 기본 on — per-cwd 상태 파일로 override
 STATE_DIR="$HOME/.claude/.hub-state"
 # Issue105: 시스템 단위 마스터 OFF 플래그 (모든 프로젝트 자동 모드 차단)
@@ -45,6 +47,34 @@ try:
     print(d.get('prompt', ''))
 except Exception:
     pass" 2>/dev/null)
+
+# 수면 모드 가드 (Issue278 / Issue281) — 활성 + 명시 hub 트리거 부재 시 자동 렌더 억제.
+#   sleep-mode-trigger.sh 가 규칙을 주입하고, 여기서는 자동 hub 렌더 지시를 방출하지 않게 한다
+#   (단일 책임 분리). 사용자가 `..show`/`..ask`/`..board`/`..hub`/`..sleep off` 를 명시하면 존중.
+#   Issue281: 판정을 hooks/sleep-state.sh 로 단일화(전역 OR per-cwd) + config `rules.suppress_hub` 존중.
+SLEEP_SUPPRESS_HUB=0
+if [ -f "$HOME/.claude/hooks/sleep-state.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$HOME/.claude/hooks/sleep-state.sh"
+  if sleep_is_active "$cwd" && sleep_rule_on suppress_hub; then
+    SLEEP_SUPPRESS_HUB=1
+  fi
+elif [ -f "$HOME/.claude/.sleep-mode-active" ]; then
+  SLEEP_SUPPRESS_HUB=1
+fi
+if [ "$SLEEP_SUPPRESS_HUB" = "1" ]; then
+  if ! printf '%s' "$prompt" | grep -qiE '(^|[[:space:]])(\.\.show|/show|\.\.ask|/ask|\.\.board|\.\.dashboard|/dashboard|\.\.hub|/hub|(\.\.|/)?sleep[[:space:]]+off)([[:space:]]|$)'; then
+    cat <<'JSON'
+{
+  "hookSpecificOutput": {
+    "hookEventName": "UserPromptSubmit",
+    "additionalContext": "## 😴 수면 모드 — 자동 hub 렌더 억제 (Issue278)\n\n수면 모드 중 자동 HTML 렌더/브라우저 open 금지. **평문 채팅으로 진행** — HTML 미작성·브라우저 미open. 함께 온 요청은 수면 규칙(권장형 자율 진행)대로 정상 수행. 명시 렌더가 필요하면 사용자가 `..show` 를 직접 입력. 해제는 `sleep off`."
+  }
+}
+JSON
+    exit 0
+  fi
+fi
 
 # `..hub list` · `/hub list` — 등록 프로젝트 hub on/off 상태 일괄 조회(조회 전용, 토글 아님).
 #   hub 웹 UI Project List 팝업을 열지 않고 채팅에서 바로 확인하기 위함.
@@ -282,6 +312,9 @@ else:
 
 STATE_FILE="$STATE_DIR/${CWD_HASH}__${PROJECT_LABEL}"
 
+# Issue283: hub 모드 플래그를 cwd 스코프로 확정 (세션 간 누수 차단)
+FLAG_FILE="$HOME/.claude/.hub-mode-active-${CWD_HASH}"
+
 # Issue105 마이그레이션: 기존 hash-only 파일이 있고 새 라벨 파일이 없으면 rename
 OLD_STATE_FILE="$STATE_DIR/$CWD_HASH"
 if [ -f "$OLD_STATE_FILE" ] && [ ! -f "$STATE_FILE" ]; then
@@ -289,10 +322,14 @@ if [ -f "$OLD_STATE_FILE" ] && [ ! -f "$STATE_FILE" ]; then
 fi
 
 # 프로젝트 판정: cwd 가 ~/_git/___pm/projects/* 번호 파일이 가리키는 경로에 at-or-under 인가
+# prj3#Issue-unreg: prj0(=~, home)은 정확 일치만 매칭. home 하위 descendant 는 제외.
+#   과거엔 home 이 at-or-under 로 매칭돼 ~/.vscode 등 home 아래 모든 폴더가 IS_PROJECT=1 →
+#   미등록 폴더에서도 hub 자동 발동. home 은 네비 단축이지 "하위 전부 hub" 선언이 아님.
 IS_PROJECT=$(CWD_VAL="$cwd" python3 -c "
 import os
 cwd = os.environ.get('CWD_VAL', '')
 pdir = os.path.join(os.path.expanduser('~'), '_git', '___pm', 'projects')
+home = os.path.realpath(os.path.expanduser('~'))
 hit = False
 if cwd:
     cwd = os.path.realpath(cwd)
@@ -308,7 +345,8 @@ if cwd:
             if not p:
                 continue
             p = os.path.realpath(os.path.expanduser(p))
-            if cwd == p or cwd.startswith(p + os.sep):
+            # home(prj0) 은 exact-only. 그 외 프로젝트는 at-or-under.
+            if cwd == p or (p != home and cwd.startswith(p + os.sep)):
                 hit = True
                 break
     except Exception:
@@ -619,9 +657,9 @@ fi
 #   fpm-ask-intercept.sh 가 동일 form 자동 회수 경로로 처리 (인프라 재사용).
 # 매칭: `..ask` 가 render 분기보다 먼저 평가되도록 bare `..show`/`..hub` 분기 위에 배치.
 if printf '%s' "$prompt" | grep -qiE '(^|[[:space:]])\.\.ask([[:space:]]|$)'; then
+  # Issue283: `..ask` 는 1회성 진입 — state file 불변 (Issue178 이 `..show` 에 확립한 원칙 동일 적용).
+  #   구 코드는 `printf 'on' > "$STATE_FILE"` 로 그 폴더 hub 를 영구 on 전환시켰음.
   touch "$FLAG_FILE"
-  mkdir -p "$STATE_DIR"
-  printf 'on' > "$STATE_FILE"
 
   # topic 추출: "..ask <주제 ...>" 에서 트리거 다음 토큰들
   ASK_TOPIC=$(printf '%s' "$prompt" | sed -nE 's/.*\.\.ask[[:space:]]+(.+)/\1/p' | head -1)
@@ -637,7 +675,7 @@ topic_clause = f"`{topic}`" if topic else "(트리거에 주제 없음 — 사�
 context = (
     "## `..ask` 트리거 감지 — b모드 (양방향 Q&A 폼 자동 회수, Issue126)\n\n"
     f"주제 = {topic_clause}\n\n"
-    "`.hub-mode-active` 플래그 활성화됨. 본 turn 은 **사용자에게 결정을 묻는 폼 1회 제시**가 목적 "
+    "`.hub-mode-active-<hash>` 플래그 활성화됨. 본 turn 은 **사용자에게 결정을 묻는 폼 1회 제시**가 목적 "
     "(\"나에게 물어봐\" 모드 — 응답 자체가 결정 회수 폼).\n\n"
     "### 처리 절차 (필수)\n"
     "1. 주제에 대해 사용자가 선택할 **2~4개 옵션**을 도출 (권장안은 첫 옵션 + label 끝 `(권장)`).\n"
@@ -755,6 +793,19 @@ RENDER_TARGET=$(grep -E '^[[:space:]]*render_target:' "$HUB_SETTING_FILE" 2>/dev
 #   "hub" 로 덮어쓰기 전 시점. Issue184 강제 예외는 "사용자가 yml 에 직접 hub 로 적었는가" 만 봐야 하며,
 #   파생 hub 까지 예외로 삼으면 browser_open:off 의 helper 승격 동작(아래)이 깨짐.
 RENDER_TARGET_CFG="$RENDER_TARGET"
+# Issue289(P4): Zed 세션은 `vscode` 표면(Simple Browser)을 표현할 수단이 없다(Zed 에 내장 브라우저 패널 없음).
+#   그대로 두면 렌더가 조용히 사라지므로 `hub`(외부 브라우저 + 서버 http URL)로 자동 강등하고 1줄 고지한다.
+#   판정은 SessionStart 가 남긴 마커만 확인 — ps 재조회 없음(비용 0). hub/local-open/both 는 무변경.
+ZED_DOWNGRADED=0
+if [ "$RENDER_TARGET_CFG" = "vscode" ]; then
+  # shellcheck source=lib/zed-detect.sh
+  . "$HOME/.claude/hooks/lib/zed-detect.sh" 2>/dev/null || true
+  if command -v zed_is_marked >/dev/null 2>&1 && zed_is_marked "$SID_FULL"; then
+    RENDER_TARGET_CFG="hub"
+    RENDER_TARGET="hub"
+    ZED_DOWNGRADED=1
+  fi
+fi
 # Issue263: open-skip 은 이제 render_target 값이 아니라 별도 플래그로 표현.
 #   구조상 `hub` 가 "URL 형식"과 "open 생략" 두 뜻을 겸하던 것을 분리 — hub 는 URL 형식만, skip 은 아래 파생 신호.
 HUB_OPEN_SKIP=0
@@ -816,6 +867,24 @@ fi
 # EFFECTIVE=off 는 RENDER_TARGET(config)을 그대로 fallback 위치로 유지 — 별도 처리 불요.
 # hub-internal + EFFECTIVE=on 도 RENDER_TARGET="hub"(라인 580 설정값) 유지 — 별도 처리 불요.
 
+# prj3#Issue-unreg: /tmp fallback 은 서버 register-doc 스킵(라인 179) → hub/vscode 서버 라우트 403 → 아무것도 안 뜸.
+#   OUT_DIR=/tmp/___pm 이면 config(render_target hub/vscode/hub-internal) 무관하게 file:// 직접 open 으로 강제.
+#   "생성되면 반드시 표시" 보장. 서버·등록 불필요. (미등록 폴더 or _doc_work 없는 프로젝트 공통 안전망)
+if [ "$OUT_DIR" = "/tmp/___pm" ]; then
+  RENDER_TARGET="local-open"
+  HUB_OPEN_SKIP=0
+  if [ "$BROWSER_OPEN_OFF" = "1" ]; then
+    # browser_open:off 라도 /tmp 는 채팅 URL 이 죽으므로(403) 실제 open 필요 → helper 승격.
+    HTM_OPEN_CMD="bash \"$HOME/_git/___pm/plugins/fpm-core/hooks/fpm-browser-open.sh\" -a \"$_app\" -f $_focus -r false"
+    BROWSER_OPEN_OFF=0
+  fi
+fi
+
+# prj3#Issue-unreg: 미등록 폴더(IS_PROJECT=0) 렌더 정책 — hub(/tmp 렌더+표시) | text(평문, 기본).
+#   data SSOT: ___pm data/hub_setting.yml (고급 탭). 키 부재 시 안전 기본값 text.
+UNREG_RENDER=$(grep -E '^[[:space:]]*unregistered_render:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//; s/^"//; s/"$//')
+[ -z "$UNREG_RENDER" ] && UNREG_RENDER="text"
+
 # Issue133: a모드 render 트리거 `..hub` → `..show` rename. `..show`/`/show` = primary,
 #   `..hub`(bare) = 한시적 deprecated alias. 토글(`..hub on|off|start|stop`)·c모드(`..hub dash`)는
 #   위 분기에서 이미 처리·exit 됨 — 여기 도달한 `..hub` 는 render-intent 뿐 (보존 아님).
@@ -826,6 +895,26 @@ if printf '%s' "$prompt" | grep -qE '(^|[[:space:]])(\.\.show|/show)([[:space:]]
 elif printf '%s' "$prompt" | grep -qE '(^|[[:space:]])\.\.hub([[:space:]]|$)'; then
   HUB_RENDER_TRIGGER="hub-deprecated"
 fi
+
+# prj3#Issue-unreg: 미등록 폴더 렌더 게이트. unregistered_render=text(기본) 이면
+#   미등록 폴더(IS_PROJECT=0)에서 렌더가 발동할 상황(명시 ..show OR state-file/EFFECTIVE=on)에
+#   htm 을 만들지 않고 평문으로 응답 (사용자가 본 "invisible /tmp htm" 재발 차단).
+#   `unregistered_render: hub` 로 바꾸면 이 게이트를 통과 → 위 /tmp 안전망(file:// open)으로 표시.
+#   등록 프로젝트(IS_PROJECT=1)는 무관 — 게이트 미적용.
+if [ "$IS_PROJECT" = "0" ] && [ "$UNREG_RENDER" != "hub" ] \
+   && { [ -n "$HUB_RENDER_TRIGGER" ] || [ "$EFFECTIVE" = "on" ]; }; then
+  rm -f "$FLAG_FILE"
+  cat <<'JSON'
+{
+  "hookSpecificOutput": {
+    "hookEventName": "UserPromptSubmit",
+    "additionalContext": "## hub 렌더 skip — 미등록 폴더 (unregistered_render: text)\n\n현재 cwd 는 ___pm 등록 프로젝트가 아님(`Projects.md` 범위 밖). 미등록 폴더 기본 정책이 `text` 라 자동/`..show` hub 렌더를 발동하지 않음.\n\n**평문 채팅으로 응답** — HTML 문서 미작성·브라우저 미open. 요청된 작업(슬래시 커맨드·dev·커밋 등)은 정상 수행. state/flag 무변경.\n\n이 폴더에서도 hub 로 보고 싶으면: `hub_setting.yml` 고급 탭 `unregistered_render: hub` 로 변경(미등록 폴더는 /tmp 렌더 후 file:// 로 표시) 또는 이 폴더를 `Projects.md` 에 등록."
+  }
+}
+JSON
+  exit 0
+fi
+
 if [ -n "$HUB_RENDER_TRIGGER" ]; then
   # 플래그 활성화 — 후속 AskUserQuestion 을 form 으로 가로채기 위함
   touch "$FLAG_FILE"
@@ -847,6 +936,7 @@ if [ -n "$HUB_RENDER_TRIGGER" ]; then
     RENDER_HOST="$RENDER_HOST" \
     RENDER_PORT="$RENDER_PORT" \
     HUB_LINK_TARGET="$HUB_LINK_TARGET" \
+    ZED_DOWNGRADED="$ZED_DOWNGRADED" \
     python3 <<'PYEOF'
 import os, json
 
@@ -913,6 +1003,14 @@ else:  # local-open (기본)
         "   ```\n"
         f"   - macOS `{open_cmd}` (브라우저·포커스는 `browser_focus`/`default_browser` 설정 따름 — `-g`=백그라운드 open, 포커스 미탈취)\n"
         "   - 기본 브라우저(Chrome)와 분리하여 hub/dashboard 전용으로 Firefox 사용 (사용자 운영 모델)\n"
+    )
+# Issue289(P4): Zed 세션에서 render_target:vscode → hub 자동 강등된 경우 1줄 고지 의무.
+#   조용한 강등은 "설정대로 안 도는데 이유를 모름" 상태를 만듦 → 반드시 채팅에 남긴다.
+if os.environ.get('ZED_DOWNGRADED', '0') == '1':
+    render_step += (
+        "   - ℹ️ **자동 강등 고지 (Issue289)**: 현재 세션은 Zed(ACP 브리지). Zed 에는 내장 브라우저 패널이 없어 "
+        "`render_target: vscode` 를 표현할 수 없으므로 `hub`(외부 브라우저)로 강등함. "
+        "채팅 응답 끝에 한 줄 안내: `(알림: Zed 세션 — render_target vscode → hub 자동 강등)`\n"
     )
 # Issue133: `..hub` bare render 는 deprecated → `..show` 안내 주입
 deprecated = os.environ.get('HUB_RENDER_TRIGGER', '') == 'hub-deprecated'
@@ -1037,7 +1135,7 @@ context = (
     "- 장시간 background 모니터링·SSE push 가 필요하면 `..hub dash <topic>` 로 dashboard agent 호출\n"
     "- Mode C 는 동일 ___pm htm-server 사용 (Issue45 이후 hub 과 공통)\n\n"
     "### 선택지 자동 승격 (Issue16_3·Issue16_6, 필수)\n"
-    "- **트리거 (3 조건 모두 충족 시)**: `.hub-mode-active` 활성 + 응답이 N=2~4 선택지 (번호/알파벳/dash 리스트) + 결정 요청 문구 (\"선택해줘\", \"어느 옵션\", \"y/N\", \"번호로 답해\", \"골라줘\", \"어느 쪽\", \"Yes/No\" 등)\n"
+    "- **트리거 (3 조건 모두 충족 시)**: `.hub-mode-active-<hash>` 활성 + 응답이 N=2~4 선택지 (번호/알파벳/dash 리스트) + 결정 요청 문구 (\"선택해줘\", \"어느 옵션\", \"y/N\", \"번호로 답해\", \"골라줘\", \"어느 쪽\", \"Yes/No\" 등)\n"
     "- **동작**: 텍스트 bullet dump 금지. 응답 본문(HTML)은 옵션 설명·비교만, 결정 요청은 반드시 `AskUserQuestion` 호출로 분리. intercept hook 이 form 자동 회수 분기\n"
     "- **호출 예**: `AskUserQuestion(questions=[{\"question\":\"...\",\"header\":\"...\",\"multiSelect\":false,\"options\":[{\"label\":\"A (권장)\",\"description\":\"...\"}, ...]}])` — 권장안은 `options[0]` + label 끝 `(권장)`\n"
     "- **예외** (텍스트 유지): 단순 비교표·정보성 답변·코드 dump·옵션 5개 이상·simple confirm 외 정보성 응답\n"
@@ -1072,6 +1170,7 @@ if [ "$EFFECTIVE" = "on" ]; then
     RENDER_HOST="$RENDER_HOST" \
     RENDER_PORT="$RENDER_PORT" \
     HUB_LINK_TARGET="$HUB_LINK_TARGET" \
+    ZED_DOWNGRADED="$ZED_DOWNGRADED" \
     python3 <<'PYEOF'
 import os, json
 
@@ -1117,6 +1216,14 @@ elif render_target == 'both':
 else:  # local-open (기본)
     render_step = (
         f"6. Bash → `{open_cmd} \"file://<절대경로>\"` (브라우저·포커스 = `browser_focus`/`default_browser` 설정. `-g`=백그라운드, 포커스 미탈취)\n"
+    )
+
+# Issue289(P4): Zed 세션 자동 강등 고지 (자동 hub 모드에서도 동일 의무)
+if os.environ.get('ZED_DOWNGRADED', '0') == '1':
+    render_step += (
+        "   - ℹ️ **자동 강등 고지 (Issue289)**: Zed 세션(ACP 브리지)은 내장 브라우저 패널이 없어 "
+        "`render_target: vscode` 를 표현 불가 → `hub`(외부 브라우저)로 강등. "
+        "채팅 끝에 한 줄: `(알림: Zed 세션 — render_target vscode → hub 자동 강등)`\n"
     )
 
 # Issue168: 상단 framing 의 "Firefox 에 표시"/"Firefox open" 문구가 step6 와 어긋나면

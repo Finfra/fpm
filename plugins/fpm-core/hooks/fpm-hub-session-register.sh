@@ -58,6 +58,21 @@ REG_URL="http://127.0.0.1:${SERVER_PORT}/session/register?cwd=${CWD_ENC}"
 #   서버가 capabilities.entrypoint 로 hub 카드 출처 배지(🆚/⌨️)를 분기.
 ENTRY="${CLAUDE_CODE_ENTRYPOINT:-}"
 
+# Issue289(P3g): Zed 출처 판정 — Zed 는 ACP 브리지로 붙어 entrypoint 가 `sdk-ts` 로만 보이고
+#   ~/.claude/ide/*.lock 도 남기지 않는다. 결정적 신호는 부모 프로세스 체인뿐이므로
+#   **세션 등록 시 1회만** ps 로 조사하고, 결과를 caps.editor + 마커 파일에 캐시한다.
+#   서버(prj1#Issue327 e5f82bd)가 capabilities.editor=="zed" 를 origin=zed 로 소비해
+#   배지·클릭·포커스 게이트를 3값 분기한다. 매 렌더의 재조회는 fpm-hub-trigger 가 마커로 회피.
+EDITOR_SIG=""
+if [ "$ENTRY" != "claude-vscode" ]; then
+  # shellcheck source=lib/zed-detect.sh
+  . "$HOME/.claude/hooks/lib/zed-detect.sh" 2>/dev/null || true
+  if command -v zed_detect_by_proc >/dev/null 2>&1 && zed_detect_by_proc "$PID"; then
+    EDITOR_SIG="zed"
+    zed_mark "$SID"
+  fi
+fi
+
 # Issue221(보너스): resume 세션 model 선탐색 — SessionStart(source=resume/compact) 시점엔
 #   transcript 에 이미 assistant .message.model 존재 → dot 을 첫 응답 前 즉시 표시.
 #   신규(source=startup) 세션은 transcript 비어 MODEL='' → 무해(기존 동작 유지, Stop 훅이 채움).
@@ -86,19 +101,21 @@ fi
 
 BODY=$(python3 -c "
 import json, sys
-sid, src, win, pid, entry, model = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6]
+sid, src, win, pid, entry, model, editor = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6], sys.argv[7]
 caps = {'tmux_window': win, 'source': src, 'kind': 'live'}
 if entry:
     caps['entrypoint'] = entry   # Issue177: 출처 배지용 (claude-vscode|cli|...)
 if model:
     caps['model'] = model        # Issue221: resume 세션 모델 신호등 즉시 표시
+if editor:
+    caps['editor'] = editor      # Issue289: 서버 _origin_from_caps 가 origin=zed 로 소비
 body = {'sid': sid, 'content_type': 'live', 'capabilities': caps}
 try:
     body['pid'] = int(pid)   # Issue122: 서버 계약 pid(int) 필수
 except (ValueError, TypeError):
     pass
 print(json.dumps(body))
-" "$SID" "$SRC" "$TMUX_WIN" "$PID" "$ENTRY" "$MODEL")
+" "$SID" "$SRC" "$TMUX_WIN" "$PID" "$ENTRY" "$MODEL" "$EDITOR_SIG")
 
 curl -s --max-time 2 \
   -X POST "$REG_URL" \

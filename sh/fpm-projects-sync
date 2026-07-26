@@ -124,15 +124,109 @@ def gen_projects(rows):
     print(f'[1/3] projects/ 인덱스 {n}개 재생성')
 
 
-def update_vscode(rows):
-    """[2/3] 각 프로젝트 .vscode/settings.json 에 배경색 + 이모지 반영 (다른 키 보존)."""
+EDITOR_YML = os.path.join(PM_ROOT, 'data', 'editor.yml')
+
+
+def editor_cfg(key, default=''):
+    """data/editor.yml flat key:value 조회 (Issue327). 파일·키 부재 시 default."""
+    try:
+        with open(EDITOR_YML, encoding='utf-8') as fh:
+            for line in fh:
+                m = re.match(r'\s*' + re.escape(key) + r'\s*:\s*(.*)$', line)
+                if m:
+                    v = re.sub(r'\s*#.*$', '', m.group(1)).strip()
+                    return v or default
+    except OSError:
+        pass
+    return default
+
+
+def target_editors():
+    """색을 반영할 에디터 목록. color_sync=off → 빈 목록(동기 skip)."""
+    mode = editor_cfg('color_sync', 'all')
+    if mode == 'off':
+        return []
+    if mode == 'default':
+        return [editor_cfg('default_editor', 'vscode')]
+    raw = editor_cfg('enabled_editors', 'vscode')
+    return [e.strip() for e in raw.split(',') if e.strip()]
+
+
+def _load_json_lenient(path):
+    """(data, ok) — 파싱 실패 시 (None, False). JSONC trailing comma 1회 관용."""
+    if not os.path.isfile(path):
+        return {}, True
+    raw = open(path, encoding='utf-8').read()
+    try:
+        return json.loads(raw), True
+    except json.JSONDecodeError:
+        try:
+            return json.loads(re.sub(r',(\s*[}\]])', r'\1', raw)), True
+        except json.JSONDecodeError:
+            return None, False
+
+
+def write_zed(real, base, fg, emoji):
+    """.zed/settings.json 에 배경색 반영 (Issue327).
+
+    Zed 는 peacock 같은 확장이 없어 `experimental.theme_overrides` 로 직접 칠한다.
+    ⚠️ Zed 는 신뢰(trust)하지 않은 워크트리의 프로젝트 설정을 무시한다(Restricted Mode) —
+       파일을 써도 사용자가 그 프로젝트를 1회 신뢰하기 전까지 색이 안 보인다.
+    window.title 대응 키는 없어 이모지는 반영 대상이 아니다(능력 매트릭스 title_emoji 미지원).
+    """
+    zdir = os.path.join(real, '.zed')
+    spath = os.path.join(zdir, 'settings.json')
+    data, ok = _load_json_lenient(spath)
+    if not ok:
+        return 'skip'
+    ov = data.get('experimental.theme_overrides', {}) or {}
+    ov.update({
+        'background':               base,
+        'editor.background':        base,
+        'panel.background':         base,
+        'tab_bar.background':       base,
+        'title_bar.background':     base,
+        'status_bar.background':    base,
+        'toolbar.background':       base,
+    })
+    data['experimental.theme_overrides'] = ov
+    os.makedirs(zdir, exist_ok=True)
+    with open(spath, 'w', encoding='utf-8') as fh:
+        json.dump(data, fh, ensure_ascii=False, indent=2)
+        fh.write('\n')
+    return 'ok'
+
+
+def update_editors(rows):
+    """[2/3] 각 프로젝트의 에디터 설정 파일에 배경색(+VSCode 는 이모지) 반영 (다른 키 보존).
+
+    대상 에디터는 data/editor.yml 의 color_sync·enabled_editors 가 결정 (Issue327).
+    """
+    editors = target_editors()
+    if not editors:
+        print('[2/3] color_sync: off — 에디터 색 동기 skip')
+        return
     touched = skipped = missing = 0
+    zed_touched = zed_skipped = 0
+    do_vscode = 'vscode' in editors
+    do_zed = 'zed' in editors
     for r in rows:
         real = os.path.expanduser(r['path'])
         if not os.path.isdir(real):
             missing += 1
             continue
         if not re.match(r'#[0-9a-fA-F]{3,6}$', r['color'] or ''):
+            continue
+
+        if do_zed:
+            res = write_zed(real, r['color'], readable_fg(r['color']), r['emoji'])
+            if res == 'ok':
+                zed_touched += 1
+            else:
+                zed_skipped += 1
+                print(f"  ⚠️ 파싱 실패 — skip: {os.path.join(real, '.zed', 'settings.json')}")
+
+        if not do_vscode:
             continue
 
         vsdir = os.path.join(real, '.vscode')
@@ -181,7 +275,12 @@ def update_vscode(rows):
             fh.write('\n')
         touched += 1
 
-    print(f'[2/3] .vscode 갱신 {touched}개 (디렉토리 없음 {missing}, 파싱skip {skipped})')
+    parts = []
+    if do_vscode:
+        parts.append(f'.vscode {touched}개(파싱skip {skipped})')
+    if do_zed:
+        parts.append(f'.zed {zed_touched}개(파싱skip {zed_skipped})')
+    print(f"[2/3] 에디터 설정 갱신 — {' / '.join(parts)} (디렉토리 없음 {missing})")
 
 
 def run_iterm():
@@ -211,7 +310,7 @@ def main():
         print(f'✅ fpm-projects-sync --index-only 완료 — {len(rows)}개 프로젝트 (projects/ 만)')
         return
 
-    update_vscode(rows)
+    update_editors(rows)
     run_iterm()
     print(f'✅ fpm-projects-sync 완료 — {len(rows)}개 프로젝트')
 

@@ -6,6 +6,10 @@ date: 2026-03-29
 
 # 작업 설명
 
+> ⚠️ **VSCode 전용** (Issue327). Zed 에는 project registry(프로젝트 목록 확장) 개념이 자체로 없어
+> **영구 미지원**이다 — 최근 항목이 자동 관리되므로 대응 커맨드를 만들 필요가 없다.
+
+
 `~/_git/___pm/Projects.md`의 프로젝트 테이블을 참조하여
 `~/Library/Application Support/Code/User/globalStorage/alefragnani.project-manager/projects.json`의
 각 항목 `name`을 `{id}.{현재이름}` 형식으로 업데이트한다.

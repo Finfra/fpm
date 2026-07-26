@@ -4,6 +4,14 @@ description: 다른 프로젝트(prj)로 명령을 위임하고 완료 시까지
 date: 2026-05-16
 ---
 
+# 진입 게이트 — 위임은 명시 opt-in (Issue286)
+
+본 스킬은 **명시 위임 토큰**(`pm-do`·`/pm-do`·`prj<N>`·"N번 프로젝트")이 있을 때만 진입한다.
+
+* bare 숫자로 시작하는 입력(`11 /dev`, `3 해결해줘`)은 **현재 프로젝트의 이슈 번호** → 본 스킬 호출 금지
+* 양쪽으로 읽히면 `AskUserQuestion` 1회 확인. 수면 모드 규칙①(자율 진행) 적용 제외 — 타 prj 세션 기동은 현재 프로젝트 밖 부작용 = 크리티컬
+* 상세: [`~/.claude/rules/input-interpretation-rules.md`](../../rules/input-interpretation-rules.md)
+
 # 개요
 
 `pm-do <prj번호> "<명령>"` — 호출한 prj에서 다른 prj로 명령을 위임함. 대상 prj의 Issue.md `✅ 완료` 섹션에 해당 이슈 hash가 출현할 때까지 동기 대기 후 hash를 회수함.
@@ -113,16 +121,26 @@ TARGET="pm:${WIN_NAME}.0"
 PANE_PID=$($TMUX display-message -t "$TARGET" -p '#{pane_pid}' 2>/dev/null)
 CLAUDE_CNT=$(pgrep -P "$PANE_PID" -f "node.*claude\|claude.*node" 2>/dev/null | /usr/bin/wc -l | /usr/bin/tr -d ' ')
 
-# Step 3: Claude 미가동이면 띄움
-if [ "$CLAUDE_CNT" -eq 0 ]; then
-  $TMUX send-keys -t "$TARGET" "claude --dangerously-skip-permissions" Enter
-  /bin/sleep 5  # Claude 부팅 대기
-fi
-
-# Step 4: 명령 변환 후 전달
+# Step 3~4: 비대화 1-shot 실행 (Issue299 — pending 방지)
+#   ⚠️ 대화형 TUI 로 띄운 뒤 send-keys 로 프롬프트를 넣으면, 첫 실행 안내
+#      (Chrome 확장 등)·편집 승인 게이트에서 **아무 작업도 못 하고 멈춘다**.
+#      실측: 2026-07-26 위임 세션이 Chrome 프롬프트에서 작업 0으로 대기.
+#   → 프롬프트를 인자로 넘기는 **`-p`(print) 비대화 모드**를 기본으로 한다.
+#   ⚠️ 사용자 쉘 별칭 `cc`(= claude --dangerously-skip-permissions)는
+#      **대화형 쉘 전용**이라 스크립트·send-keys 문맥에서는 풀네임을 쓴다.
 RESOLVED_CMD=$(resolve_cmd "$CMD_RAW" "$SUFFIX")
-$TMUX send-keys -t "$TARGET" "$RESOLVED_CMD" Enter
-echo "[delegated] pm:${WIN_NAME}.0 ← ${RESOLVED_CMD}"
+CLAUDE_BIN="claude --dangerously-skip-permissions"
+
+if [ "$CLAUDE_CNT" -gt 0 ]; then
+  # 이미 대화형 Claude 가 그 pane 을 점유 중 → 프롬프트만 입력(기존 경로).
+  # 이 경로는 게이트에 걸릴 수 있으므로 아래 "pending 징후" 확인이 필수.
+  $TMUX send-keys -t "$TARGET" "$RESOLVED_CMD" Enter
+  echo "[delegated:interactive] pm:${WIN_NAME}.0 ← ${RESOLVED_CMD}"
+else
+  # pane 이 비어 있으면 비대화 1-shot 으로 실행 (기본 경로)
+  $TMUX send-keys -t "$TARGET" "${CLAUDE_BIN} -p '${RESOLVED_CMD}'" Enter
+  echo "[delegated:print] pm:${WIN_NAME}.0 ← ${CLAUDE_BIN} -p '${RESOLVED_CMD}'"
+fi
 ```
 
 `resolve_cmd`:
@@ -142,6 +160,17 @@ resolve_cmd() {
   echo "$cmd"
 }
 ```
+
+# 실행 모드 — `-p` 비대화가 기본 (Issue299)
+
+| 모드 | 명령 | 언제 | 특징 |
+| :--- | :--- | :--- | :--- |
+| **비대화(기본)** | `claude --dangerously-skip-permissions -p '<프롬프트>'` | 위임·자동화 전부 | 게이트 없음. 끝나면 프로세스 종료 → 완료 판정이 명확 |
+| 대화형(예외) | `claude --dangerously-skip-permissions` + send-keys | 사람이 중간 개입할 작업 | **첫 실행 안내·승인 게이트에서 멈춘다**. 사람이 붙어 있을 때만 |
+
+* 사용자 쉘에서 손으로 띄울 때는 별칭 `cc -p '<프롬프트>'` 가 동일하다. **별칭은 대화형 쉘 전용**이므로 스크립트·`send-keys`·cron 에서는 `claude --dangerously-skip-permissions -p` 풀네임을 쓴다
+* `-p` 는 1-shot 이다. 다단계 대화가 필요하면 프롬프트에 절차를 전부 적거나 `--continue`/`--resume` 으로 이어붙인다
+* **pending 징후**: `tmux capture-pane` 에 `Do you want`·`❯ 1. Yes`·`Enter to confirm` 이 보이면 게이트에 걸린 것이다. 위임이 진척 0 이면 이걸 먼저 확인한다
 
 # 완료 폴링
 

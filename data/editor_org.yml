@@ -1,0 +1,18 @@
+# 에디터 설정 — sh/fpm_editors.sh(런처·어댑터) + sh/fpm-projects-sync(색 writer) + hub server.py 가 읽음.
+# flat key:value only (hub_setting.yml 과 동일 파싱 관례 — yq 무의존).
+# 📖 설계 SSOT: _doc_arch/editor-abstraction-design.md
+
+default_editor: vscode        # vscode | zed — cdfv·v/z 미지정 시 대상, hub 서버의 비세션 open 대상
+enabled_editors: vscode,zed   # 색 동기 등 "쓰는 만큼 전부" 반영할 대상 (쉼표 구분)
+color_sync: all               # all=enabled 전부 / default=default_editor 만 / off
+
+short_launchers: true         # v/z/zn/za/zw/vn/vw 1글자 런처 정의 여부 (이름 충돌 시 false)
+set_editor_env: false         # true 면 EDITOR/VISUAL 을 default_editor 의 wait 모드로 export
+
+# CLI 실행 파일 경로 override (빈 값=자동 탐색: PATH → .app 내부 CLI 후보)
+bin_vscode:
+bin_zed:
+
+# macOS 앱 이름 override (hub 서버의 `open -a` 대상. 빈 값=기본값)
+app_vscode:                   # 기본: Visual Studio Code
+app_zed:                      # 기본: Zed

@@ -1,0 +1,52 @@
+{
+  "files.watcherExclude": {
+    "**/.smart-env": true,
+    "**/.smtcmp_json_db": true,
+    "**/.smtcmp_vector_db": true,
+    "**/.makemd": true,
+    "**/.obsidian/plugins": true,
+    "**/graphify-out": true,
+    "**/.llmwiki": true,
+    "**/.ruff_cache": true,
+    "**/.pytest_cache": true,
+    "**/target": true,
+    "**/Pods": true,
+    "**/.build": true,
+    "**/DerivedData": true,
+    "**/wiki": true,
+    "**/_doc_work/htm": true
+  },
+  "search.exclude": {
+    "**/.smart-env": true,
+    "**/.smtcmp_json_db": true,
+    "**/.smtcmp_vector_db": true,
+    "**/.makemd": true,
+    "**/.obsidian/plugins": true,
+    "**/graphify-out": true,
+    "**/.llmwiki": true,
+    "**/.ruff_cache": true,
+    "**/.pytest_cache": true,
+    "**/target": true,
+    "**/Pods": true,
+    "**/.build": true,
+    "**/DerivedData": true,
+    "**/wiki": true,
+    "**/_doc_work/htm": true,
+    "**/*.zip": true,
+    "**/*.tar.gz": true,
+    "**/*.dmg": true,
+    "**/*.pdf": true,
+    "**/*.mp4": true,
+    "**/*.sqlite": true,
+    "**/*.db": true
+  },
+  "search.followSymlinks": false,
+  "search.quickOpen.includeSymbols": false,
+  "typescript.tsserver.maxTsServerMemory": 3072,
+  "python.analysis.diagnosticMode": "openFilesOnly",
+  "python.analysis.indexing": false,
+  "workbench.editor.limit": {
+    "value": 8,
+    "perEditorGroup": true
+  }
+}

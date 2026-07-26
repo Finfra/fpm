@@ -10,13 +10,13 @@
 #   서버 down 시 fail-loud — paste-back fallback 없음.
 #
 # 동작:
-#   - .hub-mode-active 플래그 없음           → 통과 (exit 0)
+#   - .hub-mode-active-<hash> 플래그 없음 or effective=off → 통과 (exit 0) [Issue283]
 #   - 플래그 있음 + healthz 200 + /register OK → deny + form 자동 회수 지시 주입
 #   - 플래그 있음 + 서버 실패                 → deny + 서버 재시작 안내 + 종료 옵션 제시
 #   - Mode C(Live Dashboard) 는 본 hook 영향 받지 않음 (별도 dashboard agent)
 #
 # Issue126 (2026-06-03): b모드 명시 트리거 `..ask` 신설. `..ask` 는 fpm-hub-trigger.sh 에서
-#   .hub-mode-active 플래그를 touch 하므로, 본 hook 은 트리거 종류(자동 모드 / `..show` / `..ask`)와
+#   .hub-mode-active-<hash> 플래그를 touch 하므로, 본 hook 은 트리거 종류(자동 모드 / `..show` / `..ask`)와
 #   무관하게 동일 form 자동 회수 경로를 재사용함 (플래그 기반 단일 진입 — 별도 분기 불필요).
 #   Issue133 (2026-06-03): a모드 render 트리거 `..hub`→`..show` rename (토글 `..hub stop` 등은 보존).
 #
@@ -27,11 +27,7 @@
 
 set -u
 
-FLAG_MODE="$HOME/.claude/.hub-mode-active"
-
-if [ ! -f "$FLAG_MODE" ]; then
-  exit 0
-fi
+. "$HOME/.claude/hooks/hub-scope.sh"
 
 input=$(cat)
 
@@ -41,6 +37,18 @@ try:
     print(json.load(sys.stdin).get('cwd',''))
 except Exception:
     pass" 2>/dev/null)
+
+# Issue283: cwd 스코프 플래그 + effective 재판정 2중 게이트.
+#   (1) 플래그는 `.hub-mode-active-<md5(cwd)[:8]>` — 타 세션(hub on 프로젝트)이 켠 플래그를 주워
+#       off 프로젝트에서 form 이 뜨던 누수 차단.
+#   (2) 플래그가 stale 하게 남아도 SYSTEM_OFF > .hub-state/<hash> > IS_PROJECT 판정이 off 면 통과.
+FLAG_MODE=$(hub_flag_file "$cwd")
+if [ ! -f "$FLAG_MODE" ]; then
+  exit 0
+fi
+if [ "$(hub_effective "$cwd")" = "off" ]; then
+  exit 0
+fi
 
 session_id=$(printf '%s' "$input" | python3 -c "
 import sys, json
@@ -431,7 +439,7 @@ project_header_guide = (
 
 reason = (
     "## AskUserQuestion 가로채기 — HTML form 자동 회수 (Issue45 단일 경로)\n\n"
-    "`.hub-mode-active` 플래그 활성 + ___pm htm-server 가용. "
+    "`.hub-mode-active-<hash>` 플래그 활성(effective=on) + ___pm htm-server 가용. "
     "AskUserQuestion 도구 호출 차단됨. 사용자가 채팅이 아닌 Firefox HTML 폼으로 답변하도록 다음 절차를 따르세요.\n\n"
     "### 질문 데이터 (인라인 JSON)\n```json\n" + questions_json + "\n```\n\n"
     + project_header_guide

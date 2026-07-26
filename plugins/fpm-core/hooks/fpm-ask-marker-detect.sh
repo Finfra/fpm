@@ -7,7 +7,7 @@
 #   ~/.claude/rules/global-scar-change-rules.md
 #
 # 동작:
-#   - .hub-mode-active 플래그 없음 → exit 0
+#   - .hub-mode-active-<hash> 플래그 없음 or effective=off → exit 0 [Issue283]
 #   - 플래그 있음 + 직전 assistant 응답에 v1 sentinel 쌍 BEGIN/END 마커 발견
 #     → 마커 JSON 파싱·검증 → server healthz/register → form HTML 생성 지시를
 #       Stop hook `decision: "block"` reason 으로 주입하여 다음 turn 에서 Claude
@@ -33,10 +33,7 @@
 
 set -u
 
-FLAG_MODE="$HOME/.claude/.hub-mode-active"
-if [ ! -f "$FLAG_MODE" ]; then
-  exit 0
-fi
+. "$HOME/.claude/hooks/hub-scope.sh"
 
 input=$(cat)
 
@@ -61,6 +58,15 @@ try:
     print(json.load(sys.stdin).get('session_id',''))
 except Exception:
     pass" 2>/dev/null)
+
+# Issue283: cwd 스코프 플래그 + effective 재판정 (전역 플래그 세션 간 누수 차단)
+FLAG_MODE=$(hub_flag_file "$cwd")
+if [ ! -f "$FLAG_MODE" ]; then
+  exit 0
+fi
+if [ "$(hub_effective "$cwd")" = "off" ]; then
+  exit 0
+fi
 
 # 무한 루프 방지: stop_hook_active true 면 즉시 exit
 stop_hook_active=$(printf '%s' "$input" | python3 -c "

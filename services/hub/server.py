@@ -1251,6 +1251,74 @@ def _session_ai_title(cwd: str, sid: str):
     return title
 
 
+def _clean_prompt_excerpt(body: str) -> str:
+    """Issue328: 첫 user 프롬프트 원문 → 카드 제목용 1줄 정제.
+
+    slash 커맨드 세션의 첫 user 레코드는 `<command-message>…</command-message>
+    <command-name>/dev</command-name><command-args>…` 래퍼라 원문 그대로 쓰면
+    카드가 태그로 도배된다. command-name 이 있으면 `/dev 인자` 형태로 축약하고,
+    없으면 XML 유사 태그만 제거한다."""
+    name = re.search(r"<command-name>\s*(.*?)\s*</command-name>", body, re.S)
+    if name:
+        cmd = name.group(1).strip()
+        args = re.search(r"<command-args>\s*(.*?)\s*</command-args>", body, re.S)
+        arg = (args.group(1).strip() if args else "")
+        body = f"{cmd} {arg}".strip()
+    else:
+        body = re.sub(r"<[^>]+>", " ", body)
+    return re.sub(r"\s+", " ", body).strip()
+
+
+def _session_first_prompt(cwd: str, sid: str, limit: int = 60):
+    """Issue328: 세션 JSONL 의 첫 user 프롬프트 1줄 발췌. 없으면 None.
+
+    `ai-title` 은 VSCode 확장만 기록한다 — Zed(ACP/sdk-ts)·터미널 세션 JSONL 엔
+    영구히 없다. 그 결과 title 이 항상 비어 Issue166 의 빈 세션 숨김 필터에 걸려
+    살아있는 세션이 hub 에서 조용히 사라졌다. 프롬프트 발췌를 최종 폴백으로 둔다.
+
+    head 방향 스캔(첫 user 는 파일 앞쪽) + mtime 캐시 — `_session_ai_title` 동일 패턴.
+    첫 user 레코드는 불변이므로 캐시 적중률이 사실상 100%."""
+    path = _resolve_session_jsonl(cwd, sid)
+    if not path:
+        return None
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    ck = f"firstprompt:{path}"
+    cached = doc_cache_get(ck, st.st_mtime)
+    if cached is not None:
+        return cached or None    # "" = 발췌 불가 (재스캔 방지용 캐시값)
+    text = None
+    try:
+        with open(path, "rb") as f:
+            # 첫 user 는 통상 수 KB 이내. 상한을 둬 거대 파일 전수 읽기를 막는다.
+            chunk = f.read(1048576)
+        for ln in chunk.decode("utf-8", "ignore").splitlines():
+            if '"user"' not in ln:
+                continue
+            try:
+                d = json.loads(ln)
+            except ValueError:
+                continue   # window 경계로 잘린 마지막 줄 등
+            if d.get("type") != "user":
+                continue
+            content = (d.get("message") or {}).get("content")
+            texts, _tools, _thinks = _transcript_block_text(content)
+            body = " ".join(t for t in texts if t).strip()
+            if not body:
+                continue   # tool_result 만 있는 user 레코드 → 다음 후보
+            body = _clean_prompt_excerpt(body)
+            if not body:
+                continue
+            text = body[:limit].strip()
+            break
+    except OSError:
+        pass
+    doc_cache_put(ck, st.st_mtime, text or "")
+    return text
+
+
 def _html_escape(s):
     return (str(s).replace("&", "&amp;").replace("<", "&lt;")
             .replace(">", "&gt;").replace('"', "&quot;").replace("'", "&#39;"))
@@ -1966,6 +2034,10 @@ def _simple_browser_focus_skip(mode: str, front_proc: str, front_win: str,
         return "focus-never"
     if mode != "gate":
         return ""
+    # Issue327: Zed 가 전면이면 skip — Simple Browser 는 VSCode 전용 표면이라 여기서 열면
+    #   Zed 에서 타이핑 중인 사용자의 포커스를 VSCode 가 빼앗는다(창 제목 일치 여부와 무관).
+    if front_proc == "Zed":
+        return "zed-frontmost"
     if front_proc not in ("Code", "Electron"):
         return ""
     owner_base = os.path.basename(target_cwd) if target_cwd else ""
@@ -2113,6 +2185,120 @@ def _apply_log_level(setting: dict) -> None:
     로더가 임계값을 전역에 push 하는 단방향 구조."""
     global _LOG_THRESHOLD
     _LOG_THRESHOLD = LOG_LEVELS.get(str(setting.get("log_level", "INFO")).upper(), 2)
+
+
+# ── 에디터 어댑터 (Issue327) ────────────────────────────────────────────────
+# data/editor.yml(flat key:value) 를 읽어 앱 이름·기본 에디터를 결정한다.
+# 하드코딩 `open -a "Visual Studio Code"` 를 대체 — Zed 사용자가 hub 에서 무엇을 눌러도
+# VSCode 가 뜨던 결함(설계 인벤토리 #13)의 수정.
+EDITOR_SETTING_FILE = os.path.join(REPO_ROOT, "data", "editor.yml")
+_EDITOR_APP_DEFAULT = {"vscode": "Visual Studio Code", "zed": "Zed"}
+# 아이콘 캐시 — 앱 번들 .icns 에서 첫 요청 시 생성(타사 로고를 repo 에 커밋하지 않기 위함)
+EDITOR_ICON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "editor")
+_EDITOR_APP_CANDIDATES = {
+    "vscode": ["/Applications/Visual Studio Code.app",
+               "/Applications/_editor/Visual Studio Code.app",
+               os.path.expanduser("~/Applications/Visual Studio Code.app")],
+    "zed": ["/Applications/Zed.app",
+            "/Applications/_editor/Zed.app",
+            os.path.expanduser("~/Applications/Zed.app")],
+}
+
+
+def _editor_cfg(key: str, default: str = "") -> str:
+    """data/editor.yml flat key:value 조회. 파일·키 부재 시 default."""
+    try:
+        with open(EDITOR_SETTING_FILE, encoding="utf-8") as fh:
+            for line in fh:
+                m = re.match(r"\s*" + re.escape(key) + r"\s*:\s*(.*)$", line)
+                if m:
+                    v = re.sub(r"\s*#.*$", "", m.group(1)).strip()
+                    return v or default
+    except OSError:
+        pass
+    return default
+
+
+def _default_editor() -> str:
+    ed = _editor_cfg("default_editor", "vscode").lower()
+    return ed if ed in _EDITOR_APP_DEFAULT else "vscode"
+
+
+def _editor_app_name(editor: str = "") -> str:
+    """macOS `open -a` 대상 앱 이름. editor.yml 의 app_<editor> 로 override 가능."""
+    ed = (editor or _default_editor()).lower()
+    if ed not in _EDITOR_APP_DEFAULT:
+        ed = "vscode"
+    return _editor_cfg(f"app_{ed}", "") or _EDITOR_APP_DEFAULT[ed]
+
+
+def _session_editor(sid: str) -> str:
+    """세션 sid 의 출처 에디터(vscode|zed). 미상이면 default_editor.
+
+    origin=terminal 세션도 "어느 앱으로 폴더를 열까"는 정해야 하므로 default 로 떨어진다.
+    """
+    try:
+        with sessions_lock:
+            for (_h, _sid), entry in sessions.items():
+                if _sid != sid:
+                    continue
+                caps = entry.get("capabilities") or {}
+                return _origin_from_caps(caps) if _origin_from_caps(caps) in _EDITOR_APP_DEFAULT \
+                    else _default_editor()
+    except Exception:
+        pass
+    return _default_editor()
+
+
+def _origin_from_caps(caps: dict) -> str:
+    """세션 capabilities → origin (vscode|zed|terminal). Issue327 로 3값화.
+
+    - VSCode 확장: CLAUDE_CODE_ENTRYPOINT=claude-vscode
+    - Zed: ACP 브리지라 entrypoint 가 sdk-ts 로만 보인다 → 판정 hook(prj3)이 caps.editor="zed"
+      를 실어 보내야 구분 가능. 서버는 그 신호를 신뢰하고, 없으면 terminal 로 둔다.
+    """
+    ep = str(caps.get("entrypoint", "")).strip()
+    if ep == "claude-vscode":
+        return "vscode"
+    ed = str(caps.get("editor", "")).strip().lower()
+    if ed in _EDITOR_APP_DEFAULT:
+        return ed
+    return "terminal"
+
+
+def _editor_icon_file(editor: str) -> str:
+    """에디터 아이콘 PNG 경로. 없으면 앱 번들 .icns 에서 1회 생성(실패 시 빈 문자열).
+
+    타사 상표 이미지를 repo 에 커밋하지 않기 위해 런타임 생성·캐시한다.
+    """
+    ed = (editor or "").lower()
+    if ed not in _EDITOR_APP_CANDIDATES:
+        return ""
+    out = os.path.join(EDITOR_ICON_DIR, f"{ed}.png")
+    if os.path.isfile(out):
+        return out
+    app = next((a for a in _EDITOR_APP_CANDIDATES[ed] if os.path.isdir(a)), "")
+    if not app:
+        return ""
+    res = os.path.join(app, "Contents", "Resources")
+    icns = ""
+    try:
+        for fn in sorted(os.listdir(res)):
+            if fn.endswith(".icns") and "document" not in fn.lower():
+                icns = os.path.join(res, fn)
+                break
+    except OSError:
+        return ""
+    if not icns:
+        return ""
+    try:
+        os.makedirs(EDITOR_ICON_DIR, exist_ok=True)
+        subprocess.run(["sips", "-s", "format", "png", icns, "--out", out,
+                        "--resampleWidth", "64"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+    except Exception:
+        return ""
+    return out if os.path.isfile(out) else ""
 
 
 def _ssh_remote_uri(cwd: str, alias: str) -> str:
@@ -2988,6 +3174,27 @@ class Handler(BaseHTTPRequestHandler):
         # Issue253: 배지 서버(Servers.md 이모지 등록)는 이모지 SVG 서빙 — favicon·문서
         #   헤더 hub-link 가 전부 이 경로를 참조하므로 단일 지점에서 서버 아이콘으로 전환.
         #   브라우저는 확장자가 아닌 Content-Type 으로 렌더하므로 .png 경로에 SVG 허용.
+        # Issue327: 에디터 아이콘 — /editor-icon/<vscode|zed>.png.
+        #   앱 번들 .icns 에서 런타임 추출·캐시(타사 로고 repo 미커밋). 없으면 404 → JS 가 emoji 폴백.
+        if parsed.path.startswith("/editor-icon/"):
+            name = os.path.basename(parsed.path)[:-4] if parsed.path.endswith(".png") else ""
+            icon = _editor_icon_file(name)
+            if not icon:
+                self._send_json(404, {"error": "icon unavailable"})
+                return
+            try:
+                data = open(icon, "rb").read()
+            except OSError:
+                self._send_json(404, {"error": "icon unreadable"})
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "public, max-age=86400")
+            self.end_headers()
+            self.wfile.write(data)
+            return
+
         if parsed.path == "/fpm-icon.png":
             _emoji, _hue, _sname = _self_server_badge()
             if _emoji:
@@ -4245,6 +4452,12 @@ class Handler(BaseHTTPRequestHandler):
                     dash_title = ai_title
                 elif isinstance(lbl, str) and lbl.strip():
                     dash_title = lbl.strip()
+                else:
+                    # Issue328: 최종 폴백 — JSONL 첫 user 프롬프트 발췌.
+                    #   ai-title 은 VSCode 확장 전용이라 Zed(sdk-ts)·터미널 세션은
+                    #   영구 title 없음 → Issue166 빈 세션 필터에 걸려 통째로 숨겨졌다.
+                    dash_title = _session_first_prompt(
+                        proj_snap.get(h, {}).get("cwd", ""), sid)
                 # else (Issue129): 명령(프롬프트) 전 세션 → dash_title None 유지 → 클라가 "-" 표기.
                 #   기존 "claude · win N" fallback 제거 — VSCode 세션엔 무의미(전부 win 1).
             if not force_live:
@@ -4263,7 +4476,9 @@ class Handler(BaseHTTPRequestHandler):
             #   그 외/미상 → "terminal"(클릭 시 VSCode 재오픈 안 함).
             _entry_caps = entry.get("capabilities") or {}
             _ep = str(_entry_caps.get("entrypoint", "")).strip()
-            origin = "vscode" if _ep == "claude-vscode" else "terminal"
+            # Issue327: 3값화 — Zed(ACP 브리지)는 entrypoint 가 sdk-ts 로만 보여
+            #   판정 hook(prj3)이 caps.editor="zed" 를 실어 보낸다. _origin_from_caps 가 단일 판정점.
+            origin = _origin_from_caps(_entry_caps)
             # Issue273: 메인 세션 모델 — producer hook 이 caps.model 로 transcript 최신 model 전송.
             _model_id = str(_entry_caps.get("model", "")).strip()
             _model_tier = _classify_model_tier(_model_id)
@@ -4333,7 +4548,9 @@ class Handler(BaseHTTPRequestHandler):
         elif _order == "project":
             _prj_id = {os.path.expanduser(r["path"]).rstrip("/"): r["id"]
                        for r in _load_projects_list()}
-            results.sort(key=lambda x: (_prj_id.get((x.get("cwd") or "").rstrip("/"), 10**9),
+            # Issue303 이후 prj id 는 문자열("9a") → int 기본값과 혼합 비교 시 TypeError.
+            #   _pid_sort_key 로 튜플 정규화하여 미등록 cwd 는 (inf,"",0) 로 밀어냄.
+            results.sort(key=lambda x: (_pid_sort_key(_prj_id.get((x.get("cwd") or "").rstrip("/"), "")),
                                         x.get("created") or 0))
         # Issue63: terminal(done/stopped) dashboard 세션 TTL prune — 1h 경과분은
         #   sessions 테이블에서 완전 제거하여 sessions.json 무한 성장 차단.
@@ -5256,7 +5473,7 @@ __WARN__
                 self._send_json(200, {"status": "remote", "uri": uri, "cwd": open_cwd})
                 return
         try:
-            subprocess.Popen(["open", "-a", "Visual Studio Code", open_cwd],
+            subprocess.Popen(["open", "-a", _editor_app_name(), open_cwd],  # Issue327
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
             self._send_json(500, {"error": f"spawn failed: {e}"})
@@ -5320,7 +5537,7 @@ __WARN__
                 self.end_headers()
                 return
         try:
-            subprocess.Popen(["open", "-a", "Visual Studio Code", target],
+            subprocess.Popen(["open", "-a", _editor_app_name(), target],  # Issue327
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
             self._send_json(500, {"error": f"spawn failed: {e}"})
@@ -5387,11 +5604,22 @@ __WARN__
                 self._send_json(200, {"status": "remote", "uri": uri,
                                       "folder_uri": folder_uri, "sid": sid})
                 return
+        # Issue327: Zed 세션은 세션 딥링크가 없다(능력 매트릭스 session_deeplink 영구 미지원)
+        #   → 워크스페이스만 연다. vscode:// URI 를 그대로 던지면 VSCode 가 열려 오동작.
+        sess_editor = _session_editor(sid)
         try:
+            if sess_editor == "zed":
+                subprocess.Popen(["open", "-a", _editor_app_name("zed"), open_cwd],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                log(f"POST /open-session — zed workspace only (딥링크 미지원) cwd={open_cwd} sid={sid}")
+                self._send_json(200, {"status": "opened-workspace", "editor": "zed",
+                                      "cwd": open_cwd, "sid": sid})
+                return
             # 워크스페이스 창 보장·전면화 후(0.4s) 세션 URI 로 탭 포커스.
             subprocess.Popen(
                 ["bash", "-c",
-                 f'open -a "Visual Studio Code" {shlex.quote(open_cwd)}; '
+                 f'open -a {shlex.quote(_editor_app_name(sess_editor))} '
+                 f'{shlex.quote(open_cwd)}; '
                  f'sleep 0.4; open {shlex.quote(uri)}'],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
@@ -5503,7 +5731,9 @@ __WARN__
             if target_cwd:
                 subprocess.Popen(
                     ["bash", "-c",
-                     f'open -a "Visual Studio Code" {shlex.quote(target_cwd)}; '
+                     # Simple Browser 는 VSCode 전용 표면 → 앱 고정 (Issue327: 능력 매트릭스 inline_browser)
+                     f'open -a {shlex.quote(_editor_app_name("vscode"))} '
+                     f'{shlex.quote(target_cwd)}; '
                      f'sleep 0.4; open {shlex.quote(uri)}'],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             else:
@@ -5525,7 +5755,7 @@ __WARN__
             self._send_json(404, {"error": "hub_setting.yml not found"})
             return
         try:
-            subprocess.Popen(["open", "-a", "Visual Studio Code", HUB_SETTING_FILE],
+            subprocess.Popen(["open", "-a", _editor_app_name(), HUB_SETTING_FILE],  # Issue327
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
             self._send_json(500, {"error": f"spawn failed: {e}"})
@@ -5713,7 +5943,7 @@ __WARN__
             self._send_json(404, {"error": "Projects.md not found"})
             return
         try:
-            subprocess.Popen(["open", "-a", "Visual Studio Code", PROJECTS_MD],
+            subprocess.Popen(["open", "-a", _editor_app_name(), PROJECTS_MD],  # Issue327
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
             self._send_json(500, {"error": f"spawn failed: {e}"})
@@ -6648,8 +6878,13 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
 
         파일은 `Projects.md` 로부터 재생성되는 gitignore 산출물이라 부재가 정상일 수 있다.
         그 경우 raw 404 JSON 대신 재생성 커맨드를 담은 안내 HTML 을 돌려준다.
+
+        Issue321: 새로고침 시 `Projects.md` 가 산출물보다 최신이면(mtime 비교) serve
+        직전에 빌더를 자동 실행해 stale 맵을 재생성한다. 빌더 실패·부재는 조용히
+        무시하고 기존 파일을 그대로 돌려준다(fail-safe).
         """
         path = os.path.join(REPO_ROOT, PROJECTS_MAP_NAME)
+        self._rebuild_projects_map_if_stale(path)
         try:
             with open(path, "rb") as f:
                 body = f.read()
@@ -6692,6 +6927,38 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _rebuild_projects_map_if_stale(self, out_path: str):
+        """Issue321: `Projects.md` mtime > `Projects_map.htm` mtime 이면 빌더 재실행.
+
+        새로고침만으로 최신 트리를 보게 하는 목적. 판정·실행 모두 best-effort —
+        소스 부재·빌더 부재·빌더 실패·타임아웃은 모두 조용히 무시하고 기존 산출물을
+        그대로 serve 한다(맵 표시가 소스 편집에 막히지 않게).
+        """
+        src = os.path.join(REPO_ROOT, "Projects.md")
+        builder = os.path.join(REPO_ROOT, PROJECTS_MAP_BUILDER)
+        try:
+            src_mtime = os.path.getmtime(src)
+        except OSError:
+            return  # 소스 없음 → 재빌드 불가
+        try:
+            out_mtime = os.path.getmtime(out_path)
+        except OSError:
+            out_mtime = 0.0  # 산출물 없음 → 재빌드 시도(빌더가 있으면)
+        if src_mtime <= out_mtime:
+            return  # 최신 — no-op
+        if not os.path.isfile(builder):
+            return  # 빌더 부재 → 안내 HTML 경로에 위임
+        try:
+            subprocess.run(
+                ["python3", builder],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                timeout=20,
+            )
+            log(f"GET /projects-map — rebuilt (Projects.md stale): {out_path}")
+        except Exception as e:
+            log(f"GET /projects-map — rebuild skipped: {e}")
 
     def _handle_view(self, parsed):
         """Issue16_2: dashboard·form HTML을 동일 origin(http://127.0.0.1)으로 serve.
@@ -7384,7 +7651,7 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         header_html = (
             '<header class="dash-hdr"><h1>' + esc(title) + '</h1>'
             '<nav class="hdr-actions">'
-            '<a class="proj-badge" href="#" title="VSCode 로 ' + proj_label + ' 프로젝트 열기" onclick=\'' + onclick_open + '\'>📁 ' + proj_label + '</a>'
+            '<a class="proj-badge" href="#" title="' + _editor_app_name() + ' 로 ' + proj_label + ' 프로젝트 열기" onclick=\'' + onclick_open + '\'>📁 ' + proj_label + '</a>'  # Issue327
             '<a class="sess-link" href="/hub" title="활성 세션 목록 보기 (hub)">🛰 활성 세션</a>'
             '<button type="button" class="copy-link" title="이 문서 링크 복사" onclick="' + copy_onclick + '">🔗</button>'
             '<a class="hub-link" href="/hub" title="통합 Hub 대시보드로 이동">🗂 Hub</a>'
@@ -8523,6 +8790,8 @@ main { padding: 1.5rem; max-width: 1600px; margin: 0 auto; display: flex; gap: 1
 .live-item[data-sid]:hover { background: rgba(127,127,127,.12); }
 /* Issue177: 세션 출처 배지 (🆚 VSCode / ⌨️ 터미널) — topic 앞 작은 아이콘 */
 .live-origin { flex-shrink: 0; font-size: 0.82em; line-height: 1; opacity: 0.85; cursor: help; position: relative; }
+/* Issue327: 에디터 로고 배지 — emoji 와 같은 광학 크기로 고정(배지 줄 높이 변화 0) */
+.live-origin-ico { width: 1em; height: 1em; display: inline-block; vertical-align: -0.12em; border-radius: 2px; }
 /* Issue273: 메인 세션 모델 신호등 배지 (🟣 opus / 🔵 sonnet / 🟢 haiku / 🟠 fable) — origin 배지 옆 */
 .live-model { flex-shrink: 0; font-size: 0.78em; line-height: 1; cursor: help; margin-left: -0.25rem; position: relative; }
 /* Issue221: 네이티브 title 툴팁은 브라우저가 지연(~1.5~2.5s) 소유·조정 불가 → data-tip 커스텀 툴팁으로 즉시 표시(지연 0)
@@ -8866,10 +9135,18 @@ function renderLiveSessions(list, limit, showCopy) {
     const topic = s.title || '-';
     // Issue177: 세션 출처 배지 — VSCode(🆚) vs 터미널(⌨️). origin 은 서버가 capabilities.entrypoint 로 판정.
     //   터미널 세션은 클릭해도 VSCode 재오픈 안 함(아래 위임 핸들러 분기). data-origin 으로 핸들러에 전달.
-    const origin = s.origin === 'vscode' ? 'vscode' : 'terminal';
+    // Issue327: 3값 — vscode|zed 는 실제 앱 로고 이미지, terminal 은 emoji(앱이 아니므로 로고 없음).
+    //   아이콘 404(에디터 미설치 등)면 onerror 로 emoji 폴백 → 배지가 비지 않는다.
+    const origin = (s.origin === 'vscode' || s.origin === 'zed') ? s.origin : 'terminal';
     // Issue221: title→data-tip (커스텀 CSS 툴팁, 지연 0). CSS .live-origin[data-tip]:hover::after
-    const originBadge = origin === 'vscode'
-      ? `<span class="live-origin vs" data-tip="VSCode 세션 — 클릭 시 탭 포커스">🆚</span>`
+    const ORIGIN_META = {
+      vscode: {tip: 'VSCode 세션 — 클릭 시 탭 포커스', fallback: '🆚'},
+      zed:    {tip: 'Zed 세션 — 클릭 시 워크스페이스 열기(세션 복귀 불가)', fallback: '🅩'},
+    };
+    const originBadge = ORIGIN_META[origin]
+      ? `<span class="live-origin ${origin}" data-tip="${escapeHtml(ORIGIN_META[origin].tip)}">`
+        + `<img class="live-origin-ico" src="/editor-icon/${origin}.png" alt="${origin}"`
+        + ` onerror="this.replaceWith(document.createTextNode('${ORIGIN_META[origin].fallback}'))"></span>`
       : `<span class="live-origin term" data-tip="터미널 세션(CLI) — 클릭 시 대화 내용 보기(뷰어)">⌨️</span>`;
     // Issue273: 메인 세션 모델 신호등 배지 — 🟣 opus / 🔵 sonnet / 🟢 haiku / 🟠 fable. 미상→무표시.
     const modelDot = {opus:'🟣', sonnet:'🔵', haiku:'🟢', fable:'🟠'}[s.model_tier] || '';
