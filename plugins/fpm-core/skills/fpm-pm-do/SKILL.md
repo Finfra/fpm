@@ -161,7 +161,9 @@ resolve_cmd() {
 }
 ```
 
-# 실행 모드 — `-p` 비대화가 기본 (Issue299)
+# 실행 모드 — `-p` 비대화가 기본 (Issue299·Issue300)
+
+> 규칙 SSOT: [`rules/session-delegation-rules.md`](../../rules/session-delegation-rules.md). 실동작 코드는 **`~/.bin/pm-do`** 이며 본 문서와 동일 분기를 갖는다(둘 중 하나만 고치면 반쪽 — Issue300 실측).
 
 | 모드 | 명령 | 언제 | 특징 |
 | :--- | :--- | :--- | :--- |
@@ -256,6 +258,7 @@ extract_completion_hash() {
 
 # 의존 룰·SCAR
 
+* **`~/.claude/rules/session-delegation-rules.md` — 세션 기동 표준 SSOT (Issue300)**. `-p` + `--dangerously-skip-permissions` 강제, 게이트를 사용자에게 넘기지 않기
 * `~/.claude/rules/issue-g.md` 규칙2 `* depends:` 필드 정의 (Issue17)
 * `~/_git/___pm/.claude/skills/cdf/index.md` — tmux pane 라우팅
 * `~/_git/___pm/Projects.md` — 번호↔경로↔Domain SSOT

@@ -31,22 +31,23 @@ STATE_DIR="$HOME/.claude/.hub-state"
 # Issue105: 시스템 단위 마스터 OFF 플래그 (모든 프로젝트 자동 모드 차단)
 SYSTEM_OFF_FLAG="$HOME/.claude/.hub-system-off"
 
-# python3로 cwd / prompt / session_id 파싱 (hook 입력 JSON)
-cwd=$(printf '%s' "$input" | python3 -c "
-import sys, json
+# hook 입력 JSON 에서 cwd / prompt / session_id 파싱.
+# Issue305_3: 종전에는 필드마다 python3 를 띄워 3회 × ~20ms 를 고정 지출했다.
+#   1회 호출로 세 값을 **쉘 인용된 대입문**으로 받아 eval 한다(shlex.quote → 작은따옴표
+#   포장이라 프롬프트에 개행·따옴표·`$`·백틱이 있어도 안전). NUL 구분자 방식은 불가 —
+#   bash command substitution 이 NUL 을 버린다(실측).
+eval "$(printf '%s' "$input" | python3 -c "
+import sys, json, shlex
 try:
     d = json.load(sys.stdin)
-    print(d.get('cwd', ''))
 except Exception:
-    pass" 2>/dev/null)
-
-prompt=$(printf '%s' "$input" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    print(d.get('prompt', ''))
-except Exception:
-    pass" 2>/dev/null)
+    d = {}
+if not isinstance(d, dict):
+    d = {}
+for k in ('cwd', 'prompt', 'session_id'):
+    print(('_hookjson_' + k) + '=' + shlex.quote(str(d.get(k, ''))))" 2>/dev/null)"
+cwd="${_hookjson_cwd-}"
+prompt="${_hookjson_prompt-}"
 
 # 수면 모드 가드 (Issue278 / Issue281) — 활성 + 명시 hub 트리거 부재 시 자동 렌더 억제.
 #   sleep-mode-trigger.sh 가 규칙을 주입하고, 여기서는 자동 hub 렌더 지시를 방출하지 않게 한다
@@ -145,13 +146,7 @@ PYEOF
   exit 0
 fi
 
-session_id=$(printf '%s' "$input" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    print(d.get('session_id', ''))
-except Exception:
-    pass" 2>/dev/null)
+session_id="${_hookjson_session_id-}"   # Issue305_3: 위 단일 파싱에서 확보 (재spawn 제거)
 
 # Issue26: SID(세션 식별자) 결정 — session_id 우선, 미존재 시 cwd_hash로 fallback
 SID="$session_id"
@@ -226,19 +221,14 @@ import hashlib, os, re
 cwd = os.environ.get('CWD_VAL', '')
 root = ''
 hexcol = ''
-# 1. nearest ancestor .vscode/settings.json peacock.color
-d = cwd
-while d and d != '/':
-    p = os.path.join(d, '.vscode', 'settings.json')
-    if os.path.isfile(p):
-        try:
-            m = re.search(r'"peacock\.color"\s*:\s*"(#[0-9A-Fa-f]{3,8})"', open(p, encoding='utf-8').read())
-            if m:
-                hexcol = m.group(1); root = d; break
-        except Exception:
-            pass
-    d = os.path.dirname(d)
-# 2. Projects.md prefix 매칭 fallback
+# Issue309: 색상·이름 판정은 Projects.md(정본) 단일 소스.
+#   종전 1순위였던 'cwd 조상의 .vscode/settings.json 재탐색'은 방향이 거꾸로였다.
+#   올바른 흐름은 .vscode 가 바뀔 때 Projects.md 를 갱신하는 것(vscode-peacock-sync.sh)이고,
+#   조회는 Projects.md 만 본다. 역방향(Projects.md -> 각 프로젝트 .vscode 적용)은
+#   자동화하지 않으며 사용자가 명시 요청할 때만 수행한다.
+#   부수 효과로 오귀속도 사라진다 — 자체 .vscode 가 없는 하위 프로젝트가 조상을 타고
+#   올라가 홈(~/.vscode)의 색을 집어 이름까지 'nowage' 로 뒤집히던 문제(fSnippet 실측).
+# 1. Projects.md prefix 매칭 (정본)
 if not hexcol:
     bt = chr(96)
     try:
@@ -252,7 +242,7 @@ if not hexcol:
                     root = ph; hexcol = hexes[-1]
     except Exception:
         pass
-# 3. hex → HSL + 가독성 클램프 (Issue157)
+# 2. hex → HSL + 가독성 클램프 (Issue157). 미등록 프로젝트는 hsl 해시 폴백
 def _hex_to_hsl(hx):
     hx = hx.lstrip('#')
     if len(hx) == 3:
@@ -292,13 +282,55 @@ PYEOF
 
 # Issue83: cwd_hash + 프로젝트 판정 + per-cwd 상태 파일 경로
 # Issue105: 파일명에 프로젝트 라벨 포함 (`<hash>__<label>`) — 어느 폴더가 stop 상태인지 가시
-CWD_HASH=$(CWD_VAL="$cwd" python3 -c "
+# Issue305_3: CWD_HASH·PROJECT_LABEL 은 python3 2회(~40ms)를 고정 지출했다.
+#   ASCII 경로는 bash + md5(1~2ms)로 처리하고, 비-ASCII 는 문자 단위 치환 의미가
+#   달라지므로(한글 1자 → `_` 1개) 기존 python3 경로를 그대로 탄다.
+#   ⚠️ 해시는 cwd **원문**(rstrip 없음), 라벨은 rstrip 후 — sleep-state.sh 와 규칙이
+#   다르므로 공유하지 않고 여기서 hub 의미 그대로 복제한다. 파일명이 곧 상태라 1바이트도 달라지면 안 된다.
+CWD_HASH=""
+PROJECT_LABEL=""
+case "$cwd" in
+  *[!A-Za-z0-9._/-]*|"") ;;
+  *)
+    _md5bin=$(command -v md5 2>/dev/null || command -v md5sum 2>/dev/null)
+    if [ -n "$_md5bin" ]; then
+      if [ "${_md5bin##*/}" = "md5" ]; then
+        _h=$("$_md5bin" -q -s "$cwd" 2>/dev/null)
+      else
+        _h=$(printf '%s' "$cwd" | "$_md5bin" 2>/dev/null | cut -d' ' -f1)
+      fi
+      if [ -n "$_h" ]; then
+        CWD_HASH="${_h:0:8}"
+        _c="${cwd%/}"
+        _base="${_c##*/}"; _rest="${_c%/*}"; _parent="${_rest##*/}"
+        case "$_base" in
+          _*) [ -n "$_parent" ] && _label="$_parent-$_base" || _label="$_base" ;;
+          *)  _label="$_base" ;;
+        esac
+        _san=""
+        for ((_i = 0; _i < ${#_label}; _i++)); do
+          _ch="${_label:_i:1}"
+          case "$_ch" in
+            [A-Za-z0-9._-]) _san="$_san$_ch" ;;
+            *) _san="${_san}_" ;;
+          esac
+        done
+        _san="${_san:0:48}"
+        [ -z "$_san" ] && _san="unknown"
+        PROJECT_LABEL="$_san"
+      fi
+    fi
+    ;;
+esac
+if [ -z "$CWD_HASH" ]; then
+  CWD_HASH=$(CWD_VAL="$cwd" python3 -c "
 import hashlib, os
 c = os.environ.get('CWD_VAL', '')
 print(hashlib.md5(c.encode('utf-8')).hexdigest()[:8] if c else 'none')")
-
-# 라벨: 마지막 path segment. basename 이 '_'로 시작하면 parent-base 결합 (ex: _public → fSnippet-_public)
-PROJECT_LABEL=$(CWD_VAL="$cwd" python3 -c "
+fi
+if [ -z "$PROJECT_LABEL" ]; then
+  # 라벨: 마지막 path segment. basename 이 '_'로 시작하면 parent-base 결합 (ex: _public → fSnippet-_public)
+  PROJECT_LABEL=$(CWD_VAL="$cwd" python3 -c "
 import os, re
 cwd = os.environ.get('CWD_VAL', '').rstrip('/')
 if not cwd:
@@ -309,6 +341,7 @@ else:
     parent = parts[-2] if len(parts) >= 2 else ''
     label = f'{parent}-{base}' if base.startswith('_') and parent else base
     print(re.sub(r'[^A-Za-z0-9._-]', '_', label)[:48] or 'unknown')")
+fi
 
 STATE_FILE="$STATE_DIR/${CWD_HASH}__${PROJECT_LABEL}"
 

@@ -11,5 +11,4 @@ transcripts/
 scrap/
 cache/
 tmp/
-_doc_work/
 # _doc_arch/ · Issue.md 는 포함 유지 (설계 SSOT — 제외 금지)
