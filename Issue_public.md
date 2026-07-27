@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: 4fb8c9508b2fffda35877a5a386e831c86914881128901f9a9cb56653bca1720
+source_sha: 0655e3c29679eb4d29fac59db6488a0a0f541dfe161ae26a555dc03ba6b67901
 ---
 
 # 안내
