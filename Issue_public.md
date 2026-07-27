@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: 0655e3c29679eb4d29fac59db6488a0a0f541dfe161ae26a555dc03ba6b67901
+source_sha: 35bd7388071b385ede43ec21cb399d2d6688b0dca90d94e7cf8fb822155e8c7b
 ---
 
 # 안내
@@ -17,6 +17,25 @@ source_sha: 0655e3c29679eb4d29fac59db6488a0a0f541dfe161ae26a555dc03ba6b67901
 `scripts/fpm-issue-digest.sh` 가 덮어쓴다.
 
 # 이슈 근거
+
+## Issue331: Zed 세션 orphan 누적 — 하이브리드 리퍼(브리지 사망 + idle TTL) ✅
+* 목적: Zed 에서 Claude Code 를 쓰면 VSCode 확장 같은 세션 관리(스레드 종료 시 프로세스 정리)가 없어, 스레드마다 새로 뜬 claude 프로세스(ACP 브리지, entrypoint `sdk-ts`)가 스레드를 닫아도 살아남는다. 그 결과 hub 활성 세션 카드가 무한 누적되고 메모리도 계속 점유된다.
+* 구현 명세:
+    - 판정 `_zed_orphan_reason(entry, now)`: origin(`_origin_from_caps`)이 `zed` 인 live 세션만 대상. `gc_meta.shell_pid`(등록 시 캡처한 브리지 pid)와 현재 `ps -o ppid=` 를 대조해 불일치·사망·`ppid<=1` 이면 `bridge-dead`, 아니면 heartbeat age ≥ `ZED_IDLE_TTL`(1800초) 이면 `idle-ttl`, 그 외 보존
+    - 처리 `_reap_zed_orphans()`: `_gc_execute` 의 `kill-claude` 단계 재사용(comm 대조 가드로 pid 재사용 오살 차단, SIGTERM → 2초 → SIGKILL) → `_live_dismiss_add` tombstone → `sessions` prune → `persist_sessions`
+    - 배치: `_orphan_reaper_loop` 데몬 스레드(120초 주기) + 수동 트리거 `POST /reap-orphan-live`(loopback only). `/kill-empty-live` 와 완전히 분리 — label 조건을 쓰지 않으므로 VSCode·터미널 세션은 판정 대상이 아니다
+    - 검증 결과(2026-07-27): dry-run 에서 zed 10건만 `idle-ttl` 판정, vscode 9건·terminal 2건은 전부 `None`(보존). 실행 후 zed pid 10개 전부 사망 확인, live 항목 23 → 13(잔존은 vscode·terminal). 서버 재기동 로그 `[reaper] started — interval=120.0s idle_ttl=1800.0s (zed only)` 확인
+    - 대상 파일: `services/hub/server.py` (`_zed_orphan_reason`·`_reap_zed_orphans`·`_orphan_reaper_loop`·`_handle_reap_orphan_live`)
+    - **좀비 킬러 폐기 경로 (사용자 결정 2026-07-27)**: 현행 `/kill-empty-live` 는 VSCode 전용 임시 수단으로 취급한다. 본 이슈의 부모 프로세스 판정 리퍼가 안정화되면 버튼·엔드포인트·`liveSessions.zombie*` i18n 키를 제거한다. 결정사항 섹션에 명시됨
+
+## Issue330: fpm 배포 파이프라인 통합테스트 (원본→미러→마켓→소비자 정합)
+* 목적: v0.2.1 배포에서 **버전 문자열은 전부 일치하는데 실제 파일이 어긋난** 상태가 발견됐다. prj20 마켓의 vendored `fpm-core` 가 원본과 54개 파일 상이했고 소비자(host)는 그 구버전 SCAR 를 받아 쓰고 있었다. 원인은 `deploy` 가 `--with-marketplace` 없이 돌아 publish 가 누락된 것인데, 버전 체계가 서로 달라(prj20 `0.9.1` vs 원본 `0.2.1`) 번호 비교로는 탐지 자체가 불가능했다. 지점 *안*을 보는 단위 테스트는 있으나 지점 *사이*를 보는 검사가 없어, 배포 직후 전 구간 정합을 1회 명령으로 판정하는 스모크가 필요하다.
+* 구현 명세:
+    - 신규 `scripts/fpm-integration-test.sh` — `[--host <ssh-host>] [--quiet]`, 전부 PASS=0 / 1건+ FAIL=1, SKIP 은 0 유지
+    - T2 diff 제외는 `.DS_Store`(macOS 부산물)와 `.claude-plugin/plugin.json`(publish 가 버전 주입) 2종만. 제외 추가 시 스크립트 주석에 사유 필수
+    - FAIL 출력에 해소 명령 병기 (ex: `→ 해소: bash scripts/fpm-sync.sh publish --push`)
+    - 소비자 검사는 `zsh -ic` + 명시 PATH(`$HOME/.local/bin`) 로 호출 — `zsh -lc` 는 `.zshrc` 를 읽지 않음
+    - 문서 갱신: `_doc_arch/fpm-sync-deploy.md`(실전 게이트 대응·publish 누락 리스크) + `_doc_arch/fpm-consumer-install.md`(신규, 소비자 설치 SSOT)
 
 ## Issue328: Zed·터미널 세션이 hub 활성 세션에 안 보임 — title 폴백 부재
 * 목적: Zed(ACP/sdk-ts) 세션이 살아있고 hub 에 register 도 되는데 활성 세션 목록에서 전부 사라짐. 세션 감지가 아니라 title 폴백 부재가 원인이므로 서버측 폴백을 넣어 Zed·터미널 세션을 정상 노출시킴

@@ -2965,6 +2965,99 @@ def _gc_execute(steps: list) -> list:
     return stages
 
 
+# --- Issue331: Zed orphan live 세션 리퍼 (하이브리드) -------------------------
+# Zed 는 스레드마다 claude 를 띄우지만 스레드를 닫아도 그 프로세스를 죽이지 않아
+# live 세션 카드·프로세스가 무한 누적된다. 실측(2026-07-27):
+#   - 전 스레드의 부모가 단일 ACP 브리지(node claude-agent-acp) 하나였다.
+#     → "부모 사망 → orphan" 판정은 Zed 앱을 종료했을 때만 발동하고,
+#       스레드 닫힘은 구분하지 못한다.
+#   - 프로세스 상태·CPU·fd 구성도 활성/비활성이 동일했다.
+#   - 유일하게 갈라지는 신호가 heartbeat 신선도(= transcript mtime)였다.
+# 따라서 하이브리드로 간다: 브리지 사망은 즉시 리핑(부모 판정의 유효 부분),
+# 그 외는 idle TTL. 대상은 origin=="zed" 세션으로 한정한다 — VSCode 확장은
+# 자체 세션 관리가 있고, 터미널 세션은 사용자가 직접 띄운 것이라 오살 위험이 크다.
+ZED_IDLE_TTL = 1800.0   # 30분. heartbeat 갱신이 끊긴 zed 세션의 리핑 임계
+
+
+def _zed_orphan_reason(entry: dict, now: float):
+    """origin=zed live 세션의 orphan 사유 판정 (순수 — kill 없음).
+    반환: 사유 문자열 또는 None(보존). 판정 순서는 확정적인 것부터.
+      - bridge-dead   : 등록 시 캡처한 부모(ACP 브리지)가 죽었거나 reparent 됨
+      - idle-ttl      : heartbeat 가 ZED_IDLE_TTL 초 이상 갱신되지 않음
+    """
+    if entry.get("content_type") != "live":
+        return None
+    if _origin_from_caps(entry.get("capabilities") or {}) != "zed":
+        return None
+    pid = entry.get("live_pid")
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return None
+    if pid <= 1 or not _pid_alive(pid):
+        return None  # 이미 죽음 — 카드 정리는 기존 게이트가 처리
+    meta = entry.get("gc_meta") or {}
+    captured_parent = meta.get("shell_pid")
+    cur_ppid = _ps_ppid(pid)
+    if captured_parent:
+        if cur_ppid is None or cur_ppid <= 1 or cur_ppid != int(captured_parent):
+            return "bridge-dead"
+        if not _pid_alive(int(captured_parent)):
+            return "bridge-dead"
+    elif cur_ppid is not None and cur_ppid <= 1:
+        return "bridge-dead"
+    if now - (entry.get("updated") or 0) >= ZED_IDLE_TTL:
+        return "idle-ttl"
+    return None
+
+
+def _reap_zed_orphans() -> dict:
+    """orphan 판정된 zed live 세션을 종료·정리. 반환 요약 dict.
+    kill 은 _gc_execute 의 kill-claude 단계를 재사용한다(comm 대조 가드 포함 —
+    pid 재사용 오살 차단). 종료 후 sessions prune + dismiss tombstone 으로
+    마지막 heartbeat 재등록을 막는다."""
+    now = time.time()
+    with sessions_lock:
+        snap = list(sessions.items())
+    victims = []  # (h, sid, pid, reason)
+    for (h, sid), entry in snap:
+        if not isinstance(entry, dict):
+            continue
+        reason = _zed_orphan_reason(entry, now)
+        if reason:
+            victims.append((h, sid, int(entry.get("live_pid")), reason))
+    if not victims:
+        return {"reaped": 0, "victims": []}
+    results = []
+    for h, sid, pid, reason in victims:
+        stages = _gc_execute([{"kind": "kill-claude", "pid": pid}])
+        ok = bool(stages and stages[0].get("ok"))
+        _live_dismiss_add(h, sid)
+        results.append({"sid": sid, "pid": pid, "reason": reason, "killed": ok,
+                        "note": stages[0].get("note") if stages else None})
+    pruned = 0
+    with sessions_lock:
+        for h, sid, _, _ in victims:
+            if sessions.pop((h, sid), None) is not None:
+                pruned += 1
+    if pruned:
+        persist_sessions()
+    log(f"[reaper] zed orphans reaped={len(results)} pruned={pruned} "
+        f"reasons={[r['reason'] for r in results]}")
+    return {"reaped": len(results), "pruned": pruned, "victims": results}
+
+
+def _orphan_reaper_loop(interval: float = 120.0) -> None:
+    """주기 리퍼. 대상 세션이 없으면 판정 비용도 0 에 수렴(딕셔너리 스캔뿐)."""
+    log(f"[reaper] started — interval={interval}s idle_ttl={ZED_IDLE_TTL}s (zed only)")
+    while True:
+        try:
+            time.sleep(interval)
+            _reap_zed_orphans()
+        except Exception as e:
+            log(f"[reaper] loop error: {e}")
+
+
 def persist_pids() -> None:
     """Issue63: pids dict(runner PID 등록분)를 pids.json 에 atomic flush.
     종전 sessions 만 영속되고 pids 가 휘발 → 서버 재시작 시 복원 세션의 /control 이
@@ -3354,6 +3447,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/kill-empty-live":
             self._handle_kill_empty_live(parsed)
+            return
+        # Issue331: zed orphan 리퍼 수동 트리거 (주기 스레드와 동일 판정)
+        if parsed.path == "/reap-orphan-live":
+            self._handle_reap_orphan_live(parsed)
             return
         if parsed.path == "/clear-htm-docs":
             self._handle_clear_htm_docs(parsed)
@@ -4860,6 +4957,19 @@ __WARN__
             "already_dead_count": len(already_dead),
             "pruned": pruned,
         })
+
+    def _handle_reap_orphan_live(self, parsed):
+        """Issue331: origin=zed live 세션 중 orphan(브리지 사망 / idle TTL 초과)을
+        종료·정리한다. 주기 리퍼(_orphan_reaper_loop)와 동일한 판정을 즉시 1회 수행.
+        VSCode·터미널 세션은 판정 대상이 아니다(오살 방지). 127.0.0.1 trust."""
+        client_ip = self.client_address[0] if self.client_address else ""
+        if not _ip_allowed(client_ip):
+            self._send_json(403, {"error": "localhost only"})
+            return
+        summary = _reap_zed_orphans()
+        summary["status"] = "ok"
+        summary["idle_ttl"] = ZED_IDLE_TTL
+        self._send_json(200, summary)
 
     def _handle_clear_htm_docs(self, parsed):
         """Issue41: htm-registry.json 에서 항목 제거. ?keep=N → 파일 mtime 최신 N개 보존,
@@ -11135,6 +11245,10 @@ def main():
     if _open_mode:
         threading.Thread(target=_populate_allowlist, name="allowlist-populate",
                          daemon=True).start()
+
+    # Issue331: zed orphan live 세션 주기 리퍼 (브리지 사망 즉시 + idle TTL)
+    threading.Thread(target=_orphan_reaper_loop, name="orphan-reaper",
+                     daemon=True).start()
 
     # Issue59: bind 를 PID_FILE 기록보다 먼저 수행 — bind 실패 시 PID_FILE 미생성·미삭제.
     #          (실패 경로의 cleanup 이 살아있는 다른 서버의 pid 파일을 지우던 버그 차단)
