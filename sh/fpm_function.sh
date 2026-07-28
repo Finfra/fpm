@@ -15,6 +15,8 @@
 #   cdfn/cdfvn : 번호 대신 "문자(이름)" 부분일치 (cdf/cdfv 의 이름검색 변형, _cdfn_resolve 공용)
 #                1개 즉시·다수 choose from list 선택창 — Projects.md 의 프로젝트명·한글명·경로 매칭
 #   cdf-num : cdf 역방향 — 경로($PWD 기본) → 등록 프로젝트 번호 (최장 prefix 일치)
+#   cdf-rel/cdfr  : 경로(파일 가능) → 프로젝트 루트 기준 상대 경로
+#   cdf-base/cdfb : 경로(파일 가능) → 프로젝트 루트 절대 경로 (-n 으로 prj 번호 병기)
 #   cdft  : tmux pm 세션 window/pane 관리
 # --- SSH by Server ID ($FPM_BASE/Servers.md SSOT) ---
 #   _sshf_file / _sshf_resolve : 공용 내부 헬퍼
@@ -461,6 +463,121 @@ cdf-num() {
     return 0
 }
 
+# _fpm_clean_path : 터미널 제어 문자(Bracketed paste \e[?2004l, ANSI escape 등) 제거 헬퍼
+_fpm_clean_path() {
+    printf '%s' "$1" | LC_ALL=C sed -e "s/'$'\x1b''\[[0-9;?]*[a-zA-Z]//g" -e "s/\[?[0-9]*[a-zA-Z]//g"
+}
+
+# cdf-rel (cdfr) : 등록 프로젝트 루트 기준 상대 경로(Project-relative path) 추출
+#   ex) cdf-rel /Users/nowage/Documents/finfra/fSnippetData/_doc_arch/file.md
+#       → _doc_arch/file.md
+#       cdfr (alias)
+cdf-rel() {
+    local raw_target="${1:-$PWD}"
+    local target; target=$(_fpm_clean_path "$raw_target")
+    target="${target/#\~/$HOME}"
+
+    if [[ -d "$target" ]]; then
+        target="$(chpwd_functions=(); builtin cd -P -- "$target" 2>/dev/null && pwd)"
+    elif [[ -f "$target" ]]; then
+        local dir_part="$(dirname "$target")"
+        local base_part="$(basename "$target")"
+        dir_part="$(chpwd_functions=(); builtin cd -P -- "$dir_part" 2>/dev/null && pwd)"
+        target="${dir_part}/${base_part}"
+    fi
+
+    local base_dir; base_dir=$(_pm_manager) || return 1
+    local best_path="" best_len=-1
+    local f p
+    for f in "${base_dir}"/[0-9]*; do
+        [[ -f "$f" ]] || continue
+        p=$(cat "$f")
+        p="${p/#\~/$HOME}"
+        p="${p%/}"
+        [[ -z "$p" ]] && continue
+        if [[ "$target" == "$p" || "$target" == "$p"/* ]] && (( ${#p} > best_len )); then
+            best_len=${#p}
+            best_path="$p"
+        fi
+    done
+
+    if [[ -z "$best_path" ]]; then
+        _fpm_clean_path "$target"
+        echo
+        return 1
+    fi
+
+    local rel="${target#$best_path}"
+    rel="${rel#/}"
+    local res
+    if [[ -z "$rel" ]]; then
+        res="."
+    else
+        res="$rel"
+    fi
+    _fpm_clean_path "$res"
+    echo
+}
+
+cdfr() {
+    cdf-rel "$@"
+}
+
+# cdf-base (cdfb) : 경로(파일 가능) → 등록 프로젝트 루트 절대 경로 (cdf-rel 의 짝)
+#   ex) cdf-base /Users/nowage/Documents/finfra/fSnippetData/_doc_arch/x.md
+#       → /Users/nowage/Documents/finfra/fSnippetData
+#       cdf-base -n  : 루트 경로 + 프로젝트 번호를 stderr 로 표시
+#   최장 prefix 일치. 미등록이면 stderr 안내 후 exit 1
+cdf-base() {
+    local verbose=0
+    [[ "$1" == "-n" || "$1" == "-v" ]] && { verbose=1; shift; }
+
+    local raw_target="${1:-$PWD}"
+    local target; target=$(_fpm_clean_path "$raw_target")
+    target="${target/#\~/$HOME}"
+
+    if [[ -d "$target" ]]; then
+        target="$(chpwd_functions=(); builtin cd -P -- "$target" 2>/dev/null && pwd)"
+    elif [[ -f "$target" ]]; then
+        local dir_part="$(dirname "$target")"
+        local base_part="$(basename "$target")"
+        dir_part="$(chpwd_functions=(); builtin cd -P -- "$dir_part" 2>/dev/null && pwd)"
+        target="${dir_part}/${base_part}"
+    fi
+
+    local base_dir; base_dir=$(_pm_manager) || return 1
+    local best_id="" best_path="" best_len=-1
+    local f p
+    for f in "${base_dir}"/[0-9]*; do
+        [[ -f "$f" ]] || continue
+        p=$(cat "$f")
+        p="${p/#\~/$HOME}"
+        p="${p%/}"
+        [[ -z "$p" ]] && continue
+        if [[ "$target" == "$p" || "$target" == "$p"/* ]] && (( ${#p} > best_len )); then
+            best_len=${#p}
+            best_path="$p"
+            best_id=$(basename "$f")
+        fi
+    done
+
+    if [[ -z "$best_path" ]]; then
+        echo "미등록 경로: $target" >&2
+        return 1
+    fi
+
+    _fpm_clean_path "$best_path"
+    echo
+    (( verbose )) && echo "  prj: $best_id" >&2
+    return 0
+}
+
+cdfb() {
+    cdf-base "$@"
+}
+
+
+
 # cdft : tmux pm 세션의 window/pane 생성·관리
 # 사용법:
 #   cdft list                     : pm 세션 윈도우 목록
@@ -852,9 +969,22 @@ iterm-bg() {
     # 제어 터미널 없는 셸(Claude Code Bash 등)에선 /dev/tty open 실패 → 에러 노이즈.
     # 그룹+2>/dev/null 로 리다이렉트 실패를 침묵 처리(정상 터미널에선 그대로 동작).
     if [[ -z "$1" ]]; then
-        { printf '\033]111;\007' > /dev/tty; } 2>/dev/null
+        # 배경(111) + 전경(110) 모두 프로파일 기본값 복원 (Issue333)
+        { printf '\033]111;\007\033]110;\007' > /dev/tty; } 2>/dev/null
     else
-        { printf '\033]1337;SetColors=bg=%s\007' "$1" > /dev/tty; } 2>/dev/null
+        local hex="${1#\#}"
+        # 배경 명도에 맞춘 가독 전경색 동반 전송 (Issue333)
+        # fpm-projects-sync 의 readable_fg() 와 동일 공식: 0.2126R + 0.7152G + 0.0722B
+        if [[ "$hex" =~ ^[0-9a-fA-F]{6}$ ]]; then
+            local r g b lum fg
+            r=$((16#${hex:0:2})); g=$((16#${hex:2:2})); b=$((16#${hex:4:2}))
+            lum=$(( (2126 * r + 7152 * g + 722 * b) / 10000 ))   # 0..255
+            if (( lum > 127 )); then fg=15202b; else fg=e8e8e8; fi
+            { printf '\033]1337;SetColors=bg=%s\007\033]1337;SetColors=fg=%s\007' "$hex" "$fg" > /dev/tty; } 2>/dev/null
+        else
+            # hex 파싱 실패 시 기존 동작(배경만) 유지 — fail-soft
+            { printf '\033]1337;SetColors=bg=%s\007' "$hex" > /dev/tty; } 2>/dev/null
+        fi
     fi
 }
 
