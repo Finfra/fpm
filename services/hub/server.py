@@ -4550,9 +4550,23 @@ class Handler(BaseHTTPRequestHandler):
                 lp = entry.get("live_pid")
                 if lp is not None:
                     if not _pid_alive(int(lp)):
-                        terminal_keys.append((h, sid))
-                        continue
-                    force_live = True
+                        # Issue341: 등록 pid 가 단기 wrapper 였던 세션 self-heal.
+                        #   훅이 잘못된 pid(등록 직후 사망)를 넣으면 살아있는 세션이
+                        #   전부 terminal 로 분류돼 📡 활성 세션이 통째로 비었다.
+                        #   heartbeat 가 신선하면 pid 를 신뢰하지 않고 TTL 로 판정하고,
+                        #   죽은 live_pid 는 제거해 이후 dedup 오염을 막는다.
+                        if age <= LIVE_TTL:
+                            with sessions_lock:
+                                cur = sessions.get((h, sid))
+                                if cur is not None and cur.get("live_pid") == lp:
+                                    cur.pop("live_pid", None)
+                            entry.pop("live_pid", None)
+                            force_live = True
+                        else:
+                            terminal_keys.append((h, sid))
+                            continue
+                    else:
+                        force_live = True
                 else:
                     if age > LIVE_TTL:
                         terminal_keys.append((h, sid))

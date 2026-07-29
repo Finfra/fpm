@@ -37,6 +37,36 @@ except Exception:
 # pid: JSON 값이 있고 정수면 사용, 아니면 훅 부모 pid(=claude 세션) fallback
 PID="$PID_JSON"
 case "$PID" in ''|*[!0-9]*) PID="$PPID" ;; esac
+
+# prj1#Issue341: stdin JSON 의 pid 를 그대로 믿으면 안 된다. 일부 빌드(Linux/VSCode 확장)에서
+#   그 값이 장수 claude 세션이 아니라 훅을 스폰한 단기 wrapper/subprocess pid 다.
+#   등록 직후 그 pid 가 죽어 서버 _collect_live_sessions 의 _pid_alive 게이트가
+#   전 세션을 terminal 로 분류 → hub 📡 활성 세션이 통째로 비었다(fg1 실측).
+#   교정: (1) 죽은 pid 면 $PPID 로 대체 (2) 부모 체인을 타고 claude 세션으로 승격.
+_fpm_pid_alive() { kill -0 "$1" 2>/dev/null; }
+
+_fpm_ppid_of() { ps -o ppid= -p "$1" 2>/dev/null | tr -d ' '; }
+
+# comm basename 이 claude 계열이거나, args 가 claude 배포본 cli.js 를 실행 중이면 세션 프로세스.
+#   ⚠️ args 에 "claude" 문자열만 보고 판정하면 안 된다 — `zsh -c source ~/.claude/...`
+#      같은 무관 프로세스가 걸린다(실측 오탐).
+_fpm_is_claude_proc() {
+  _c=$(ps -o comm= -p "$1" 2>/dev/null); _c=${_c##*/}
+  case "$_c" in claude|claude-code) return 0 ;; esac
+  case "$(ps -o args= -p "$1" 2>/dev/null)" in
+    *claude*cli.js*|*claude-code*) return 0 ;;
+  esac
+  return 1
+}
+
+_fpm_pid_alive "$PID" || PID="$PPID"
+
+_p="$PID"; _i=0
+while [ -n "$_p" ] && [ "$_p" != "0" ] && [ "$_p" != "1" ] && [ "$_i" -lt 10 ]; do
+  if _fpm_is_claude_proc "$_p"; then PID="$_p"; break; fi
+  _p=$(_fpm_ppid_of "$_p"); _i=$((_i + 1))
+done
+
 [ -z "$CWD" ] && exit 0   # Issue179: PWD fallback 제거 — hook 컨텍스트 PWD 는 frontmost 반영 위험(세션 오귀속), doc-register.sh:43 표준 정합
 case "$CWD" in /*) ;; *) exit 0 ;; esac   # 절대경로만
 

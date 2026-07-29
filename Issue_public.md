@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: feafee424630511fba4ed284f5a56b7aeb79b691f61d4a2b5598c45a9c25bafc
+source_sha: 14b014dfc826572e4996c9a97940e1413fd8b6e479fe7ada48ed0c70781401f4
 ---
 
 # 안내
@@ -17,6 +17,26 @@ source_sha: feafee424630511fba4ed284f5a56b7aeb79b691f61d4a2b5598c45a9c25bafc
 `scripts/fpm-issue-digest.sh` 가 덮어쓴다.
 
 # 이슈 근거
+
+## Issue341: hub 📡 활성 세션 전멸 — 세션 등록 pid 가 단기 wrapper ✅
+* 목적: host `http://host:9876/hub-shell` 의 📡 활성 세션이 항상 비어 있음. `sessions.json` 엔 4건 등록돼 있는데 `/boards` 의 `live_sessions=[]`.
+* 구현 명세:
+    - hook(근본): 죽은 pid 면 `$PPID` 로 대체 후 부모 체인 10단계까지 올라가 claude 세션 프로세스로 승격. 판정은 `comm` basename(`claude`/`claude-code`) + args 의 claude `cli.js`
+    - ⚠️ args 에 `claude` 문자열만 보고 판정하면 `zsh -c source ~/.claude/...` 가 오탐(실측) → comm 우선
+    - 훅 원본은 prj3(`~/.claude/hooks/`) — 번들(`plugins/fpm-core/hooks/`)은 `fpm-bundle-sync.sh` 가 라이브에서 덮어쓰므로 번들만 고치면 배포 시 되돌아간다(실측). prj3 커밋 `<commit>`
+    - 배포 부수 수정: `scripts/fpm-sync.sh` forward 가 exclude 를 sanitize **前** 적용하도록 순서 교정 — exclude 대상인 `_doc_arch/publishable-policy.md` 의 마커 문법 설명이 redaction 마커 불균형으로 오검출돼 forward 가 중단됐다(`_doc_arch` 추적 전환 후 발현)
+    - server(방어): `live_pid` 사망이어도 heartbeat 가 `LIVE_TTL`(300s) 이내면 TTL 로 판정하고 죽은 `live_pid` 를 제거(self-heal). 이미 등록된 데드 세션·resume 시나리오 커버
+
+## Issue340: cdf 계열 Linux 이식성 — macOS 하드코딩 제거·헤드리스 거짓 성공 차단 ✅
+* 목적: host(Linux) 에서 `cdf 1 3 5` 가 `osascript: command not found` 만 뱉고 동작 안 함. cdf 계열이 macOS 전용 도구(`osascript`·`open`·`pbcopy`·`say`·`/opt/homebrew/bin/tmux`)를 직접 호출한 탓. fpm 이 Linux 로 배포되는 이상 이식성은 선택이 아님.
+* 구현 명세:
+    - 판정 헬퍼 8종 신설(`sh/fpm_function.sh` 상단): `_fpm_os`·`_fpm_is_macos`·`_fpm_need_macos`·`_fpm_has_display`·`_fpm_tmux_bin`·`_fpm_split_pane`·`_fpm_tmux_focus`·`_fpm_say`
+    - 핵심 판정 — **명령 존재 확인만으로 부족**. headless 는 도구가 깔려 있어도 실패하므로 `DISPLAY`/`WAYLAND_DISPLAY` 까지 본다(`_fpm_has_display`)
+    - `cdf` 다중: iTerm2 → tmux `split-window` → ⛔ 안내 + **`cdft <ids>` 대안 제시** + 경로 출력(안내 1회만, `_CDF_HINTED`)
+    - `cdfc`: headless 사전 차단 + 복사 exit code 검사 fail-loud / `cdff`: headless 면 xdg-open 실행 자체 생략
+    - `cdfn`: stdin≠tty 면 명시 오류 + 후보 목록(zsh·bash 양쪽)
+    - `cdft`: tmux 경로 PATH 우선 해석 + 완료 후 `_fpm_tmux_focus` 자동 attach(tmux 안=select-window, stdout≠tty=생략 — `pm-do` 파싱 블로킹 방지, `FPM_NO_ATTACH=1` 억제)
+    - 검증: host 실환경에서 cdf·cdff·cdfc·cdfn·cdft·cdf-num·sshf 전수 실행. 4회 배포 후 사용자 최종 확인
 
 ## Issue338: fpm-core 번들에 issue-map 생성기 누락 — 반쪽 배포 ✅
 * 목적: 번들 hub `services/hub/server.py` 는 `Issue_map.htm` 을 serve(`/issue-map`, `ISSUE_MAP_NAME` 고정)하는데 그 파일을 **생성하는 `issue-map` 스킬이 번들에 없음**. 소비자만 배포하고 생산자를 뺀 반쪽 배포 → 플러그인 전용 설치 환경에서 `/issue-map` 영구 404.
