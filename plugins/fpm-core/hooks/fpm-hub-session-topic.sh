@@ -115,21 +115,34 @@ print(last)
 " 2>/dev/null)
 fi
 
+# Issue313: Zed 신호 재전송 — 마커 조회(`[ -f ]` 1회)만 하므로 ps 재조회 없이 무비용.
+#   SessionStart 1회 등록에만 실리던 caps.editor 가 이 훅의 재등록에서 지워지는 회귀 차단.
+EDITOR_SIG=""
+if [ "$ENTRY" != "claude-vscode" ]; then
+  # shellcheck source=lib/zed-detect.sh
+  . "$HOME/.claude/hooks/lib/zed-detect.sh" 2>/dev/null || true
+  if command -v zed_is_marked >/dev/null 2>&1 && zed_is_marked "$SID"; then
+    EDITOR_SIG="zed"
+  fi
+fi
+
 BODY=$(python3 -c "
 import json, sys
-sid, label, pid, entry, model = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+sid, label, pid, entry, model, editor = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6]
 caps = {'source': 'prompt', 'kind': 'live'}
 if entry:
     caps['entrypoint'] = entry   # Issue179: 출처 배지용 (claude-vscode|cli|...)
 if model:
     caps['model'] = model        # Issue217: 카드 모델 신호등 이모지 (prj1#Issue273)
+if editor:
+    caps['editor'] = editor      # Issue313: 서버 _origin_from_caps 가 origin=zed 로 소비
 body = {'sid': sid, 'content_type': 'live', 'label': label, 'capabilities': caps}
 try:
     body['pid'] = int(pid)   # Issue122: 서버 계약 pid(int) — live 카드 dedup·liveness
 except (ValueError, TypeError):
     pass
 print(json.dumps(body))
-" "$SID" "$LABEL" "$PID" "$ENTRY" "$MODEL")
+" "$SID" "$LABEL" "$PID" "$ENTRY" "$MODEL" "$EDITOR_SIG")
 
 curl -s --max-time 2 \
   -X POST "$REG_URL" \

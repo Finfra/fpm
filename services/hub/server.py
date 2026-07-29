@@ -52,6 +52,9 @@ PORT = int(os.environ.get("HTM_SERVER_PORT", "9876"))
 LOOPBACK_IPS = frozenset(("127.0.0.1", "::1"))
 ALLOWED_IPS = set()  # startup 에서 populate (개방 모드일 때만). 평소엔 빈 set.
 ALLOWED_NETS = []    # Issue175: CIDR 서브넷 allowlist (ip_network 리스트). 평소엔 빈 리스트.
+# Issue332: allowlist 백그라운드 적재 완료 플래그. False 인 동안의 비허용 판정은
+# "차단" 이 아니라 "준비 중" → 403 대신 503 + Retry-After 로 응답한다.
+ALLOWLIST_READY = True  # 개방 모드 진입 시 main() 에서 False 로 내렸다가 적재 완료 시 True
 # allow_server_list 분리: bind_host 와 source-IP 게이트 디커플링.
 # bind 가 비루프백이고 allow_server_list=false 면 ALLOWED_IPS=self 만 적재 → bind_host(self)
 # 전용(외부 source IP 전부 차단). true 면 Servers.md(check=O)+self 적재.
@@ -3243,6 +3246,22 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _deny_ip(self):
+        """source-IP 게이트 거부 응답. Issue332: allowlist 적재 미완이면 '차단'이 아니라
+        '준비 중' 이므로 403 대신 503 + Retry-After 로 응답 — 오진(차단당했다) 차단."""
+        if not ALLOWLIST_READY:
+            payload = json.dumps({"error": "allowlist not ready", "retry_after": 2},
+                                 ensure_ascii=False).encode("utf-8")
+            self.send_response(503)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Retry-After", "2")
+            self.send_header("Access-Control-Allow-Origin", self._acao())
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        self._send_json(403, {"error": "ip not allowed"})
+
     def do_OPTIONS(self):
         self._send_json(204, {})
 
@@ -3251,7 +3270,7 @@ class Handler(BaseHTTPRequestHandler):
         # 항상 통과. 개방 모드(HTM_SERVER_HOST)에선 비-allowlist IP 를 여기서 차단
         # → 토큰 노출 GET(/boards, /hub)·SSE 까지 일괄 보호.
         if not _ip_allowed(self.client_address[0] if self.client_address else ""):
-            self._send_json(403, {"error": "ip not allowed"})
+            self._deny_ip()
             return
         parsed = urlparse(self.path)
         if parsed.path == "/":
@@ -3424,7 +3443,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         # Issue141: 전역 source-IP 게이트 (do_GET 대칭).
         if not _ip_allowed(self.client_address[0] if self.client_address else ""):
-            self._send_json(403, {"error": "ip not allowed"})
+            self._deny_ip()
             return
         parsed = urlparse(self.path)
         if parsed.path == "/register":
@@ -6814,6 +6833,49 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
                 save_registry(HTM_REGISTRY, entries)
                 log(f"htm-doc self-heal — registry rewrite -> {new_path}")
 
+    def _htm_doc_autoregister(self, abs_path: str) -> bool:
+        """Issue337: 미등록 htm 요청의 self-heal 등록. 생산자 훅(PostToolUse matcher: Write)이
+        Bash heredoc·스크립트 생성 경로에서 발동하지 않아 생기는 영구 403 을 서버가 흡수한다.
+
+        허용 조건(전부 충족해야 등록 — 화이트리스트 보안 모델 유지):
+          1. 실존 일반 파일 + 확장자 .htm/.html
+          2. 부모 폴더가 canonical htm 출력 폴더 (`_doc_work/{htm,z_done/htm,z_htm}`) 또는 TMP_OUT_DIR
+          3. 파일명이 htm 출력 규약(`hub_htm_*` / legacy `claude-htm-*`) 준수
+          4. HTM_CLEARED tombstone 에 없음 — 사용자가 명시 제거한 문서는 부활시키지 않음
+        임의 경로 노출은 2·3 이 막고, 사용자 의사(clear)는 4 가 존중한다."""
+        if not os.path.isfile(abs_path) or not abs_path.endswith((".htm", ".html")):
+            return False
+        if not _htm_output_stem(os.path.basename(abs_path)):
+            return False
+        parent = os.path.dirname(abs_path)
+        ok_dir = os.path.realpath(parent) == os.path.realpath(TMP_OUT_DIR)
+        if not ok_dir:
+            norm = parent.replace(os.sep, "/")
+            ok_dir = any(norm.endswith("/_doc_work/" + d) for d in HTM_DIRS)
+        if not ok_dir:
+            return False
+        with registry_lock:
+            if abs_path in set(load_registry(HTM_CLEARED)):
+                return False
+            entries = load_registry(HTM_REGISTRY)
+            if any(os.path.realpath(e.get("path") or "") == abs_path for e in entries if e.get("path")):
+                return True
+            # cwd 추정: `_doc_work/...` 상위가 프로젝트 루트 (tmp fallback 은 빈 문자열)
+            cwd = ""
+            marker = "/_doc_work/"
+            norm_abs = abs_path.replace(os.sep, "/")
+            if marker in norm_abs:
+                cwd = norm_abs[:norm_abs.index(marker)]
+            entries.insert(0, {
+                "path": abs_path,
+                "cwd": cwd,
+                "title": self._extract_html_title(abs_path) or os.path.basename(abs_path),
+                "registered_at": time.time(),
+            })
+            save_registry(HTM_REGISTRY, entries)
+        log(f"GET /htm-doc — self-heal autoregister (Issue337): {abs_path}")
+        return True
+
     def _handle_htm_doc(self, parsed):
         """Issue50: htm-registry 등록 htm html 을 토큰 없이 serve. registry 는
         localhost 전용 endpoint(/register-doc·/hub-rescan·autoheal)로만 기록되는
@@ -6834,15 +6896,23 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
                 reg_paths.add(p)
                 reg_paths.add(os.path.realpath(p))
         if abs_path not in reg_paths and rel not in reg_paths:
-            log(f"GET /htm-doc — unregistered path rejected: {abs_path}")
-            # Issue: /tmp fallback 경로(=프로젝트에 htm 폴더 부재로 트리거가 /tmp 로 회피)
-            #   는 register 훅(fpm-hub-doc-register, htm 경로만 매칭)이 등록을 스킵 → 영구 403.
-            #   이 경우 raw JSON 대신 "htm 폴더 만들라" 안내 HTML 을 serve (원인·해결 즉시 인지).
-            if os.path.dirname(abs_path) == os.path.realpath(TMP_OUT_DIR):
-                self._send_htm_doc_tmp_hint(abs_path)
+            # Issue337: 생산자가 Write 툴이 아닌 경로(Bash heredoc·스크립트)로 htm 을 쓰면
+            #   PostToolUse(matcher: Write) 훅 `fpm-hub-doc-register` 가 아예 발동하지 않아
+            #   영구 403 dead link 가 된다(2026-07-28 <private-project> 실측 — 훅 정상, 트리거 부재).
+            #   서버가 canonical 경로/파일명 규약을 만족하는 실존 파일을 self-heal 등록한다.
+            if self._htm_doc_autoregister(abs_path):
+                with registry_lock:
+                    reg = load_registry(HTM_REGISTRY)
+            else:
+                log(f"GET /htm-doc — unregistered path rejected: {abs_path}")
+                # Issue: /tmp fallback 경로(=프로젝트에 htm 폴더 부재로 트리거가 /tmp 로 회피)
+                #   는 register 훅(fpm-hub-doc-register, htm 경로만 매칭)이 등록을 스킵 → 영구 403.
+                #   이 경우 raw JSON 대신 "htm 폴더 만들라" 안내 HTML 을 serve (원인·해결 즉시 인지).
+                if os.path.dirname(abs_path) == os.path.realpath(TMP_OUT_DIR):
+                    self._send_htm_doc_tmp_hint(abs_path)
+                    return
+                self._send_json(403, {"error": "not a registered htm doc"})
                 return
-            self._send_json(403, {"error": "not a registered htm doc"})
-            return
         # Issue102: htm 스킬(Issue123)이 .htm 확장자로 문서를 씀 → .html/.htm 모두 허용
         if not abs_path.endswith((".html", ".htm")):
             self._send_json(403, {"error": "extension not allowed"})
@@ -8021,7 +8091,13 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
                 }
                 sessions[(h, sid)] = entry
             else:
-                entry["capabilities"] = caps or entry.get("capabilities", {})
+                # Issue336: 교체가 아니라 **병합**. 통째 교체하면 SessionStart 훅이 1회만
+                #   싣는 신호(capabilities.editor="zed")가 이후 heartbeat(topic·model 훅,
+                #   editor 미포함)에서 지워져 origin 이 terminal 로 강등된다.
+                #   매 등록에서 재전송되는 source·kind·model·entrypoint 는 병합해도 최신값이 이긴다.
+                merged = dict(entry.get("capabilities") or {})
+                merged.update(caps or {})
+                entry["capabilities"] = merged
                 entry["updated"] = now  # heartbeat (live TTL 갱신)
                 # Issue98: 명시 "live" 재등록만 content_type 승격 — dashboard 등 기존
                 #   세션 타입은 보존 (response 기본값이 덮어쓰지 않도록).
@@ -11142,7 +11218,7 @@ def main():
 
     # Issue141: env 미설정 시 hub_setting.yml bind_host 적용 (env > yml > 기본).
     # bind_host 는 스칼라 또는 리스트 — 리스트면 각 주소에 개별 bind(멀티소켓).
-    global HOST, ALLOW_ALL, BIND_HOSTS
+    global HOST, ALLOW_ALL, BIND_HOSTS, ALLOWLIST_READY
     if _HOST_ENV is not None:
         BIND_HOSTS = [_HOST_ENV.strip()]
     else:
@@ -11188,8 +11264,49 @@ def main():
     # 스레드로 지연 실행. 개방 모드의 Servers.md gethostbyname / self gethostbyname_ex 는
     # 호스트당 DNS 타임아웃(~5s) 까지 동기 블로킹 가능 → 그동안 bind 가 지연되어 재시작
     # 다운타임을 유발했다. bind 는 BIND_HOSTS(스칼라 IP/호스트, DNS 불요)만 쓰므로 allowlist
-    # 적재를 미뤄도 bind 시각에 영향 없음. 적재 완료 전 window 동안 외부 source IP 는 일시
-    # 403 당할 수 있으나(self-correcting), 루프백은 _ip_allowed 에서 항상 허용 → 로컬 무영향.
+    # 적재를 미뤄도 bind 시각에 영향 없음.
+    #
+    # Issue332: 위 주석의 "루프백은 항상 허용 → 로컬 무영향" 전제는 tailnet 호스트명
+    # (advertise_host MagicDNS)으로 자기 자신을 열 때 깨진다 — 소스 IP 가 루프백이 아니라
+    # 자기 tailscale IP 라 적재 완료 전 창에서 403 당한다. 따라서 DNS resolve 가 필요 없는
+    # 항목(BIND_HOSTS self IP + hub_setting.yml inline allow_list IP/CIDR)은 bind 이전에
+    # 동기 적재한다(다운타임 증가 0). resolve 가 필요한 Servers.md·로컬 인터페이스 조회만
+    # 백그라운드에 남긴다. 그래도 남는 창은 ALLOWLIST_READY 플래그로 503 처리.
+    def _populate_allowlist_sync():
+        """DNS 불요 항목만 즉시 적재 — bind 전 호출. 실패 없음(순수 파싱)."""
+        if not _open_mode:
+            return
+        # bind 주소 자체는 항상 self → 리터럴 IP 만 즉시 허용(호스트명은 백그라운드 resolve).
+        _bind_ips = set()
+        for _h in BIND_HOSTS:
+            if _h in LOOPBACK_IPS:
+                continue
+            try:
+                ipaddress.ip_address(_h)
+            except ValueError:
+                continue  # 호스트명 — resolve 필요, 백그라운드에서 처리
+            _bind_ips.add(_h)
+        ALLOWED_IPS.update(_bind_ips)
+        # inline allow_list (IP/CIDR) — yml 파싱만, resolve 불요.
+        _inline = _load_hub_setting().get("allow_list") or []
+        _added_ips, _added_nets = [], []
+        for item in _inline:
+            if "/" in item:
+                try:
+                    ALLOWED_NETS.append(ipaddress.ip_network(item, strict=False))
+                    _added_nets.append(item)
+                except ValueError as e:
+                    log(f"[allowlist] inline allow_list CIDR 파싱 실패 skip — {item}: {e}")
+            else:
+                try:
+                    ipaddress.ip_address(item)  # IP 검증(호스트명 미지원)
+                    ALLOWED_IPS.add(item)
+                    _added_ips.append(item)
+                except ValueError:
+                    log(f"[allowlist] inline allow_list 항목 무시(IP/CIDR 아님) — {item}")
+        log(f"[allowlist] 동기 선적재(Issue332) — bind self IP {sorted(_bind_ips)}, "
+            f"inline IP {_added_ips}, inline CIDR {_added_nets}")
+
     def _populate_allowlist():
         # 비루프백 bind + allow_server_list=false → bind_host(self) 만 허용.
         # Servers.md 미적재. 외부 source IP 는 _ip_allowed 게이트에서 전부 403.
@@ -11219,31 +11336,22 @@ def main():
                 f"[hub] ⚠️ 외부 개방 모드 — bind={BIND_HOSTS}:{PORT}, "
                 f"allowlist {len(ALLOWED_IPS)} hosts + {len(ALLOWED_NETS)} CIDR (+loopback)\n")
 
-        # allow_list (hub_setting.yml inline) — Servers.md 와 additive 병합. IP/CIDR 만(호스트명 미지원).
-        # 개방 모드에서만 의미. allow_server_list 토글과 독립 — 사용자가 명시한 추가 grant 이므로 항상 적용.
-        if _open_mode:
-            _inline = _load_hub_setting().get("allow_list") or []
-            _added_ips, _added_nets = [], []
-            for item in _inline:
-                if "/" in item:
-                    try:
-                        ALLOWED_NETS.append(ipaddress.ip_network(item, strict=False))
-                        _added_nets.append(item)
-                    except ValueError as e:
-                        log(f"[allowlist] inline allow_list CIDR 파싱 실패 skip — {item}: {e}")
-                else:
-                    try:
-                        ipaddress.ip_address(item)  # IP 검증(호스트명 미지원)
-                        ALLOWED_IPS.add(item)
-                        _added_ips.append(item)
-                    except ValueError:
-                        log(f"[allowlist] inline allow_list 항목 무시(IP/CIDR 아님) — {item}")
-            if _added_ips or _added_nets:
-                log(f"[allowlist] inline allow_list 적재 — IP {_added_ips}, CIDR {_added_nets}")
+        # Issue332: inline allow_list 는 _populate_allowlist_sync() 로 이관(bind 전 동기 적재).
 
     # 개방 모드에서만 백그라운드 적재 스레드 가동(루프백 전용 기본 모드는 적재 불요 → no-op).
     if _open_mode:
-        threading.Thread(target=_populate_allowlist, name="allowlist-populate",
+        _populate_allowlist_sync()  # DNS 불요 항목 — bind 전 동기 (Issue332)
+        ALLOWLIST_READY = False     # resolve 항목 적재 완료 전까지 비허용 판정 = 503
+
+        def _populate_allowlist_bg():
+            global ALLOWLIST_READY
+            try:
+                _populate_allowlist()
+            finally:
+                ALLOWLIST_READY = True
+                log("[allowlist] 적재 완료 — ALLOWLIST_READY=True (Issue332)")
+
+        threading.Thread(target=_populate_allowlist_bg, name="allowlist-populate",
                          daemon=True).start()
 
     # Issue331: zed orphan live 세션 주기 리퍼 (브리지 사망 즉시 + idle TTL)

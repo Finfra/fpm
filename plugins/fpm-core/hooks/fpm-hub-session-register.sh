@@ -70,6 +70,10 @@ if [ "$ENTRY" != "claude-vscode" ]; then
   if command -v zed_detect_by_proc >/dev/null 2>&1 && zed_detect_by_proc "$PID"; then
     EDITOR_SIG="zed"
     zed_mark "$SID"
+  elif command -v zed_is_marked >/dev/null 2>&1 && zed_is_marked "$SID"; then
+    # Issue313: ps 조상 체인 판정 실패 폴백 — resume·재등록으로 체인이 끊긴 경우
+    #   이전에 기록해 둔 마커로 복구한다(파일 존재 확인 1회, 무비용).
+    EDITOR_SIG="zed"
   fi
 fi
 

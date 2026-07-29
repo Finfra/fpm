@@ -166,6 +166,67 @@ def _load_json_lenient(path):
             return None, False
 
 
+def reconcile_from_editors(rows, content):
+    """[0/3] 역방향 동기 — .vscode/settings.json 이 Projects.md 보다 최신이면 그 색을 SSOT 로 되받는다.
+
+    통상 방향은 Projects.md → 에디터 설정이다. 그러나 사용자가 VSCode 에서 peacock 으로 색을
+    직접 고르면 최신 의도는 settings.json 쪽에 있고, 그대로 forward sync 를 돌리면 그 선택이
+    조용히 덮여 사라진다. mtime 으로 어느 쪽이 나중 편집인지 판정해 방향을 뒤집는다.
+
+    채택 조건 (모두 충족해야 함):
+      1. `.vscode/settings.json` 이 존재하고 파싱 가능
+      2. `peacock.color` 가 유효 hex
+      3. Projects.md 의 color 와 실제로 다름
+      4. settings.json mtime > Projects.md mtime
+
+    반환: (갱신된 content, [(id, 이전색, 새색), ...]). 변경 없으면 원본 content 와 빈 리스트.
+    """
+    try:
+        md_mtime = os.path.getmtime(PROJECTS_MD)
+    except OSError:
+        return content, []
+
+    changes = []
+    for r in rows:
+        real = os.path.expanduser(r['path'])
+        spath = os.path.join(real, '.vscode', 'settings.json')
+        if not os.path.isfile(spath):
+            continue
+        if os.path.getmtime(spath) <= md_mtime:
+            continue
+        data, ok = _load_json_lenient(spath)
+        if not ok or not isinstance(data, dict):
+            continue
+        newc = (data.get('peacock.color') or '').strip()
+        if not re.match(r'^#[0-9a-fA-F]{3,6}$', newc):
+            continue
+        if newc.lower() == (r['color'] or '').lower():
+            continue
+        changes.append((r['id'], r['color'], newc))
+
+    if not changes:
+        return content, []
+
+    # 표 행의 color 셀만 교체. 색상 hex 는 color 컬럼에만 등장하므로 행 단위 치환으로 충분하다.
+    lines = content.split('\n')
+    by_id = {cid: (old, new) for cid, old, new in changes}
+    for i, line in enumerate(lines):
+        if not line.startswith('|'):
+            continue
+        cols = [c.strip() for c in line.split('|')[1:-1]]
+        if not cols:
+            continue
+        pid = cols[0]
+        if pid not in by_id:
+            continue
+        old, new = by_id[pid]
+        if old:
+            lines[i] = line.replace(old, new, 1)
+        else:
+            continue
+    return '\n'.join(lines), changes
+
+
 def write_zed(real, base, fg, emoji):
     """.zed/settings.json 에 배경색 반영 (Issue327).
 
@@ -294,6 +355,7 @@ def run_iterm():
 
 def main():
     index_only = '--index-only' in sys.argv[1:]
+    no_reverse = '--no-reverse' in sys.argv[1:]
 
     with open(PROJECTS_MD, encoding='utf-8') as f:
         content = f.read()
@@ -302,6 +364,17 @@ def main():
     if not rows:
         print('Error: Projects.md 테이블 파싱 실패 (id/color 헤더 확인)', file=sys.stderr)
         sys.exit(1)
+
+    # [0/3] 역방향 동기 — 에디터 설정이 더 최신이면 그 색을 SSOT 로 되받은 뒤 forward 진행.
+    if not (index_only or no_reverse):
+        new_content, changes = reconcile_from_editors(rows, content)
+        if changes:
+            with open(PROJECTS_MD, 'w', encoding='utf-8') as f:
+                f.write(new_content)
+            for cid, old, new in changes:
+                print(f'[0/3] 역방향 반영 — prj{cid}: {old} → {new} (.vscode/settings.json 이 더 최신)')
+            content = new_content
+            rows = parse_table(content)
 
     gen_projects(rows)
     if index_only:

@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: 35bd7388071b385ede43ec21cb399d2d6688b0dca90d94e7cf8fb822155e8c7b
+source_sha: 61aff2ec3e174996ef26d55a086c7f1a6d8fd8b258c633055bc398d4ad94e3ce
 ---
 
 # 안내
@@ -17,6 +17,45 @@ source_sha: 35bd7388071b385ede43ec21cb399d2d6688b0dca90d94e7cf8fb822155e8c7b
 `scripts/fpm-issue-digest.sh` 가 덮어쓴다.
 
 # 이슈 근거
+
+## Issue336: hub 세션 capabilities 통째 교체로 Zed 신호 유실 ✅
+* 목적: hub 카드의 Zed 아이콘이 세션 시작 직후에만 보이고 첫 프롬프트 이후 사라진다. 원인은 `/session/register` 핸들러가 heartbeat 재등록마다 `capabilities` 를 **병합이 아니라 통째 교체**하기 때문. Zed 판정 신호(`capabilities.editor="zed"`)는 SessionStart 훅이 1회만 싣는 값이라, `editor` 없는 caps 를 보내는 topic·model 훅이 그것을 지운다. VSCode 는 `entrypoint` 를 매 등록마다 재전송하므로 무사해서 Zed 만 회귀로 보였다.
+* depends: prj3#Issue313
+* 구현 명세:
+    - `/session/register` 의 기존 entry 갱신 경로를 교체 → **병합**(`entry["capabilities"].update(caps)`)으로 변경. 매 등록에서 재전송되는 `source`·`kind`·`model`·`entrypoint` 는 병합해도 최신값이 이기므로 회귀 없음
+    - 신규 entry 생성 경로는 현행 유지(비교 대상 없음)
+    - 검증: Zed 세션에서 프롬프트 1회 이상 진행 후 `sessions.json` 에 `editor=zed` 잔존 확인 + hub 카드 아이콘 유지 확인
+
+## Issue335: pm-do 프롬프트의 쉘 메타문자가 tmux send-keys 경로에서 리다이렉션으로 해석됨 ✅
+* 목적: `pm-do <prj> "<프롬프트>"` 의 프롬프트에 `<`, `>`, `|` 가 들어가면 위임 세션의 zsh 가 이를 리다이렉션·파이프로 해석해 명령이 조각나고, claude 는 아예 기동되지 않거나 잘린 프롬프트를 받는다. 위임이 조용히 실패하고 원인은 tmux 패인을 직접 봐야만 드러난다.
+* 구현 명세:
+    - `~/.bin/pm-do` 의 프롬프트 조립부에서 **셸 인용을 명시 적용**한다. zsh 기준 `${(q)PROMPT}` 또는 python `shlex.quote` 등가 처리로 단일 인자화. 임시방편으로 메타문자를 이스케이프하는 방식은 누락 문자가 남으므로 채택하지 않는다
+    - 검증: `<`, `>`, `|`, `$`, 백틱, 개행을 모두 포함한 프롬프트로 no-op 위임 1건을 실행해 **패인에 원문 그대로** 도달하는지 확인. 대화형이 아니라 tmux 위임 경로로 검증할 것
+    - 2원 구조 주의: 문서는 `~/.claude/skills/fpm-pm-do/SKILL.md`, 실동작 코드는 `~/.bin/pm-do`. 이번 수정은 코드 전용이나 SKILL 문서가 프롬프트 작성 제약을 안내하고 있으면 함께 갱신
+    - 관련: Issue334(pm-do extract_hash PATH 의존) 와 같은 스크립트다. 함께 손대면 1커밋으로 묶어도 무방
+
+## Issue337: Bash 로 쓴 htm 은 등록 훅이 아예 안 돌아 영구 403 — 서버 self-heal 등록 ✅
+* 목적: <private-project> 세션이 렌더한 [hub_htm_20260728_010327_a_rfp-plan.htm](/Users/user/work/<private-project>/_doc_work/htm/hub_htm_20260728_010327_a_rfp-plan.htm) 이 `/htm-doc` 에서 `{"error": "not a registered htm doc"}` 403 dead link 가 됐다. 파일·파일명 규약·서버 모두 정상인데 registry 에만 없다.
+* 구현 명세:
+    - `_htm_doc_autoregister()` 신설 — `/htm-doc` 미등록 판정 시 403 직전에 self-heal 등록 시도. 4조건 전부 충족해야 등록(화이트리스트 모델 유지): ① 실존 파일 + `.htm`/`.html` ② 부모 폴더가 canonical(`_doc_work/{htm,z_done/htm,z_htm}` 또는 `TMP_OUT_DIR`) ③ 파일명이 `_htm_output_stem()` 규약(`hub_htm_*`/legacy `claude-htm-*`) ④ `HTM_CLEARED` tombstone 에 없음(사용자 명시 제거 존중).
+    - 임의 경로 노출은 ②③ 이, 사용자 의사는 ④ 가 막는다. 생산자가 어떤 도구로 쓰든 무관하게 링크가 산다.
+    - 검증(2026-07-28): 문제 URL → **200** + 로그 `self-heal autoregister (Issue337)`. `/etc/hosts`(비규약) → 403. cleared 문서 → 403 유지.
+
+## Issue332: hub allowlist 적재 race window — 재시작 직후 자기 tailscale IP 가 403 ✅
+* 목적: hub 서버 재시작 직후 약 25초 동안 allowlist 가 비어 있어, MagicDNS 호스트명(`<tailnet-host>`)으로 접속한 **자기 자신**이 `{"error": "ip not allowed"}` 403 을 받는다. Issue200 이 재시작 다운타임을 줄이려 allowlist 적재를 백그라운드 스레드로 뺐고, 그 주석은 "루프백은 항상 허용 → 로컬 무영향" 을 전제했으나, tailnet 호스트명으로 열면 같은 머신도 소스 IP 가 tailscale IP(`100.89.64.124`)라 이 전제가 깨진다. hub 를 tailnet 으로 상시 여는 현재 운용에서 재시작마다 재현된다.
+* 구현 명세:
+    - **DNS 불요 항목은 bind 이전 동기 적재**: `BIND_HOSTS`(self IP 문자열)와 `hub_setting.yml` inline `allow_list`(IP/CIDR) 는 resolve 가 필요 없다. `_populate_allowlist` 에서 이 둘을 분리해 스레드 시작 전에 채운다 → 다운타임 증가 0 으로 창이 닫힌다
+    - **Servers.md 호스트 resolve 만 백그라운드 유지** (Issue200 의 원래 목적 보존)
+    - **적재 완료 플래그 + 503**: `_allowlist_ready` 플래그를 두고, 미완료 상태에서 비허용 판정이 나면 403 대신 `503` + `Retry-After: 2` 로 응답한다. "차단" 과 "준비 중" 이 구분되어 오진이 사라진다
+    - 검증: 서버 재시작 직후 즉시 `curl http://<tailnet-host>:9876/hub` → 200 (기존엔 403). `time` 으로 재시작~bind 소요가 기존 대비 증가 없음 확인
+
+## Issue333: iterm-bg 가 배경만 칠하고 전경색을 안 바꿔 밝은 프로젝트 색에서 터미널 글자 판독 불가 ✅
+* 목적: `Projects.md` 의 파스텔 계열 프로젝트 색(ex: prj15 `#8bd6b3`)이 적용된 폴더에서 iTerm2 터미널 글자가 배경에 묻혀 읽히지 않는다. VSCode 밝기 조정으로는 해결되지 않는다 — 색을 칠하는 주체가 VSCode 테마가 아니라 `chpwd` → `iterm-bg` OSC 이스케이프이기 때문이다.
+* 구현 명세:
+    - `iterm-bg()` 에 `readable_fg()` 와 동일한 상대 휘도 공식(`0.2126R + 0.7152G + 0.0722B`)을 zsh 정수 산술로 이식하고, 임계값 초과 시 `fg=15202b` · 이하면 `fg=e8e8e8` 을 `SetColors` 로 함께 전송.
+    - 인자 없는 복원 경로에 전경색 기본값 복원(`\033]110;\007`)을 추가. 현재는 배경만 되돌리는 `\033]111;\007` 뿐이라, 프로젝트 폴더를 벗어나면 검은 글자가 남는다.
+    - ANSI 16색 스왑은 별도 판단 — (a) `Projects.md` 색상을 다크 톤으로 교체(코드 변경 불요, VSCode 타이틀바 인상 변화) 또는 (b) 밝은 배경일 때 ANSI 0~15 라이트 팔레트 동시 스왑(복원 경로도 함께 확장). 이슈 착수 시 택일.
+    - 검증: 밝은 색 프로젝트(prj15)와 어두운 색 프로젝트 양쪽에서 `cd` 후 글자 판독 확인 + 비프로젝트 폴더로 이동 시 기본색 복원 확인.
 
 ## Issue331: Zed 세션 orphan 누적 — 하이브리드 리퍼(브리지 사망 + idle TTL) ✅
 * 목적: Zed 에서 Claude Code 를 쓰면 VSCode 확장 같은 세션 관리(스레드 종료 시 프로세스 정리)가 없어, 스레드마다 새로 뜬 claude 프로세스(ACP 브리지, entrypoint `sdk-ts`)가 스레드를 닫아도 살아남는다. 그 결과 hub 활성 세션 카드가 무한 누적되고 메모리도 계속 점유된다.
@@ -124,6 +163,13 @@ source_sha: 35bd7388071b385ede43ec21cb399d2d6688b0dca90d94e7cf8fb822155e8c7b
     - 클라이언트 JS 그룹핑에서 프로젝트별 `openIssueCount` 저장, 배지 렌더 `${g.items.length}` → `${g.openIssueCount}` 교체 + `data-tip` 툴팁에 세션 수 병기(정보 손실 없음), `.live-badge[data-tip]` 를 기존 hover 툴팁 위임 셀렉터에 추가
     - Issue.md 없는 프로젝트는 0 처리
     - 검증: `python3 -m py_compile` 통과, hub 재시작 후 `/boards` API 로 pm=3(Issue316 자신 포함 전 3=316+315+310)·obsidian=1·claude=4·m2slide=5·videoMaker=0·common=0 확인 — 수정 전 오카운트(섹션 미반영 시 pm=9)와 대조해 로직 정정 검증
+
+## Issue313: `_doc_arch` 감사 Group C — prj8 _user_lib 감사 방향 결정 ✅
+* 목적: prj8 _user_lib(라이브러리 루트, 하위 prj55·56·57 포함)는 `Issue.md` 가 없어 nPTiR 미초기화 상태. Issue307 감사에서 보류됨. 감사 방향 결정 필요.
+* depends: Issue307
+* 구현 명세:
+    - 결정: 루트는 **컨텐츠 없는 컨테이너 폴더로 감사 대상에서 제외**. 실 콘텐츠는 하위 prj55·56·57 각자 독립 관리(이미 등록 프로젝트) — 루트에 별도 Issue.md 신설 불필요
+    - 커밋 없음(문서상 결정만)
 
 ## Issue311: hub 서버 disk-scan 파일명 패턴 stale ✅
 * 목적: hub 서버 htm 디스크 스캔이 구 파일명 패턴만 매치해 현행 산출물을 놓치는 버그 수정 (Issue306 감사 발견)

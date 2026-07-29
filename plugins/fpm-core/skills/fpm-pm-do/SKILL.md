@@ -138,8 +138,13 @@ if [ "$CLAUDE_CNT" -gt 0 ]; then
   echo "[delegated:interactive] pm:${WIN_NAME}.0 ← ${RESOLVED_CMD}"
 else
   # pane 이 비어 있으면 비대화 1-shot 으로 실행 (기본 경로)
-  $TMUX send-keys -t "$TARGET" "${CLAUDE_BIN} -p '${RESOLVED_CMD}'" Enter
-  echo "[delegated:print] pm:${WIN_NAME}.0 ← ${CLAUDE_BIN} -p '${RESOLVED_CMD}'"
+  # ⚠️ Issue335 — send-keys 가 보낸 문자열은 대상 zsh 가 **다시 파싱**한다.
+  #   프롬프트에 < > | $ 백틱이 있으면 리다이렉션·파이프로 해석되어 명령이 조각나고
+  #   claude 가 아예 안 뜨거나 잘린 프롬프트를 받는다(2026-07-28 실측: `zsh: no such file or directory: 성공`).
+  #   반드시 zsh ${(qq)} 로 단일 인자화할 것. 메타문자 개별 이스케이프는 누락이 남으므로 금지.
+  QUOTED_CMD=${(qq)RESOLVED_CMD}
+  $TMUX send-keys -t "$TARGET" "${CLAUDE_BIN} -p ${QUOTED_CMD}" Enter
+  echo "[delegated:print] pm:${WIN_NAME}.0 ← ${CLAUDE_BIN} -p ${QUOTED_CMD}"
 fi
 ```
 

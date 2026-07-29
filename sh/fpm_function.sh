@@ -469,7 +469,7 @@ _fpm_clean_path() {
 }
 
 # cdf-rel (cdfr) : 등록 프로젝트 루트 기준 상대 경로(Project-relative path) 추출
-#   ex) cdf-rel /Users/nowage/Documents/finfra/fSnippetData/_doc_arch/file.md
+#   ex) cdf-rel $HOME/Documents/finfra/<private-project>/_doc_arch/file.md
 #       → _doc_arch/file.md
 #       cdfr (alias)
 cdf-rel() {
@@ -524,8 +524,8 @@ cdfr() {
 }
 
 # cdf-base (cdfb) : 경로(파일 가능) → 등록 프로젝트 루트 절대 경로 (cdf-rel 의 짝)
-#   ex) cdf-base /Users/nowage/Documents/finfra/fSnippetData/_doc_arch/x.md
-#       → /Users/nowage/Documents/finfra/fSnippetData
+#   ex) cdf-base $HOME/Documents/finfra/<private-project>/_doc_arch/x.md
+#       → $HOME/Documents/finfra/<private-project>
 #       cdf-base -n  : 루트 경로 + 프로젝트 번호를 stderr 로 표시
 #   최장 prefix 일치. 미등록이면 stderr 안내 후 exit 1
 cdf-base() {
