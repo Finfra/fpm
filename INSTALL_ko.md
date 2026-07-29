@@ -13,6 +13,8 @@ date: 2026-06-21
 * (선택) iTerm2 — 다중 패널 분할
 * (선택) VS Code + `code` CLI — `cdfv`
 * (선택) Python 3 — hub 서버
+* (선택) Node.js + `npx` — `/fpm-issue-map` 다이어그램 렌더. 없으면 이 커맨드만 미동작(다른 기능 무관)
+* (선택) mermaid-cli(`mmdc`) 전역 설치 — 있으면 우선 사용, npx 다운로드 없이 즉시·오프라인 렌더. `npm i -g @mermaid-js/mermaid-cli`
 * (선택) Keyboard Maestro (유료) — 매크로 연동
 
 # 빠른 설치

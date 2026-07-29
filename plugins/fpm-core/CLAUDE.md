@@ -6,8 +6,8 @@
 
 | 분류 | 항목 |
 | :--- | :--- |
-| Commands | `fpm-hub`, `fpm-board`, `fpm-hub-server` (구 `fpm-board-server`, deprecated alias 잔존), `fpm-pm-new`, `fpm-pm-del`, `fpm-pm-update`, `fpm-pm-query`, `fpm-pm-do`, `fpm-cdf` |
-| Skills | `fpm-pm`, `fpm-cdf` |
+| Commands | `fpm-hub`, `fpm-board`, `fpm-hub-server` (구 `fpm-board-server`, deprecated alias 잔존), `fpm-pm-new`, `fpm-pm-del`, `fpm-pm-update`, `fpm-pm-query`, `fpm-pm-do`, `fpm-cdf`, `fpm-issue-map` |
+| Skills | `fpm-pm`, `fpm-cdf`, `fpm-issue-map` |
 | Agents | `fpm-board` (+ runner/supervisor/queue-runner) |
 | Hooks | `fpm-hub-trigger`, `fpm-ask-intercept`, `fpm-ask-marker-detect`, `fpm-ask-question-guard`, `fpm-board-notify`, `fpm-hub-session-{register,end,topic}`, `fpm-hub-doc-register` |
 | Services | `services/hub/server.py` (hub/dashboard 백엔드, Python stdlib HTTP+SSE) |
@@ -30,6 +30,15 @@ b/c모드는 백엔드 서버를 사용한다. `/fpm-hub-server start|stop|resta
 ```
 
 서버 경로는 `${CLAUDE_PLUGIN_ROOT}` 로 해석되어 설치 위치에 자동 적응한다.
+
+## 사전요구 — `/fpm-issue-map` (mermaid 렌더)
+
+이슈 관계도 생성만 외부 런타임을 쓴다. 나머지 기능은 무관하다.
+
+* **필요**: `node` + `npx` (대부분 환경에 이미 있음). 렌더러는 `npx -y @mermaid-js/mermaid-cli` 로 자동 조달된다
+* **선택**: `mmdc` 전역 설치(`npm i -g @mermaid-js/mermaid-cli`) — 있으면 우선 사용. 다운로드 없이 즉시 실행되고 오프라인에서도 동작
+* **최초 npx 실행은 느리다** — 패키지 다운로드로 수 분 걸릴 수 있고 네트워크가 필요하다(timeout 600s)
+* **둘 다 없으면** `mmdc·npx 모두 없음` 으로 즉시 실패한다(fail-loud). `/fpm-issue-map` 만 막히고 hub·pm·cdf 는 정상
 
 ## 환경 변수
 

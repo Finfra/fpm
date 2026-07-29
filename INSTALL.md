@@ -13,6 +13,8 @@ date: 2026-06-21
 * (optional) iTerm2 — multi-pane split
 * (optional) VS Code + `code` CLI — `cdfv`
 * (optional) Python 3 — hub server
+* (optional) Node.js + `npx` — diagram rendering for `/fpm-issue-map`. Without it only that command is unavailable (everything else is unaffected)
+* (optional) mermaid-cli (`mmdc`) installed globally — used first when present, so rendering starts instantly and works offline. `npm i -g @mermaid-js/mermaid-cli`
 * (optional) Keyboard Maestro (paid) — macro integration
 
 # Quick Install
