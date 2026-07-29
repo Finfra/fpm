@@ -73,7 +73,10 @@ sync_dir_by_name "$BUNDLE/agents"   "$GLOBAL/agents"
 
 # --- 3. skills — 번들 이름과 라이브 이름이 다른 케이스가 있어 명시 매핑 ---
 #   fpm-cdf ← prj1 .claude/skills/cdf, fpm-pm ← prj1 .claude/skills/pm,
-#   fpm-pm-do ← 글로벌 ~/.claude/skills/fpm-pm-do
+#   fpm-pm-do ← 글로벌 ~/.claude/skills/fpm-pm-do,
+#   fpm-issue-map ← 글로벌 ~/.claude/skills/issue-map (Issue338)
+#     번들 hub server.py 가 Issue_map.htm 을 serve 하는데 생성기가 빠져 있어
+#     플러그인 전용 설치(fg1)에서 /issue-map 이 영구 404 였다.
 sync_skill() {  # $1=번들 스킬명 $2=라이브 디렉토리
   local dst="$BUNDLE/skills/$1" src="$2"
   [ -d "$dst" ] && [ -d "$src" ] || return 0
@@ -87,6 +90,7 @@ sync_skill() {  # $1=번들 스킬명 $2=라이브 디렉토리
 sync_skill fpm-pm-do "$GLOBAL/skills/fpm-pm-do"
 sync_skill fpm-pm    "$REPO/.claude/skills/pm"
 sync_skill fpm-cdf   "$REPO/.claude/skills/cdf"
+sync_skill fpm-issue-map "$GLOBAL/skills/issue-map"
 
 # --- 4. 런타임 데이터 (i18n catalog + 설치 템플릿) ---
 #   locales 부재 시 hub UI 가 번역 키 그대로 노출되고 test_i18n_parity 가 깨진다.
