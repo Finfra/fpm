@@ -502,9 +502,25 @@ def build_graph_mmd(issues, stage_map, hidden=frozenset(), resolver=None):
 
 
 # ── SVG 렌더 ────────────────────────────────────────────────────────────
+def resolve_mmdc() -> list:
+    """mmdc 실행자 해석 (Issue317).
+
+    전역 설치(mmdc) 우선. 없으면 npx 경유로 자동 대체 — 전역 npm prefix 가
+    /usr 인 환경(sudo 필요)에서 소비자가 설치 없이 실행할 수 있게 한다.
+    둘 다 없을 때만 fail-loud.
+    """
+    if shutil.which("mmdc"):
+        return ["mmdc"]
+    if shutil.which("npx"):
+        print("[issue-map] mmdc 미설치 → npx 경유 실행 "
+              "(첫 실행은 패키지 다운로드로 수 분 소요 가능)", file=sys.stderr)
+        return ["npx", "-y", "@mermaid-js/mermaid-cli"]
+    raise RuntimeError(
+        "mmdc·npx 모두 없음 — `npm i -g @mermaid-js/mermaid-cli` 또는 node/npx 설치 후 재실행")
+
+
 def render_svg(mmd_text: str, workdir: Path, name: str) -> str:
-    if not shutil.which("mmdc"):
-        raise RuntimeError("mmdc 미설치 — `npm i -g @mermaid-js/mermaid-cli` 후 재실행")
+    runner = resolve_mmdc()
     src, dst = workdir / f"{name}.mmd", workdir / f"{name}.svg"
     src.write_text(mmd_text)
     # securityLevel 기본값(strict)은 click href 를 무시한다 — 카드 클릭(Issue274)이
@@ -517,9 +533,10 @@ def render_svg(mmd_text: str, workdir: Path, name: str) -> str:
         chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
         if Path(chrome).exists():
             env["PUPPETEER_EXECUTABLE_PATH"] = chrome  # puppeteer 내장 Chrome 부재 대비
-    r = subprocess.run(["mmdc", "-i", str(src), "-o", str(dst), "-b", "transparent",
+    # npx 첫 실행은 패키지 다운로드가 붙으므로 넉넉히 (Issue317)
+    r = subprocess.run(runner + ["-i", str(src), "-o", str(dst), "-b", "transparent",
                        "-c", str(cfg)],
-                       capture_output=True, text=True, env=env)
+                       capture_output=True, text=True, env=env, timeout=600)
     if r.returncode != 0 or not dst.exists():
         raise RuntimeError(f"mmdc 렌더 실패 ({name}):\n{r.stderr.strip()[-800:]}")
     s = dst.read_text()

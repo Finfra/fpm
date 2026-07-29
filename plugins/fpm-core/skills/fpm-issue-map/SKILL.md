@@ -223,9 +223,9 @@ python3 "$BIM" --deadlock
 
 # 의존 도구
 
-* **mmdc** (`@mermaid-js/mermaid-cli`) — mermaid → SVG 선렌더. 미설치 시 `npm i -g @mermaid-js/mermaid-cli`
+* **mmdc** (`@mermaid-js/mermaid-cli`) — mermaid → SVG 선렌더. **선택 의존**(Issue317) — 미설치면 `npx -y @mermaid-js/mermaid-cli` 로 자동 대체하므로 node/npx 만 있으면 동작한다. 첫 npx 실행은 패키지 다운로드로 수 분 소요 가능(timeout 600s). 상시 사용하면 `npm i -g @mermaid-js/mermaid-cli` 로 전역 설치가 빠름
 * puppeteer 내장 Chrome 이 없으면 스크립트가 `/Applications/Google Chrome.app` 을 자동 사용한다. 다른 경로면 `PUPPETEER_EXECUTABLE_PATH` 환경변수로 지정
-* 두 경로 모두 없으면 스크립트가 `mmdc 미설치` / `mmdc 렌더 실패` 로 **즉시 종료**한다(fail-loud). 부분 산출물을 쓰지 않으므로 기존 `Issue_map.htm` 은 훼손되지 않음
+* mmdc·npx 가 **둘 다** 없거나 렌더가 실패하면 스크립트가 `mmdc·npx 모두 없음` / `mmdc 렌더 실패` 로 **즉시 종료**한다(fail-loud). 부분 산출물을 쓰지 않으므로 기존 `Issue_map.htm` 은 훼손되지 않음
 * 그 외 외부 의존 없음 (Python 표준 라이브러리만 사용)
 
 # 완료 조건

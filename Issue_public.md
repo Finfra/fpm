@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: 3f6c3bfefe6b1d44a4a0e6891f973c55f0c875b0dd99779198177f6244244bb3
+source_sha: 7e5dc50c5a6ff455a9d0c4b1bb3e29c947b50f589980f39437ecf4c758fddc76
 ---
 
 # 안내
@@ -18,7 +18,7 @@ source_sha: 3f6c3bfefe6b1d44a4a0e6891f973c55f0c875b0dd99779198177f6244244bb3
 
 # 이슈 근거
 
-## Issue338: fpm-core 번들에 issue-map 생성기 누락 — 반쪽 배포
+## Issue338: fpm-core 번들에 issue-map 생성기 누락 — 반쪽 배포 ✅
 * 목적: 번들 hub `services/hub/server.py` 는 `Issue_map.htm` 을 serve(`/issue-map`, `ISSUE_MAP_NAME` 고정)하는데 그 파일을 **생성하는 `issue-map` 스킬이 번들에 없음**. 소비자만 배포하고 생산자를 뺀 반쪽 배포 → 플러그인 전용 설치 환경에서 `/issue-map` 영구 404.
 * depends: (없음)
 * 구현 명세:
@@ -27,7 +27,8 @@ source_sha: 3f6c3bfefe6b1d44a4a0e6891f973c55f0c875b0dd99779198177f6244244bb3
     - [v] `bash scripts/fpm-bundle-sync.sh --check` → "표류 없음" 확인
     - [v] `plugins/fpm-core/commands/fpm-issue-map.md` 수동 편입 — 번들 commands 는 이름 일치분만 동기하므로 신규 파일은 seed 필요
     - [v] prj3#Issue316 반영분 재동기(`bundle-sync` → 표류 없음, 번들 hub test_*.py 전량 통과, `CLAUDE_PLUGIN_ROOT` resolver 실행 검증)
-    - [ ] fpm deploy(publish) 로 prj20 반영 — 번들 준비 완료, 배포 실행만 남음
+    - [v] `fpm-sync.sh deploy` (v0.2.8, mirror `<commit>`) + `fpm-sync.sh publish --push` (prj20 `<commit>`) 로 마켓 반영
+    - [v] host 실환경 검증 — `claude plugin update fpm-core@f-claude-plugins` 0.2.2→0.2.8, 번들 `commands/fpm-issue-map.md` 존재, **글로벌 issue-map 스킬이 없는 플러그인 전용 환경에서** resolver 가 번들 사본 선택 → `Issue_map.htm` 생성 성공(10.3 KB, 이슈 71건)
 
 ## Issue336: hub 세션 capabilities 통째 교체로 Zed 신호 유실 ✅
 * 목적: hub 카드의 Zed 아이콘이 세션 시작 직후에만 보이고 첫 프롬프트 이후 사라진다. 원인은 `/session/register` 핸들러가 heartbeat 재등록마다 `capabilities` 를 **병합이 아니라 통째 교체**하기 때문. Zed 판정 신호(`capabilities.editor="zed"`)는 SessionStart 훅이 1회만 싣는 값이라, `editor` 없는 caps 를 보내는 topic·model 훅이 그것을 지운다. VSCode 는 `entrypoint` 를 매 등록마다 재전송하므로 무사해서 Zed 만 회귀로 보였다.
