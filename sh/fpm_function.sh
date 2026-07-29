@@ -62,6 +62,23 @@ _fpm_tmux_bin() {
     return 1
 }
 
+# _fpm_say <메시지> : 음성 알림. hook-say.sh 우선 → say(macOS) → 없으면 생략 고지
+#   `say` 는 macOS 내장 TTS. Linux 에는 없어 `/usr/bin/say: no such file or directory`
+#   로 깨졌음 → 존재 확인 후 실행하고, 없으면 왜 생략됐는지 1줄 표시(무음 실패 금지).
+_fpm_say() {
+    local msg="${1:-session ready}"
+    if [ -x "$HOME/.claude/hooks/hook-say.sh" ]; then
+        "$HOME/.claude/hooks/hook-say.sh" session_ready "$msg"
+        return 0
+    fi
+    if command -v say >/dev/null 2>&1; then
+        say "$msg"
+        return 0
+    fi
+    echo "🔇 음성 알림 생략: \`say\` 는 macOS 전용 (현재 OS=$(_fpm_os)) — \"${msg}\"" >&2
+    return 0
+}
+
 # _fpm_split_pane <dir> [cmd] : 새 pane 에서 dir 로 이동(+cmd 실행)
 #   macOS+iTerm2 → osascript 수평분할 / tmux 세션 안 → tmux split-window
 #   둘 다 아니면 안내 후 1 반환 (호출측이 경로만 출력하도록)
@@ -300,7 +317,7 @@ cdf() {
         _cdf_base "$@" || return 0
     fi
 
-    local first=1
+    local first=1 _CDF_HINTED=0   # _CDF_HINTED: 분할 불가 안내를 인덱스마다 반복 출력하지 않기 위함
     for target in "${_CDF_TARGETS[@]}"; do
         if [[ $first -eq 1 ]]; then
             first=0
@@ -309,8 +326,13 @@ cdf() {
         else
             # 2번째 이후 인덱스 = 창 분할. macOS(iTerm2) → osascript, tmux 안 → split-window.
             if ! _fpm_split_pane "$target" "$_CDF_CMD"; then
-                _fpm_need_macos "cdf 다중 인덱스(창 분할)" \
-                    "tmux 세션 안에서 실행하면 split-window 로 동작함. 지금은 경로만 출력:"
+                # tmux 밖 Linux → 분할 불가. 같은 목적의 이식 가능 대안(cdft)을 즉시 제시.
+                if [[ $_CDF_HINTED -eq 0 ]]; then
+                    _CDF_HINTED=1
+                    _fpm_need_macos "cdf 다중 인덱스(창 분할)" \
+                        "대신 \`cdft ${_CDF_IDS[*]}\` 를 쓰면 tmux pm 세션에 pane 을 만들어 동일하게 동작함 (OS 무관)."
+                    echo "   아래는 해석된 경로 (cd 는 첫 인덱스만 적용됨):" >&2
+                fi
                 echo "   $target"
             fi
         fi
@@ -903,7 +925,7 @@ cdft() {
             echo "  ${FOUND_TARGETS[$i]} → ${PROJ_PATHS[$i]}"
         done
         local REUSE_WIN=$(echo "${FOUND_TARGETS[1]}" | /usr/bin/sed 's/pm://;s/\..*//')
-        if [ -x "$HOME/.claude/hooks/hook-say.sh" ]; then "$HOME/.claude/hooks/hook-say.sh" session_ready "session ready"; else /usr/bin/say "session ready"; fi
+        _fpm_say "session ready"
         echo "WIN_NAME=$REUSE_WIN"
     else
         # 신규 윈도우 생성
@@ -936,7 +958,7 @@ cdft() {
 
         /bin/sleep 1
         $TMUX_CMD list-panes -t "pm:$WIN_NAME" -F '  pane #P: #{pane_current_path}'
-        if [ -x "$HOME/.claude/hooks/hook-say.sh" ]; then "$HOME/.claude/hooks/hook-say.sh" session_ready "session ready"; else /usr/bin/say "session ready"; fi
+        _fpm_say "session ready"
         echo "WIN_NAME=$WIN_NAME"
     fi
 }
