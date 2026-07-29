@@ -45,6 +45,17 @@ _cdfn_resolve() {
         # 다수 매치 → 네이티브 선택창 (표시문자열만 노출, 선택분의 앞 id 반환)
         local menu_file="/tmp/.cdfn_menu_$$" picked
         printf '%s\n' "${hits[@]#*$'\t'}" > "$menu_file"
+        # macOS 아니면 choose from list(osascript) 불가 → 터미널 번호 입력 fallback
+        if ! _fpm_is_macos; then
+            command rm -f "$menu_file"
+            echo "여러 개 매치 — 번호 선택 (macOS 선택창은 macOS 전용, 터미널 입력으로 대체)" >&2
+            local i
+            for (( i=1; i<=n; i++ )); do echo "  [$i] ${hits[$i]#*$'\t'}" >&2; done
+            printf '번호> ' >&2; read -r picked
+            [[ "$picked" == <-> ]] && (( picked >= 1 && picked <= n )) \
+                || { echo "취소됨" >&2; return 1; }
+            printf '%s' "${hits[$picked]%%$'\t'*}"; return 0
+        fi
         picked=$(osascript \
             -e 'set t to do shell script "cat '"$menu_file"'"' \
             -e 'set L to paragraphs of t' \

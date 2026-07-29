@@ -39,6 +39,49 @@ _fpm_rematch() {
     return 0
 }
 
+# --- 플랫폼 헬퍼 (macOS 전용 기능의 Linux fail-loud 처리) ---
+# 배경: cdf 다중 인덱스·cdff·cdfc·cdfn 선택창은 osascript/open/pbcopy 에 의존.
+#   Linux(fg1 등)에서는 `osascript: command not found` 만 뜨고 무엇이 왜 안 되는지
+#   알 수 없었음 → 아래 헬퍼로 "macOS 전용" 을 명시하고 가능한 대체 경로를 안내.
+_fpm_os() { uname -s 2>/dev/null || echo unknown; }
+_fpm_is_macos() { [ "$(_fpm_os)" = "Darwin" ]; }
+
+# _fpm_need_macos <기능명> [대안안내] : macOS 면 0, 아니면 메시지 출력 후 1
+_fpm_need_macos() {
+    _fpm_is_macos && return 0
+    echo "⛔ ${1:-이 기능} : macOS 전용 (현재 OS=$(_fpm_os))" >&2
+    [ -n "$2" ] && echo "   → $2" >&2
+    return 1
+}
+
+# _fpm_tmux_bin : tmux 실행 경로 (PATH 우선, Homebrew fallback). 없으면 빈 문자열
+_fpm_tmux_bin() {
+    local t
+    t=$(command -v tmux 2>/dev/null) && { printf '%s' "$t"; return 0; }
+    [ -x /opt/homebrew/bin/tmux ] && { printf '%s' /opt/homebrew/bin/tmux; return 0; }
+    return 1
+}
+
+# _fpm_split_pane <dir> [cmd] : 새 pane 에서 dir 로 이동(+cmd 실행)
+#   macOS+iTerm2 → osascript 수평분할 / tmux 세션 안 → tmux split-window
+#   둘 다 아니면 안내 후 1 반환 (호출측이 경로만 출력하도록)
+_fpm_split_pane() {
+    local dir="$1" cmd="$2" full="cd '$1'"
+    [ -n "$cmd" ] && full="${full} && ${cmd}"
+    if _fpm_is_macos; then
+        osascript -e "tell application \"iTerm2\" to tell current session of current window to tell (split horizontally with default profile) to write text \"${full}\""
+        sleep 0.1
+        return 0
+    fi
+    local tb
+    if [ -n "${TMUX:-}" ] && tb=$(_fpm_tmux_bin); then
+        "$tb" split-window -h -c "$dir" ${cmd:+"$cmd"}
+        "$tb" select-layout -E >/dev/null 2>&1
+        return 0
+    fi
+    return 1
+}
+
 # --- CDF (인덱스 기반 디렉토리 이동) ---
 # _pm_manager : 베이스 경로 관리 및 목록 출력 공용 함수
 #   base = $FPM_BASE/projects (env 우선). FPM_BASE 미설정 시 legacy ~/.info/__pmBasePath.txt fallback.
@@ -264,10 +307,12 @@ cdf() {
             cd "$target"
             [[ -n "$_CDF_CMD" ]] && eval "$_CDF_CMD"
         else
-            local iterm_cmd="cd '$target'"
-            [[ -n "$_CDF_CMD" ]] && iterm_cmd="${iterm_cmd} && ${_CDF_CMD}"
-            osascript -e "tell application \"iTerm2\" to tell current session of current window to tell (split horizontally with default profile) to write text \"${iterm_cmd}\""
-            sleep 0.1
+            # 2번째 이후 인덱스 = 창 분할. macOS(iTerm2) → osascript, tmux 안 → split-window.
+            if ! _fpm_split_pane "$target" "$_CDF_CMD"; then
+                _fpm_need_macos "cdf 다중 인덱스(창 분할)" \
+                    "tmux 세션 안에서 실행하면 split-window 로 동작함. 지금은 경로만 출력:"
+                echo "   $target"
+            fi
         fi
     done
 
@@ -280,8 +325,17 @@ cdf() {
 cdff() {
     _cdf_base "$@" || return 0
     _cdf_apply_subfolder
+    # 파일관리자 열기: macOS=open / Linux=xdg-open. 둘 다 없으면 경로만 출력.
+    local opener=""
+    if _fpm_is_macos; then opener=open
+    else opener=$(command -v xdg-open 2>/dev/null || true); fi
+    if [[ -z "$opener" ]]; then
+        _fpm_need_macos "cdff (파일관리자 열기)" "xdg-open 설치 시 Linux 도 지원. 지금은 경로만 출력:"
+        printf '   %s\n' "${_CDF_TARGETS[@]}"
+        return 1
+    fi
     for target in "${_CDF_TARGETS[@]}"; do
-        open "$target"
+        "$opener" "$target"
         sleep 0.1
     done
 }
@@ -294,7 +348,22 @@ cdfc() {
     for target in "${_CDF_TARGETS[@]}"; do
         result+="$target"$'\n'
     done
-    [[ -n "$result" ]] && { echo -n "${result%$'\n'}" | pbcopy; echo "📋 Copied to clipboard."; }
+    [[ -z "$result" ]] && return 0
+    result="${result%$'\n'}"
+    # 클립보드: macOS=pbcopy / Wayland=wl-copy / X11=xclip|xsel
+    local clip=""
+    if _fpm_is_macos; then clip="pbcopy"
+    elif command -v wl-copy >/dev/null 2>&1; then clip="wl-copy"
+    elif command -v xclip   >/dev/null 2>&1; then clip="xclip -selection clipboard"
+    elif command -v xsel    >/dev/null 2>&1; then clip="xsel --clipboard --input"
+    fi
+    if [[ -z "$clip" ]]; then
+        _fpm_need_macos "cdfc (클립보드 복사)" "Linux 는 wl-copy / xclip / xsel 중 하나 설치 필요. 지금은 경로만 출력:"
+        echo "$result"
+        return 1
+    fi
+    echo -n "$result" | eval "$clip"
+    echo "📋 Copied to clipboard."
 }
 
 # cdfv : 해당 경로를 VS Code로 열기
@@ -340,7 +409,10 @@ cdfv() {
             if [[ $new_window -eq 1 ]]; then
                 _fpm_editor_open vscode new "$target"
                 sleep 0.8   # 새 창(탭) 생성 대기
-                if [[ $nw_detached -eq 0 ]]; then
+                if [[ $nw_detached -eq 0 ]] && ! _fpm_is_macos; then
+                    # Linux: window tabbing 자체가 없어 분리 불필요 — code -n 결과 그대로 사용
+                    nw_detached=1
+                elif [[ $nw_detached -eq 0 ]]; then
                     # 첫 프로젝트만 별도 창으로 분리 (이후 프로젝트는 이 창에 병합)
                     osascript -e 'tell application "System Events" to tell process "Code"' \
                               -e 'set mi to menu item "Move Tab to New Window" of menu 1 of menu bar item "Window" of menu bar 1' \
@@ -403,6 +475,17 @@ else
         else
             local menu_file="/tmp/.cdfn_menu_$$" picked
             printf '%s\n' "${hits[@]#*$'\t'}" > "$menu_file"
+            # macOS 아니면 choose from list(osascript) 불가 → 터미널 번호 입력 fallback
+            if ! _fpm_is_macos; then
+                command rm -f "$menu_file"
+                echo "여러 개 매치 — 번호 선택 (macOS 선택창은 macOS 전용, 터미널 입력으로 대체)" >&2
+                local _i=1 _h
+                for _h in "${hits[@]}"; do echo "  [$_i] ${_h#*$'\t'}" >&2; _i=$((_i+1)); done
+                printf '번호> ' >&2; read -r picked
+                [[ "$picked" =~ ^[0-9]+$ ]] && [ "$picked" -ge 1 ] && [ "$picked" -le "$n" ] \
+                    || { echo "취소됨" >&2; return 1; }
+                printf '%s' "${hits[$((picked-1))]%%$'\t'*}"; return 0
+            fi
             picked=$(osascript \
                 -e 'set t to do shell script "cat '"$menu_file"'"' \
                 -e 'set L to paragraphs of t' \
@@ -591,7 +674,9 @@ cdfb() {
 #   cdft capture :fapp            : pane 출력 수집 (기본 50줄)
 #   cdft capture :fapp 30         : pane 출력 수집 (30줄)
 cdft() {
-    local TMUX_CMD=/opt/homebrew/bin/tmux
+    # tmux 경로: PATH 우선 → Homebrew fallback (Linux 는 /usr/bin/tmux 등)
+    local TMUX_CMD
+    TMUX_CMD=$(_fpm_tmux_bin) || { echo "⛔ cdft : tmux 미설치 (PATH·/opt/homebrew 모두 없음)" >&2; return 1; }
     local base_dir=$(_pm_manager)
     [[ $? -ne 0 ]] && return 1
 
@@ -930,8 +1015,10 @@ sshf() {
             local hi=$(( lo + ${#names[@]} - 1 ))
             for (( i=hi; i>lo; i-- )); do
                 n="${names[$i]}"
-                osascript -e "tell application \"iTerm2\" to tell current session of current window to tell (split horizontally with default profile) to write text \"ssh ${n}\""
-                sleep 0.1
+                if ! _fpm_split_pane "$PWD" "ssh ${n}"; then
+                    _fpm_need_macos "sshf 다중 접속(창 분할)" \
+                        "tmux 세션 안에서 실행하면 split-window 로 동작함. 건너뜀: ssh ${n}"
+                fi
             done
             # 첫 서버: 현재 창 (마지막, 블로킹 OK)
             ssh "${names[$lo]}"
