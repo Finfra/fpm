@@ -79,6 +79,27 @@ _fpm_say() {
     return 0
 }
 
+# _fpm_tmux_focus <tmux경로> <window명> : 만든/찾은 window 로 실제 이동
+#   tmux 안  → select-window (현재 client 를 그 window 로 전환)
+#   tmux 밖  → attach-session (블로킹 — 사용자가 그 화면으로 들어감)
+#   ⚠️ stdout 이 tty 가 아니면(=명령치환·파이프·pm-do 의 WIN_NAME 파싱) attach 하지 않는다.
+#      attach 는 터미널을 점유하므로 스크립트 문맥에서 실행되면 그대로 멈춘다.
+#   억제: FPM_NO_ATTACH=1
+_fpm_tmux_focus() {
+    local tb="$1" win="$2"
+    [ -n "${FPM_NO_ATTACH:-}" ] && return 0
+    if [ -n "${TMUX:-}" ]; then
+        "$tb" select-window -t "pm:$win" 2>/dev/null
+        return 0
+    fi
+    if [ ! -t 1 ]; then
+        echo "   (attach 생략: 비대화 문맥. 직접 들어가려면 \`tmux attach -t pm\`)" >&2
+        return 0
+    fi
+    "$tb" select-window -t "pm:$win" 2>/dev/null
+    "$tb" attach-session -t pm
+}
+
 # _fpm_split_pane <dir> [cmd] : 새 pane 에서 dir 로 이동(+cmd 실행)
 #   macOS+iTerm2 → osascript 수평분할 / tmux 세션 안 → tmux split-window
 #   둘 다 아니면 안내 후 1 반환 (호출측이 경로만 출력하도록)
@@ -927,6 +948,7 @@ cdft() {
         local REUSE_WIN=$(echo "${FOUND_TARGETS[1]}" | /usr/bin/sed 's/pm://;s/\..*//')
         _fpm_say "session ready"
         echo "WIN_NAME=$REUSE_WIN"
+        _fpm_tmux_focus "$TMUX_CMD" "$REUSE_WIN"
     else
         # 신규 윈도우 생성
         local MAX_NUM=0
@@ -960,6 +982,7 @@ cdft() {
         $TMUX_CMD list-panes -t "pm:$WIN_NAME" -F '  pane #P: #{pane_current_path}'
         _fpm_say "session ready"
         echo "WIN_NAME=$WIN_NAME"
+        _fpm_tmux_focus "$TMUX_CMD" "$WIN_NAME"
     fi
 }
 
