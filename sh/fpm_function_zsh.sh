@@ -48,8 +48,14 @@ _cdfn_resolve() {
         # macOS 아니면 choose from list(osascript) 불가 → 터미널 번호 입력 fallback
         if ! _fpm_is_macos; then
             command rm -f "$menu_file"
-            echo "여러 개 매치 — 번호 선택 (macOS 선택창은 macOS 전용, 터미널 입력으로 대체)" >&2
             local i
+            if [ ! -t 0 ]; then
+                # 비대화(stdin 이 tty 아님) — read 가 즉시 빈 값을 받아 조용히 취소되던 것 방지
+                echo "❌ 여러 개 매치 — 비대화 문맥이라 번호 선택 불가. 검색어를 더 구체적으로 주거나 번호를 직접 쓰세요:" >&2
+                for (( i=1; i<=n; i++ )); do echo "  ${hits[$i]#*$'\t'}" >&2; done
+                return 1
+            fi
+            echo "여러 개 매치 — 번호 선택 (macOS 선택창은 macOS 전용, 터미널 입력으로 대체)" >&2
             for (( i=1; i<=n; i++ )); do echo "  [$i] ${hits[$i]#*$'\t'}" >&2; done
             printf '번호> ' >&2; read -r picked
             [[ "$picked" == <-> ]] && (( picked >= 1 && picked <= n )) \

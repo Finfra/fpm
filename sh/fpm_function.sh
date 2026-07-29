@@ -79,6 +79,14 @@ _fpm_say() {
     return 0
 }
 
+# _fpm_has_display : GUI 세션인가 (macOS=항상 참 / Linux=DISPLAY·WAYLAND_DISPLAY 존재)
+#   headless 원격(fg1 ssh)에서 xdg-open·xclip 은 설치돼 있어도 실패한다.
+#   존재 확인만으로는 부족 → 디스플레이 유무까지 봐야 거짓 성공을 막는다.
+_fpm_has_display() {
+    _fpm_is_macos && return 0
+    [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]
+}
+
 # _fpm_tmux_focus <tmux경로> <window명> : 만든/찾은 window 로 실제 이동
 #   tmux 안  → select-window (현재 client 를 그 window 로 전환)
 #   tmux 밖  → attach-session (블로킹 — 사용자가 그 화면으로 들어감)
@@ -368,9 +376,15 @@ cdf() {
 cdff() {
     _cdf_base "$@" || return 0
     _cdf_apply_subfolder
-    # 파일관리자 열기: macOS=open / Linux=xdg-open. 둘 다 없으면 경로만 출력.
+    # 파일관리자 열기: macOS=open / Linux(GUI)=xdg-open.
+    # headless(ssh·DISPLAY 없음)면 xdg-open 이 있어도 mailcap·www-browser 오류만 뱉으므로
+    # 아예 실행하지 않고 경로를 출력한다 (쓰레기 출력 방지).
     local opener=""
     if _fpm_is_macos; then opener=open
+    elif ! _fpm_has_display; then
+        echo "🖥️  cdff 생략: GUI 세션 아님 (headless — DISPLAY·WAYLAND_DISPLAY 없음). 경로만 출력:" >&2
+        printf '   %s\n' "${_CDF_TARGETS[@]}"
+        return 1
     else opener=$(command -v xdg-open 2>/dev/null || true); fi
     if [[ -z "$opener" ]]; then
         _fpm_need_macos "cdff (파일관리자 열기)" "xdg-open 설치 시 Linux 도 지원. 지금은 경로만 출력:"
@@ -400,12 +414,23 @@ cdfc() {
     elif command -v xclip   >/dev/null 2>&1; then clip="xclip -selection clipboard"
     elif command -v xsel    >/dev/null 2>&1; then clip="xsel --clipboard --input"
     fi
+    # headless 면 X 클립보드 자체가 없음 — xclip 이 있어도 "Can't open display" 로 실패한다.
+    if ! _fpm_has_display; then
+        echo "🖥️  cdfc 생략: GUI 세션 아님 (headless — 클립보드 없음). 경로만 출력:" >&2
+        echo "$result"
+        return 1
+    fi
     if [[ -z "$clip" ]]; then
         _fpm_need_macos "cdfc (클립보드 복사)" "Linux 는 wl-copy / xclip / xsel 중 하나 설치 필요. 지금은 경로만 출력:"
         echo "$result"
         return 1
     fi
-    echo -n "$result" | eval "$clip"
+    # 복사 실패를 성공으로 보고하지 않는다 (거짓 성공 금지 — fg1 실측: xclip 실패인데 ✅ 출력됨)
+    if ! echo -n "$result" | eval "$clip"; then
+        echo "⚠️ 클립보드 복사 실패 (${clip%% *}). 경로만 출력:" >&2
+        echo "$result"
+        return 1
+    fi
     echo "📋 Copied to clipboard."
 }
 
@@ -521,8 +546,14 @@ else
             # macOS 아니면 choose from list(osascript) 불가 → 터미널 번호 입력 fallback
             if ! _fpm_is_macos; then
                 command rm -f "$menu_file"
-                echo "여러 개 매치 — 번호 선택 (macOS 선택창은 macOS 전용, 터미널 입력으로 대체)" >&2
                 local _i=1 _h
+                if [ ! -t 0 ]; then
+                    # 비대화 — read 가 즉시 빈 값을 받아 조용히 취소되던 것 방지
+                    echo "❌ 여러 개 매치 — 비대화 문맥이라 번호 선택 불가. 검색어를 더 구체적으로 주거나 번호를 직접 쓰세요:" >&2
+                    for _h in "${hits[@]}"; do echo "  ${_h#*$'\t'}" >&2; done
+                    return 1
+                fi
+                echo "여러 개 매치 — 번호 선택 (macOS 선택창은 macOS 전용, 터미널 입력으로 대체)" >&2
                 for _h in "${hits[@]}"; do echo "  [$_i] ${_h#*$'\t'}" >&2; _i=$((_i+1)); done
                 printf '번호> ' >&2; read -r picked
                 [[ "$picked" =~ ^[0-9]+$ ]] && [ "$picked" -ge 1 ] && [ "$picked" -le "$n" ] \
