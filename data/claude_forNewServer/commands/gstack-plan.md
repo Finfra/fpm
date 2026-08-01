@@ -25,7 +25,7 @@ gstack 계획 단계 스킬(`/office-hours`, `/autoplan`, `/plan-ceo-review`, `/
 
 ## 2. plan 파일 생성
 
-**경로**: `{nPTiR루트}/_doc_work/plan/{주제}_plan.md`
+**경로**: `{nPTiR루트}/_doc_work/z_done/plan/{주제}_plan.md`
 
 **frontmatter 템플릿**:
 
@@ -81,7 +81,7 @@ issue: TBD
 
 ```markdown
 1. {gstack 출력 제목}
-    - plan: `_doc_work/plan/{주제}_plan.md`
+    - plan: `_doc_work/z_done/plan/{주제}_plan.md`
 ```
 
 이후 `/issue-reg-g`로 이슈 번호 발급 시 자동으로 `* plan:` 필드 연결됨.

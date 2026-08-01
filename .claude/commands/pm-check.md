@@ -29,7 +29,7 @@ date: 2026-07-09
 | 폴더 | 사유 |
 | :--- | :--- |
 | `_doc_work/plan`   | nPTiR plan 산출물 |
-| `_doc_work/tasks`  | nPTiR task 산출물 (복수형 고정) |
+| ~~`_doc_work/tasks`~~ | **폐지** (2026.07.31) — task 는 `_doc_work/plan/{주제}_task.md` |
 | `_doc_work/report` | nPTiR report 산출물 |
 | `_doc_work/z_done` | 완료 이슈 산출물 아카이브 (`plan`/`tasks`/`report`/`htm` 하위) |
 | `_doc_work/htm`    | **hub 렌더 산출물 저장·자동 등록 (403 예방)** — Issue289 로 `z_htm` → `htm` 이전 |
@@ -49,9 +49,9 @@ BASE="$HOME/_git/___pm/projects"
 # htm 는 hub 폴더 — fpm 설치 or ~/_git/___pm 존재 시에만 필수에 포함 (비-fpm 환경엔 불요)
 # Issue289: z_htm → htm 이전. htm/ 생성이 곧 그 프로젝트의 신규 경로 전환 스위치.
 if [ -d "$HOME/_git/___pm" ] || command -v fpm >/dev/null 2>&1; then
-  REQUIRED=(_doc_work/plan _doc_work/tasks _doc_work/report _doc_work/z_done _doc_work/htm _doc_arch)
+  REQUIRED=(_doc_work/plan _doc_work/report _doc_work/z_done _doc_work/htm _doc_arch)
 else
-  REQUIRED=(_doc_work/plan _doc_work/tasks _doc_work/report _doc_work/z_done _doc_arch)
+  REQUIRED=(_doc_work/plan _doc_work/report _doc_work/z_done _doc_arch)
 fi
 # 제외: 0=home(~, nPTiR 워크스페이스 아님), 2=Obsidian 볼트(hub 렌더 대상 아님 — Issue289),
 #       7/25/26=publish 미러(_doc_work 추가 시 미러 오염)

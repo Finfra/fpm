@@ -2,6 +2,8 @@
 name: fpm-board
 description: tmux 기반 dashboard 에이전트. window 1:1 매칭으로 백그라운드 runner 가동, data 파일 주기 갱신. 순수 모니터링(단일 worker) + 큐 오케스트레이션(DAG) 2모드. 트리거 — "..board <topic>" (deprecated alias "..dashboard")
 date: 2026-05-31
+# runner 가동·DAG 오케스트레이션·주기 갱신 (Issue322/M5)
+model: sonnet
 ---
 
 > ⚠️ **글로벌 SCAR 변경 가드 (Issue46)**: 본 agent 는 모든 프로젝트가 공유. cwd ≠ `~/.claude/` 면 즉시 수정 금지 → `~/.claude/Issue.md` 이슈 등록 후 처리. 설계 정본 SSOT: `~/_git/___pm/_doc_arch/hub_board_tmux_design.md`. 절차: `~/.claude/rules/global-scar-change-rules.md`
@@ -382,7 +384,7 @@ runner `cleanup()` 가 SIGTERM/INT 수신 시 `worker_pid` alive 면 SIGTERM →
 
 라이프사이클: `runner 시작 → while(true) commands 실행 → widgets 갱신 → sleep INTERVAL → 루프 → (stop/kill 만 정지)`
 
-## 7. 채팅 응답 (caveman)
+## 7. 채팅 응답 (요점 중심)
 
 * **브라우저 open 규칙 (Issue193)**: 브라우저·오픈 방식은 `~/_git/___pm/data/hub_setting.yml` 의 `default_browser`·`browser_open` 이 결정. 특정 브라우저명 하드코딩 금지. hook 미경유 실행(agent 직접 dispatch·inline 테스트)이라 주입된 open 명령이 없으면 위 yml 을 직접 읽어 `open -g -a <resolved>` 를 구성할 것
 
@@ -496,7 +498,7 @@ supervisor·queue-runner 는 글로벌 템플릿. env 변수로 인스턴스 파
 2. queue-runner log 확인: `$OUT_DIR/<topic>.queue-runner.log` (stderr redirect 있으면)
 3. (선택) dash hub 등록 확인 (Issue197): `~/_git/___pm/data/hub/dash-registry.json` 에 `DATA_FILE` 경로 존재 — 없으면 서버 down 이었던 것 (runner 재기동 시 재등록됨)
 
-### Q5. 채팅 응답 (caveman)
+### Q5. 채팅 응답 (요점 중심)
 
 순수 모니터링 `## 9` 와 동일 의무 + 큐 특화:
 

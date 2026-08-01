@@ -107,6 +107,16 @@ if [ "$ENTRY" != "claude-vscode" ]; then
   fi
 fi
 
+# Issue342(S3): 기동자 신호 — 세션을 띄운 주체가 심는 env FPM_SESSION_ORIGIN.
+#   ⚠️ CLAUDE_CODE_ENTRYPOINT(위 ENTRY)와 축이 다르다 — 저쪽은 "어느 에디터",
+#   이쪽은 "누가 띄웠나"(pm-do 위임·board runner·사람). 서버는 caps.launched_by 로 받는다.
+#   미설정이면 아예 안 보낸다. manual 로 단정하지 않는 이유는 배선 누락과 수동 기동이
+#   구분되지 않게 되기 때문이다(서버도 미상을 빈 문자열로 남긴다).
+case "${FPM_SESSION_ORIGIN:-}" in
+  pm-do|board|manual|ide) LAUNCHED_BY="$FPM_SESSION_ORIGIN" ;;
+  *)                      LAUNCHED_BY="" ;;
+esac
+
 # Issue221(보너스): resume 세션 model 선탐색 — SessionStart(source=resume/compact) 시점엔
 #   transcript 에 이미 assistant .message.model 존재 → dot 을 첫 응답 前 즉시 표시.
 #   신규(source=startup) 세션은 transcript 비어 MODEL='' → 무해(기존 동작 유지, Stop 훅이 채움).
@@ -135,7 +145,7 @@ fi
 
 BODY=$(python3 -c "
 import json, sys
-sid, src, win, pid, entry, model, editor = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6], sys.argv[7]
+sid, src, win, pid, entry, model, editor, launched_by = sys.argv[1:9]
 caps = {'tmux_window': win, 'source': src, 'kind': 'live'}
 if entry:
     caps['entrypoint'] = entry   # Issue177: 출처 배지용 (claude-vscode|cli|...)
@@ -143,13 +153,15 @@ if model:
     caps['model'] = model        # Issue221: resume 세션 모델 신호등 즉시 표시
 if editor:
     caps['editor'] = editor      # Issue289: 서버 _origin_from_caps 가 origin=zed 로 소비
+if launched_by:
+    caps['launched_by'] = launched_by   # Issue342 S3: 기동자(pm-do|board|manual|ide)
 body = {'sid': sid, 'content_type': 'live', 'capabilities': caps}
 try:
     body['pid'] = int(pid)   # Issue122: 서버 계약 pid(int) 필수
 except (ValueError, TypeError):
     pass
 print(json.dumps(body))
-" "$SID" "$SRC" "$TMUX_WIN" "$PID" "$ENTRY" "$MODEL" "$EDITOR_SIG")
+" "$SID" "$SRC" "$TMUX_WIN" "$PID" "$ENTRY" "$MODEL" "$EDITOR_SIG" "$LAUNCHED_BY")
 
 curl -s --max-time 2 \
   -X POST "$REG_URL" \

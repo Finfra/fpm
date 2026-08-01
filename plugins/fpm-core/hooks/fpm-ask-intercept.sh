@@ -459,7 +459,7 @@ reason = (
     "   - JavaScript (SSOT: `hooks/fpm-ask-form-template.js`, Issue68 — `{ANSWER_URL}` 치환 완료본. 아래 블록을 그대로 `<script>` 에 삽입):\n"
     "```js\n" + form_js + "```\n\n"
     + open_step_2 +
-    "**3. 채팅 안내** (Issue40/Issue60 fallback 의무 — caveman 압축이되 다음 모두 포함):\n"
+    "**3. 채팅 안내** (Issue40/Issue60 fallback 의무 — 요점 중심이되 다음 모두 포함):\n"
     "   1. 한 줄 헤드라인: '질문 폼 열림. \"전송\" 클릭 → 자동 회수 대기.'\n"
     "   2. 질문 텍스트 (압축 금지)\n"
     "   3. 옵션 라벨 + 1줄 desc (≤4개: 전부 bullet, 5개+: 라벨만 압축)\n"

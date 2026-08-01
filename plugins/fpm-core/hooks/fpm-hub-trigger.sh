@@ -36,18 +36,45 @@ SYSTEM_OFF_FLAG="$HOME/.claude/.hub-system-off"
 #   1회 호출로 세 값을 **쉘 인용된 대입문**으로 받아 eval 한다(shlex.quote → 작은따옴표
 #   포장이라 프롬프트에 개행·따옴표·`$`·백틱이 있어도 안전). NUL 구분자 방식은 불가 —
 #   bash command substitution 이 NUL 을 버린다(실측).
-eval "$(printf '%s' "$input" | python3 -c "
-import sys, json, shlex
-try:
-    d = json.load(sys.stdin)
-except Exception:
-    d = {}
-if not isinstance(d, dict):
-    d = {}
-for k in ('cwd', 'prompt', 'session_id'):
-    print(('_hookjson_' + k) + '=' + shlex.quote(str(d.get(k, ''))))" 2>/dev/null)"
+# F2-1: 파싱 단일 지점(jq 기반, hooks/hook-input.sh). 디스패처가 미리 파싱했으면 비용 0.
+# shellcheck source=/dev/null
+. "$HOME/.claude/hooks/hook-input.sh"
+hook_input_parse "$input"
+_hookjson_cwd="$HOOK_CWD"
+_hookjson_prompt="$HOOK_PROMPT"
+_hookjson_session_id="$HOOK_SESSION_ID"
 cwd="${_hookjson_cwd-}"
 prompt="${_hookjson_prompt-}"
+
+# ── 프롬프트 트리거 선행 게이트 (F2-7, 2026.07.31) ──────────────────────
+# 이 hook 은 `..show`·`..hub on`·`..text` 같은 트리거를 찾느라 프롬프트를 **13~15회**
+# grep 한다. 매번 `printf | grep` 2프로세스라 no-op 경로에서만 ~40ms 를 지출했다.
+# 그런데 그 패턴들이 찾는 선행 토큰은 셋뿐이다: `..` · `/` · `sleep`.
+# 셋 중 아무것도 없으면 **어떤 패턴도 매칭될 수 없으므로** grep 을 통째로 건너뛴다.
+#
+# ⚠️ 게이트 문자를 좁히지 말 것 —
+#   · `/` 필수: 739행이 `^/<커맨드>` (임의 슬래시 커맨드)를 본다
+#   · `sleep` 필수: 64행 패턴의 `(\.\.|/)?sleep[[:space:]]+off` 는 **접두 없이도** 매칭된다
+#   새 트리거를 추가하면서 선행 문자가 늘면 여기도 같이 늘려야 한다. 안 그러면 그 트리거는
+#   조용히 죽는다(게이트에서 걸러져 grep 까지 도달하지 못함).
+case "$prompt" in
+  *".."*|*"/"*|*[Ss][Ll][Ee][Ee][Pp]*) _HUB_TRIG_MAYBE=1 ;;
+  *)                                   _HUB_TRIG_MAYBE=0 ;;
+esac
+
+# _hub_pmatch [-i] <정규식> — 프롬프트 매칭. 게이트 미통과 시 프로세스 0으로 즉시 실패.
+_hub_pmatch() {
+  local _ci=0
+  if [ "${1:-}" = "-i" ]; then _ci=1; shift; fi
+  [ "$_HUB_TRIG_MAYBE" = 1 ] || return 1
+  # ⚠️ 아래 두 줄은 **실제 grep 이어야 한다**. 일괄 치환 시 이 안까지 바뀌면 자기 자신을
+  #   호출해 무한 재귀에 빠진다(F2-7 1차 시도에서 실제로 발생 — 발동 경로가 25s 타임아웃).
+  if [ "$_ci" = 1 ]; then
+    printf '%s' "$prompt" | grep -qiE "$1"
+  else
+    printf '%s' "$prompt" | grep -qE "$1"
+  fi
+}
 
 # 수면 모드 가드 (Issue278 / Issue281) — 활성 + 명시 hub 트리거 부재 시 자동 렌더 억제.
 #   sleep-mode-trigger.sh 가 규칙을 주입하고, 여기서는 자동 hub 렌더 지시를 방출하지 않게 한다
@@ -64,7 +91,7 @@ elif [ -f "$HOME/.claude/.sleep-mode-active" ]; then
   SLEEP_SUPPRESS_HUB=1
 fi
 if [ "$SLEEP_SUPPRESS_HUB" = "1" ]; then
-  if ! printf '%s' "$prompt" | grep -qiE '(^|[[:space:]])(\.\.show|/show|\.\.ask|/ask|\.\.board|\.\.dashboard|/dashboard|\.\.hub|/hub|(\.\.|/)?sleep[[:space:]]+off)([[:space:]]|$)'; then
+  if ! _hub_pmatch -i '(^|[[:space:]])(\.\.show|/show|\.\.ask|/ask|\.\.board|\.\.dashboard|/dashboard|\.\.hub|/hub|(\.\.|/)?sleep[[:space:]]+off)([[:space:]]|$)'; then
     cat <<'JSON'
 {
   "hookSpecificOutput": {
@@ -80,7 +107,7 @@ fi
 # `..hub list` · `/hub list` — 등록 프로젝트 hub on/off 상태 일괄 조회(조회 전용, 토글 아님).
 #   hub 웹 UI Project List 팝업을 열지 않고 채팅에서 바로 확인하기 위함.
 #   server.py _load_projects_list()/_htm_state() 판정 로직을 python으로 복제.
-if printf '%s' "$prompt" | grep -qiE '(^|[[:space:]])(\.\.hub|/hub)[[:space:]]+list([[:space:]]|$)'; then
+if _hub_pmatch -i '(^|[[:space:]])(\.\.hub|/hub)[[:space:]]+list([[:space:]]|$)'; then
   python3 <<'PYEOF'
 import hashlib, json, os
 
@@ -354,37 +381,14 @@ if [ -f "$OLD_STATE_FILE" ] && [ ! -f "$STATE_FILE" ]; then
   mv "$OLD_STATE_FILE" "$STATE_FILE" 2>/dev/null
 fi
 
-# 프로젝트 판정: cwd 가 ~/_git/___pm/projects/* 번호 파일이 가리키는 경로에 at-or-under 인가
-# prj3#Issue-unreg: prj0(=~, home)은 정확 일치만 매칭. home 하위 descendant 는 제외.
-#   과거엔 home 이 at-or-under 로 매칭돼 ~/.vscode 등 home 아래 모든 폴더가 IS_PROJECT=1 →
-#   미등록 폴더에서도 hub 자동 발동. home 은 네비 단축이지 "하위 전부 hub" 선언이 아님.
-IS_PROJECT=$(CWD_VAL="$cwd" python3 -c "
-import os
-cwd = os.environ.get('CWD_VAL', '')
-pdir = os.path.join(os.path.expanduser('~'), '_git', '___pm', 'projects')
-home = os.path.realpath(os.path.expanduser('~'))
-hit = False
-if cwd:
-    cwd = os.path.realpath(cwd)
-    try:
-        for fn in os.listdir(pdir):
-            if not fn.isdigit():
-                continue
-            try:
-                with open(os.path.join(pdir, fn)) as f:
-                    p = f.read().strip()
-            except Exception:
-                continue
-            if not p:
-                continue
-            p = os.path.realpath(os.path.expanduser(p))
-            # home(prj0) 은 exact-only. 그 외 프로젝트는 at-or-under.
-            if cwd == p or (p != home and cwd.startswith(p + os.sep)):
-                hit = True
-                break
-    except Exception:
-        pass
-print('1' if hit else '0')")
+# 프로젝트 판정 — 판정 단일 지점 hub-scope.sh 에 위임 (규칙5, Issue322/F4-7⑤)
+#   ⚠️ 종전엔 hub_is_project() 와 **문자 그대로 동일한 python3 33줄**을 여기에 복제하고 있었다.
+#   같은 판정이 두 곳에 있으면 반드시 갈라지므로 source 로 접었다. hub-state.js(JS 3중 구현)는
+#   같은 커밋에서 제거 — 판정 구현은 이제 hub-scope.sh 하나다.
+#   해시는 위에서 이미 계산했으므로 캐시 쌍으로 넘겨 프로세스 순증을 0 으로 유지한다.
+. "$HOME/.claude/hooks/hub-scope.sh"
+export HUB_CWD_HASH="$CWD_HASH" HUB_CWD_HASH_FOR="$cwd"
+IS_PROJECT=$(hub_is_project "$cwd")
 
 # Issue163: `..text`/`..txt`/`/text`/`/txt` — 단발(이번 turn 한정) render-off 트리거.
 #   state/flag 파일 무변경 (영속 토글 `..hub stop`/`off` 와 구분). 본 turn 자동 hub 렌더만 suppress.
@@ -394,7 +398,7 @@ print('1' if hit else '0')")
 #   사유: `..show`/`..ask` 렌더가 브라우저에 안 떠서 사용자가 `..text` 로 확인할 때, 기존 문구는
 #   "작업 정상 수행" → Claude 가 직전 작업을 재실행 → 멱등성 없는 세션에서 이중 실행 부작용.
 #   토큰 제거 후 잔여 텍스트 유무로 bare vs `..text <요청>` 분기.
-if printf '%s' "$prompt" | grep -qiE '(^|[[:space:]])(\.\.te?xt|/te?xt)([[:space:]]|$)'; then
+if _hub_pmatch -i '(^|[[:space:]])(\.\.te?xt|/te?xt)([[:space:]]|$)'; then
   rm -f "$FLAG_FILE"  # 자동 모드가 켰을 수 있는 이번 turn 렌더 플래그 해제 (state 파일 불변)
   # 마커 토큰 제거 후 잔여(공백 제외) 유무 판정
   _text_rest=$(printf '%s' "$prompt" | sed -E 's#(\.\.te?xt|/te?xt)# #g' | tr -d '[:space:]')
@@ -435,13 +439,13 @@ fi
 #   매처 순서 주의: bare `on`/`off` 정규식이 `on all` 도 매칭하므로 `all` 변형을 먼저 평가.
 HTM_ONOFF=""   # on | off
 HTM_SCOPE=""   # system | project
-if printf '%s' "$prompt" | grep -qiE '(^|[[:space:]])(\.\.hub|/hub)[[:space:]]+on[[:space:]]+all([[:space:]]|$)'; then
+if _hub_pmatch -i '(^|[[:space:]])(\.\.hub|/hub)[[:space:]]+on[[:space:]]+all([[:space:]]|$)'; then
   HTM_ONOFF="on"; HTM_SCOPE="system"
-elif printf '%s' "$prompt" | grep -qiE '(^|[[:space:]])(\.\.hub|/hub)[[:space:]]+off[[:space:]]+all([[:space:]]|$)'; then
+elif _hub_pmatch -i '(^|[[:space:]])(\.\.hub|/hub)[[:space:]]+off[[:space:]]+all([[:space:]]|$)'; then
   HTM_ONOFF="off"; HTM_SCOPE="system"
-elif printf '%s' "$prompt" | grep -qiE '(^|[[:space:]])(\.\.hub|/hub)[[:space:]]+on([[:space:]]|$)'; then
+elif _hub_pmatch -i '(^|[[:space:]])(\.\.hub|/hub)[[:space:]]+on([[:space:]]|$)'; then
   HTM_ONOFF="on"; HTM_SCOPE="project"
-elif printf '%s' "$prompt" | grep -qiE '(^|[[:space:]])(\.\.hub|/hub)[[:space:]]+off([[:space:]]|$)'; then
+elif _hub_pmatch -i '(^|[[:space:]])(\.\.hub|/hub)[[:space:]]+off([[:space:]]|$)'; then
   HTM_ONOFF="off"; HTM_SCOPE="project"
 fi
 
@@ -523,9 +527,9 @@ fi
 # `..hub start|stop` — 프로젝트 on/off 의 deprecated alias (하위호환, `..hub` 전용).
 #   `/hub start|stop` 은 여기서 매칭하지 않음 → slash 커맨드(서버 lifecycle)로 통과.
 HTM_PROJ=""
-if printf '%s' "$prompt" | grep -qiE '(^|[[:space:]])\.\.hub[[:space:]]+start([[:space:]]|$)'; then
+if _hub_pmatch -i '(^|[[:space:]])\.\.hub[[:space:]]+start([[:space:]]|$)'; then
   HTM_PROJ="on"
-elif printf '%s' "$prompt" | grep -qiE '(^|[[:space:]])\.\.hub[[:space:]]+stop([[:space:]]|$)'; then
+elif _hub_pmatch -i '(^|[[:space:]])\.\.hub[[:space:]]+stop([[:space:]]|$)'; then
   HTM_PROJ="off"
 fi
 if [ -n "$HTM_PROJ" ]; then
@@ -578,7 +582,7 @@ fi
 # Issue41 (2026-05-19): `..dashboard` alias 추가 — 자연어 매칭 강화
 # Issue126 (2026-06-03): `..board <topic>` 신설 — c모드 단일 단어 트리거. `..hub dash`/`..dashboard` 는
 #   하위호환 별칭으로 유지 (deprecation 예정, 즉시 제거 금지 — 기존 muscle memory 보호).
-if printf '%s' "$prompt" | grep -qE '(^|[[:space:]])(\.\.hub[[:space:]]+dash|\.\.dashboard|\.\.board)([[:space:]]|$)'; then
+if _hub_pmatch '(^|[[:space:]])(\.\.hub[[:space:]]+dash|\.\.dashboard|\.\.board)([[:space:]]|$)'; then
   touch "$FLAG_FILE"
   SERVER_PORT="${HTM_SERVER_PORT:-9876}"
   health=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 "http://127.0.0.1:${SERVER_PORT}/healthz" 2>/dev/null)
@@ -689,7 +693,7 @@ fi
 #   `..ask` 로 "나에게 물어봐" 모드를 직접 호출. 플래그 touch → 후속 AskUserQuestion 을
 #   fpm-ask-intercept.sh 가 동일 form 자동 회수 경로로 처리 (인프라 재사용).
 # 매칭: `..ask` 가 render 분기보다 먼저 평가되도록 bare `..show`/`..hub` 분기 위에 배치.
-if printf '%s' "$prompt" | grep -qiE '(^|[[:space:]])\.\.ask([[:space:]]|$)'; then
+if _hub_pmatch -i '(^|[[:space:]])\.\.ask([[:space:]]|$)'; then
   # Issue283: `..ask` 는 1회성 진입 — state file 불변 (Issue178 이 `..show` 에 확립한 원칙 동일 적용).
   #   구 코드는 `printf 'on' > "$STATE_FILE"` 로 그 폴더 hub 를 영구 on 전환시켰음.
   touch "$FLAG_FILE"
@@ -739,8 +743,8 @@ fi
 # B. Slash command + ..show(또는 구 ..hub) 끝 위치 → 경고 후 exit (사용자 위치 교정)
 # 사유: `/dev 885 ..show` 형식은 slash command가 prompt 흡수 → hub additionalContext 무시됨
 # Issue33: regex 강화 — `/단어<space|EOL>` 만 매칭. `/tmp/test2` 같은 file path 는 두 번째 `/` 로 인해 미매칭
-if printf '%s' "$prompt" | grep -qE '^/[a-zA-Z][a-zA-Z0-9_-]*([[:space:]]|$)' && \
-   printf '%s' "$prompt" | grep -qE '(\.\.show|\.\.hub)[[:space:]]*$'; then
+if _hub_pmatch '^/[a-zA-Z][a-zA-Z0-9_-]*([[:space:]]|$)' && \
+   _hub_pmatch '(\.\.show|\.\.hub)[[:space:]]*$'; then
   cat <<'JSON'
 {
   "hookSpecificOutput": {
@@ -757,8 +761,57 @@ fi
 # 본문 HTML 은 file:// 직접 open. Q&A 만 intercept hook 이 ___pm htm-server inbox 로 자동 회수.
 # Issue130: browser_focus + default_browser 토글 (Issue128 확장)
 HUB_SETTING_FILE="$HOME/_git/___pm/data/hub_setting.yml"
+
+# ── hub_setting.yml 조회 단일 지점 (F2-3 후속, 2026.07.31) ──────────────
+# 종전에는 **키마다** `grep | head | sed` 3프로세스를 띄웠고 이 hook 이 8키를 읽어
+# no-op 경로에서만 20+ 프로세스를 지출했다(실측 138ms — 규칙3 50ms 의 2.7배,
+# UserPromptSubmit 예산 193/200ms 의 주범). sleep-state.sh 가 Issue305_3 에서
+# 같은 패턴을 고친 방식을 그대로 적용한다: **awk 1회로 전체를 평탄화**해 캐시하고
+# 조회는 쉘 내장만 쓴다.
+#   ⚠️ 파싱 의미는 종전 sed 체인과 동일하게 맞춘다 — 값 뒤 `#` 주석 절단, 앞뒤 공백 제거,
+#      감싼 큰따옴표 제거, 같은 키가 여럿이면 첫 줄 우선(head -1 과 동일).
+_HUB_CFG_DUMP=""
+_HUB_CFG_LOADED=0
+_hub_cfg_load() {
+  [ "$_HUB_CFG_LOADED" = 1 ] && return 0
+  _HUB_CFG_LOADED=1
+  [ -f "$HUB_SETTING_FILE" ] || return 0
+  _HUB_CFG_DUMP=$(awk '
+    /^[[:space:]]*#/ { next }
+    match($0, /^[[:space:]]*[A-Za-z0-9_.-]+[[:space:]]*:/) {
+      key = substr($0, 1, RLENGTH); sub(/[[:space:]]*:$/, "", key); gsub(/^[[:space:]]+/, "", key)
+      val = substr($0, RLENGTH + 1)
+      sub(/[[:space:]]*#.*$/, "", val); gsub(/^[[:space:]]+|[[:space:]]+$/, "", val)
+      sub(/^"/, "", val); sub(/"$/, "", val)
+      if (!(key in seen)) { seen[key] = 1; printf "%s\t%s\n", key, val }
+    }
+  ' "$HUB_SETTING_FILE" 2>/dev/null)
+  return 0
+}
+
+# hub_cfg <키> [기본값] — 값을 stdout 으로.
+# ⚠️ 호출은 대개 `$(hub_cfg x)` = **커맨드 치환 = 서브셸**이라, 캐시를 서브셸 안에서 채우면
+#   부모로 전파되지 않아 매 호출 awk 가 다시 뜬다(실측: 치환 전후 시간 동일, awk 8회).
+#   그래서 아래 정의 직후 **부모 셸에서 _hub_cfg_load 를 1회 직접 호출**해 둔다.
+hub_cfg() {
+  local key="$1" default="${2:-}" line
+  _hub_cfg_load
+  if [ -n "$_HUB_CFG_DUMP" ]; then
+    while IFS= read -r line; do
+      if [ "${line%%	*}" = "$key" ]; then
+        local v="${line#*	}"
+        [ -n "$v" ] && { printf '%s\n' "$v"; return 0; }
+        break
+      fi
+    done <<< "$_HUB_CFG_DUMP"
+  fi
+  printf '%s\n' "$default"
+}
+
+# 부모 셸에서 1회 선로드 — 이후 서브셸 호출은 상속된 _HUB_CFG_DUMP 를 그대로 쓴다(awk 0회)
+_hub_cfg_load
 # default_browser: firefox(기본)/chrome/edge/safari, 미지원 값은 .app 절대 경로로 해석
-_db=$(grep -E '^[[:space:]]*default_browser:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//; s/^"//; s/"$//')
+_db=$(hub_cfg default_browser)
 case "$_db" in
   ""|firefox|Firefox) _app="Firefox" ;;
   chrome|Chrome)      _app="Google Chrome" ;;
@@ -770,14 +823,14 @@ esac
 #   browser_focus(open 포커스 여부) + render_target:hub(open-skip) 두 신호를 단일 키로 통합.
 #   SSOT 설계: ~/_git/___pm/_doc_arch/hub_setting.md "browser_open (Issue170)".
 #   off=자동 open 생략(채팅 URL 만) / background=open -g(포커스 미탈취) / foreground=open(포커스 탈취).
-_bopen=$(grep -E '^[[:space:]]*browser_open:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//; s/^"//; s/"$//')
+_bopen=$(hub_cfg browser_open)
 # fallback(키 미설정/빈값): render_target:vscode→off, browser_focus(true→foreground/false→background) 역산 — 하위호환.
 #   Issue263: 표면 축 분리 — open-skip 을 함의하는 값은 이제 `vscode`(VSCode 패널). `hub` 는 외부 브라우저 open 이므로 여기서 제외.
 if [ -z "$_bopen" ]; then
-  _rt_raw=$(grep -E '^[[:space:]]*render_target:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//; s/^"//; s/"$//')
+  _rt_raw=$(hub_cfg render_target)
   if [ "$_rt_raw" = "vscode" ]; then
     _bopen="off"
-  elif grep -qE '^[[:space:]]*browser_focus:[[:space:]]*true' "$HUB_SETTING_FILE" 2>/dev/null; then
+  elif [ "$(hub_cfg browser_focus)" = "true" ]; then
     _bopen="foreground"
   else
     _bopen="background"
@@ -797,20 +850,17 @@ esac
 #   렌더(HTM_OPEN_CMD)는 위 browser_open case 의 plain open/open -g 유지 → 렌더마다 새 탭(하나씩 닫으며 검토 가능).
 #   (구 Issue162 폐기: reuse helper 가 :9876 origin 매칭으로 /hub + 모든 htm-doc 렌더를 한 탭에 collapse 했음.
 #    helper(fpm-browser-open.sh)는 렌더 미사용 — fhub 등 /hub 직접 open 경로용으로만 잔존.)
-_reuse=$(grep -E '^[[:space:]]*browser_tab_reuse:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//')
+_reuse=$(hub_cfg browser_tab_reuse)
 if [ "$_reuse" = "true" ]; then HUB_LINK_TARGET="fpm-hub"; else HUB_LINK_TARGET="_blank"; fi
 
 # prj3#Issue184: hub state(on/off) 를 render 분기 앞에서 미리 계산 (아래 render_target resolver 가 참조).
 #   판정 우선순위: SYSTEM_OFF_FLAG > STATE_FILE > IS_PROJECT (자동 렌더 브랜치와 동일 로직).
 #   과거엔 자동 브랜치 직전(옛 line 783)에서만 계산 → `..show` 브랜치는 state 를 몰라 render 위치를 못 바꿨음.
-EFFECTIVE="off"
-if [ -f "$SYSTEM_OFF_FLAG" ]; then
-  EFFECTIVE="off"
-elif [ -f "$STATE_FILE" ]; then
-  EFFECTIVE=$(tr -d '[:space:]' < "$STATE_FILE" 2>/dev/null)
-elif [ "$IS_PROJECT" = "1" ]; then
-  EFFECTIVE="on"
-fi
+# 판정 단일 지점 위임 (규칙5, Issue322/F4-7⑤) — 우선순위 SYSTEM_OFF > state 파일 > IS_PROJECT
+#   는 hub_effective() 안에 있다. 여기서 다시 쓰지 않는다.
+#   ⚠️ state 파일 값은 `on`/`off` 뿐이므로(위 토글 분기가 HTM_ONOFF 만 기록) 종전의 raw 읽기와
+#   hub_effective() 의 on 정규화는 **결과 동등**하다 — 전 프로젝트 state 파일 6건 실측으로 확인.
+EFFECTIVE=$(hub_effective "$cwd")
 
 # Issue141: render_target — ..show/자동 hub 렌더의 출력 경로 분기 (file:// open vs hub 서버 URL).
 #   데이터 SSOT: ___pm data/hub_setting.yml (prj1#Issue153 신설). 키 부재 시 local-open 무해 fallback.
@@ -820,7 +870,7 @@ fi
 #   `hub` 는 원뜻(URL 형식 = 서버 http)으로 복원 → 표시 표면은 default_browser/browser_open 이 다시 결정.
 #   ⚠️ URL 라우트는 /htm-doc?path= (Issue50, register-doc 등록 htm 토큰없이 serve) — /view 는 cwd+token 전용이라 부적합.
 #   render 문서는 Write 시 fpm-hub-doc-register PostToolUse hook 이 자동 register-doc → URL 즉시 유효.
-RENDER_TARGET=$(grep -E '^[[:space:]]*render_target:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//; s/^"//; s/"$//')
+RENDER_TARGET=$(hub_cfg render_target)
 [ -z "$RENDER_TARGET" ] && RENDER_TARGET="local-open"
 # prj3#Issue249: yml 원본 값 보존 — 아래 파생 override(browser_open:off / hub-internal)가 RENDER_TARGET 을
 #   "hub" 로 덮어쓰기 전 시점. Issue184 강제 예외는 "사용자가 yml 에 직접 hub 로 적었는가" 만 봐야 하며,
@@ -847,12 +897,12 @@ HUB_OPEN_SKIP=0
 # Issue162: render_tab_mode=hub-internal → hub 쉘(/hub-shell) 내부 iframe 탭이 표시 담당 →
 #   OS 브라우저 open 시 hub 내부 탭 + OS 새 탭 중복 생성. render_target 강제 hub 로 open 생략(URL 만 emit).
 #   browser-tab(기본) 시 현행 동작 유지(회귀 0). SSOT: ~/_git/___pm/_doc_arch/hub_internal_tabs.md "영향 컴포넌트".
-RENDER_TAB_MODE=$(grep -E '^[[:space:]]*render_tab_mode:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//; s/^"//; s/"$//')
+RENDER_TAB_MODE=$(hub_cfg render_tab_mode)
 [ "$RENDER_TAB_MODE" = "hub-internal" ] && { RENDER_TARGET="hub"; HUB_OPEN_SKIP=1; }   # Issue263: skip 을 명시 플래그로
 # URL host = advertise_host ?? bind_host (주석처리 advertise_host 는 `^advertise_host:` 미매칭 → 생략 취급).
 #   advertise 생략 + bind 0.0.0.0/미설정 → 접속 가능 host 강제(127.0.0.1) — `http://0.0.0.0` 좀비 URL 차단 (prj1#Issue153 가드).
-_adv=$(grep -E '^[[:space:]]*advertise_host:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//; s/^"//; s/"$//')
-_bind=$(grep -E '^[[:space:]]*bind_host:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//; s/^"//; s/"$//')
+_adv=$(hub_cfg advertise_host)
+_bind=$(hub_cfg bind_host)
 if [ -n "$_adv" ]; then
   RENDER_HOST="$_adv"
 elif [ -n "$_bind" ] && [ "$_bind" != "0.0.0.0" ]; then
@@ -915,7 +965,7 @@ fi
 
 # prj3#Issue-unreg: 미등록 폴더(IS_PROJECT=0) 렌더 정책 — hub(/tmp 렌더+표시) | text(평문, 기본).
 #   data SSOT: ___pm data/hub_setting.yml (고급 탭). 키 부재 시 안전 기본값 text.
-UNREG_RENDER=$(grep -E '^[[:space:]]*unregistered_render:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//; s/^"//; s/"$//')
+UNREG_RENDER=$(hub_cfg unregistered_render)
 [ -z "$UNREG_RENDER" ] && UNREG_RENDER="text"
 
 # Issue133: a모드 render 트리거 `..hub` → `..show` rename. `..show`/`/show` = primary,
@@ -923,9 +973,9 @@ UNREG_RENDER=$(grep -E '^[[:space:]]*unregistered_render:' "$HUB_SETTING_FILE" 2
 #   위 분기에서 이미 처리·exit 됨 — 여기 도달한 `..hub` 는 render-intent 뿐 (보존 아님).
 # 서버 down 시 intercept hook fail-loud 안내.
 HUB_RENDER_TRIGGER=""
-if printf '%s' "$prompt" | grep -qE '(^|[[:space:]])(\.\.show|/show)([[:space:]]|$)'; then
+if _hub_pmatch '(^|[[:space:]])(\.\.show|/show)([[:space:]]|$)'; then
   HUB_RENDER_TRIGGER="show"
-elif printf '%s' "$prompt" | grep -qE '(^|[[:space:]])\.\.hub([[:space:]]|$)'; then
+elif _hub_pmatch '(^|[[:space:]])\.\.hub([[:space:]]|$)'; then
   HUB_RENDER_TRIGGER="hub-deprecated"
 fi
 
@@ -1102,19 +1152,19 @@ if render_target == 'vscode':
     browser_line = "- 표시: 외부 브라우저 강제 open 안 함 — VSCode Simple Browser 패널에 표시 (render_target: vscode, Issue263)\n"
     body_line = "- 본문 HTML: hub 서버 register-doc 자동 등록 + POST /open-simple-browser 로 VSCode 패널 렌더 (file:// open 생략, ⚠️ `open` 실행 금지)\n"
     turn_phrase = "HTML 렌더 (본문 또는 폼) + Simple Browser POST + hub URL emit + 채팅 요약"
-    example_line = "   - 예: `HTML 저장. <경로>. Simple Browser POST 완료(VSCode 패널 표시). fallback URL http://host.local:9876/htm-doc?path=<경로>` + 핵심 요약\n"
+    example_line = "   - 예: `HTML 저장. <경로>. Simple Browser POST 완료(VSCode 패널 표시). fallback URL http://host-1.local:9876/htm-doc?path=<경로>` + 핵심 요약\n"
     surface_phrase = "VSCode Simple Browser 패널"
 elif render_target == 'hub' and hub_open_skip:
     browser_line = "- 표시: 자동 open 생략 — hub URL 만 채팅에 emit (browser_open:off / hub-internal)\n"
     body_line = "- 본문 HTML: hub 서버 register-doc 자동 등록 + `/htm-doc?path=` URL emit (⚠️ `open` 실행 금지)\n"
     turn_phrase = "HTML 렌더 (본문 또는 폼) + hub URL emit + 채팅 요약"
-    example_line = "   - 예: `HTML 저장. <경로>. hub URL http://host.local:9876/htm-doc?path=<경로>` + 핵심 요약\n"
+    example_line = "   - 예: `HTML 저장. <경로>. hub URL http://host-1.local:9876/htm-doc?path=<경로>` + 핵심 요약\n"
     surface_phrase = "hub URL emit"
 elif render_target == 'hub':
     browser_line = "- 표시: hub 서버 http URL 을 외부 브라우저로 open (file:// 아님 — render_target: hub, Issue263)\n"
     body_line = "- 본문 HTML: hub 서버 register-doc 자동 등록 후 `/htm-doc?path=` URL 을 브라우저로 open (file:// 미사용)\n"
     turn_phrase = "HTML 렌더 (본문 또는 폼) + hub URL 브라우저 open + 채팅 요약"
-    example_line = "   - 예: `HTML 저장. <경로>. hub URL http://host.local:9876/htm-doc?path=<경로> 브라우저 열림.` + 핵심 요약\n"
+    example_line = "   - 예: `HTML 저장. <경로>. hub URL http://host-1.local:9876/htm-doc?path=<경로> 브라우저 열림.` + 핵심 요약\n"
     surface_phrase = "hub URL 브라우저 open"
 else:
     browser_line = "- 브라우저: Firefox 강제 open (Chrome=일반 / Firefox=hub·dashboard 전용 분리 운영)\n"
@@ -1150,12 +1200,12 @@ context = (
     "    - **본문 작성 조건 (기본)**: 응답이 정보 전달(설명·코드·표·비교·자료) 포함. 폼은 그 뒤 결정 요청 분리용. step 2~8 진행\n"
     "2. 응답 본문을 **완전한 HTML 문서**로 작성 — `<!DOCTYPE html>`, `<html lang=\"ko\">`, `<head>`(meta charset/viewport, 서버 아이콘 favicon `<link rel=\"icon\" href=\"/fpm-icon.png\">` (배지 서버=이모지 SVG, 미등록=fPm PNG — prj1#Issue253, 경로 변경 금지), `<title>` prefix `\"" + project_name + " — <원래 제목>\"`), `<style>` (시스템 폰트, max-width 820px, line-height 1.7, 다크모드 `@media (prefers-color-scheme: dark)`), `<body>` 전체 포함\n"
     + canonical_header +
-    "4. **HTML 본문은 caveman 압축 적용 제외** — 자연스러운 한국어 산문·완전한 문장·풍부한 설명. caveman 은 사용자에게 보내는 채팅 응답에만 적용\n"
+    "4. **HTML 본문은 완전한 한국어 산문** — 완전한 문장·풍부한 설명. 채팅 응답의 요점 중심 압축을 본문에 적용하지 말 것\n"
     "4-1. **생성·수정 파일 = 클릭 링크 (Issue201)**: 본문에서 이 응답이 생성·수정·언급하는 산출물 파일 경로는 평문 나열 금지 — 반드시 클릭 가능한 앵커 `<a href=\"vscode://file<파일 절대경로>\">파일명</a>` 로 렌더. 절대경로는 `/` 로 시작하며 `vscode://file` 바로 뒤에 그대로 붙임(슬래시 1개, 예: `<a href=\"vscode://file$HOME/.claude/Issue.md\">Issue.md</a>`). VSCode Simple Browser 에서 클릭 시 해당 파일이 에디터로 열림 (서버 불필요). 렌더된 `.htm` 산출물 자체 경로는 헤더 배지/복사 버튼이 담당하므로 본문에 중복 링크 불요.\n"
     "5. 표·리스트·코드블록·`<h1>`~`<h4>`·`<blockquote>` 자유 사용. 코드블록은 배경+padding, 인용구는 좌측 보더\n"
     "6. **저장**: `Write` 도구로 `" + out_dir + "/hub_htm_<YYYYMMDD_HHMMSS>_a_<주제>.htm` 저장 (날짜시간=`date +%Y%m%d_%H%M%S` 출력, 주제=핵심 10자 내외 kebab-case, mode `a`=메인 렌더)\n"
     + render_step +
-    "8. 채팅 응답(caveman 유지)에는 한 줄 헤드라인 + 핵심 bullet 2~3개 + 저장 경로 표기\n"
+    "8. 채팅 응답은 한 줄 헤드라인 + 핵심 bullet 2~3개 + 저장 경로 표기\n"
     + example_line +
     "   - **Issue60 의무**: 브라우저 표시 안 됐을 가능성(Firefox 종료·hidden·미설치·원격 SSH·다른 데스크톱) 항상 가정. **채팅 fallback 텍스트가 1차 채널**, Firefox 는 보조. 채팅만 읽어도 내용 파악·경로 재오픈 가능해야 함. 본문 핵심 요약은 3줄 이내, 표·코드 dump 금지\n\n"
     "### 후속 질문 (form 자동 회수, Issue45)\n"
@@ -1322,7 +1372,7 @@ context = (
     "- 요청된 작업·슬래시 커맨드(`/dev`, `/issue-*` 등)·dev 사이클·커밋 **모두 정상 진행**. HTML 렌더는 결과의 *표현*이며 작업 대체 아님.\n"
     "- 명시적 `..show`(render-only, 워크플로우 차단)과 다름 — 자동 모드는 차단 없음.\n\n"
     "### 응답 본문 처리\n"
-    f"0. **trivial 응답이면 hub 전체 skip (Issue85)** — HTML 작성·{open_skip_phrase} 평문 caveman 채팅으로 답하고 종료. "
+    f"0. **trivial 응답이면 hub 전체 skip (Issue85)** — HTML 작성·{open_skip_phrase} 평문 채팅으로 답하고 종료. "
     "trivial = 짧은 사실 답변·단순 확인(yes/no)·명령어/경로 안내 등 HTML 렌더 가치(표·코드블록·다이어그램·다단계 설명) 없는 응답. "
     "판단 모호하면 렌더 (기본 on 정책 유지)\n"
     "1. trivial 단발 질의(yes/no, A/B 선택, 정답 spoiler 위험)면 본문 HTML skip → 바로 `AskUserQuestion` 호출 (intercept 가 폼 처리)\n"
@@ -1330,12 +1380,12 @@ context = (
     "`<head>`(meta charset/viewport, 서버 아이콘 favicon `<link rel=\"icon\" href=\"/fpm-icon.png\">` (배지 서버=이모지 SVG, 미등록=fPm PNG — prj1#Issue253, 경로 변경 금지), `<title>` prefix `\"" + project_name + " — <제목>\"`), "
     "`<style>`(시스템 폰트, max-width 820px, line-height 1.7, 다크모드 `@media (prefers-color-scheme: dark)`), `<body>`\n"
     + canonical_header +
-    "4. HTML 본문은 **caveman 압축 제외** — 자연스러운 한국어 산문·완전한 문장. 표·코드블록·blockquote 자유. "
+    "4. HTML 본문은 **완전한 한국어 산문** — 완전한 문장. 표·코드블록·blockquote 자유. "
     "프로세스·인과·구조 성격 내용은 mermaid 다이어그램 우선 렌더\n"
     "4-1. **생성·수정 파일 = 클릭 링크 (Issue201)**: 본문에서 이 응답이 생성·수정·언급하는 산출물 파일 경로는 평문 나열 금지 — 반드시 `<a href=\"vscode://file<파일 절대경로>\">파일명</a>` 앵커로 렌더 (예: `<a href=\"vscode://file$HOME/.claude/Issue.md\">Issue.md</a>`, 슬래시 1개). VSCode Simple Browser 에서 클릭 시 파일이 에디터로 열림 (서버 불필요).\n"
     "5. `Write` → `" + out_dir + "/hub_htm_<YYYYMMDD_HHMMSS>_a_<주제>.htm` (" + path_note + ") — 날짜시간=`date +%Y%m%d_%H%M%S`, 주제=핵심 10자 내외 kebab, mode `a`=메인 렌더\n"
     + render_step +
-    "7. 채팅 응답(caveman 유지): 한 줄 헤드라인 + 핵심 bullet 2~3개 + 저장 경로. "
+    "7. 채팅 응답: 한 줄 헤드라인 + 핵심 bullet 2~3개 + 저장 경로. "
     "채팅 fallback 이 1차 채널 (Firefox 미표시 가정 — 채팅만 읽어도 내용 파악·재오픈 가능해야 함)\n\n"
     "### 후속 질문\n"
     "- `AskUserQuestion` 호출 시 PreToolUse hook(`fpm-ask-intercept.sh`)이 form 자동 회수 — deny reason 절차를 그대로 따를 것\n"

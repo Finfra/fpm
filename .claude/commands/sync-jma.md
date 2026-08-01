@@ -36,7 +36,7 @@ ex) `/sync-jma all push --dry-run` / `/sync-jma fapp push` / `/sync-jma 15 pull`
 | target   | prj    | 경로                                                                                  | rsync_exclude (공통 외 추가) |
 | :------- | :----- | :------------------------------------------------------------------------------------ | :--------------------------- |
 | `social` | 4      | `~/_git/__all/social`                                                                  | `--exclude='.playwright-mcp'` (browser 캐시 4.8M 비전송) |
-| `data`   | 9      | `~/Documents/finfra/<private-project>`                                                      | (없음)                       |
+| `data`   | 9      | `~/Documents/finfra/<private-project-2>`                                                      | (없음)                       |
 | `fapp`   | 11~16  | `~/_git/__all/{fBanner,fBoard,fGoogleSheet,fQRGen,fSnippet,fWarrange}`                 | fSnippet·fWarrange 는 `--exclude='_public'` (public 타깃이 별도 소유) |
 | `public` | 25, 26 | `~/_git/__all/fSnippet/_public`, `~/_git/__all/fWarrange/_public`                      | (없음)                       |
 | `ollamaClaude` | 91 | `~/_git/__all/ollamaClaude`                                                          | (없음)                       |

@@ -157,12 +157,12 @@ date: 2026-05-19
 `..show` 처리(구 `..hub`) 후 사용자에게 보내는 **모든** 채팅 응답에는 **반드시 다음 세 요소를 포함**할 것:
 
 1. **한 줄 헤드라인** — 이번 turn 에 무엇이 표시되었는지 (mode A/B, 본질 요지)
-2. **내용 핵심 요약 (3줄 이내, Issue60 의무)** — 표·코드 dump 금지. caveman 압축된 핵심 사실 bullet 2~3개. 브라우저 부재 가정 하에 채팅만으로 결과 파악 가능해야 함
+2. **내용 핵심 요약 (3줄 이내, Issue60 의무)** — 표·코드 dump 금지. 요점만 남긴 핵심 사실 bullet 2~3개. 브라우저 부재 가정 하에 채팅만으로 결과 파악 가능해야 함
 3. **저장 경로 / stable URL — raw URL 형식 (Issue104)** — 형식: `📁 file://{abs_path}` (Mode A) / `🌐 http://{stable_url}` (Mode B/C). raw URL 그대로 노출 — 사용자가 클릭 시 즉시 브라우저 open (VSCode·IDE·iTerm 모두 file://·http:// 자동 링크화). 마크다운 링크 `[basename](url)` 형식 금지 (path 가시성 손실). bare 절대경로(`📁 /Users/...`) 단독 노출도 금지 (`file://` prefix 없으면 클릭 불가). Mode B/C stable URL 은 token 포함 전체 유지 (임의 제거 금지)
 
 **사유 (Issue60)**: 브라우저 표시 실패 패턴이 빈번함 — (a) 사용자가 다른 작업·창에 집중해 변화 인지 못 함, (b) 브라우저 강제 종료·hidden·미설치, (c) 원격 SSH·다른 데스크톱·다른 모니터, (d) SSE 끊김. 채팅에 명시적 요약·경로/URL 이 있어야 (1) 무슨 일이 일어났는지 즉시 파악, (2) 창 닫혔으면 경로·URL 로 직접 재오픈, (3) GUI 단절 환경에서도 텍스트만으로 결과 도달.
 
-**표시 형식 (단방향 응답, caveman 호환 권장 패턴)**:
+**표시 형식 (단방향 응답)**:
 
 ```
 HTML 저장. 브라우저 열림.
@@ -263,7 +263,7 @@ ex)
         * 채팅 fallback 도 폼 안내(질문·옵션·경로)만 표시
     - **본문 작성 조건 (기본, 본문+폼 2 파일)**: 응답이 정보 전달(설명·코드·표·비교·자료)을 포함하며, 폼은 그 뒤 결정 요청 분리에 쓰이는 경우
         * 응답 본문을 **완전한 HTML 문서**로 작성 (아래 step 4-7)
-3. **HTML 본문은 caveman 압축 적용 제외** — 자연스러운 한국어 산문·완전한 문장·풍부한 설명 사용. caveman 은 채팅 응답에만 적용
+3. **HTML 본문은 완전한 한국어 산문** — 완전한 문장·풍부한 설명 사용. 채팅 응답의 요점 중심 압축을 본문에 적용하지 말 것
 4. HTML 템플릿 요구사항 (필수):
     - `<!DOCTYPE html>`, `<html lang="ko">`, `<meta charset="utf-8">`, viewport meta
     - **fPm favicon (Issue155·Issue182)**: `<head>` 에 hub 서버 서빙 favicon 삽입 — `<link rel="icon" href="/fpm-icon.png">`. hub 서버 `/fpm-icon.png` 라우트가 fPm 로고(Finfra fox) PNG 를 서빙. 문서는 `http://127.0.0.1:9876/htm-doc?path=` 경유 열림 → host-relative `/fpm-icon.png` 가 hub 서버로 해석(원격 접근 시에도 동작)
@@ -408,7 +408,7 @@ ex)
    - 등록 대상은 본문 HTML(mode a) + B모드 질문 폼(mode b, `hub_htm_*_b_*.htm`, Issue80). Mode D 폼(mode c, `hub_htm_*_c_*.htm`)만 transient 산출물이므로 등록 제외
    - 엔드포인트 SSOT: `~/_git/___pm/_doc_arch/hub_htm.md` `POST /register-doc` 섹션
    - **Issue73/Issue80**: PostToolUse hook `~/.claude/hooks/fpm-hub-doc-register.sh` 가 `*/_doc_work/{htm,z_done/htm,z_htm}/hub_htm_*_*.htm`(`_c_` auto 제외) Write 시 동일 등록을 자동 수행. 본 step 의 수동 curl 은 hook 미작동 환경(서버 down·hook 미설치) 대비 fallback. 중복 등록은 server 측 동일 path dedup 처리
-8. 채팅 응답(caveman 형식)에는 한 줄 헤드라인 + 핵심 bullet 2~3개 + 저장 경로 표기 (위 "채팅 응답 표시 규칙" 참조)
+8. 채팅 응답에는 한 줄 헤드라인 + 핵심 bullet 2~3개 + 저장 경로 표기 (위 "채팅 응답 표시 규칙" 참조)
 
 ## 다이어그램 우선 렌더 (Issue82)
 
@@ -419,7 +419,7 @@ HTML 본문 작성 시 **프로세스·인과관계·구조** 성격의 내용�
 * 본문 작성 중 한 덩어리의 내용이 **순서·흐름·관계·계층**을 담고 있으면 먼저 "다이어그램으로 표현 가능한가" 를 판단
 * 가능하면 mermaid 다이어그램을 1차 표현으로 사용. 다이어그램만으로 불명확한 부분만 1~2문장 보조 설명 병기
 * 다이어그램화가 부적합한 내용(아래 제외표)은 기존대로 표·리스트·산문 유지
-* 채팅 응답(caveman)에는 다이어그램 미적용 — HTML 본문 전용
+* 채팅 응답에는 다이어그램 미적용 — HTML 본문 전용
 
 ### 다이어그램 본문 작성
 
@@ -516,11 +516,13 @@ flowchart TD
 * 표·코드블록·figure·blockquote 는 step 4 의 기존 스타일 토대를 그대로 사용. 레포트 패턴은 본문 *구조*만 규정하며 스타일·헤더·다크 정책을 바꾸지 않는다.
 * 다이어그램 우선 렌더 규칙과 병행 — 항목별 섹션 안에서 프로세스·구조 성격 내용은 mermaid 로 렌더해도 된다.
 
-## Caveman 모드 상호작용
+## 출력 채널별 문체
 
-- HTML 본문 = 코드/문서 컨텐츠로 취급. caveman 압축 규칙 "Code blocks unchanged" 적용
-- 채팅 응답(보고)은 caveman 유지: `HTML 저장. 브라우저 열림.` + 요약 bullet
-- caveman OFF 상태면 채팅도 일반 문체
+- **HTML 본문** = 완전한 한국어 산문. 채팅용 요점 압축을 본문에 적용하지 않는다
+- **채팅 응답(보고)** = 요점 중심: 한 줄 헤드라인 + 요약 bullet + 저장 경로
+- 근거: [`rules/language-rules.md`](../rules/language-rules.md) "요점 중심, 목록 형태로 간결 정리"
+
+> 🔧 종전 이 절은 `caveman` 압축 모드와의 상호작용 규약이었다. 해당 플러그인은 감사 v1.0.3 ◆C 판정으로 제거됐고(F4-6/F4-7), 채널별 문체 요구만 남겼다.
 
 ## Mode C: Live Dashboard — 별도 agent 로 분리됨
 

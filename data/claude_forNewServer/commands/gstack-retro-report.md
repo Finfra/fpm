@@ -37,7 +37,7 @@ date +%G-W%V
 
 ## 3. report 파일 생성
 
-**경로**: `{nPTiR루트}/_doc_work/report/retro_{YYYY}-W{WW}_report.md`
+**경로**: `{nPTiR루트}/_doc_work/z_done/report/retro_{YYYY}-W{WW}_report.md`
 
 **중복 처리**:
 * 파일 존재 + `--force` 없음 → 사용자에게 덮어쓰기 확인 1회 → 거부 시 종료

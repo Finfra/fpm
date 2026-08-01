@@ -22,4 +22,4 @@ ex) `/scar-export --target codex`, `/scar-export --target all --full`
 
 # 참조
 
-* 설계 SSOT: `_doc_work/plan/scar-crosstool-export_plan.md` · 이슈: Issue234(T7, 최초 구현) → Issue281_2(본 wrapper화)
+* 설계 SSOT: `_doc_work/z_done/plan/scar-crosstool-export_plan.md` · 이슈: Issue234(T7, 최초 구현) → Issue281_2(본 wrapper화)

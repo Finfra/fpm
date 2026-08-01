@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: 14b014dfc826572e4996c9a97940e1413fd8b6e479fe7ada48ed0c70781401f4
+source_sha: db5087d1cae7a17320707878ef852ff657def6bd68f05c7c2e12bd35bae3b17d
 ---
 
 # 안내
@@ -17,6 +17,42 @@ source_sha: 14b014dfc826572e4996c9a97940e1413fd8b6e479fe7ada48ed0c70781401f4
 `scripts/fpm-issue-digest.sh` 가 덮어쓴다.
 
 # 이슈 근거
+
+## Issue349: fpm-sanitize 가 정상 상태에서 forward 를 조용히 죽임 + fail-loud 무력화 ✅
+* 목적: `scripts/fpm-sanitize.sh` 말미의 파이프라인 하나가 **서로 다른 두 결함**을 동시에 만들고 있었다. Issue342 의 승인된 forward sync 가 여기서 막혀 발견됐다.
+* 구현 명세:
+    - 파이프라인 → **here-doc `while`** 로 전환. 서브셸이 사라져 ②가 진짜 중단이 되고, 빈 입력도 무해해져 ①이 사라진다
+    - `if [ -n "$_P3_HITS" ]` 로 감싸 빈 경우를 명시적으로 건너뛴다
+
+## Issue342: 배포 파이프라인 잔여 5건 — 태그 자동화·인벤토리·provenance·sanitize 단사·세션 origin ✅
+* 목적: prj3#Issue322(SCAR 감사 v1.0.3 후속) 진행 중 **실행 파이프라인·서버 코드 변경이 필요해 분리**된 항목들. 문서·규약은 그 이슈에서 확정했고, 여기서는 코드를 건드린다. 검증 없이 커밋하면 배포가 깨지는 성격이라 별도 이슈로 뗐다.
+* depends: prj3#Issue322
+* 구현 명세:
+    - 착수 전 **각 항목의 선행 조건을 먼저 실측**할 것 — Issue322 에서 T6·T7·F3-3·F3-4·M6 이 *"이미 되어 있음"* 으로 판정된 전례가 있다. 보고서 기술을 그대로 믿지 말 것
+    - 배포 스크립트 변경은 **dry-run 선행**(`opus-4-8-execution-rules` §7). fSnippet·fWarrange 양쪽 `deploy.sh` 가 대상
+    - P2 는 착수 시 **기존 미러와의 diff 규모를 먼저 측정**하고 사용자 승인을 받을 것
+
+## Issue346: 배포 스크립트 2건 — 릴리스 태그 생성 배선 + deploy-state 인벤토리 ✅
+* 목적: Issue342 의 **F5-4·F5-5** 를 실물 범위로 분리한다. 둘 다 배포 스크립트 한 파일을 고치는 작업이고 대상 repo·dry-run 검증면이 같아 한 이슈로 묶는다. Issue342 안에 두면 그 이슈가 종결될 때 함께 사라진다.
+* depends: Issue342
+
+## Issue343: 이슈맵 depends 파서 fail-loud + 규약 정합 — 조용한 의존 유실 차단 ✅
+* 목적: prj3#Issue322 에서 `* depends:` 토큰 문법을 확정(괄호 부기 허용·**prj 이름 표기 금지**)했다. 그런데 실측해 보니 **파서가 규약 위반 토큰을 조용히 버리고 있었다** — 경고 없이 `None` 을 반환해 그 의존이 이슈맵에서 **통째로 사라진다**. 규약을 정한 것만으로는 이 유실이 안 잡히므로 파서 쪽을 고친다.
+* depends: prj3#Issue322
+* 구현 명세:
+    - **P1. `None` fail-loud** — `parse_dep_token()` 이 `None` 을 낼 때 **원문 토큰을 수집**해 빌드 종료 시 `⚠️ depends 파싱 실패 N건` 과 목록을 stderr·요약에 출력. ⚠️ 예외: `없음`·`-`·빈 문자열은 정상 no-op 이므로 세지 않는다
+    - **P2. prj 이름 표기 경고** — `('ext', ref, …)` 의 `ref` 가 `^prj[0-9]+[a-z]?$` 가 아니면 경고. 자동 해석은 **하지 않는다**(이름은 바뀌고 중복되므로 추측이 오히려 위험 — 규약이 번호를 요구하는 이유가 그것이다)
+    - **P3. 테스트 보강** — `services/hub/test_issue_map.py`(249줄, depends 케이스 28건)에 위 실측 8케이스를 회귀 픽스처로 추가
+    - **P4.** `services/hub/server.py`(11,448줄) ↔ `plugins/fpm-core/services/hub/server.py`(11,410줄) **38줄 차이** 원인 확인 — 배포 시점 차이면 정상, 미동기면 동기화
+
+## Issue344: prj1 백업 사각지대 — gitignored 원천자료가 host 미러에 안 담김 ✅
+* 목적: prj3#Issue322 의 **X2**(prj1 백업 경로 확보)로 host bare mirror 를 신설해 커밋 1229개가 단일 지점이던 위험은 해소했다. 그러나 그 백업은 **git 추적 파일만** 커버한다 — `_doc_base/`·`projects/`·`Projects.md` 등 **로컬 전용 gitignore 대상은 어디에도 백업되지 않는다**. X2 완료 시점에 한계로 명시되며 "별도 경로 필요 시 후속 이슈" 로 남긴 항목이다.
+* depends: prj3#Issue322
+* 구현 명세:
+    - 1단계 **실측 선행** — 미추적 대상의 실제 용량·파일 수를 먼저 잰다(`git ls-files --others --ignored --exclude-standard | wc -l`). 크기에 따라 수단이 갈린다
+    - 2단계 수단 선택: ① host 로 `rsync` 하는 별도 경로(추적분 백업과 같은 목적지, git 아님) ② `_doc_base/` 만 별도 private repo ③ Time Machine 존치 + 문서화만
+    - ⚠️ **prj1 밖 자산에 손대지 않는다** — 다른 프로젝트의 `_doc_base/` 백업은 본 이슈 범위가 아니다(공통 정책이 필요하면 별도 이슈)
+    - 백업 경로를 만들었으면 **복구 리허설 1회**를 X2 와 같은 수준으로 수행하고 결과를 기록
 
 ## Issue341: hub 📡 활성 세션 전멸 — 세션 등록 pid 가 단기 wrapper ✅
 * 목적: host `http://host:9876/hub-shell` 의 📡 활성 세션이 항상 비어 있음. `sessions.json` 엔 4건 등록돼 있는데 `/boards` 의 `live_sessions=[]`.
@@ -67,7 +103,7 @@ source_sha: 14b014dfc826572e4996c9a97940e1413fd8b6e479fe7ada48ed0c70781401f4
     - 관련: Issue334(pm-do extract_hash PATH 의존) 와 같은 스크립트다. 함께 손대면 1커밋으로 묶어도 무방
 
 ## Issue337: Bash 로 쓴 htm 은 등록 훅이 아예 안 돌아 영구 403 — 서버 self-heal 등록 ✅
-* 목적: <private-project> 세션이 렌더한 [hub_htm_20260728_010327_a_rfp-plan.htm](/Users/user/work/<private-project>/_doc_work/htm/hub_htm_20260728_010327_a_rfp-plan.htm) 이 `/htm-doc` 에서 `{"error": "not a registered htm doc"}` 403 dead link 가 됐다. 파일·파일명 규약·서버 모두 정상인데 registry 에만 없다.
+* 목적: <private-project-5> 세션이 렌더한 [hub_htm_20260728_010327_a_rfp-plan.htm](/Users/user/work/<private-project-5>/_doc_work/htm/hub_htm_20260728_010327_a_rfp-plan.htm) 이 `/htm-doc` 에서 `{"error": "not a registered htm doc"}` 403 dead link 가 됐다. 파일·파일명 규약·서버 모두 정상인데 registry 에만 없다.
 * 구현 명세:
     - `_htm_doc_autoregister()` 신설 — `/htm-doc` 미등록 판정 시 403 직전에 self-heal 등록 시도. 4조건 전부 충족해야 등록(화이트리스트 모델 유지): ① 실존 파일 + `.htm`/`.html` ② 부모 폴더가 canonical(`_doc_work/{htm,z_done/htm,z_htm}` 또는 `TMP_OUT_DIR`) ③ 파일명이 `_htm_output_stem()` 규약(`hub_htm_*`/legacy `claude-htm-*`) ④ `HTM_CLEARED` tombstone 에 없음(사용자 명시 제거 존중).
     - 임의 경로 노출은 ②③ 이, 사용자 의사는 ④ 가 막는다. 생산자가 어떤 도구로 쓰든 무관하게 링크가 산다.
@@ -161,6 +197,19 @@ source_sha: 14b014dfc826572e4996c9a97940e1413fd8b6e479fe7ada48ed0c70781401f4
     - 정책 `sanitize[]` 리터럴을 검증뿐 아니라 **치환**에도 적용 (종전엔 fail-loud 만 → 수동 대응). 정책 파일은 self-exclude 라 리터럴 자체는 미러로 나가지 않음
     - 검증: 재생성 결과 24→13 이슈, 잔존 PII grep 0건, `--check` 신선도 통과
 
+## Issue322: prj82 경로 갱신 + prj81 관리범위에서 <private-project-3> 제외
+* 목적: prj81(<private-project-5>) 안에서 `<private-project-3>` 이 `40-server/` 하위로 재이동(커밋 `<commit>`)됨. registry 의 구 prj82 매핑이 stale 이 되어 갱신 요청됨 (요청 출처: <private-project-5> 세션 2026-07-25)
+* 구현 명세:
+    - 조치 없음. <private-project-5> 측 문서는 커밋 `<commit>` 으로 새 번호 체계 반영 완료
+    - 남은 판단거리: 자체 `Issue.md` 를 가진 하위 트리(`40-server/<private-project-3>`)를 registry 없이 nPTiR 루트로 쓰는 패턴을 일반 규칙으로 명문화할지 여부 → 필요 시 별도 이슈로 신설
+
+## Issue322: prj82 경로 갱신 + prj81 관리범위에서 <private-project-3> 제외 ✅
+* 목적: prj81(<private-project-5>) 안에서 `<private-project-3>` 이 `40-server/` 하위로 재이동(prj81 커밋 `<commit>`)됨. prj1 registry 의 prj82 매핑 경로가 구 위치를 가리켜 stale 이며, 중첩 미니프로젝트가 prj81 관리범위에 겹쳐 잡히는 문제도 함께 정리 요청됨 (요청 출처: prj81 세션 2026-07-25)
+* 구현 명세:
+    - `projects/82` 1줄 경로 교체 + `projects-map` 계열 산출물 재생성(있으면)
+    - prj81 관리범위 제외 방식은 prj1 의 registry/스캔 규약에 맞춰 결정 (제외 목록 필드 or 중첩 프로젝트 우선 판정). 중첩 프로젝트 일반 규칙으로 다룰지 여부도 함께 판단
+    - 검증: `cdf 82` 가 새 경로로 이동 / `cdf-num` 이 `40-server/<private-project-3>` cwd 에서 82 를 반환 (최장 prefix 일치로 81 이 아닌 82)
+
 ## Issue321: hub_setting `unregistered_render` 키 신설 — 미등록 폴더 렌더 정책 ✅
 * 목적: 글로벌 hook 이 소비할 미등록 폴더(IS_PROJECT=0) 렌더 정책 키를 hub_setting SSOT 에 추가. prj3#Issue280 의 data 절반.
 * 구현 명세: 소비처는 글로벌 `~/.claude/hooks/fpm-hub-trigger.sh` (prj3#Issue280). 키 부재 시 hook 이 안전 기본값 text 로 fallback. + 아이콘 좌측 정렬 (등록: 2026-07-23, 해결: 2026-07-23, commit: <commit>) ✅
@@ -172,7 +221,7 @@ source_sha: 14b014dfc826572e4996c9a97940e1413fd8b6e479fe7ada48ed0c70781401f4
     - 검증: 재빌드 `Projects_map.htm` 에 `<header>` 방출 확인, `header{` css 규칙 0건(서버 주입 조건 충족), `<div id=topbar>` 소멸. htm/md 는 빌드 산출물(git 미추적).
 
 ## Issue319: fpm-projects-sync — projects/ 에 실물 디렉토리 침입 시 침묵 실패 (경로 파일 재생성 불가) ✅
-* 목적: `projects/9a` 가 경로 한 줄 파일이 아니라 14MB 논문 프로젝트 실물 디렉토리(+`9a.bak` 중복)로 존재해 `cdf 9a` 등 index 가 깨짐. 원인은 실물 프로젝트(`<private-project>`)가 타깃 `<private-project>/_doc_base/` 대신 ___pm index 폴더에 잘못 배치됨(수동 mv/cp 또는 haiku 에이전트 실수 추정). `gen_projects` 는 디렉토리를 걸러내지 못해 `os.remove`(IsADirectoryError)·`open(...,'w')` 둘 다 실패, path 파일을 재생성하지 못하고 침묵 실패함.
+* 목적: `projects/9a` 가 경로 한 줄 파일이 아니라 14MB 논문 프로젝트 실물 디렉토리(+`9a.bak` 중복)로 존재해 `cdf 9a` 등 index 가 깨짐. 원인은 실물 프로젝트(`<private-project-1>`)가 타깃 `<private-project-2>/_doc_base/` 대신 ___pm index 폴더에 잘못 배치됨(수동 mv/cp 또는 haiku 에이전트 실수 추정). `gen_projects` 는 디렉토리를 걸러내지 못해 `os.remove`(IsADirectoryError)·`open(...,'w')` 둘 다 실패, path 파일을 재생성하지 못하고 침묵 실패함.
 * 구현 명세:
     - `sh/fpm-projects-sync` `gen_projects()`: 재생성 직전 `projects/<pid>` 중 디렉토리인 항목을 스캔하는 fail-loud 가드 추가. stray 발견 시 Projects.md 의 올바른 타깃 경로와 함께 stderr 출력 후 `sys.exit(2)`. 자동 rmtree 는 백업 없는 실물 삭제 위험이라 금지 — 수동 이동 안내만.
     - 검증: 구문검사 통과, 정상 상태 `--index-only` 43개 재생성 성공, 임시 `projects/99z` 주입 시 exit=2 + 안내 메시지 정상.

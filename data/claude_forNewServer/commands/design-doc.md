@@ -52,7 +52,7 @@ date: 2026-04-19
 2. `# 관련 자료` 섹션에 후보 링크 자동 삽입:
    - 루트 `Harness.md` (존재 시)
    - 주제와 매칭되는 `rules/{주제}-rules.md` (Grep으로 탐색)
-   - 주제와 매칭되는 `_doc_work/plan/{주제}_plan.md`
+   - 주제와 매칭되는 `_doc_work/z_done/plan/{주제}_plan.md`
 3. `/md-rule-apply {파일경로}` 실행하여 검증
 
 ### Case B: 기존 파일에 섹션 추가 (파일 있음, 섹션명 미지정)
@@ -109,7 +109,7 @@ date: {YYYY-MM-DD}
 
 1. `/md-rule-apply {파일경로}` 실행 — Frontmatter·Outline·Bullet·Table 검증
 2. `# 관련 자료` 섹션 1개 이상 링크 확인 (고립 문서 방지)
-3. SSOT 중복 확인: Grep으로 동일 내용이 `rules/`·루트 `Harness.md`·`_doc_work/plan/`에 있는지 탐색 → 발견 시 사용자 보고 + 참조 링크로 축약 제안
+3. SSOT 중복 확인: Grep으로 동일 내용이 `rules/`·루트 `Harness.md`·`_doc_work/z_done/plan/`에 있는지 탐색 → 발견 시 사용자 보고 + 참조 링크로 축약 제안
 
 # 산출물
 
@@ -121,7 +121,7 @@ date: {YYYY-MM-DD}
 
 * 필수 참조: [`_doc_arch/doc-design-rules.md`](../_doc_arch/doc-design-rules.md)
     - 작성 시점 (언제 `_doc_arch/`에 둘지)
-    - `_doc_arch/` vs `_doc_work/plan/` 분리 기준
+    - `_doc_arch/` vs `_doc_work/z_done/plan/` 분리 기준
     - SSOT 중복 방지 우선순위
     - 필수 섹션 목록
 * 관련: [`rules/nptir-rules.md`](../rules/nptir-rules.md) — nPTiR 루트 위치 판정
@@ -152,8 +152,8 @@ date: {YYYY-MM-DD}
 | 커맨드           | 용도                                   | 저장 위치                        |
 | :--------------- | :------------------------------------- | :------------------------------- |
 | `/design-doc`    | 영속적 설계 SSOT                       | `_doc_arch/`                   |
-| `/needs`, `/sp-plan`, `/gstack-plan` | 이슈별 실행 계획      | `_doc_work/plan/`                |
-| `/gstack-report` | 이슈 완료 결과물                       | `_doc_work/report/`              |
+| `/needs`, `/sp-plan`, `/gstack-plan` | 이슈별 실행 계획      | `_doc_work/z_done/plan/`                |
+| `/gstack-report` | 이슈 완료 결과물                       | `_doc_work/z_done/report/`              |
 | `/md-add`        | 범용 마크다운 생성                     | 경로 자유 (주로 docs/)           |
 
 # 종료 조건

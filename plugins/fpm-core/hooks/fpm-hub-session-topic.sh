@@ -25,22 +25,18 @@ input=$(cat)
 # stdin JSON 에서 session_id·cwd·prompt·pid 추출 + prompt 요약(label) 동시 산출.
 # 요약: 첫 비어있지 않은 줄 → 제어문자 제거 → 50자 truncate(+…). 슬래시 커맨드는 첫 줄에
 #   그대로 보존됨(별도 처리 불필요).
-read -r SID CWD PID_JSON <<< "$(printf '%s' "$input" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    print(d.get('session_id', ''), d.get('cwd', ''), d.get('pid', ''))
-except Exception:
-    print('', '', '')
-")"
+# F2-1: 파싱 단일 지점(jq 기반, hooks/hook-input.sh). 디스패처가 미리 파싱했으면 비용 0.
+# shellcheck source=/dev/null
+. "$HOME/.claude/hooks/hook-input.sh"
+hook_input_parse "$input"
+SID="$HOOK_SESSION_ID"
+CWD="$HOOK_CWD"
+PID_JSON="$HOOK_PID"
 
-LABEL=$(printf '%s' "$input" | python3 -c "
-import sys, json, re
-try:
-    d = json.load(sys.stdin)
-    p = d.get('prompt', '') or ''
-except Exception:
-    p = ''
+LABEL=$(HOOK_PROMPT="$HOOK_PROMPT" python3 -c "
+import os, re
+# F2-1: JSON 재파싱 대신 이미 뽑아둔 prompt 를 env 로 받는다(python3 기동 1회 절약)
+p = os.environ.get('HOOK_PROMPT', '') or ''
 # Issue127 후속: UserPromptSubmit prompt 는 사용자 raw 입력 앞에 IDE/시스템 래퍼를
 #   prepend 함(<ide_opened_file>·<ide_selection>·<task-notification>·<system-reminder> 등).
 #   전처리 없으면 '첫 줄'이 래퍼 태그를 잡아 label 이 오염됨 → 블록 제거 후 첫 실제 줄 추출.
@@ -92,13 +88,7 @@ ENTRY="${CLAUDE_CODE_ENTRYPOINT:-}"
 # Issue217(prj1#Issue273): 현재 세션 모델 — transcript jsonl 마지막 assistant .message.model.
 #   hub 활성세션 카드 신호등 이모지(🟣opus/🔵sonnet/🟢haiku/🟠fable) producer.
 #   SessionStart(register.sh)는 첫 응답 전이라 model 미상 → 매 프롬프트 이 훅이 갱신.
-TRANSCRIPT=$(printf '%s' "$input" | python3 -c "
-import sys, json
-try:
-    print(json.load(sys.stdin).get('transcript_path', '') or '')
-except Exception:
-    print('')
-")
+TRANSCRIPT="$HOOK_TRANSCRIPT"   # F2-1: 재파싱 제거 (hook-input.sh 가 이미 추출)
 MODEL=""
 if [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ]; then
   MODEL=$(tail -n 400 "$TRANSCRIPT" 2>/dev/null | python3 -c "

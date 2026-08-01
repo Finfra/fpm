@@ -245,5 +245,69 @@ finally:
         server.projects.update(_projects_backup)
     shutil.rmtree(TMP)
 
+# --- Issue343: parse_dep_token 규약 준수 + 조용한 유실 차단 회귀 ---
+# ⚠️ 검사 대상은 server.py 가 아니라 이슈맵 생성기다. 파서가 두 벌(원본 prj3 ·
+#   배포본 plugins/fpm-core) 이므로 **양쪽 모두** 같은 픽스처로 돌린다 — 한쪽만
+#   고치면 배포본 사용자가 구버전 동작을 만난다(2원 구조 반쪽 수정).
+import importlib.util  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+# 위 블록의 finally 가 TMP 를 지웠으므로 자체 임시 디렉토리를 새로 잡는다
+TMP2 = tempfile.mkdtemp(prefix="dep-token-test-")
+
+_BIM_PATHS = [
+    os.path.expanduser("~/.claude/skills/issue-map/build_issue_map.py"),
+    os.path.join(Path(os.path.abspath(__file__)).parents[2],
+                 "plugins", "fpm-core", "skills", "fpm-issue-map", "build_issue_map.py"),
+]
+
+# (입력, 기대 반환, 경고종류) — 경고종류 None 이면 규약 준수라 경고가 없어야 한다.
+#   실측 8케이스 (Issue343 상세, 2026.08.01)
+_DEP_CASES = [
+    ("Issue170 (충족)",                      ("local", None, "Issue170"), None),
+    ("prj3#Issue269 (완료 — commit bd1cb38)", ("ext", "prj3", "Issue269"), None),
+    ("prj16#Issue42",                        ("ext", "prj16", "Issue42"), None),
+    ("`___pm#Issue66`",                      ("ext", "___pm", "Issue66"), "named_ref"),
+    ("paidApp Issue892 (구현 주체)",          None,                        "unparsed"),
+    ("`~/.claude` Issue148",                 None,                        "unparsed"),
+    ("fSnippet#Issue951",                    ("ext", "fSnippet", "Issue951"), "named_ref"),
+    ("social#Issue30",                       ("ext", "social", "Issue30"), "named_ref"),
+    # 혼합 표기 — 마지막 토큰이 실제 참조 대상이라 prj55 로 정규화되어야 한다
+    ("air-gap-claudeCode prj55#Issue9",      ("ext", "prj55", "Issue9"),  None),
+    ("없음",                                  None,                        None),  # 정상 no-op
+    ("(없음)",                                None,                        None),  # 괄호 부기형 — 규약 허용
+]
+
+for _bim in _BIM_PATHS:
+    _label = "원본" if ".claude" in _bim else "배포본"
+    if not os.path.exists(_bim):
+        check(f"[{_label}] 생성기 존재", False)
+        continue
+    _spec = importlib.util.spec_from_file_location(f"bim_{_label}", _bim)
+    _bm = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_bm)
+
+    for _tok, _want, _warn_kind in _DEP_CASES:
+        check(f"[{_label}] parse_dep_token({_tok!r})",
+              _bm.parse_dep_token(_tok) == _want)
+
+    # 파싱 실패·이름 표기가 실제로 **수집**되는지 — 반환값만 맞고 경고가 없으면
+    # Issue343 이 잡으려던 '조용한 유실' 이 그대로 남는다.
+    _md = os.path.join(TMP2, f"dep-warn-{_label}.md")
+    _body = "# 📙 일반\n\n"
+    for _i, (_tok, _, _) in enumerate(_DEP_CASES, start=1):
+        _body += f"## Issue{_i}: t{_i}\n* 목적: x\n* depends: {_tok}\n\n"
+    open(_md, "w").write(_body)
+    _warn = []
+    _bm.parse_issue_md(Path(_md), warn=_warn)
+    _kinds = sorted(k for k, _, _ in _warn)
+    _want_kinds = sorted(w for _, _, w in _DEP_CASES if w)
+    check(f"[{_label}] depends 규약 위반 수집 (기대 {len(_want_kinds)}건)",
+          _kinds == _want_kinds)
+    check(f"[{_label}] warn 미지정 시 종전 동작(수집 없음)",
+          _bm.parse_issue_md(Path(_md)) is not None)
+
+shutil.rmtree(TMP2)
+
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

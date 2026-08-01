@@ -41,7 +41,7 @@ gh pr list --state all --search "Issue{번호}" --json url,number,state --limit 
 
 ## 3. report 파일 생성
 
-**경로**: `{nPTiR루트}/_doc_work/report/{주제}_issue{번호}_report.md`
+**경로**: `{nPTiR루트}/_doc_work/z_done/report/{주제}_issue{번호}_report.md`
 
 `{주제}`는 plan 파일명 또는 Issue.md 항목 제목에서 추출 (kebab-case 변환).
 
@@ -53,7 +53,7 @@ name: {주제}_issue{번호}_report
 description: Issue{번호} {제목} 해결 report
 date: {오늘 날짜 YYYY-MM-DD}
 issue: Issue{번호}
-plan: _doc_work/plan/{주제}_plan.md
+plan: _doc_work/z_done/plan/{주제}_plan.md
 commits:
   - {hash1}
   - {hash2}
@@ -124,7 +124,7 @@ deploy_url: {/land-and-deploy 출력 URL, 없으면 생략}
 또한 항목 본문에 `* report:` 라인 추가 (`* plan:`, `* task:` 다음 줄):
 
 ```markdown
-* report: `_doc_work/report/{주제}_issue{번호}_report.md`
+* report: `_doc_work/z_done/report/{주제}_issue{번호}_report.md`
 ```
 
 **주의**: 이슈를 진행중 → 완료 섹션으로 이동하지 않음. 사용자가 명시적으로 `/issue-closer-g` 실행해야 이동.

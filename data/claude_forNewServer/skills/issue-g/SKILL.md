@@ -69,8 +69,8 @@ Issue1, Issue2, Issue3, ...
 ```markdown
 ## Issue[번호]: [제목] (등록: YYYY-MM-DD)
 * 목적: 한 줄 요약
-* plan: `_doc_work/plan/{주제}_plan.md`   ← 있을 때만
-* task: `_doc_work/tasks/{주제}_task.md`   ← 있을 때만
+* plan: `_doc_work/z_done/plan/{주제}_plan.md`   ← 있을 때만
+* task: `_doc_work/z_done/tasks/{주제}_task.md`   ← 있을 때만
 * 상세:
     - 상세 내용 1
     - 상세 내용 2

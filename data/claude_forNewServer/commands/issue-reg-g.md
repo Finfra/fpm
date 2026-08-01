@@ -55,11 +55,11 @@ python3 .claude/skills/issue-manager/scripts/issue-manager.py register \
 
 ### 3-1. plan/task 파일 연결 (있을 경우)
 
-`_doc_work/plan/` 및 `_doc_work/tasks/`에서 이 이슈와 관련된 파일을 Glob으로 탐색:
+`_doc_work/z_done/plan/` 및 `_doc_work/z_done/tasks/`에서 이 이슈와 관련된 파일을 Glob으로 탐색:
 
 ```
-_doc_work/plan/{주제}_plan.md
-_doc_work/tasks/{주제}_task.md
+_doc_work/z_done/plan/{주제}_plan.md
+_doc_work/z_done/tasks/{주제}_task.md
 ```
 
 파일 발견 시:

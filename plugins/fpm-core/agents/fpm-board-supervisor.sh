@@ -324,7 +324,11 @@ worker_spawn() {
   tmux select-pane -t "$pid" -T "worker@prj$prj" 2>/dev/null
   tmux select-layout -t "$SESSION:$WINDOW" tiled 2>/dev/null
   # WORKER_CMD: 기본 claude. Phase 6 합성 하니스 검증 시 가짜 worker 스크립트 주입 (Issue89).
-  tmux send-keys -t "$pid" "${WORKER_CMD:-claude}" Enter 2>/dev/null
+  # Issue342 S3 — 기동자 신호(FPM_SESSION_ORIGIN=board). SessionStart 훅이 caps.launched_by
+  #   로 실어 hub 카드가 board worker 를 사람이 띄운 세션과 구분한다.
+  #   ⚠️ WORKER_CMD override(합성 하니스) 경로에도 붙인다 — 안 붙이면 검증 세션만 미상이 되어
+  #   실제와 다른 조건을 검증하게 된다. 가짜 worker 는 env 를 무시하므로 무해하다.
+  tmux send-keys -t "$pid" "FPM_SESSION_ORIGIN=board ${WORKER_CMD:-claude}" Enter 2>/dev/null
   printf '%s %s\n' "$prj" "$pid" >> "$WORKERS_FILE"
   log "worker@prj$prj 생성 pane=$pid cwd=$cwd (${WORKER_CMD:-claude} 기동)"
   return 0

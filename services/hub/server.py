@@ -524,7 +524,7 @@ CLOSE_SHIM = (
 #   _serve_dash_inline 와 동일한 복사 로직을 serve 시점에 주입해 prj3 템플릿 수정 없이 해소.
 #   주입 스크립트는 nav.header-actions 의 닫기 버튼 직전에 🔗 버튼을 삽입.
 # Issue(2026-07-03 링크 복사 오동작): 생성된 .htm 파일에는 hook 템플릿이 박은 구버전
-#   onclick(무가드 navigator.clipboard.writeText)이 존재 — HTTP 비-localhost(host.local 등
+#   onclick(무가드 navigator.clipboard.writeText)이 존재 — HTTP 비-localhost(host-1.local 등
 #   insecure context)에선 navigator.clipboard 가 undefined 라 동기 TypeError 로 침묵 실패.
 #   기존 버튼 발견 시 스킵하지 않고 **재바인딩**(onclick 교체)하여 과거 산출물도 서빙
 #   시점에 교정. 복사 로직은 isSecureContext 가드 + execCommand fallback + prompt 최종 폴백.
@@ -2269,6 +2269,26 @@ def _origin_from_caps(caps: dict) -> str:
     return "terminal"
 
 
+_CANONICAL_LAUNCHERS = ("pm-do", "board", "manual", "ide")
+
+
+def _launched_by_from_caps(caps: dict) -> str:
+    """세션 capabilities → 기동자(launcher). Issue342 S3.
+
+    ⚠️ `origin` 과 혼동 금지 — `origin`(_origin_from_caps)은 **어느 에디터에서 떴나**
+    (vscode|zed|terminal)이고 카드 클릭 동작을 좌우한다. 여기서 판정하는 것은
+    **누가 띄웠나**(pm-do 위임인가·board runner 인가·사람이 직접인가)로 축이 다르다.
+    Issue342 원문은 이 필드도 `origin` 으로 부르나, 그 이름은 Issue177 이 선점했고
+    load-bearing 이라 재사용하면 에디터 판정이 깨진다. 그래서 `launched_by` 로 뗀다.
+
+    값의 출처는 기동자가 심는 env `FPM_SESSION_ORIGIN` 이며 SessionStart 훅(prj3)이
+    capabilities 에 실어 보낸다. 미상은 빈 문자열 — **추측하지 않는다**(env 가 없다는
+    사실 자체가 정보다. manual 로 단정하면 배선 누락과 수동 기동이 구분되지 않는다).
+    """
+    v = str(caps.get("launched_by", "")).strip().lower()
+    return v if v in _CANONICAL_LAUNCHERS else ""
+
+
 def _editor_icon_file(editor: str) -> str:
     """에디터 아이콘 PNG 경로. 없으면 앱 번들 .icns 에서 1회 생성(실패 시 빈 문자열).
 
@@ -3061,6 +3081,40 @@ def _orphan_reaper_loop(interval: float = 120.0) -> None:
             log(f"[reaper] loop error: {e}")
 
 
+AOA_MQ_TICK = os.path.expanduser("~/_git/___common/.claude/agents/aoa-mq-tick.sh")
+AOA_MQ_GATE_SEC = 3600
+
+
+def _aoa_mq_tick_loop(interval: float = 300.0) -> None:
+    """aoa-mq tick 주기 구동 (prj5 Issue37 F3-4).
+
+    종전 구동 주체는 jmDashboard 의 페이지 리프레시였다 — 사람이 브라우저를 열어야 큐가
+    도는 단일 장애점이었고, 자리를 비운 기간엔 예약·D-Day 가 통째로 밀렸다.
+    상시 떠 있는 이 서버가 대신 구동한다.
+
+    빈도 억제는 tick 의 `--gate` 가 공유 파일(.last-tick)로 판정한다. 여기서 5분마다
+    깨우는 것은 게이트 경계를 촘촘히 넘기 위함이고, 실제 실행은 시간당 1회다.
+    게이트 파일은 jmDashboard 경로로 실행된 tick 도 갱신하므로 prj57 을 수정하지 않고도
+    두 구동자가 서로를 억제한다.
+
+    fail-soft: 스크립트가 없거나 spawn 이 실패해도 서버 본체는 계속 돈다.
+    """
+    if not os.path.exists(AOA_MQ_TICK):
+        log(f"[aoa-mq] tick script not found — 타이머 미기동: {AOA_MQ_TICK}")
+        return
+    log(f"[aoa-mq] tick timer started — wake={interval}s gate={AOA_MQ_GATE_SEC}s")
+    while True:
+        try:
+            time.sleep(interval)
+            subprocess.Popen(
+                ["/bin/bash", AOA_MQ_TICK, "--gate", str(AOA_MQ_GATE_SEC)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True,          # detached — 서버 종료가 tick 을 끊지 않는다
+            )
+        except Exception as e:
+            log(f"[aoa-mq] tick spawn error: {e}")
+
+
 def persist_pids() -> None:
     """Issue63: pids dict(runner PID 등록분)를 pids.json 에 atomic flush.
     종전 sessions 만 영속되고 pids 가 휘발 → 서버 재시작 시 복원 세션의 /control 이
@@ -3230,8 +3284,8 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def _acao(self) -> str:
-        # 요청 Origin 을 반향: file://(Origin: null)·host.local·127.0.0.1 모두 매칭.
-        # 과거 "null" 하드코딩은 host.local:9876 로 페이지를 열면 origin 불일치 →
+        # 요청 Origin 을 반향: file://(Origin: null)·host-1.local·127.0.0.1 모두 매칭.
+        # 과거 "null" 하드코딩은 host-1.local:9876 로 페이지를 열면 origin 불일치 →
         # 브라우저 CORS 차단("Failed to fetch") 유발 (Simple Browser/htm-doc 경로).
         return self.headers.get("Origin") or "null"
 
@@ -4609,6 +4663,8 @@ class Handler(BaseHTTPRequestHandler):
             # Issue327: 3값화 — Zed(ACP 브리지)는 entrypoint 가 sdk-ts 로만 보여
             #   판정 hook(prj3)이 caps.editor="zed" 를 실어 보낸다. _origin_from_caps 가 단일 판정점.
             origin = _origin_from_caps(_entry_caps)
+            # Issue342 S3: 기동자(누가 띄웠나). origin(어느 에디터인가)과 축이 다르다.
+            launched_by = _launched_by_from_caps(_entry_caps)
             # Issue273: 메인 세션 모델 — producer hook 이 caps.model 로 transcript 최신 model 전송.
             _model_id = str(_entry_caps.get("model", "")).strip()
             _model_tier = _classify_model_tier(_model_id)
@@ -4627,6 +4683,8 @@ class Handler(BaseHTTPRequestHandler):
                 "mode": entry.get("mode"),
                 "content_type": entry.get("content_type"),
                 "origin": origin,         # Issue177: "vscode" | "terminal" (카드 배지·클릭 분기)
+                # Issue342 S3: "pm-do"|"board"|"manual"|"ide"|"" (미상). origin 과 별개 축.
+                "launched_by": launched_by,
                 "model_tier": _model_tier,  # Issue273: opus|sonnet|haiku|fable|"" (신호등 이모지)
                 "model_id": _model_id,      # Issue273: 이모지 hover 툴팁 원문
                 "title": dash_title,      # Issue80: dashboard topic (없으면 None → JS fallback)
@@ -5638,7 +5696,7 @@ __WARN__
         Issue317(Issue284_2 재발): 애초 `/ob`·`/open-session` 과 같은 loopback 전용
         등급으로 묶었으나, `/open-project`(Issue42/237)는 동일하게 host-local `open`
         을 실행하면서도 `_ip_allowed()`(bind self·allowlist 포함) + 비루프백일 때
-        `ssh_remote_alias` 원격 URI 폴백을 쓴다. bind_host 를 비루프백(예: host.local
+        `ssh_remote_alias` 원격 URI 폴백을 쓴다. bind_host 를 비루프백(예: host-1.local
         LAN IP)으로 연 사용자가 `/projects-map` 페이지 자체는 `_ip_allowed()` 로 열람
         가능한데, 정작 노드 클릭(`/open-prj`)만 strict loopback 이라 403 — 페이지는
         뜨고 클릭만 죽는 오작동. `/open-project` 와 동일한 게이트+폴백으로 통일한다.
@@ -6912,7 +6970,7 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         if abs_path not in reg_paths and rel not in reg_paths:
             # Issue337: 생산자가 Write 툴이 아닌 경로(Bash heredoc·스크립트)로 htm 을 쓰면
             #   PostToolUse(matcher: Write) 훅 `fpm-hub-doc-register` 가 아예 발동하지 않아
-            #   영구 403 dead link 가 된다(2026-07-28 <private-project> 실측 — 훅 정상, 트리거 부재).
+            #   영구 403 dead link 가 된다(2026-07-28 <private-project-5> 실측 — 훅 정상, 트리거 부재).
             #   서버가 canonical 경로/파일명 규약을 만족하는 실존 파일을 self-heal 등록한다.
             if self._htm_doc_autoregister(abs_path):
                 with registry_lock:
@@ -9394,7 +9452,7 @@ function renderLiveSessions(list, limit, showCopy) {
 }
 
 // Issue276: 세션 ID 클립보드 복사. isSecureContext 가드 + execCommand fallback + prompt 최종 폴백.
-//   HTTP 비-localhost(host.local 등 insecure context)에선 navigator.clipboard 미정의 → execCommand 경유.
+//   HTTP 비-localhost(host-1.local 등 insecure context)에선 navigator.clipboard 미정의 → execCommand 경유.
 // Issue300(숨은 기능): 복사 직후 ✓ 녹색(.copied) 상태에서 한 번 더 클릭하면 그 세션의
 //   VSCode 세션 탭으로 이동한다(POST /open-session — Projects_map 활성 세션 🟢 아이콘과 동일 동작).
 //   버튼을 늘리지 않고 세션 이동을 얹기 위한 2단 클릭. 녹색 유지 시간은 두 번째 클릭 여유를
@@ -11370,6 +11428,10 @@ def main():
 
     # Issue331: zed orphan live 세션 주기 리퍼 (브리지 사망 즉시 + idle TTL)
     threading.Thread(target=_orphan_reaper_loop, name="orphan-reaper",
+                     daemon=True).start()
+
+    # prj5 Issue37 F3-4: aoa-mq tick 구동 — jmDashboard 브라우저 리프레시 의존 제거
+    threading.Thread(target=_aoa_mq_tick_loop, name="aoa-mq-tick",
                      daemon=True).start()
 
     # Issue59: bind 를 PID_FILE 기록보다 먼저 수행 — bind 실패 시 PID_FILE 미생성·미삭제.

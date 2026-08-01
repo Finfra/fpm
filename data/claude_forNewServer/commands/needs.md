@@ -8,7 +8,7 @@ date: 2026-04-19
 
 > **규칙 로드**: 실행 전 `~/.claude/_doc_arch/sp-nptir-rules.md` 를 Read할 것.
 
-nPTiR needs 단계 단일 입구. 주제 확실성에 따라 A경로(brainstorming) 또는 B경로(sp-plan)로 자동 라우팅하고 `_doc_work/plan/{주제}_plan.md` 단일 산출물을 생성함.
+nPTiR needs 단계 단일 입구. 주제 확실성에 따라 A경로(brainstorming) 또는 B경로(sp-plan)로 자동 라우팅하고 `_doc_work/z_done/plan/{주제}_plan.md` 단일 산출물을 생성함.
 
 # 입력
 
@@ -50,7 +50,7 @@ nPTiR needs 단계 단일 입구. 주제 확실성에 따라 A경로(brainstormi
 
 ## 4. plan 파일 생성
 
-**경로**: `{nPTiR루트}/_doc_work/plan/{주제}_plan.md`
+**경로**: `{nPTiR루트}/_doc_work/z_done/plan/{주제}_plan.md`
 
 **frontmatter**:
 
@@ -86,7 +86,7 @@ plan 생성 완료 직후 사용자에게 1회 질의:
 
 # 산출물
 
-* **단일 파일**: `_doc_work/plan/{주제}_plan.md`
+* **단일 파일**: `_doc_work/z_done/plan/{주제}_plan.md`
 * `_doc_work/needs/` 폴더 **미사용** (needs 산출물은 plan 내부 흡수)
 * brainstorming 대화 내용은 plan `## Needs Exploration`에 요약 (원문 저장 금지)
 
@@ -103,7 +103,7 @@ plan 생성 완료 직후 사용자에게 1회 질의:
 
 # 종료 조건
 
-* plan 파일 생성 확인 (`ls _doc_work/plan/{주제}_plan.md` 성공)
+* plan 파일 생성 확인 (`ls _doc_work/z_done/plan/{주제}_plan.md` 성공)
 * 후속 질의 응답 수령 (Y/N)
 * Y 선택 시: Issue.md 이슈 등록 + 양방향 링크 확인 후 종료
 * N 선택 시: plan 파일 저장 후 종료

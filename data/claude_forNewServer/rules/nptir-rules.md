@@ -7,9 +7,9 @@ date: 2026-04-14
 # 파일 위치 규칙
 
 - nPTiR 루트: 현재 작업 컨텍스트에서 가장 가까운 `Issue.md`가 있는 디렉토리
-- plan → `{nPTiR루트}/_doc_work/plan/{주제}_plan.md`
-- task → `{nPTiR루트}/_doc_work/tasks/{주제}_task.md` ← **복수형 `tasks/` 고정**
-- report → `{nPTiR루트}/_doc_work/report/{주제}_issue{번호}_report.md`
+- plan → `{nPTiR루트}/_doc_work/z_done/plan/{주제}_plan.md`
+- task → `{nPTiR루트}/_doc_work/z_done/tasks/{주제}_task.md` ← **복수형 `tasks/` 고정**
+- report → `{nPTiR루트}/_doc_work/z_done/report/{주제}_issue{번호}_report.md`
 - Issue.md 없으면 → 사용자에게 위치 확인 후 생성
 - 이슈 번호 미정 시 report 파일명: `{주제}_report.md` → 이슈 연결 후 rename
 - **needs 산출물 규칙**: 탐색 결과는 plan 파일 내 `## Needs Exploration` 섹션으로 흡수. `_doc_work/needs/` 폴더 미사용. Issue.md 이슈 포맷에 `* needs:` 필드 추가 금지 (산출물 단일화). 상세: [`sp-nptir-rules.md`](sp-nptir-rules.md), [`commands/needs.md`](../commands/needs.md)
@@ -23,9 +23,9 @@ date: 2026-04-14
 
 | 올바름                | 잘못됨 (금지)           | 비고                                                 |
 | :-------------------- | :---------------------- | :--------------------------------------------------- |
-| `_doc_work/tasks/`    | ~~`_doc_work/task/`~~   | 단수 `task/`는 과거 오타. 2026-04-14 `33ad8eb`에서 교정 |
-| `_doc_work/plan/`     | ~~`_doc_work/plans/`~~  | plan은 단수                                          |
-| `_doc_work/report/`   | ~~`_doc_work/reports/`~~| report는 단수                                        |
+| `_doc_work/z_done/tasks/`    | ~~`_doc_work/task/`~~   | 단수 `task/`는 과거 오타. 2026-04-14 `33ad8eb`에서 교정 |
+| `_doc_work/z_done/plan/`     | ~~`_doc_work/plans/`~~  | plan은 단수                                          |
+| `_doc_work/z_done/report/`   | ~~`_doc_work/reports/`~~| report는 단수                                        |
 
 - **기존 프로젝트에 단수 `_doc_work/task/` 디렉토리가 남아있으면 복수 `tasks/`로 마이그레이션**
 - Glob/find로 단수 참조 확인: `find _doc_work -maxdepth 1 -name task -type d`
@@ -49,7 +49,7 @@ task는 plan도 추가:
 
 ```yaml
 issue: TBD
-plan: _doc_work/plan/{주제}_plan.md
+plan: _doc_work/z_done/plan/{주제}_plan.md
 ```
 
 ## Issue.md 이슈 항목
@@ -59,8 +59,8 @@ plan/task 파일이 있으면 `* 목적:` 바로 아래에 경로 필드 추가:
 ```markdown
 ## Issue5: {제목} (등록: YYYY-MM-DD)
 * 목적: ...
-* plan: `_doc_work/plan/{주제}_plan.md`
-* task: `_doc_work/tasks/{주제}_task.md`
+* plan: `_doc_work/z_done/plan/{주제}_plan.md`
+* task: `_doc_work/z_done/tasks/{주제}_task.md`
 * 상세:
     - ...
 ```
@@ -69,7 +69,7 @@ plan/task 파일이 있으면 `* 목적:` 바로 아래에 경로 필드 추가:
 
 `/issue-reg-g` 3-1 단계에서 자동 처리:
 
-1. `_doc_work/plan/`, `_doc_work/tasks/` Glob으로 관련 파일 탐색
+1. `_doc_work/z_done/plan/`, `_doc_work/z_done/tasks/` Glob으로 관련 파일 탐색
 2. 발견 시: Issue.md에 `* plan:`, `* task:` 경로 추가
 3. 발견 시: 해당 파일 frontmatter `issue: TBD` → `issue: Issue{번호}` 업데이트
 
@@ -127,11 +127,11 @@ nPTiR 산출물(plan/task/report) 및 작업 부산물은 **절대 프로젝트 
 
 | 금지 패턴 (루트)                       | 올바른 위치                          |
 | :------------------------------------- | :----------------------------------- |
-| `tasks.md`, `*_task.md`, `task_*.md`   | `_doc_work/tasks/`                   |
-| `*_plan.md`, `plan_*.md`               | `_doc_work/plan/`                    |
-| `*_report.md`, `report_*.md`           | `_doc_work/report/`                  |
-| `verification_report_*.md`             | `_doc_work/report/`                  |
-| `analyze_*.md`, `debug_*.md`           | `_doc_work/report/` 또는 `_doc_work/debug/` |
+| `tasks.md`, `*_task.md`, `task_*.md`   | `_doc_work/z_done/tasks/`                   |
+| `*_plan.md`, `plan_*.md`               | `_doc_work/z_done/plan/`                    |
+| `*_report.md`, `report_*.md`           | `_doc_work/z_done/report/`                  |
+| `verification_report_*.md`             | `_doc_work/z_done/report/`                  |
+| `analyze_*.md`, `debug_*.md`           | `_doc_work/z_done/report/` 또는 `_doc_work/debug/` |
 | 임시 테스트 스크립트(`run_*`, `test_*`) | 모듈 폴더 또는 `z_test/`             |
 | `*.log`                                | `logs/`                              |
 
@@ -145,7 +145,7 @@ nPTiR 산출물(plan/task/report) 및 작업 부산물은 **절대 프로젝트 
 {cmd} > verification_report_$(date +%Y%m%d).md
 
 ## ✅ 권장
-{cmd} > _doc_work/report/verification_report_$(date +%Y%m%d).md
+{cmd} > _doc_work/z_done/report/verification_report_$(date +%Y%m%d).md
 {cmd} > logs/test/run_test_$(date +%Y%m%d-%H%M%S).log
 ```
 
@@ -196,5 +196,5 @@ _doc_work/
 - [ ] `PROMPTS.md` 생성
 - [ ] `Harness.md` 생성
 - [ ] `.claude/` 폴더 생성
-- [ ] `_doc_work/plan/`, `_doc_work/tasks/`, `_doc_work/report/`, `_doc_work/z_done/` 생성
+- [ ] `_doc_work/z_done/plan/`, `_doc_work/z_done/tasks/`, `_doc_work/z_done/report/`, `_doc_work/z_done/` 생성
 - [ ] `_doc_arch/` 폴더 생성

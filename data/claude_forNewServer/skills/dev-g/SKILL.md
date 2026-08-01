@@ -22,7 +22,7 @@ description: "모든 프로젝트에서 사용 가능한 이슈 기반 개발 �
 ### Case A: 인자가 있는 경우 (후보 번호 N)
 
 1. `Issue.md`의 `# 🌱 이슈후보` 섹션에서 N번 항목 식별
-2. **nPTiR 파일 확인**: `_doc_work/plan/`, `_doc_work/tasks/`에서 이 이슈후보와 관련된 파일 탐색
+2. **nPTiR 파일 확인**: `_doc_work/z_done/plan/`, `_doc_work/z_done/tasks/`에서 이 이슈후보와 관련된 파일 탐색
     - 있으면: 이슈 등록 시 자동 연결 (`/issue-reg` 3-1 단계)
     - 없으면: **생성하지 않음** — plan/task는 사용자가 명시적으로 요청할 때만 생성
 3. `/issue-reg`로 이슈 등록 (진행중 상태로 전환, plan/task 파일 자동 연결)
@@ -114,7 +114,7 @@ task가 크거나 독립 서브태스크 다수일 때 superpowers 자동화 스
 
 | 상황                                    | 권장 SP 스킬                              | 호출 조건                                    |
 | :-------------------------------------- | :---------------------------------------- | :------------------------------------------- |
-| plan 파일 기반 다단계 실행              | `superpowers:executing-plans`             | `_doc_work/plan/{주제}_plan.md` 존재 시      |
+| plan 파일 기반 다단계 실행              | `superpowers:executing-plans`             | `_doc_work/z_done/plan/{주제}_plan.md` 존재 시      |
 | 독립 서브태스크 다수 (상태 공유 없음)   | `superpowers:subagent-driven-development` | Claude Code 등 subagent 지원 환경            |
 | 다중 버그·다중 도메인 동시 수정         | `superpowers:dispatching-parallel-agents` | 세부 가이드는 `/issue-fix-g` 병렬 섹션 참조  |
 

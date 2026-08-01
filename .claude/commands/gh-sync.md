@@ -22,4 +22,4 @@ ex) `/gh-sync status`, `/gh-sync push`, `/gh-sync push --apply`, `/gh-sync pull`
 
 # 참조
 
-* 설계 SSOT: `_doc_work/plan/gh-issue-bridge_plan.md` · 이슈: Issue233(T6, 최초 구현) → Issue281_1(본 wrapper화)
+* 설계 SSOT: `_doc_work/z_done/plan/gh-issue-bridge_plan.md` · 이슈: Issue233(T6, 최초 구현) → Issue281_1(본 wrapper화)

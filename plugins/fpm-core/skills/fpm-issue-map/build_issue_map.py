@@ -67,6 +67,12 @@ MAX_PROJECTS = 20   # 교착 탐색: 열어 볼 프로젝트 상한
 
 
 # ── 파싱 ────────────────────────────────────────────────────────────────
+# `* depends:` 에서 파싱 불가여도 정상인 토큰 — 선행 없음을 밝히는 표기 (Issue343 P1)
+DEP_NULL_TOKENS = {"없음", "-", "n/a", "none", "na"}
+# 규약상 유효한 prj 참조 (rules/issue-g.md 규칙2) — 이름 표기는 위반 (Issue343 P2)
+PRJ_REF_RE = re.compile(r"^prj[0-9]+[a-z]?$")
+
+
 def parse_dep_token(tok: str):
     """`* depends:` 의 쉼표 조각 1개 → ('local', None, 'Issue3') | ('ext', 'prj1', 'Issue286') | None.
 
@@ -87,8 +93,13 @@ def parse_dep_token(tok: str):
     return ("local", None, m.group(1)) if m else None
 
 
-def parse_issue_md(path: Path):
-    """Issue.md → {id: {...}} 순서 보존 dict."""
+def parse_issue_md(path: Path, warn: list | None = None):
+    """Issue.md → {id: {...}} 순서 보존 dict.
+
+    warn 을 주면 `* depends:` 규약 위반을 (kind, 이슈ID, 원문토큰) 으로 수집한다 (Issue343).
+    타 프로젝트 조회(CrossResolver)는 warn 을 주지 않는다 — 남의 repo 위반을
+    여기서 보고하면 소음이고, 그 repo 의 이슈맵이 자기 것을 보고해야 한다.
+    """
     issues, section = {}, None
     current = None
     for line in path.read_text().splitlines():
@@ -123,11 +134,25 @@ def parse_issue_md(path: Path):
             for d in m_dep.group(1).split(","):
                 parsed = parse_dep_token(d)
                 if not parsed:
+                    # Issue343 P1: 조용히 버리면 그 의존이 지도에서 통째로 사라진다.
+                    # 없는 화살표는 눈에 띄지 않으므로 파싱 실패를 반드시 드러낸다.
+                    raw = d.strip()
+                    # 판정은 **정규화 후**에 한다 — `(없음)` 은 규약이 허용하는 표기인데
+                    # 괄호가 먼저 제거돼 빈 토큰이 되므로, 원문으로 대조하면 오탐이다.
+                    norm = re.sub(r"\([^)]*\)", " ", raw.replace("`", "")).strip()
+                    # norm 이 비면 토큰 전체가 괄호 부기였다는 뜻 — `(없음)` 이 그 형태다
+                    if warn is not None and raw and norm and norm.lower() not in DEP_NULL_TOKENS:
+                        warn.append(("unparsed", current["id"], raw))
                     continue
                 kind, ref, iid = parsed
                 if kind == "local":
                     current["depends"].append(iid)
                 else:                       # 타 prj 는 버리지 않고 보존 (Issue252)
+                    # Issue343 P2: 이름 표기(`fSnippet#`)는 파싱은 되나 레지스트리에
+                    # 없어 cross-prj 조회가 실패한다 → 링크가 조용히 끊긴다.
+                    # 자동 해석은 하지 않는다 — 이름은 바뀌고 중복되므로 추측이 더 위험하다.
+                    if warn is not None and not PRJ_REF_RE.match(ref):
+                        warn.append(("named_ref", current["id"], d.strip()))
                     current["ext"].append((ref, iid))
             continue
         m_trg = re.match(r"^\*\s+trigger\s*:\s*(.+?)\s*$", line)
@@ -963,6 +988,29 @@ def print_deadlock_report(issues, resolver, cycles):
               "선행 완료 시 자동 해제")
 
 
+def print_dep_warnings(warn: list) -> None:
+    """`* depends:` 규약 위반을 stderr 로 보고 (Issue343).
+
+    stderr 인 이유: 이 스크립트의 stdout 은 요약이고, 경고는 파이프로 흘려도
+    사라지면 안 되는 신호다. 자동 교정은 하지 않는다 — 규약 위반의 해석은 사람 몫.
+    """
+    if not warn:
+        return
+    bad = [w for w in warn if w[0] == "unparsed"]
+    named = [w for w in warn if w[0] == "named_ref"]
+    if bad:
+        print(f"\n⚠️ depends 파싱 실패 {len(bad)}건 — 이 의존은 지도에 그려지지 않았다:",
+              file=sys.stderr)
+        for _, iid, raw in bad:
+            print(f"   {iid:<12} {raw!r}", file=sys.stderr)
+    if named:
+        print(f"\n⚠️ prj 이름 표기 {len(named)}건 — `prj<번호>#Issue<N>` 로 고칠 것 "
+              "(이름은 레지스트리에 없어 cross-prj 조회가 실패한다):", file=sys.stderr)
+        for _, iid, raw in named:
+            print(f"   {iid:<12} {raw!r}", file=sys.stderr)
+    print("   규약: rules/issue-g.md 규칙2 `depends` 토큰 문법\n", file=sys.stderr)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="Issue_map.htm")
@@ -981,7 +1029,8 @@ def main():
     if not issue_md.exists():
         sys.exit(f"❌ {issue_md} 없음 — nPTiR 루트에서 실행할 것")
 
-    issues = parse_issue_md(issue_md)
+    dep_warn: list = []
+    issues = parse_issue_md(issue_md, warn=dep_warn)
     if not issues:
         sys.exit("❌ 이슈 파싱 결과 0건 — Issue.md 형식 확인 필요")
     ghosts = split_excluded(issues)         # ⏸️ 보류 · 🚫 취소 제외 (Issue259)
@@ -994,6 +1043,7 @@ def main():
 
     if args.deadlock:
         print_deadlock_report(issues, resolver, cycles)
+        print_dep_warnings(dep_warn)
         return
 
     hidden = frozenset() if args.all else settled(issues)
@@ -1028,6 +1078,7 @@ def main():
             print("⚠️ depends 연결 0건 — 의존 관계도·임계 경로 생략, 진행 전 이슈 목록만 렌더")
         print()
         print_deadlock_report(issues, resolver, cycles)
+        print_dep_warnings(dep_warn)
         return
 
     svg_graph = svg_crit = ""
@@ -1057,6 +1108,7 @@ def main():
     elif resolver.unresolved:
         print(f"⚠️ 타 prj 선행 {len(set(resolver.unresolved))}건 미확인 — 차단 여부 미판정 "
               "(`--deadlock` 로 상세 확인)")
+    print_dep_warnings(dep_warn)
 
 
 if __name__ == "__main__":

@@ -129,7 +129,9 @@ CLAUDE_CNT=$(pgrep -P "$PANE_PID" -f "node.*claude\|claude.*node" 2>/dev/null | 
 #   ⚠️ 사용자 쉘 별칭 `cc`(= claude --dangerously-skip-permissions)는
 #      **대화형 쉘 전용**이라 스크립트·send-keys 문맥에서는 풀네임을 쓴다.
 RESOLVED_CMD=$(resolve_cmd "$CMD_RAW" "$SUFFIX")
-CLAUDE_BIN="claude --dangerously-skip-permissions"
+# Issue342 S3 — 기동자 신호. SessionStart 훅이 caps.launched_by 로 실어 hub 카드가
+#   위임 세션을 사람이 띄운 세션과 구분한다. 실동작 코드 `~/.bin/pm-do` 와 같은 값이어야 한다.
+CLAUDE_BIN="FPM_SESSION_ORIGIN=pm-do claude --dangerously-skip-permissions"
 
 if [ "$CLAUDE_CNT" -gt 0 ]; then
   # 이미 대화형 Claude 가 그 pane 을 점유 중 → 프롬프트만 입력(기존 경로).
@@ -172,8 +174,10 @@ resolve_cmd() {
 
 | 모드 | 명령 | 언제 | 특징 |
 | :--- | :--- | :--- | :--- |
-| **비대화(기본)** | `claude --dangerously-skip-permissions -p '<프롬프트>'` | 위임·자동화 전부 | 게이트 없음. 끝나면 프로세스 종료 → 완료 판정이 명확 |
-| 대화형(예외) | `claude --dangerously-skip-permissions` + send-keys | 사람이 중간 개입할 작업 | **첫 실행 안내·승인 게이트에서 멈춘다**. 사람이 붙어 있을 때만 |
+| **비대화(기본)** | `FPM_SESSION_ORIGIN=pm-do claude --dangerously-skip-permissions -p '<프롬프트>'` | 위임·자동화 전부 | 게이트 없음. 끝나면 프로세스 종료 → 완료 판정이 명확 |
+| 대화형(예외) | `FPM_SESSION_ORIGIN=pm-do claude --dangerously-skip-permissions` + send-keys | 사람이 중간 개입할 작업 | **첫 실행 안내·승인 게이트에서 멈춘다**. 사람이 붙어 있을 때만 |
+
+* `FPM_SESSION_ORIGIN=pm-do` 는 **기동자 신호**다(Issue342 S3) — hub 카드가 위임 세션을 사람이 띄운 세션과 구분한다. 빠뜨려도 위임 자체는 동작하나 카드에서 출처가 미상이 된다
 
 * 사용자 쉘에서 손으로 띄울 때는 별칭 `cc -p '<프롬프트>'` 가 동일하다. **별칭은 대화형 쉘 전용**이므로 스크립트·`send-keys`·cron 에서는 `claude --dangerously-skip-permissions -p` 풀네임을 쓴다
 * `-p` 는 1-shot 이다. 다단계 대화가 필요하면 프롬프트에 절차를 전부 적거나 `--continue`/`--resume` 으로 이어붙인다

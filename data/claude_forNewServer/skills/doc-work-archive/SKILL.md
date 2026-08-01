@@ -50,9 +50,9 @@ nPTiR 산출물(plan/task/report)이 `_doc_work/` 하위에 누적되면 탐색 
 
 ```
 ## Issue{N}: ... ✅
-* plan: `_doc_work/plan/{name}_plan.md`      ← 있을 때만
-* task: `_doc_work/tasks/{name}_task.md`     ← 있을 때만
-* report: `_doc_work/report/{name}_issue{N}_report.md`  ← 있을 때만
+* plan: `_doc_work/z_done/plan/{name}_plan.md`      ← 있을 때만
+* task: `_doc_work/z_done/tasks/{name}_task.md`     ← 있을 때만
+* report: `_doc_work/z_done/report/{name}_issue{N}_report.md`  ← 있을 때만
 ```
 
 수집 항목: `(issue_number, kind, src_path)` 튜플 목록. 각 `src_path`에 대해 실제 파일 존재 여부 확인.
@@ -68,8 +68,8 @@ nPTiR 산출물(plan/task/report)이 `_doc_work/` 하위에 누적되면 탐색 
 ```
 | Issue | Kind   | From                                                   | To                                                      |
 | :---- | :----- | :----------------------------------------------------- | :------------------------------------------------------ |
-| 1     | plan   | _doc_work/plan/info-files-activation_plan.md           | _doc_work/z_done/plan/info-files-activation_plan.md     |
-| 1     | report | _doc_work/report/info-files-activation_issue1_report.md| _doc_work/z_done/report/info-files-activation_issue1_report.md |
+| 1     | plan   | _doc_work/z_done/plan/info-files-activation_plan.md           | _doc_work/z_done/plan/info-files-activation_plan.md     |
+| 1     | report | _doc_work/z_done/report/info-files-activation_issue1_report.md| _doc_work/z_done/report/info-files-activation_issue1_report.md |
 | 2     | plan   | ...                                                    | ...                                                     |
 ```
 
@@ -110,9 +110,9 @@ nPTiR 산출물(plan/task/report)이 `_doc_work/` 하위에 누적되면 탐색 
 대상: 완료 섹션의 해당 이슈 항목.
 
 변환 규칙 (역따옴표 포함 정확 치환):
-- `` `_doc_work/plan/{x}.md` `` → `` `_doc_work/z_done/plan/{x}.md` ``
-- `` `_doc_work/tasks/{x}.md` `` → `` `_doc_work/z_done/tasks/{x}.md` ``
-- `` `_doc_work/report/{x}.md` `` → `` `_doc_work/z_done/report/{x}.md` ``
+- `` `_doc_work/z_done/plan/{x}.md` `` → `` `_doc_work/z_done/plan/{x}.md` ``
+- `` `_doc_work/z_done/tasks/{x}.md` `` → `` `_doc_work/z_done/tasks/{x}.md` ``
+- `` `_doc_work/z_done/report/{x}.md` `` → `` `_doc_work/z_done/report/{x}.md` ``
 
 동일 경로가 Issue.md의 **다른 이슈 항목(미완료)** 에서 발견되면 오류로 판단하고 중단 (동일 산출물을 두 이슈가 공유하는 비정상 상태).
 
@@ -122,7 +122,7 @@ task 파일의 frontmatter `plan:` 필드가 이동된 plan을 가리키면 경�
 
 ```yaml
 ---
-plan: _doc_work/plan/{x}_plan.md       ← 갱신 전
+plan: _doc_work/z_done/plan/{x}_plan.md       ← 갱신 전
 plan: _doc_work/z_done/plan/{x}_plan.md  ← 갱신 후
 ---
 ```
@@ -135,7 +135,7 @@ plan: _doc_work/z_done/plan/{x}_plan.md  ← 갱신 후
 사용자가 "전체 스캔" 옵션을 지정한 경우에만 수행:
 
 ```bash
-grep -rln "_doc_work/plan/\|_doc_work/tasks/\|_doc_work/report/" \
+grep -rln "_doc_work/z_done/plan/\|_doc_work/z_done/tasks/\|_doc_work/z_done/report/" \
   --include="*.md" "$NPTIR_ROOT"
 ```
 
@@ -168,7 +168,7 @@ grep -rln "_doc_work/plan/\|_doc_work/tasks/\|_doc_work/report/" \
 `_doc_work/`가 프로젝트 루트가 아닌 Xcode 프로젝트 폴더(`prj25/_doc_work/`, `prj26/_doc_work/` 등) 내부에 위치할 수 있음. 이 경우:
 
 - `Issue.md`는 프로젝트 최상위에 있음
-- `Issue.md`의 경로 표기는 해당 `_doc_work`에 맞춘 **상대경로** (ex: `prj26/_doc_work/plan/foo_plan.md`)
+- `Issue.md`의 경로 표기는 해당 `_doc_work`에 맞춘 **상대경로** (ex: `prj26/_doc_work/z_done/plan/foo_plan.md`)
 
 탐지 순서에서 `*.xcodeproj` 기반 fallback이 이 케이스를 커버. 이동·갱신 시 상대경로 prefix를 보존함.
 
