@@ -251,7 +251,7 @@ PM 도구 프로젝트 쌍. `___pm`(prj1) = 개발 원본 SSOT, `fpm`(prj7, `~/_
     - /issue-closer-g
 * capture
 
-# work-cti
+# <private-project-5>
 ## main
 * dev
 * issue
