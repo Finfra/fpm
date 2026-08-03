@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: db5087d1cae7a17320707878ef852ff657def6bd68f05c7c2e12bd35bae3b17d
+source_sha: a1702ba3fb8875f7ea60246406d990be4532dd5c64879f1fac44922094168a99
 ---
 
 # 안내
@@ -17,6 +17,22 @@ source_sha: db5087d1cae7a17320707878ef852ff657def6bd68f05c7c2e12bd35bae3b17d
 `scripts/fpm-issue-digest.sh` 가 덮어쓴다.
 
 # 이슈 근거
+
+## Issue350: 공개 미러에 사설 프로젝트명 잔존 — exclude 파일은 sanitize 가 닿지 않는다
+* 목적: 공개 미러 `fpm` 의 `Harness.md`·`Harness_ko.md` 에 사설 프로젝트명 **`<private-project-5>`** 가 섹션 헤더(`# <private-project-5>`)로 남아 있다. 이 문자열은 `publishable-policy.yml` 의 sanitize 대상이라 *"공개되면 안 된다"* 고 이미 판정된 값이다. 개별 문자열보다 **왜 sanitize 가 못 잡았는가** 가 본질이다.
+* 구현 명세:
+    - 1단계 **전수 실측** — 미러 전체에 sanitize `from` 리터럴이 몇 건 남았는지 센다. `Harness.md` 외에 같은 사연을 가진 exclude 고아가 더 있는지 먼저 본다
+    - 2단계 **HEAD 정화** — 미러 쪽 `Harness.md`·`Harness_ko.md` 에서 해당 절을 제거·치환. ⚠️ 이 파일들은 미러 소유(forward 가 안 덮음)라 **fpm 에서 직접 고쳐야** 한다
+    - 3단계 **재발 차단(핵심)** — exclude 파일이라도 **미러에 실재하면** 검사 대상에 넣는다. ex) forward 말미에 *미러 전체* 대상 secret-scan 을 1회 돌려 sanitize `from` 리터럴이 발견되면 fail-loud. 현행 `fpm-secret-scan.sh` 는 스냅샷(TMP)만 본다
+    - 4단계 이력 제거 여부는 **사용자 판단** — force push 는 협업자 clone 을 깨뜨린다. 노출값이 프로젝트 코드명 1개뿐이라 비용 대비 실익을 함께 검토할 것
+
+## Issue348: 배포본 test_issue_map.py 가 자기 검증을 건너뜀 — 경로 기준 어긋남
+* 목적: `plugins/fpm-core/services/hub/test_issue_map.py` 가 **배포본 생성기를 찾지 못해** 그 절반의 검증을 통째로 건너뛴다. 이 테스트의 존재 이유가 *"원본·배포본 양쪽을 같은 픽스처로 돌린다"*(파일 주석 250~251행)인데, 정작 배포본 쪽이 비어 있다.
+* depends: Issue343
+* 구현 명세:
+    - 경로를 파일 위치에 의존하지 않게 잡을 것. ex) `parents[2]` 대신 repo 루트를 `git rev-parse --show-toplevel` 또는 `_BIM_PATHS` 를 **두 후보 모두 절대경로 탐색**으로 바꾸기
+    - ⚠️ 이 파일은 **2원 사본**이다 — 원본(`services/hub/`)과 배포본(`plugins/fpm-core/services/hub/`) 을 **같은 커밋**에 고칠 것. 한쪽만 고치면 `bundle-sync --check` 가 표류로 잡는다
+    - 고친 뒤 **양쪽 위치에서 각각 실행**해 둘 다 통과하는지 확인 (한 위치에서만 돌리면 이 결함이 그대로 재발한다)
 
 ## Issue349: fpm-sanitize 가 정상 상태에서 forward 를 조용히 죽임 + fail-loud 무력화 ✅
 * 목적: `scripts/fpm-sanitize.sh` 말미의 파이프라인 하나가 **서로 다른 두 결함**을 동시에 만들고 있었다. Issue342 의 승인된 forward sync 가 여기서 막혀 발견됐다.

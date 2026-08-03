@@ -1,6 +1,6 @@
 ---
-name: fpm-pm-do
-description: 다른 prj로 명령 위임 후 완료 시까지 동기 블로킹. 의존성(* depends:) 자동 해결 지원
+name: fpm-do
+description: "다른 prj로 명령 위임 후 동기 블로킹·완료 hash 회수. 의존성 자동 해결 지원"
 date: 2026-05-16
 ---
 
@@ -9,10 +9,10 @@ skill: "fpm-pm-do"
 # 사용법
 
 ```
-/pm-do <prj번호> "<명령>"
-/pm-do --auto-deps [IssueN]
-/pm-do --no-wait <prj번호> "<명령>"
-/pm-do --status <prj번호>
+/fpm-do <prj번호> "<명령>"
+/fpm-do --auto-deps [IssueN]
+/fpm-do --no-wait <prj번호> "<명령>"
+/fpm-do --status <prj번호>
 ```
 
 # 실행 모드 (Issue299)
@@ -21,7 +21,7 @@ skill: "fpm-pm-do"
 
 # 인자: $ARGUMENTS
 
-> ⚠️ **해석 게이트 (Issue286)**: 위임은 **명시 토큰 opt-in**. `pm-do`·`/pm-do`·`prj<N>`·"N번 프로젝트" 없이 bare 숫자로 시작하는 입력(`11 /dev`)은 **현재 프로젝트의 이슈 번호**로 해석하고 본 커맨드를 호출하지 말 것. 양쪽으로 읽히면 `AskUserQuestion` 1회 확인(수면 모드에서도 예외 — 타 prj 세션 기동은 현재 프로젝트 밖 부작용 = 크리티컬). 상세: [`rules/input-interpretation-rules.md`](../rules/input-interpretation-rules.md)
+> ⚠️ **해석 게이트 (Issue286)**: 위임은 **명시 토큰 opt-in**. `pm-do`·`/fpm-do`·`prj<N>`·"N번 프로젝트" 없이 bare 숫자로 시작하는 입력(`11 /dev`)은 **현재 프로젝트의 이슈 번호**로 해석하고 본 커맨드를 호출하지 말 것. 양쪽으로 읽히면 `AskUserQuestion` 1회 확인(수면 모드에서도 예외 — 타 prj 세션 기동은 현재 프로젝트 밖 부작용 = 크리티컬). 상세: [`rules/input-interpretation-rules.md`](../rules/input-interpretation-rules.md)
 
 # 처리 흐름
 
@@ -37,23 +37,23 @@ skill: "fpm-pm-do"
 
 # 상세
 
-스킬 본문(`~/.claude/skills/pm-do/SKILL.md`) 참조. 슬래시 커맨드는 인자 라우팅만 담당.
+스킬 본문([`skills/fpm-pm-do/SKILL.md`](../skills/fpm-pm-do/SKILL.md)) 참조. 슬래시 커맨드는 인자 라우팅만 담당.
 
 # 예시
 
 ```
-/pm-do 15 "이슈3 해결"
+/fpm-do 15 "이슈3 해결"
   → prj15(fSnippet) 윈도우에서 /issue-fix-m 3 실행 후 hash 회수
 
-/pm-do --auto-deps Issue5
+/fpm-do --auto-deps Issue5
   → 현재 prj의 Issue5의 * depends 파싱
   → "prj15#Issue3, prj25#Issue7" 발견
   → 각각 순차 위임·완료 대기
 
-/pm-do --no-wait 25 "/build"
+/fpm-do --no-wait 25 "/build"
   → prj25에 /build 명령만 전달 후 즉시 리턴
 
-/pm-do --status 15
+/fpm-do --status 15
   → pm:fapp 윈도우 capture 출력
 ```
 

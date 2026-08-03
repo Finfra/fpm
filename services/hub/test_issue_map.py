@@ -255,10 +255,26 @@ from pathlib import Path  # noqa: E402
 # 위 블록의 finally 가 TMP 를 지웠으므로 자체 임시 디렉토리를 새로 잡는다
 TMP2 = tempfile.mkdtemp(prefix="dep-token-test-")
 
+def _find_bundled_bim():
+    """번들 생성기를 **파일 위치에 의존하지 않고** 찾는다 (Issue348).
+
+    이 테스트는 원본(services/hub/)과 배포본(plugins/fpm-core/services/hub/)
+    양쪽에 같은 내용으로 놓인 2원 사본이라, 고정 `parents[N]` 은 한쪽에서만
+    성립한다. 상향 탐색으로 실제 존재하는 경로를 잡는다.
+    """
+    rel = os.path.join("plugins", "fpm-core", "skills",
+                       "fpm-issue-map", "build_issue_map.py")
+    here = Path(os.path.abspath(__file__))
+    for _base in here.parents:
+        _cand = os.path.join(_base, rel)
+        if os.path.exists(_cand):
+            return _cand
+    return os.path.join(here.parents[2], rel)   # 미발견 시 fail-loud 용 기존 기준
+
+
 _BIM_PATHS = [
     os.path.expanduser("~/.claude/skills/issue-map/build_issue_map.py"),
-    os.path.join(Path(os.path.abspath(__file__)).parents[2],
-                 "plugins", "fpm-core", "skills", "fpm-issue-map", "build_issue_map.py"),
+    _find_bundled_bim(),
 ]
 
 # (입력, 기대 반환, 경고종류) — 경고종류 None 이면 규약 준수라 경고가 없어야 한다.
