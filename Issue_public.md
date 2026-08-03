@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: a1702ba3fb8875f7ea60246406d990be4532dd5c64879f1fac44922094168a99
+source_sha: 3664ca216a00cc4f59afea8921e2c0899365f4500fcadebc0cf9b88736570af5
 ---
 
 # 안내
@@ -17,6 +17,15 @@ source_sha: a1702ba3fb8875f7ea60246406d990be4532dd5c64879f1fac44922094168a99
 `scripts/fpm-issue-digest.sh` 가 덮어쓴다.
 
 # 이슈 근거
+
+## Issue352: hub registry 자동 만료 + hub OFF 배지 ✅
+* 목적: `htm-registry.json` 에 만료 정책이 없어 hub 문서 목록이 무한 누적됐다. `..hub off` 를 해도 목록은 그대로라 "꺼도 옛날 게 남아 있다"로 관측됐다. 만료를 서버가 갖게 하고, off 상태는 가리는 대신 배지로 정직하게 표시한다.
+* 구현 명세:
+    - `_prune_htm_registry()`: mtime 최신순 상위 keep 보존 → 나머지는 age 이내만 보존 → 그 외 제거. 정책값은 [`htm-lifecycle-design.md`](_doc_arch/htm-lifecycle-design.md) SSOT 승계(**keep 20 / age 7일**), `hub_setting.yml` 키(`htm_registry_keep`·`htm_registry_age_days`)로 조정 가능(둘 다 `0`=비활성)
+    - ⚠️ **tombstone(`HTM_CLEARED`) 미기록** — `clear` 는 사용자의 명시적 삭제 의도라 부활을 차단하지만 자동 만료는 의도가 아니다. 남기면 무한 성장 + 영구 복구 불가. 파일 보존이라 `/hub-rescan` 으로 복구 가능
+    - 호출은 `_collect_htm_docs()` 단일 지점 + **TTL 60초 가드**(hub 5초 polling)
+    - hub 헤더 배지 `⏸ N/M hub OFF`(전역이면 `system`). 소스는 `_hub_off_stats()` — collect 의 `projects` 는 dash-registry 기반이라 dashboard 보유 프로젝트만 담겨(실측 0건) 배지 소스로 쓸 수 없었음
+    - `_htm_state_entries()` TTL 2초 캐시로 `.hub-state` 스캔 1회화, 토글 직후 무효화
 
 ## Issue350: 공개 미러에 사설 프로젝트명 잔존 — exclude 파일은 sanitize 가 닿지 않는다
 * 목적: 공개 미러 `fpm` 의 `Harness.md`·`Harness_ko.md` 에 사설 프로젝트명 **`<private-project-5>`** 가 섹션 헤더(`# <private-project-5>`)로 남아 있다. 이 문자열은 `publishable-policy.yml` 의 sanitize 대상이라 *"공개되면 안 된다"* 고 이미 판정된 값이다. 개별 문자열보다 **왜 sanitize 가 못 잡았는가** 가 본질이다.

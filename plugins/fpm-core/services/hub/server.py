@@ -948,6 +948,70 @@ def save_registry(path: str, entries: list) -> None:
     os.replace(tmp, path)
 
 
+def _htm_entry_mtime(e: dict) -> float:
+    """htm registry 항목의 신선도 기준 시각 (판정 단일 지점 — prune·clear 공용).
+    파일 mtime 우선, stat 실패(이동·삭제) 시 registered_at fallback."""
+    try:
+        return os.path.getmtime(e.get("path", ""))
+    except OSError:
+        return e.get("registered_at", 0) or 0
+
+
+# Issue352: htm-registry 자동 만료. 만료 정책이 없어 hub 문서 목록이 무한 누적됐고
+#   (실측 jm4 168건·fg1 17건), 정리 수단이 UI 버튼 수동 호출뿐이라 `..hub off` 를 해도
+#   목록이 그대로 남아 "꺼도 옛날 게 보인다"로 관측됐다. 만료를 서버가 스스로 수행한다.
+#
+#   판정: mtime 최신순 상위 keep 개 보존 → 나머지는 age_days 이내만 보존 → 그 외 제거.
+#   ⚠️ tombstone(HTM_CLEARED)을 남기지 않는다 — clear-htm-docs 는 사용자의 명시적 삭제
+#      의도라 부활을 차단하지만, 자동 만료는 사용자 의도가 아니므로 /hub-rescan 으로
+#      복구 가능해야 한다. tombstone 을 남기면 무한 성장 + 영구 복구 불가가 된다.
+#   파일은 삭제하지 않는다 (hub 연결만 끊음 — clear-htm-docs 와 동일 원칙).
+_HTM_PRUNE_TTL = 60.0        # 실제 prune 최소 간격(초). hub 는 5초 polling 이라 가드 필수
+_htm_prune_next = 0.0
+_htm_prune_lock = threading.Lock()
+
+
+def _prune_htm_registry(force: bool = False) -> int:
+    """만료 기준 초과 htm registry 항목 제거. 반환: 제거 건수 (0=미수행·해당 없음).
+    정책값 SSOT: _doc_arch/htm-lifecycle-design.md (age 7일 + keep-N 20)."""
+    global _htm_prune_next
+    now = time.time()
+    with _htm_prune_lock:
+        if not force and now < _htm_prune_next:
+            return 0
+        _htm_prune_next = now + _HTM_PRUNE_TTL
+    setting = _load_hub_setting()
+    try:
+        keep = int(setting.get("htm_registry_keep", 20))
+    except (TypeError, ValueError):
+        keep = 20
+    try:
+        age_days = float(setting.get("htm_registry_age_days", 7))
+    except (TypeError, ValueError):
+        age_days = 7.0
+    keep = max(keep, 0)
+    age_days = max(age_days, 0.0)
+    if keep <= 0 and age_days <= 0:
+        return 0                       # 양쪽 0 = 만료 비활성 (기존 card_limit 패턴 승계)
+    cutoff = (now - age_days * 86400.0) if age_days > 0 else None
+    with registry_lock:
+        entries = load_registry(HTM_REGISTRY)
+        total = len(entries)
+        if not total:
+            return 0
+        ordered = sorted(entries, key=_htm_entry_mtime, reverse=True)
+        kept = ordered[:keep]
+        if cutoff is not None:
+            kept += [e for e in ordered[keep:] if _htm_entry_mtime(e) >= cutoff]
+        if len(kept) >= total:
+            return 0                   # 제거 대상 없음 — 쓰기 생략
+        removed = total - len(kept)
+        save_registry(HTM_REGISTRY, kept)
+    log(f"htm-registry prune — removed={removed} kept={len(kept)} total={total} "
+        f"(keep={keep}, age={age_days}d, tombstone 미기록 — rescan 복구 가능)")
+    return removed
+
+
 def _save_live_dismissed(d: dict) -> None:
     """live-dismissed tombstone 원자적 저장 (Issue135)."""
     os.makedirs(os.path.dirname(LIVE_DISMISSED), exist_ok=True)
@@ -1912,6 +1976,45 @@ def _issue_open_count(cwd: str) -> int:
     return count
 
 
+# Issue352: .hub-state 디렉토리 스캔 결과 단기 캐시. collect(5초 polling)가 프로젝트 수만큼
+#   _htm_state() 를 호출하면 listdir 이 그 횟수만큼 반복된다 — 1회 스캔 결과를 공유한다.
+#   판정 로직 자체는 _htm_state() 단일 지점 유지 (규칙5).
+_HTM_STATE_TTL = 2.0
+_htm_state_cache = (0.0, {})
+_htm_state_cache_lock = threading.Lock()
+
+
+def _htm_state_entries() -> dict:
+    """{hash_prefix: content} — .hub-state 디렉토리 1회 스캔 결과 (TTL 2초)."""
+    global _htm_state_cache
+    now = time.time()
+    with _htm_state_cache_lock:
+        exp, data = _htm_state_cache
+        if now < exp:
+            return data
+    state_dir = os.path.join(os.path.expanduser("~"), ".claude", ".hub-state")
+    out = {}
+    try:
+        for fn in os.listdir(state_dir):
+            try:
+                with open(os.path.join(state_dir, fn), encoding="utf-8") as f:
+                    out[fn.split("__", 1)[0]] = f.read().strip()
+            except OSError:
+                continue
+    except (FileNotFoundError, OSError):
+        pass
+    with _htm_state_cache_lock:
+        _htm_state_cache = (now + _HTM_STATE_TTL, out)
+    return out
+
+
+def _htm_state_cache_clear() -> None:
+    """토글 직후 캐시 무효화 — 쓴 값을 같은 요청에서 바로 되읽어야 하므로 TTL 을 못 기다린다."""
+    global _htm_state_cache
+    with _htm_state_cache_lock:
+        _htm_state_cache = (0.0, {})
+
+
 def _htm_state(path: str) -> tuple:
     """프로젝트 경로의 htm 자동 모드 effective off 여부 + 사유 계산.
     htm-trigger.sh 판정 우선순위 복제: SYSTEM_OFF_FLAG > per-cwd STATE_FILE > 프로젝트 default(on).
@@ -1921,17 +2024,7 @@ def _htm_state(path: str) -> tuple:
         return True, "시스템 OFF (..hub off)"
     abs_cwd = os.path.expanduser(path).rstrip("/")
     h = hashlib.md5(abs_cwd.encode("utf-8")).hexdigest()[:8]
-    state_dir = os.path.join(home, ".claude", ".hub-state")
-    content = None
-    try:
-        for fn in os.listdir(state_dir):
-            if fn == h or fn.startswith(h + "__"):
-                with open(os.path.join(state_dir, fn), encoding="utf-8") as f:
-                    content = f.read().strip()
-                break
-    except (FileNotFoundError, OSError):
-        pass
-    if content == "off":
+    if _htm_state_entries().get(h) == "off":
         return True, "프로젝트 stop (..hub stop)"
     return False, ""
 
@@ -1973,6 +2066,19 @@ def _projects_list_with_htm() -> list:
         off, reason = _htm_state(r.get("path", ""))
         out.append({**r, "htm_off": off, "htm_reason": reason})
     return out
+
+
+def _hub_off_stats() -> dict:
+    """Issue352: hub OFF 배지용 집계 — 등록 프로젝트(Projects.md) 중 effective off 개수 +
+    시스템 전역 OFF 여부. state 스캔은 _htm_state_entries() 캐시(TTL 2초)라 5초 polling 무해."""
+    sys_off = os.path.exists(
+        os.path.join(os.path.expanduser("~"), ".claude", ".hub-system-off"))
+    rows = _projects_list_with_htm()
+    return {
+        "hub_system_off": sys_off,
+        "hub_off_count": sum(1 for r in rows if r.get("htm_off")),
+        "hub_off_total": len(rows),
+    }
 
 
 def _resolve_project_root(abs_cwd: str) -> dict:
@@ -2369,6 +2475,11 @@ HUB_SETTING_SCHEMA = [
      "apply": "auto", "comment": "hub 화면에 표시할 htm 렌더 카드 최대 수 (0=무제한)"},
     {"key": "search_limit", "tab": "session", "widget": "number", "min": 0,
      "apply": "auto", "comment": "hub 서버가 디스크 재스캔 시 디렉토리당 읽는 파일 상한 (0=무제한)"},
+    # Issue352: htm registry 자동 만료 — 목록 무한 누적 차단 (정책 SSOT htm-lifecycle-design.md)
+    {"key": "htm_registry_keep", "tab": "session", "widget": "number", "min": 0,
+     "apply": "auto", "comment": "hub 문서 목록에 무조건 남길 최신 문서 수 (mtime 최신순). 이 개수를 넘는 오래된 문서는 '보존 기간'을 지나면 목록에서 자동으로 빠진다 — 파일은 지우지 않으므로 '디스크 재스캔'으로 되살릴 수 있다"},
+    {"key": "htm_registry_age_days", "tab": "session", "widget": "number", "min": 0,
+     "apply": "auto", "comment": "hub 문서 보존 기간(일). '무조건 남길 수'를 넘는 문서 중 이 기간 안에 만들어진 것만 목록에 남는다. 두 값이 모두 0이면 자동 정리를 하지 않는다(무한 누적)"},
     # 피드 키 묶음 (Issue197: feed_default_visible basic→session, feed_poll_interval advanced→session)
     {"key": "feed_default_visible", "tab": "session", "widget": "toggle",
      "apply": "auto", "comment": "hub 화면 첫 접속 시 피드 사이드바를 펼쳐 보일지"},
@@ -4057,6 +4168,9 @@ class Handler(BaseHTTPRequestHandler):
         디렉토리 스캔 없음 — 등록 경로 1건씩 stat. 파일 부재 시 missing=True 로 노출
         (clear 로 목록 정리 가능). cwd 로 프로젝트 메타(name/color/token) 매핑."""
         import urllib.parse as _u
+        # Issue352: registry 무한 누적 차단. TTL 가드가 있어 5초 polling 에도 실제 수행은
+        #   최대 60초당 1회. registry_lock 은 내부에서 잡으므로 여기서는 미보유 상태여야 함.
+        _prune_htm_registry()
         with projects_lock:
             proj_snap = {h: dict(p) for h, p in projects.items()}
         with registry_lock:
@@ -4394,6 +4508,11 @@ class Handler(BaseHTTPRequestHandler):
             "live_session_limit": _load_hub_setting()["live_session_limit"],  # Issue129: 카드당 세션 행 상한
             "live_session_copy_button": _load_hub_setting()["live_session_copy_button"],  # Issue277: 세션 ID 복사 버튼 표시
             "feed_blink_on_new": _load_hub_setting()["feed_blink_on_new"],  # Issue279: 새 피드 깜빡임
+            # Issue352: hub OFF 배지 소스. ⚠️ 위 out_projects 는 dash-registry 기반이라
+            #   dashboard 보유 프로젝트만 담긴다(실측 0건) — 배지 소스로 못 쓴다.
+            #   등록 프로젝트 전체(Projects.md)를 세는 _projects_list_with_htm() 을 쓴다.
+            #   시스템 전역 OFF 는 별도 플래그로 준다 — htm_reason 문자열 매칭에 기대지 않기 위함.
+            **_hub_off_stats(),
             "ts": int(time.time()),
         })
 
@@ -5086,13 +5205,8 @@ __WARN__
         with registry_lock:
             entries = load_registry(HTM_REGISTRY)
             total = len(entries)
-
-            def _mtime_key(e):
-                try:
-                    return os.path.getmtime(e.get("path", ""))
-                except OSError:
-                    return e.get("registered_at", 0) or 0
-            entries.sort(key=_mtime_key, reverse=True)
+            # Issue352: 정렬 기준은 _htm_entry_mtime 단일 지점 (자동 prune 과 공용)
+            entries.sort(key=_htm_entry_mtime, reverse=True)
             kept = entries[:keep] if keep > 0 else []
             removed = [e.get("path", "") for e in (entries[keep:] if keep > 0 else entries)]
             save_registry(HTM_REGISTRY, kept)
@@ -6082,6 +6196,7 @@ __WARN__
         except OSError as e:
             self._send_json(500, {"error": f"write failed: {e}"})
             return
+        _htm_state_cache_clear()   # Issue352: 방금 쓴 값을 같은 요청에서 되읽어야 함
         off, reason = _htm_state(path)
         log(f"POST /htm-toggle — {abs_cwd} → {new} (effective_off={off})")
         self._send_json(200, {"path": abs_cwd, "state": new, "htm_off": off, "htm_reason": reason})
@@ -6128,6 +6243,7 @@ __WARN__
             except OSError as e:
                 log(f"POST /htm-toggle-all — write failed {path}: {e}")
                 continue
+            _htm_state_cache_clear()   # Issue352: 방금 쓴 값 기준으로 재판정
             off, reason = _htm_state(path)
             results.append({"path": os.path.expanduser(path).rstrip("/"),
                             "htm_off": off, "htm_reason": reason})
@@ -9337,7 +9453,12 @@ async function reload() {
     document.getElementById('dashboard-section').style.display = dashCount > 0 ? '' : 'none';
     const liveCount = (data.live_sessions || []).length;
     const htmCount = (data.htm_docs || []).length;
-    if (hubStats) hubStats.textContent = `${(data.projects||[]).length} project · ${dashCount} dashboard · ${liveCount} live session · ${htmCount} hub doc`;
+    // Issue352: hub OFF 배지. off 는 "새 렌더 중단"이지 "과거 문서 숨김"이 아니므로
+    //   목록은 그대로 두고 상태만 표시한다 (빈 페이지로 덮지 않음).
+    const offCount = data.hub_off_count || 0, offTotal = data.hub_off_total || 0;
+    const offTxt = data.hub_system_off ? ' · ⏸ hub OFF (system)'
+                 : (offCount ? ` · ⏸ ${offCount}/${offTotal} hub OFF` : '');
+    if (hubStats) hubStats.textContent = `${(data.projects||[]).length} project · ${dashCount} dashboard · ${liveCount} live session · ${htmCount} hub doc` + offTxt;
     updated.textContent = t('statusbar.updated', {time: new Date().toLocaleTimeString()});
   } catch (e) {
     errorBar.textContent = '❌ ' + e.message;
