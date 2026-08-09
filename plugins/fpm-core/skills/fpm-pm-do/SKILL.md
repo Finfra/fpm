@@ -242,28 +242,66 @@ resolve_cmd() {
 
 # 완료 폴링
 
+동기·비동기 양쪽이 **단일 폴링 지점**(`poll_delegate`)을 쓴다. 결과는 `POLL_*` 전역으로 돌려준다.
+
 ```bash
-POLL_INTERVAL="${PM_DO_POLL_INTERVAL:-60}"
-TIMEOUT="${PM_DO_TIMEOUT:-1800}"
-MAX_ITERS=$((TIMEOUT / POLL_INTERVAL))
-
-iter=0
-while [ "$iter" -lt "$MAX_ITERS" ]; do
-  HASH=$(extract_completion_hash "$PRJ_PATH" "$ISS_NUM")
-  if [ -n "$HASH" ]; then
-    echo "[completed] prj${PRJ_NUM}#Issue${ISS_NUM} → ${HASH}"
-    echo "$HASH"
-    exit 0
-  fi
-  /bin/sleep "$POLL_INTERVAL"
-  iter=$((iter+1))
-done
-
-# 타임아웃: capture로 상황 출력
-echo "ERROR: timeout (${TIMEOUT}s) for prj${PRJ_NUM}#Issue${ISS_NUM}"
-$TMUX capture-pane -t "$TARGET" -p -l 50
-exit 2
+# 반환 0=완료 · 3=타임아웃이지만 세션은 아직 작업 중 · 2=타임아웃+세션 종료
+poll_delegate() {
+  local prj_path="$1" iss_num="$2" target="$3"
+  local max_iters=$((TIMEOUT / POLL_INTERVAL))
+  local start_ts=$(/bin/date +%s) iter=0
+  POLL_HASH=""; POLL_ELAPSED=0; POLL_ITERS=0
+  while [ "$iter" -lt "$max_iters" ]; do
+    if is_completed "$prj_path" "$iss_num"; then
+      POLL_HASH=$(extract_hash "$prj_path" "$iss_num")
+      POLL_ELAPSED=$(( $(/bin/date +%s) - start_ts )); POLL_ITERS=$iter
+      return 0
+    fi
+    /bin/sleep "$POLL_INTERVAL"; iter=$((iter + 1))
+  done
+  POLL_ELAPSED=$(( $(/bin/date +%s) - start_ts )); POLL_ITERS=$iter
+  pane_has_claude "$target" && return 3   # Issue371 축C
+  return 2
+}
 ```
+
+## 축C — 타임아웃은 실패가 아니다 (Issue371)
+
+종전엔 `TIMEOUT` 초과를 무조건 실패로 보고해서 **31분에 끝난 작업도 실패로 읽혔다**. 이제 `pane_has_claude` 로 위임 세션 생존을 확인해 갈라 본다:
+
+| 반환 | 상황 | 보고 |
+| :-: | :--- | :--- |
+| 0 | `✅` 감지 | 완료 + hash + 소요시간 |
+| **3** | 타임아웃 + **세션 생존** | *"진행 중 — 실패가 아니다"*. `PM_DO_TIMEOUT` 증액 또는 `--no-wait` 전환 안내 |
+| 2 | 타임아웃 + 세션 종료 | 실패. `✅` 미기록 |
+
+## 축A — `--no-wait` 완료 알림 (Issue371)
+
+종전 `--no-wait` 는 던지고 끝이라 **완료를 아무도 알려주지 않았다.** 백그라운드 감시를 붙이고 결과를 호출자 수신함에 넣는다.
+
+```bash
+if [ "$wait_mode" != "wait" ]; then
+  send_sh="$HOME/.claude/hooks/session-send.sh"
+  [ -x "$send_sh" ] || { echo "[pm-do] WARN: ${send_sh} 없음 — 감시 없이 리턴"; return 0; }
+  caller_pwd="$PWD"
+  (
+    poll_delegate "$prj_path" "$iss_num" "$target"; rc=$?
+    case "$rc" in
+      0) msg="✅ prj${prj_num}#Issue${iss_num} 완료 — hash ${POLL_HASH:-noHash} (${POLL_ELAPSED}s)" ;;
+      3) msg="⏳ … ${TIMEOUT}s 경과했으나 위임 세션은 아직 작업 중. 실패가 아니다" ;;
+      *) msg="⚠️ … ${TIMEOUT}s 타임아웃 + 세션 종료(✅ 미기록). 확인 필요" ;;
+    esac
+    "$send_sh" "$caller_pwd" "$msg" "pm-do"
+  ) >/dev/null 2>&1 &
+  echo "[pm-do] --no-wait — 즉시 리턴. 완료되면 다음 프롬프트에 알림이 뜬다"
+  return 0
+fi
+```
+
+* 배달은 [`hooks/session-inbox.sh`](../../hooks/session-inbox.sh) 가 호출자의 **다음 프롬프트**에 주입한다(pull). **새 hook 을 만들지 않는다**
+* ⚠️ **push(`send-keys`)로 알리지 않는다** — 비tmux·IDE 세션에 닿지 않고, 상대가 입력 중이면 깨지고, 전달 여부를 알 수 없다
+* ⚠️ `>/dev/null 2>&1 &` 로 fd 를 끊는다 — 안 끊으면 호출자(Claude Bash 도구 등)가 자식의 파이프를 기다려 **즉시 리턴이 무의미해진다**
+* 실행 검증(2026-08-09): 발신 → 수신함 생성 → hook 주입 → `read/` 이동 전 단계 통과. 백그라운드 감시는 부모 스크립트 종료 후에도 생존 확인
 
 `extract_completion_hash`:
 ```bash
