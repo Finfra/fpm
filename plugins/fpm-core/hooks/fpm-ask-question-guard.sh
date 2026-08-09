@@ -31,22 +31,16 @@
 set -u
 
 . "$HOME/.claude/hooks/hub-scope.sh"
+# Issue370: stdin 파싱을 단일 지점으로 — 종전엔 **같은 JSON 을 python3 로 3번** 파싱했다
+#   (transcript_path·cwd·stop_hook_active 각 1회). no-op 경로에서도 전부 물어서
+#   인터프리터 콜드 스타트를 3배로 냈다. jq 1회면 같은 값을 한 번에 얻는다(F2-1 과 같은 교훈).
+# shellcheck source=/dev/null
+. "$HOME/.claude/hooks/hook-input.sh"
 
 input=$(cat)
-
-transcript_path=$(printf '%s' "$input" | python3 -c "
-import sys, json
-try:
-    print(json.load(sys.stdin).get('transcript_path',''))
-except Exception:
-    pass" 2>/dev/null)
-
-cwd=$(printf '%s' "$input" | python3 -c "
-import sys, json
-try:
-    print(json.load(sys.stdin).get('cwd',''))
-except Exception:
-    pass" 2>/dev/null)
+hook_input_parse "$input"
+transcript_path="${HOOK_TRANSCRIPT:-}"
+cwd="${HOOK_CWD:-}"
 
 # Issue283: cwd 스코프 플래그 + effective 재판정 (전역 플래그 세션 간 누수 차단)
 FLAG_MODE=$(hub_flag_file "$cwd")
@@ -57,14 +51,8 @@ if [ "$(hub_effective "$cwd")" = "off" ]; then
   exit 0
 fi
 
-# 무한 루프 방지
-stop_hook_active=$(printf '%s' "$input" | python3 -c "
-import sys, json
-try:
-    print(json.load(sys.stdin).get('stop_hook_active', False))
-except Exception:
-    pass" 2>/dev/null)
-if [ "$stop_hook_active" = "True" ] || [ "$stop_hook_active" = "true" ]; then
+# 무한 루프 방지 (Issue370: hook-input 이 "true"/"" 로 정규화해 준다)
+if [ "${HOOK_STOP_ACTIVE:-}" = "true" ]; then
   exit 0
 fi
 

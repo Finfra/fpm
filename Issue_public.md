@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: 3664ca216a00cc4f59afea8921e2c0899365f4500fcadebc0cf9b88736570af5
+source_sha: 8068d0a42ee3e19e34e143886d7b108dae2cf6dd41974fa1f56c6113ca578eeb
 ---
 
 # 안내
@@ -18,6 +18,99 @@ source_sha: 3664ca216a00cc4f59afea8921e2c0899365f4500fcadebc0cf9b88736570af5
 
 # 이슈 근거
 
+## Issue362: plugins/fpm-core 번들 표류 16건 — forward 가 막혀 있다
+* 목적: `fpm-sync` forward 가 *"plugins/fpm-core 가 라이브와 표류"* 로 **중단**된 상태다(로그 2026-08-09 15:13). 배포판이 라이브보다 뒤처져 있어, 번들을 쓰는 소비자는 구버전 동작을 만난다. 특히 `skills/fpm-pm-do` 는 안전 지시 주입·원본 지시 보존 개정이 미반영이라 **위임 세션의 안전 문구가 끊긴다**.
+* depends: 없음
+* 구현 명세:
+    - 절차는 [`_doc_arch/fpm-sync-deploy.md`](_doc_arch/fpm-sync-deploy.md) — `scripts/fpm-bundle-sync.sh` 실행 → 테스트 → 커밋 → forward 재시도
+    - ⚠️ 불변식 준수: **forward/deploy 는 ___pm 콘텐츠 읽기 전용**(버전 파일 3종 bump 제외) · `rsync --delete` 금지 · push 명시 동의
+    - 표류 16건이 **한 덩어리로 오래 쌓인 것**이라, sync 전 각 항목이 의도된 라이브 변경인지 확인할 것. 특히 `services/hub` 7파일은 fpm-pm-do 와 무관한 별개 축이다
+    - 검증: `--check` 재실행 0건 · `fpm-sync` forward 정상 진행 · `skills/fpm-pm-do/SKILL.md` diff 0
+
+## Issue359: 좀비 킬러가 활성 세션까지 전멸시킴 — origin·상태 필터 부재 ✅
+* 목적: 🧟 좀비 킬러 버튼 1회 클릭으로 **live 세션 41개 전부(35 표시 → 0)** 가 사라졌다. Zed 뿐 아니라 작업 중이던 터미널 세션 14개까지 SIGTERM 됐다. 파괴적 동작인데 되돌릴 수 없다.
+* depends: Issue360 (그 리퍼가 자동으로 도는 것이 이 버튼의 대체재)
+* 구현 명세:
+    - **방침 (2026-08-07 사용자 결정)**: 버튼을 없애지 않는다. 좀비 킬러는 **내부적으로 계속 써야 하는 기능**이고, 전에 정상 동작하던 것이 Zed 유입으로 깨진 것이므로 **원인을 잡아 안정화**한다. 기능 자체를 제거하는 것은 앞으로 같은 문제를 용인하는 것과 같다. 버튼 제거는 안정화가 끝나 내부 사용에 지장이 없어진 다음의 일이다
+    - **근본 원인 (확정)**: "title 없음" 판정이 `live_label` **단독**이었다. 그러나 카드 제목은 [server.py:4927](services/hub/server.py#L4927) 에서 **3단 폴백**으로 정해진다 — ① `ai-title`(JSONL `aiTitle`, **VSCode 확장 전용**) ② `live_label` ③ `_session_first_prompt`(첫 프롬프트 발췌, Issue328 이 Zed·터미널용으로 추가). Zed·터미널 세션은 ①이 영구히 없고 ②도 안 실려 와 **③으로만 제목을 얻는다** → 화면에 제목이 멀쩡히 떠 있어도 좀비 킬러에겐 **구조적으로 항상 빈 세션**이었다. VSCode 세션도 SessionStart 훅이 label 을 생략하면(Issue121 주석이 명시) 동일하게 걸렸다
+    - 즉 Issue127(ai-title)·Issue328(first-prompt)로 **제목 소스가 늘어날 때 좀비 판정만 갱신되지 않아 낡은 것**이다. "잘 되던 기능"이 맞다
+    - **조치**: 제목 3단 판정을 [`_live_session_title`](services/hub/server.py#L1397) 로 추출해 **카드 렌더와 좀비 판정이 같은 함수를 공유**하게 했다(판정 단일 지점). 제목 소스가 또 늘어도 한 곳만 고치면 양쪽이 따라온다
+    - **관측 보강**: 응답·로그에 `kept_count`·`kept[]`(보존 내역) 추가. `kept=0` 이면 판정이 또 낡았다는 신호라 조용한 전멸 대신 즉시 드러난다
+    - **검증(2026-08-07)**: 수정 후 dry 판정 — 작업 중 세션 **7개 전부 보존**(vscode 5·zed 1·terminal 1), 타깃은 제목 없는 zed 세션 **1개**뿐. 원래 의도(프롬프트 전 빈 좀비만 제거)가 정확히 복원됨
+    - 잔여 — **origin 오분류(별건)**: VSCode 확장 세션이 `capabilities.editor` 미전송으로 `terminal` 로 잡히는 사례가 있다. 이번 판정 수정과 무관하게 동작하나(제목 기준이라 origin 무관) 카드 표기·클릭 동작이 어긋나므로 별도 확인 필요
+
+## Issue360: Zed 스레드 닫힘 직접 신호(`thread-archived`)로 orphan 판정 교체 ✅
+* 목적: Issue331 리퍼가 **기동 이후 단 1건도 잡지 못했다**(로그에 `started` 만 있고 `reaped` 0건). 유일한 판정 `bridge-dead` 가 원리적으로 발동할 수 없는 구조라, Zed live 세션·claude 프로세스가 무한 누적된다. 판정 축을 **Zed 가 직접 기록한 스레드 닫힘 사실**로 교체한다.
+* depends: Issue331 (그 판정 축 교체), Issue357 (idle-ttl 철회로 비어 버린 자리를 메움)
+* 구현 명세:
+    - `_zed_orphan_reason` 에 판정 축 **`thread-archived`** 추가. `bridge-dead` 는 창 종료 케이스를 잡으므로 **유지**
+    - 판정: sid 가 `sidebar_threads` 의 `agent_id='claude-acp' AND archived=1` 집합에 속하면 orphan. `archived=0` 은 **절대 건드리지 않는다** — 유휴 스레드 오살(Issue357)의 재발 경로를 구조적으로 차단
+    - **왜 안전한가**: idle-ttl 은 "열림/닫힘"을 heartbeat 로 *추측*했으나, `archived` 는 Zed 가 닫는 순간 *기록한 사실*이다. 사용자가 아카이브된 스레드를 다시 열면 `session/load` 로 새 프로세스가 뜨므로 복구 불가 상태(Issue357 의 `Session not found`)가 되지 않는다
+    - db 접근: 읽기 전용 URI(`mode=ro`) + `busy_timeout`, 릴리즈 채널 glob(`db/*/db.sqlite`), mtime 캐시로 재조회 억제. db 부재·조회 실패·테이블 없음은 **fail-soft(판정 skip)** — 기존 동작 유지
+    - 검증: 리퍼 1주기 후 `reaped>0` 로그 + `archived=0` 세션이 하나도 죽지 않음을 실측
+
+## Issue361: hub 카드 🗺️ 아이콘 오표시 — depends 완료 판정에 `✅ 완료` 섹션 축 누락 ✅
+* 목적: 실제로는 관계도가 비어 있는 프로젝트 카드에 이슈맵 아이콘이 떠, 열면 "의존 관계도 생략" 안내만 나온다. 사용자 지적(prj1·prj58 오표시, prj9a 정상) 기준으로 판정을 맵 빌더와 일치시킨다
+* 구현 명세:
+    - `_ISSUE_DONE_SECTIONS = {"✅ 완료"}` 를 `_ISSUE_EXCLUDED_SECTIONS` 옆으로 올려 **단일 상수**로 통합. 하단 중복 정의 제거(주석도 낡아 있었음)
+    - `_issue_md_has_depends()` 에 `section_done` 추적 추가 → `current_done = section_done or 헤더 끝 ✅`
+    - 검증(실제 함수 import): prj58 `True → False` · prj9a `True` 유지(미완료 depends 5건) · prj1 `True` 유지
+    - 원인 B 는 코드 버그가 아니므로 prj1 맵 재생성으로 해소(생략 문구 0 · 간선 14). 판정↔맵 stale 의 **구조적** 불일치는 별건 → 아래 이슈후보 등록
+
+## Issue356: hub 라이브 표시 계층 실배선 — Early Flush 완성 ✅
+* 목적: Issue353 이 만든 라이브 스트리밍(메일박스 pull·라이브 셸)이 **실사용 경로에 연결되지 않아** 사용자에게는 여전히 "턴 끝에 완성본이 한 번에 뜨는" 것으로 보인다. 턴 시작 시점에 셸을 열어 첫 페인트를 앞당기는 C안 본래 UX 를 실제로 성립시킨다
+* depends: Issue353 (완료 — 라이브 셸·메일박스·게이트가 전제)
+* 구현 명세:
+    - 실행은 서브 2건 — 356_1(prj1 서버·설정) → **prj3#Issue341**(훅 선오픈, depends: prj1#Issue356_1). Issue353 과 같은 단방향 순서 고정(서버가 먼저, 훅이 그것을 부른다)
+    - 검증: `..show` 1회에 **턴 시작 3초 이내** 라이브 뷰가 뜨고 블록이 도착하는 대로 갱신 + 턴 종료 시 게이트 판정대로 아카이브 생성
+
+## Issue356_1: prj1 — render_display 정리 + 라이브 진입점 제공 ✅
+* 목적: 훅이 라이브 뷰를 열 수 있도록 서버·설정 쪽 계약을 먼저 확정한다. 값 이름 충돌을 없애고, 값마다 실제로 다른 동작을 하게 만든다
+* depends: Issue356
+* 구현 명세:
+    - `hub_setting.yml` 키 주석 갱신 + `md_shell.render_live_shell` cfg·`_handle_session_live` 반영
+    - 회귀 테스트: 구 값 하위호환 매핑 · 값별 분기 · 진입점 응답(200/401)
+
+## Issue357: Issue353 M2 잔여 정리 — 죽은 코드·미배선·체크리스트 정정 ✅
+* 목적: Issue353 종결 검증에서 드러난 잔여를 닫는다. 기능은 동작하나 **완료 선언의 근거가 부정확**한 상태를 바로잡는 것이 핵심
+* depends: 없음 (Issue356 과 독립 — 파일은 겹치나 작업 성격이 달라 선행 처리)
+* 구현 명세:
+    - 죽은 코드 제거 시 **미완결 꼬리 프리뷰를 살릴지 먼저 판정** — 블록 단위 도착 특성상 관측되지 않았다는 실측이 있으므로 기본은 폐기(취소 사유로 기록)
+    - `gc()` 는 mail poll 경로 또는 기존 세션 GC 주기에 배선(둘 다 이미 존재 — 신규 타이머 금지)
+    - 검증: 죽은 심볼 grep 0건 · `gc()` 호출 경로 1개 이상 · task/arch/report 3문서 진술 일치
+
+## Issue355: hub 서버 다운 시 렌더 자동 강등 — 서버 유무로 사용자 경험이 갈리지 않게 ✅
+* 목적: `render_target: hub`(md-first) 에서 hub 서버가 죽어 있으면 렌더 결과를 볼 수단이 사라진다. 사용자는 **의도적으로 서버를 죽여 놓고 작업하는 경우가 많다** — 서버 작동 유무가 사용자 경험을 바꾸면 안 된다. Issue353 이 남긴 마지막 잔여(D안 "잔여는 폴백 규약뿐")를 닫는다.
+* depends: 없음 (Issue353 완료 후속)
+* 구현 명세:
+    - 본 이슈는 **규약 확정 + arch 반영** 담당. hook 구현은 prj3#Issue340
+    - [stable_performance_arch.md](_doc_arch/stable_performance_arch.md) D안 "fail-soft 강등 체인" 을 구현 완료 상태로 갱신하고 판정 방식·고지 문구를 명문화
+    - 강등 규약: 서버 미생존 → `render_target`·`render_target_cfg` 를 `local-open` 으로, `render_tab_mode: hub-internal` 은 중립화, `browser_open: off` 는 helper 승격(죽은 URL 만 남기면 아무것도 안 보임 — `/tmp` fallback 블록과 동형)
+    - 판정: bash 내장 `/dev/tcp` 포트 리슨 확인 (프로세스 기동 0회 — `UserPromptSubmit` 은 차단성 hook, 예산 50ms). 대상 host 는 `bind_host`(미설정·`0.0.0.0` 이면 `127.0.0.1`) — `advertise_host` 아님
+    - 검증: 서버 stop 상태에서 렌더 1회 → `.htm` 생성 + `file://` open + 고지 1줄 / 서버 start 상태에서 렌더 1회 → 기존 md 경로 무변경
+
+## Issue353: hub 렌더 안정성·성능 개선 — md-first + 메일박스 pull 스트리밍 ✅
+* 목적: `..show`/자동 hub 렌더가 `..text` 대비 수 배 느리고(LLM 수기 HTML 생성) 렌더·등록·표시 각층에서 반복 파손되는 구조를 근본 개선 — 콘텐츠(md)/표장(서버 셸) 분리 + transcript tail 메일박스 pull 스트리밍
+* 구현 명세:
+    - 서브 이슈 완료 순서 고정: 353_1 → 353_2 → 353_3 (depends 체인). 각 서브 완료 시 task 체크박스 `- [v]` + 커밋 해시 동기
+
+## Issue353_1: M0 스모크 검증 + M1 A안 md-first ✅
+* 목적: 설계 전제 실측 고정(transcript append 타이밍·Zed ACP 동일성) + `/md-doc` 셸 렌더로 LLM HTML 수기 생성 폐지 — hub 응답 시간 `..text` 대비 1.3배 이내
+* 구현 명세:
+    - `services/hub/server.py` 에 `GET /md-doc?path=` 추가 — `_inject_before_body_end`·`_normalize_mermaid_runtime` 재사용, disk-scan 파일명 패턴 md 반영(Issue311 재발 방지)
+
+## Issue353_2: M2 E+C 스트리밍 표시 계층 — 메일박스 pull ✅
+* 목적: transcript tail → 세션별 메일박스(seq·epoch) → `?since=` 커서 pull → 완결 블록 append 점진 렌더. 첫 페인트(셸+활동 신호) 턴 시작 3초 이내
+* depends: Issue353_1
+* 구현 명세:
+    - 종합 판정 ①~⑤ (task M2 말미 — 원격 tailscale 경로 B 실동작 포함) 전부 통과 후 종결
+
+## Issue353_3: M3 G안 서버 게이트 + 아카이브 자동화 ✅
+* 목적: `auto_render: always|short|page|doc` 임계를 서버 규칙 엔진이 메일박스 실측으로 기계 판정(LLM 판정 폐기) + Stop 시점 최종본 md 아카이브 자동 생성
+* depends: Issue353_2
+* 구현 명세:
+    - 판정 시나리오 3종(단답 0건/표 포함 생성/오버라이드) 확인 후 종결
+
 ## Issue352: hub registry 자동 만료 + hub OFF 배지 ✅
 * 목적: `htm-registry.json` 에 만료 정책이 없어 hub 문서 목록이 무한 누적됐다. `..hub off` 를 해도 목록은 그대로라 "꺼도 옛날 게 남아 있다"로 관측됐다. 만료를 서버가 갖게 하고, off 상태는 가리는 대신 배지로 정직하게 표시한다.
 * 구현 명세:
@@ -26,6 +119,13 @@ source_sha: 3664ca216a00cc4f59afea8921e2c0899365f4500fcadebc0cf9b88736570af5
     - 호출은 `_collect_htm_docs()` 단일 지점 + **TTL 60초 가드**(hub 5초 polling)
     - hub 헤더 배지 `⏸ N/M hub OFF`(전역이면 `system`). 소스는 `_hub_off_stats()` — collect 의 `projects` 는 dash-registry 기반이라 dashboard 보유 프로젝트만 담겨(실측 0건) 배지 소스로 쓸 수 없었음
     - `_htm_state_entries()` TTL 2초 캐시로 `.hub-state` 스캔 1회화, 토글 직후 무효화
+
+## Issue351: noteForHuman.md `ToProcess` 섹션 전 프로젝트 표준화 ✅
+* 목적: 정리 전 초기 메모를 아무 데나 흘리지 않고 한곳에 쌓기 위한 `# ToProcess` 섹션을 **모든 프로젝트의 `noteForHuman.md` 공통 규약**으로 도입한다. prj1·prj3 은 선반영했고, 목차 표가 없는 나머지 40개가 남았다.
+* 구현 명세:
+    - 목차 표가 **없는** 프로젝트는 목차 표를 새로 만들지 않는다. `# 개요` 블록 직후·첫 정식 H1 섹션 **앞**에 `# ToProcess` 섹션만 삽입한다:
+        ```markdown
+        # ToProcess
 
 ## Issue350: 공개 미러에 사설 프로젝트명 잔존 — exclude 파일은 sanitize 가 닿지 않는다
 * 목적: 공개 미러 `fpm` 의 `Harness.md`·`Harness_ko.md` 에 사설 프로젝트명 **`<private-project-5>`** 가 섹션 헤더(`# <private-project-5>`)로 남아 있다. 이 문자열은 `publishable-policy.yml` 의 sanitize 대상이라 *"공개되면 안 된다"* 고 이미 판정된 값이다. 개별 문자열보다 **왜 sanitize 가 못 잡았는가** 가 본질이다.
@@ -99,6 +199,17 @@ source_sha: 3664ca216a00cc4f59afea8921e2c0899365f4500fcadebc0cf9b88736570af5
     - `cdft`: tmux 경로 PATH 우선 해석 + 완료 후 `_fpm_tmux_focus` 자동 attach(tmux 안=select-window, stdout≠tty=생략 — `pm-do` 파싱 블로킹 방지, `FPM_NO_ATTACH=1` 억제)
     - 검증: host 실환경에서 cdf·cdff·cdfc·cdfn·cdft·cdf-num·sshf 전수 실행. 4회 배포 후 사용자 최종 확인
 
+## Issue339: fpm-core 사전요구 미고지 — mermaid-cli 의존성 ✅
+* 목적: 번들 `issue-map` 이 mermaid 렌더러를 요구하는데 `INSTALL.md`·`plugins/fpm-core/CLAUDE.md` 어디에도 언급이 없음. 소비자는 `/fpm-issue-map` 실행 후에야 실패로 알게 됨(host 실측). 사전요구를 설치 문서에 고지해야 함.
+* depends: prj3#Issue317
+* 구현 명세:
+    - [v] `INSTALL.md` "# 요구 사항" 에 2줄 추가 — `* (선택) Node.js + npx — /fpm-issue-map 다이어그램 렌더(없으면 이 커맨드만 미동작)` / `* (선택) mermaid-cli(mmdc) 전역 설치 — 있으면 npx 다운로드 없이 즉시·오프라인 렌더`
+    - [v] `plugins/fpm-core/CLAUDE.md` "## 구성 요소" 표 갱신 — Commands 에 `fpm-issue-map` 추가, Skills 를 `fpm-pm`, `fpm-cdf`, `fpm-issue-map` 으로 정정
+    - [v] 같은 파일에 "## 사전요구" 절 신설 — 위 상세 ①~④ 를 4줄로. 실패 시 나오는 문구(`mmdc·npx 모두 없음`)를 그대로 적어 검색 가능하게
+    - [v] 검증: 두 문서의 문구가 `resolve_mmdc()` 실제 동작과 일치하는지 대조(선택/필수 표기 역전 없을 것)
+    - [v] `fpm-sync.sh forward` → `deploy`(버전 bump) → `publish --push`(prj20 포함) 로 마켓 반영. 문서 전용 변경이라 patch bump
+    - [v] host 실환경 검증 — 0.2.8→0.2.10 업데이트, 번들 `CLAUDE.md` 9·10·34·38·40·41 행에 구성요소·사전요구 반영 확인. 실측 `mmdc` 부재 · `npx` = /usr/bin/npx · node v22.23.1 → 문서가 서술한 npx 경로와 일치
+
 ## Issue338: fpm-core 번들에 issue-map 생성기 누락 — 반쪽 배포 ✅
 * 목적: 번들 hub `services/hub/server.py` 는 `Issue_map.htm` 을 serve(`/issue-map`, `ISSUE_MAP_NAME` 고정)하는데 그 파일을 **생성하는 `issue-map` 스킬이 번들에 없음**. 소비자만 배포하고 생산자를 뺀 반쪽 배포 → 플러그인 전용 설치 환경에서 `/issue-map` 영구 404.
 * depends: (없음)
@@ -141,6 +252,15 @@ source_sha: 3664ca216a00cc4f59afea8921e2c0899365f4500fcadebc0cf9b88736570af5
     - **Servers.md 호스트 resolve 만 백그라운드 유지** (Issue200 의 원래 목적 보존)
     - **적재 완료 플래그 + 503**: `_allowlist_ready` 플래그를 두고, 미완료 상태에서 비허용 판정이 나면 403 대신 `503` + `Retry-After: 2` 로 응답한다. "차단" 과 "준비 중" 이 구분되어 오진이 사라진다
     - 검증: 서버 재시작 직후 즉시 `curl http://<tailnet-host>:9876/hub` → 200 (기존엔 403). `time` 으로 재시작~bind 소요가 기존 대비 증가 없음 확인
+
+## Issue334: pm-do extract_hash() 가 `head` 를 PATH 로 찾아 위임 완료 hash 회수가 상시 실패 ✅
+* 목적: `pm-do <prj> "<명령>"` 위임이 정상 완료되어도 완료 커밋 hash 를 회수하지 못하고 `extract_hash:6: command not found: head` 로 끝난다. 위임의 계약이 "완료 대기 + hash 회수" 인데 그 마지막 단계가 항상 깨지므로, 호출자는 매번 `git log` 로 직접 확인해야 한다.
+* 구현 명세:
+    - `extract_hash()` 의 `head -1` 을 `/usr/bin/head -1` 로 교체.
+    - 같은 스크립트 전체를 훑어 PATH 의존 호출이 더 있는지 확인 (`grep -nE '(^|[^/[:alnum:]_])(head|tail|cut|tr|wc|date|sort|uniq)[[:space:]]' ~/.bin/pm-do`). 발견되면 함께 절대경로화.
+    - 검증: 짧은 위임 1건(ex: 이미 종결된 이슈 대상 no-op)을 실행해 hash 가 실제로 출력되는지 확인. 대화형이 아니라 **tmux 위임 경로**로 검증할 것 — 대화형에서는 버그가 재현되지 않는다.
+    - 2원 구조 주의: `skills/fpm-pm-do/SKILL.md` 는 문서, `~/.bin/pm-do` 가 실동작 코드다. 이번 수정은 코드 전용이라 문서 동반 변경은 불필요하나, 동작 설명이 hash 회수를 보증하는 문구를 담고 있으면 함께 점검한다.
+    - **해결**: `head -1`→`/usr/bin/head -1`(4곳), `tail -1`→`/usr/bin/tail -1`, `date +%s`→`/bin/date +%s` 전면 절대경로화. 검증은 tmux 위임 대신 `PATH=""` 환경에서 `extract_hash` 직접 호출로 대체 — 동일 실패 조건을 결정적으로 재현하며 위임 1건보다 강한 증거다(`hash=[<commit>]` 정상 반환). `skills/fpm-pm-do/SKILL.md` 는 코드 로직을 복제하지 않아 문서 동반 변경 불요.
 
 ## Issue333: iterm-bg 가 배경만 칠하고 전경색을 안 바꿔 밝은 프로젝트 색에서 터미널 글자 판독 불가 ✅
 * 목적: `Projects.md` 의 파스텔 계열 프로젝트 색(ex: prj15 `#8bd6b3`)이 적용된 폴더에서 iTerm2 터미널 글자가 배경에 묻혀 읽히지 않는다. VSCode 밝기 조정으로는 해결되지 않는다 — 색을 칠하는 주체가 VSCode 테마가 아니라 `chpwd` → `iterm-bg` OSC 이스케이프이기 때문이다.
@@ -290,6 +410,14 @@ source_sha: 3664ca216a00cc4f59afea8921e2c0899365f4500fcadebc0cf9b88736570af5
     - fix: `_handle_register_doc` dash 분기에서 이미 계산된 `path_real`(realpath)로 stored path·dedup 통일 (htm 분기는 기존 abspath 유지 — htm-doc whitelist 는 serve 시 realpath 비교라 무관). server.py:4678 `path = path_real`
     - 정리: 기존 dash-registry.json 중복 entry 1건 제거 (realpath 표기 유지, abspath 제거) — 검증 시 llmwiki entry 1장 확인
     - 검증: dash-registry.json llmwiki entry 1건(`/private/tmp/___pm/llmwiki-compile.dash.yaml`)으로 dedup 됨
+
+## Issue308: cdf "session ready" say 하드코딩 — Issue271(prj3) say 단일 게이트 미경유 교정 ✅
+* 목적: prj3 Issue271 이 모든 say 호출을 `~/.claude/hooks/hook-say.sh` 게이트(+`data/hook_say_setting.yml` 카테고리 토글)로 모았으나, cdf(tmux 세션 준비) 계열은 `/usr/bin/say "session ready"` 를 직접 호출해 게이트를 우회함. 카테고리 토글로 끌 수 없어 "session ready" 발화가 계속 남 — 게이트 경유로 교정하여 yml 로 제어 가능하게 함.
+* 구현 명세:
+    - 8개소 치환: `/usr/bin/say "session ready"` → `SAY_GATE="$HOME/.claude/hooks/hook-say.sh"; if [ -x "$SAY_GATE" ]; then "$SAY_GATE" session_ready "session ready"; else /usr/bin/say "session ready"; fi` (게이트 부재 시 fail-open — 기존 패턴과 동일)
+    - prj3 측: `data/hook_say_setting.yml` categories 에 `session_ready: false` 추가 + `hooks/hook-say.sh` `--status` 카테고리 목록에 session_ready 추가 (prj3 커밋 별도)
+    - allowlist: `Bash(/usr/bin/say \"session ready\")` → 게이트 스크립트 호출 허용 항목으로 교체
+    - 검증: `hook-say.sh session_ready "session ready"` 무음 확인 + `hook-say.sh --status` 에 session_ready OFF 표시
 
 ## Issue305: Projects_map 상단에 `_note.md` 렌더 — 하단 수기 `#notes` 블록 대체, 공개 빌드는 고정 문구 ✅
 * 목적: 프로젝트 맵을 열 때마다 보이는 "지금 신경 쓸 일"을 파일 하나(`_note.md`)로 관리하고, 맵 상단(부제 바로 아래)에 렌더한다. 현재 메모 창구인 하단 `#notes` HTML 구간은 재생성 보존 마커에 의존해 편집이 번거롭고 실사용 이력이 0이라 대체한다.

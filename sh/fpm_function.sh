@@ -66,7 +66,10 @@ _fpm_tmux_bin() {
 #   `say` 는 macOS 내장 TTS. Linux 에는 없어 `/usr/bin/say: no such file or directory`
 #   로 깨졌음 → 존재 확인 후 실행하고, 없으면 왜 생략됐는지 1줄 표시(무음 실패 금지).
 _fpm_say() {
-    local msg="${1:-session ready}"
+    # 기본 문구는 say 계약을 따른다 — `{한글 프로젝트명}에서 {고정어}` (prj3#Issue365).
+    #   종전 기본값은 영어 `session ready` 라 한국어 음성이 알파벳을 나열했고, 6종 중 이것만
+    #   프로젝트명도 없었다. 계약 정본: ~/.claude/_doc_arch/say-notify-arch.md
+    local msg="${1:-$("$HOME/.bin/project-name.sh" 2>/dev/null)에서 시작}"
     if [ -x "$HOME/.claude/hooks/hook-say.sh" ]; then
         "$HOME/.claude/hooks/hook-say.sh" session_ready "$msg"
         return 0
@@ -977,7 +980,7 @@ cdft() {
             echo "  ${FOUND_TARGETS[$i]} → ${PROJ_PATHS[$i]}"
         done
         local REUSE_WIN=$(echo "${FOUND_TARGETS[1]}" | /usr/bin/sed 's/pm://;s/\..*//')
-        _fpm_say "session ready"
+        _fpm_say
         echo "WIN_NAME=$REUSE_WIN"
         _fpm_tmux_focus "$TMUX_CMD" "$REUSE_WIN"
     else
@@ -1011,7 +1014,7 @@ cdft() {
 
         /bin/sleep 1
         $TMUX_CMD list-panes -t "pm:$WIN_NAME" -F '  pane #P: #{pane_current_path}'
-        _fpm_say "session ready"
+        _fpm_say
         echo "WIN_NAME=$WIN_NAME"
         _fpm_tmux_focus "$TMUX_CMD" "$WIN_NAME"
     fi

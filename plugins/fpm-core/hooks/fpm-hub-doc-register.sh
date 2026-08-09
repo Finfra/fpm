@@ -34,11 +34,16 @@ except Exception:
 # Issue289: 매칭 폴더를 활성 `htm/` + 아카이브 `z_done/htm/` + legacy `z_htm/` 로 확장.
 #   z_done/htm 도 매칭하는 이유 — 아카이브 폴더에 직접 Write 되는 경우(복구·수동 배치)에도
 #   등록이 끊기지 않게. legacy z_htm 은 P3 마이그레이션 완료 후 P4 에서 제거.
+# Issue339 (prj1#Issue353 A안 md-first): 산출물이 `.md` 인 경로도 동일 규약으로 등록한다.
+#   서버 `_htm_output_stem` 이 `hub_htm_*.{htm,md}` 를 함께 인식하므로 확장자만 넓히면 된다.
+#   (`/md-doc` 는 registry 화이트리스트를 그대로 쓰므로 미등록이면 403 — 여기가 유일한 등록 경로)
 case "$FP" in
   */_doc_work/htm/hub_htm_*_c_*.htm|*/_doc_work/z_done/htm/hub_htm_*_c_*.htm|*/_doc_work/z_htm/hub_htm_*_c_*.htm) exit 0 ;;
+  */_doc_work/htm/hub_htm_*_c_*.md|*/_doc_work/z_done/htm/hub_htm_*_c_*.md|*/_doc_work/z_htm/hub_htm_*_c_*.md) exit 0 ;;
   */_doc_work/htm/hub_htm_*_*.htm|*/_doc_work/z_done/htm/hub_htm_*_*.htm|*/_doc_work/z_htm/hub_htm_*_*.htm)   ;;
-  */_doc_work/htm/*.htm|*/_doc_work/z_done/htm/*.htm|*/_doc_work/z_htm/*.htm)
-    echo "⚠️ Issue158: '$FP' 가 표준 파일명 규약 미준수. hub 산출물은 반드시 hub_htm_<YYYYMMDD_HHMMSS>_<mode>_<주제>.htm (언더스코어, date +%Y%m%d_%H%M%S) 사용. dotted/하이픈-날짜 파일은 등록 훅 미매칭 → /htm-doc 403 dead link. 파일명 재작성 권장." >&2
+  */_doc_work/htm/hub_htm_*_*.md|*/_doc_work/z_done/htm/hub_htm_*_*.md|*/_doc_work/z_htm/hub_htm_*_*.md)   ;;
+  */_doc_work/htm/*.htm|*/_doc_work/z_done/htm/*.htm|*/_doc_work/z_htm/*.htm|*/_doc_work/htm/*.md|*/_doc_work/z_done/htm/*.md|*/_doc_work/z_htm/*.md)
+    echo "⚠️ Issue158: '$FP' 가 표준 파일명 규약 미준수. hub 산출물은 반드시 hub_htm_<YYYYMMDD_HHMMSS>_<mode>_<주제>.{htm,md} (언더스코어, date +%Y%m%d_%H%M%S) 사용. dotted/하이픈-날짜 파일은 등록 훅 미매칭 → /htm-doc·/md-doc 403 dead link. 파일명 재작성 권장." >&2
     exit 2 ;;
   *) exit 0 ;;
 esac
@@ -52,13 +57,18 @@ case "$FP" in
 esac
 [ -f "$FP_ABS" ] || exit 0
 
+# Issue339: 아래 두 후처리(아이콘 data-URL 치환·헤더 CSS 자체완결 주입)는 **HTML 산출물 전용**이다.
+#   md 산출물은 표장을 서버 `/md-doc` 셸이 소유하므로 파일 본문을 건드릴 이유가 없고,
+#   건드리면 저작 md 에 HTML 이 섞여 sanitize 대상이 된다 → md 면 후처리를 통째 건너뛴다.
+case "$FP_ABS" in *.md) IS_MD=1 ;; *) IS_MD=0 ;; esac
+
 # Issue174: Hub 아이콘 self-contain — 저장된 .htm 의 host-relative `/fpm-icon.png` 참조를
 #   인라인 data-URL 로 치환. http <img> 는 VSCode Simple Browser webview CSP 가 차단해 깨지므로
 #   (Issue173), data-URL(자기완결)로 바꿔 어떤 뷰어서도 렌더되게 함. data-URL 은 hooks/assets/
 #   fpm-icon.dataurl(작은 webp, ~2KB) 에 1회 저장 — canonical 헤더 문자열은 짧은 `/fpm-icon.png`
 #   유지하여 매 프롬프트 주입 컨텍스트 bloat 0. server 상태 무관(healthz gate 이전 실행).
 ICON_DATAURL_FILE="$(dirname "$0")/assets/fpm-icon.dataurl"
-if [ -f "$ICON_DATAURL_FILE" ]; then
+if [ "$IS_MD" = "0" ] && [ -f "$ICON_DATAURL_FILE" ]; then
   FP_ABS="$FP_ABS" ICON_DATAURL_FILE="$ICON_DATAURL_FILE" python3 - <<'PYICON' 2>/dev/null || true
 import os, re
 fp = os.environ["FP_ABS"]
@@ -85,6 +95,7 @@ fi
 #   같은 파일이 나중에 /htm-doc 로 서빙돼도 serve-time 은 우리가 넣은 `header{` 보고 no-op → 이중 주입 안전.
 #   ⚠️ 동기 필요: 아래 HUB_HEADER_CSS 는 prj1 `services/hub/server.py` `HUB_HEADER_CSS` 정본과 동일
 #      문자열 유지 필수 (정본 변경 시 여기도 갱신). healthz gate 이전 실행이라 서버 상태 무관.
+if [ "$IS_MD" = "0" ]; then
 FP_ABS="$FP_ABS" python3 - <<'PYHDR' 2>/dev/null || true
 import os, re
 fp = os.environ["FP_ABS"]
@@ -126,6 +137,7 @@ new = HUB_HEADER_CSS + html if idx < 0 else html[:idx] + HUB_HEADER_CSS + html[i
 with open(fp, "w", encoding="utf-8") as f:
     f.write(new)
 PYHDR
+fi
 
 SERVER_PORT="${HTM_SERVER_PORT:-9876}"
 HEALTH_URL="http://127.0.0.1:${SERVER_PORT}/healthz"
@@ -133,7 +145,9 @@ HEALTH_URL="http://127.0.0.1:${SERVER_PORT}/healthz"
 health=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 "$HEALTH_URL" 2>/dev/null)
 [ "$health" = "200" ] || exit 0
 
-# <title> 추출 (실패 시 파일명 fallback)
+# 제목 추출 (실패 시 파일명 fallback) — htm 은 <title>, md 는 frontmatter title/name → 첫 헤딩.
+# Issue339: 추출 규칙은 prj1 server.py `_extract_html_title` 의 md 분기와 동일하게 맞춘다
+#   (양쪽이 갈라지면 hub 카드 제목과 문서 제목이 서로 다른 값을 보인다).
 BODY=$(FP_ABS="$FP_ABS" CWD="$CWD" python3 -c "
 import os, re, json
 fp = os.environ['FP_ABS']
@@ -141,7 +155,19 @@ cwd = os.environ['CWD']
 title = ''
 try:
     with open(fp, encoding='utf-8', errors='ignore') as f:
-        m = re.search(r'<title[^>]*>(.*?)</title>', f.read(), re.S | re.I)
+        head = f.read(8192) if fp.endswith('.md') else f.read()
+    if fp.endswith('.md'):
+        fm = re.match(r'(?s)\A---\n(.*?)\n---', head)
+        if fm:
+            kv = re.search(r'(?m)^(?:title|name):\s*[\"\']?([^\"\'\n]+)', fm.group(1))
+            if kv:
+                title = kv.group(1).strip()[:200]
+        if not title:
+            h = re.search(r'(?m)^#{1,6}\s+(.+)\$', head)
+            if h:
+                title = h.group(1).strip()[:200]
+    else:
+        m = re.search(r'<title[^>]*>(.*?)</title>', head, re.S | re.I)
         if m:
             title = re.sub(r'\s+', ' ', m.group(1)).strip()[:200]
 except Exception:

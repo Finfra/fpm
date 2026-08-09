@@ -31,31 +31,40 @@ set -u
 
 input=$(cat)
 
-cwd=$(printf '%s' "$input" | python3 -c "
-import sys, json
-try:
-    print(json.load(sys.stdin).get('cwd',''))
-except Exception:
-    pass" 2>/dev/null)
+# Issue360_4: cwd·session_id 파싱을 판정 단일 지점 hook-input.sh 로 위임(jq 1회, 3.7ms).
+#   종전엔 python3 를 cwd·session_id 각각 기동해 no-op 경로에서만 프로세스 2개를 태웠다.
+. "$HOME/.claude/hooks/hook-input.sh"
+hook_input_parse "$input"
+cwd="$HOOK_CWD"
 
 # Issue283: cwd 스코프 플래그 + effective 재판정 2중 게이트.
 #   (1) 플래그는 `.hub-mode-active-<md5(cwd)[:8]>` — 타 세션(hub on 프로젝트)이 켠 플래그를 주워
 #       off 프로젝트에서 form 이 뜨던 누수 차단.
 #   (2) 플래그가 stale 하게 남아도 SYSTEM_OFF > .hub-state/<hash> > IS_PROJECT 판정이 off 면 통과.
+#
+# Issue360_4: 게이트 **양쪽 분기를 한 hook 이 소유**한다. on → 폼 인터셉트(아래 본문),
+#   off → "응답 대기" 음성(_ask_say). 종전엔 off 분기가 fpm-ask-say.sh 라는 별도 배선이라
+#   같은 판정식이 두 파일에 복제돼 있었고, 그 복제가 갈라진 것이 Issue359 의 원인이었다.
+#   합쳐 두면 갈라짐이 구조적으로 불가능하다(hook-rules 규칙5 — 판정은 단일 지점에서).
+_ask_say() {
+  # project-name.sh·hook-say.sh 의 프로젝트 판정은 둘 다 PWD 기준이다. stdin 으로 받은 cwd 가
+  # 있으면 그쪽으로 맞춰 준다 — 이름과 카테고리 오버라이드가 같은 기준으로 해석되게.
+  [ -n "$cwd" ] && [ -d "$cwd" ] && cd "$cwd" 2>/dev/null
+  # 수면 모드·카테고리 off 게이트는 hook-say.sh 가 자체 처리한다.
+  "$HOME/.claude/hooks/hook-say.sh" waiting_ask "$("$HOME/.bin/project-name.sh" 2>/dev/null)에서 응답 대기"
+  exit 0
+}
+
 FLAG_MODE=$(hub_flag_file "$cwd")
 if [ ! -f "$FLAG_MODE" ]; then
-  exit 0
+  _ask_say
 fi
 if [ "$(hub_effective "$cwd")" = "off" ]; then
-  exit 0
+  _ask_say
 fi
 
-session_id=$(printf '%s' "$input" | python3 -c "
-import sys, json
-try:
-    print(json.load(sys.stdin).get('session_id',''))
-except Exception:
-    pass" 2>/dev/null)
+# Issue360_4: 위 hook_input_parse 가 이미 뽑아 둔 값을 재사용(python3 재기동 제거).
+session_id="$HOOK_SESSION_ID"
 
 SID="$session_id"
 if [ -z "$SID" ] && [ -n "$cwd" ]; then

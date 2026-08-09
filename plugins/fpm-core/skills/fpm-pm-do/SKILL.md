@@ -77,11 +77,34 @@ DEPS=$(/usr/bin/awk -v iss="$CURRENT_ISSUE" '
 
 # DEPS = "prj15#Issue3, prj25#Issue7"
 echo "$DEPS" | /usr/bin/tr ',' '\n' | while IFS= read -r dep; do
-  dep=$(echo "$dep" | /usr/bin/sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  # Issue371 축D — 괄호 주석 제거 후 트림. ⚠️ `${dep%%(*}` 금지: zsh 가 `(` 를 glob 으로
+  #   읽어 `bad pattern` 으로 전건 실패한다(실측). sed 로 자른다.
+  dep=$(echo "$dep" | /usr/bin/sed -E 's/\(.*//; s/^[[:space:]]*//; s/[[:space:]]*$//')
   [ -z "$dep" ] && continue
-  DEP_PRJ=$(echo "$dep" | /usr/bin/sed -E 's/^prj([0-9]+)#.*/\1/')
-  DEP_ISS=$(echo "$dep" | /usr/bin/sed -E 's/.*#Issue([0-9]+)$/\1/')
-  # 이미 완료인지 검사
+
+  # issue-g 규칙2 의 2형식. 서브이슈(Issue334_1) 포함.
+  #   ⚠️ 종전 sed 치환 1발은 **매치 실패 시 원본을 반환**해 DEP_PRJ 에 문자열 전체가 들어갔다.
+  #      같은 prj 형식(`Issue<M>`)·괄호 주석·타 prj 서브이슈가 전부 깨졌다(실측 2026-08-09).
+  DEP_PRJ=""; DEP_ISS=""
+  if echo "$dep" | /usr/bin/grep -qE '^prj[0-9]+#Issue[0-9]+(_[0-9]+)*$'; then
+    DEP_PRJ=$(echo "$dep" | /usr/bin/sed -E 's/^prj([0-9]+)#Issue.*$/\1/')
+    DEP_ISS=$(echo "$dep" | /usr/bin/sed -E 's/^prj[0-9]+#Issue(.*)$/\1/')
+  elif echo "$dep" | /usr/bin/grep -qE '^Issue[0-9]+(_[0-9]+)*$'; then
+    DEP_ISS=$(echo "$dep" | /usr/bin/sed -E 's/^Issue(.*)$/\1/')
+  else
+    # 조용히 건너뛰지 않는다 — 선행을 빠뜨린 채 "해결됨" 을 내면 그게 더 위험하다
+    echo "ERROR: depends 항목 파싱 실패 — '${dep}' (형식: prj<N>#Issue<M> 또는 Issue<M>)" && exit 1
+  fi
+
+  # 같은 prj 선행은 **위임하지 않는다** — 같은 프로젝트이므로 이 세션의 작업이다
+  if [ -z "$DEP_PRJ" ]; then
+    if dep_completed_local "$PWD" "$DEP_ISS"; then
+      echo "[skip] Issue${DEP_ISS} (같은 prj) already ✅"; continue
+    fi
+    echo "ERROR: 같은 prj 선행 Issue${DEP_ISS} 미완료 — 위임 대상이 아니므로 중단" && exit 1
+  fi
+
+  # 이미 완료인지 검사 (타 prj)
   if dep_completed "$DEP_PRJ" "$DEP_ISS"; then
     echo "[skip] $dep already ✅"
     continue
@@ -102,8 +125,17 @@ dep_completed() {
   local path_raw=$(/bin/cat "${PM_BASE}/${prj}" 2>/dev/null)
   local path=$(echo "$path_raw" | /usr/bin/sed "s|^~|$HOME|")
   [ ! -f "${path}/Issue.md" ] && return 1
-  /usr/bin/awk '/^# ✅ 완료/{flag=1} flag && /^## /{print}' "${path}/Issue.md" \
-    | /usr/bin/grep -qE "^## Issue${iss}:.*✅"
+  /usr/bin/awk '/^# ✅ 완료/{flag=1} flag && /^#{2,3} /{print}' "${path}/Issue.md" \
+    | /usr/bin/grep -qE "^#{2,3} Issue${iss}:.*✅"
+}
+```
+
+`dep_completed_local` (같은 prj — 경로를 직접 받는다):
+```bash
+dep_completed_local() {
+  local path="$1" iss="$2"
+  /usr/bin/awk '/^# ✅ 완료/{flag=1;next} flag && /^# /{flag=0} flag' "${path}/Issue.md" 2>/dev/null \
+    | /usr/bin/grep -qE "^#{2,3} Issue${iss}:.*✅"
 }
 ```
 
@@ -129,22 +161,34 @@ CLAUDE_CNT=$(pgrep -P "$PANE_PID" -f "node.*claude\|claude.*node" 2>/dev/null | 
 #   ⚠️ 사용자 쉘 별칭 `cc`(= claude --dangerously-skip-permissions)는
 #      **대화형 쉘 전용**이라 스크립트·send-keys 문맥에서는 풀네임을 쓴다.
 RESOLVED_CMD=$(resolve_cmd "$CMD_RAW" "$SUFFIX")
+# Issue351 — 변환이 원본 지시를 버리는 것을 막는다(실측 2026-08-06: 금지 문구 포함 명령이
+#   "/issue-fix-g 40" 으로 축약되며 제약 전부 소실). 변환이 실제로 일어났을 때만 원문을 꼬리에 보존.
+#   ⚠️ 한 줄 유지 — send-keys 는 개행을 그대로 흘려 대상 zsh 파싱을 깨뜨린다.
+#   기본 안전 지시(파괴적 작업 금지)는 프롬프트가 아니라 아래 env 를 읽는
+#   hooks/pm-do-safety-context.sh 가 SessionStart 에서 주입한다 — 변환 경로와 무관하게 항상 남는다.
+DELEGATE_PROMPT="$RESOLVED_CMD"
+if [ "$RESOLVED_CMD" != "$CMD_RAW" ]; then
+  DELEGATE_PROMPT="${RESOLVED_CMD} — [원본 지시 원문 — 제약이 있으면 위 커맨드보다 우선] ${CMD_RAW}"
+fi
 # Issue342 S3 — 기동자 신호. SessionStart 훅이 caps.launched_by 로 실어 hub 카드가
 #   위임 세션을 사람이 띄운 세션과 구분한다. 실동작 코드 `~/.bin/pm-do` 와 같은 값이어야 한다.
+#   Issue351 — 같은 env 를 pm-do-safety-context.sh 도 읽는다. 값을 바꾸면 안전 지시가 끊긴다.
 CLAUDE_BIN="FPM_SESSION_ORIGIN=pm-do claude --dangerously-skip-permissions"
 
 if [ "$CLAUDE_CNT" -gt 0 ]; then
   # 이미 대화형 Claude 가 그 pane 을 점유 중 → 프롬프트만 입력(기존 경로).
   # 이 경로는 게이트에 걸릴 수 있으므로 아래 "pending 징후" 확인이 필수.
-  $TMUX send-keys -t "$TARGET" "$RESOLVED_CMD" Enter
-  echo "[delegated:interactive] pm:${WIN_NAME}.0 ← ${RESOLVED_CMD}"
+  # ⚠️ Issue351 — 세션이 이미 떠 있어 SessionStart 훅이 다시 돌지 않는다 → 기본 안전 지시
+  #   미주입. 원본 보존(DELEGATE_PROMPT)만이 방어선이다. 무인 위임은 아래 -p 경로를 쓸 것.
+  $TMUX send-keys -t "$TARGET" "$DELEGATE_PROMPT" Enter
+  echo "[delegated:interactive] pm:${WIN_NAME}.0 ← ${DELEGATE_PROMPT}"
 else
   # pane 이 비어 있으면 비대화 1-shot 으로 실행 (기본 경로)
   # ⚠️ Issue335 — send-keys 가 보낸 문자열은 대상 zsh 가 **다시 파싱**한다.
   #   프롬프트에 < > | $ 백틱이 있으면 리다이렉션·파이프로 해석되어 명령이 조각나고
   #   claude 가 아예 안 뜨거나 잘린 프롬프트를 받는다(2026-07-28 실측: `zsh: no such file or directory: 성공`).
   #   반드시 zsh ${(qq)} 로 단일 인자화할 것. 메타문자 개별 이스케이프는 누락이 남으므로 금지.
-  QUOTED_CMD=${(qq)RESOLVED_CMD}
+  QUOTED_CMD=${(qq)DELEGATE_PROMPT}
   $TMUX send-keys -t "$TARGET" "${CLAUDE_BIN} -p ${QUOTED_CMD}" Enter
   echo "[delegated:print] pm:${WIN_NAME}.0 ← ${CLAUDE_BIN} -p ${QUOTED_CMD}"
 fi
@@ -177,7 +221,20 @@ resolve_cmd() {
 | **비대화(기본)** | `FPM_SESSION_ORIGIN=pm-do claude --dangerously-skip-permissions -p '<프롬프트>'` | 위임·자동화 전부 | 게이트 없음. 끝나면 프로세스 종료 → 완료 판정이 명확 |
 | 대화형(예외) | `FPM_SESSION_ORIGIN=pm-do claude --dangerously-skip-permissions` + send-keys | 사람이 중간 개입할 작업 | **첫 실행 안내·승인 게이트에서 멈춘다**. 사람이 붙어 있을 때만 |
 
-* `FPM_SESSION_ORIGIN=pm-do` 는 **기동자 신호**다(Issue342 S3) — hub 카드가 위임 세션을 사람이 띄운 세션과 구분한다. 빠뜨려도 위임 자체는 동작하나 카드에서 출처가 미상이 된다
+* `FPM_SESSION_ORIGIN=pm-do` 는 **기동자 신호**다(Issue342 S3) — hub 카드가 위임 세션을 사람이 띄운 세션과 구분한다. 빠뜨려도 위임 자체는 동작하나 카드에서 출처가 미상이 된다. ⚠️ **Issue351 이후로는 안전 지시 주입의 열쇠이기도 하다** — 빠뜨리면 방어선이 사라진다(아래)
+
+## 안전 지시는 어디서 오는가 (Issue351)
+
+위임 세션은 `--dangerously-skip-permissions` 로 돌아 **도구 승인 게이트가 0** 이다. [`session-delegation-rules.md`](../../rules/session-delegation-rules.md) 는 *"프롬프트에 파괴적 작업 금지를 명시하라"* 고 요구했지만, `resolve_cmd` 변환이 그 문구를 통째로 버렸다(실측 2026-08-06 — 금지 문구 포함 명령이 `/issue-fix-g 40` 으로 축약). 그래서 방어선을 **두 겹**으로 나눴다.
+
+| 겹 | 무엇 | 어디서 | 변환에 견디나 |
+| :--- | :--- | :--- | :--- |
+| **기본** | 파괴적 작업 금지 일반 지시(`rm -rf`·`git reset --hard`·외부 시스템 쓰기·프로젝트 밖 부작용) | [`hooks/pm-do-safety-context.sh`](../../hooks/pm-do-safety-context.sh) — `FPM_SESSION_ORIGIN=pm-do` 를 보고 SessionStart 에서 `additionalContext` 주입 | ✅ 프롬프트를 안 거치므로 무관 |
+| **특화** | 이 작업 한정 제약(ex: *"rclone 실행 금지"*) | `DELEGATE_PROMPT` — 변환이 일어났을 때 원문을 꼬리에 보존 | ✅ 변환돼도 원문이 남음 |
+
+* **왜 프롬프트에만 두지 않았나** — 변환 경로가 늘어날 때마다 방어선이 다시 샌다. 기동 신호(env)는 변환과 독립이다
+* ⚠️ **대화형 경로는 기본 겹이 없다** — 세션이 이미 떠 있으면 SessionStart 가 다시 돌지 않는다. 특화 겹만 유효하므로 무인 위임에는 `-p` 를 쓴다
+* 위임 세션이 두 겹을 모두 받으면 **더 구체적인 쪽(특화)이 우선**한다. 단 범위를 넓히는 방향으로는 해석하지 않는다
 
 * 사용자 쉘에서 손으로 띄울 때는 별칭 `cc -p '<프롬프트>'` 가 동일하다. **별칭은 대화형 쉘 전용**이므로 스크립트·`send-keys`·cron 에서는 `claude --dangerously-skip-permissions -p` 풀네임을 쓴다
 * `-p` 는 1-shot 이다. 다단계 대화가 필요하면 프롬프트에 절차를 전부 적거나 `--continue`/`--resume` 으로 이어붙인다
@@ -267,6 +324,8 @@ extract_completion_hash() {
 
 # 의존 룰·SCAR
 
+* **`~/.claude/_doc_arch/fpm-do-design.md` — 본 자산의 설계 SSOT (prj3 소유)**. 자산 3벌 동기화 경계(⚠️ prj1 plugin 배포판이 Issue351 미반영), 실행 10단계 실측, `--auto-deps` 파싱 결함. ⚠️ 본 SKILL 은 *실행 단계*, 설계 문서는 *왜·어디가 갈라졌나*를 담는다
+* `~/.claude/_doc_arch/session-delegation-design.md` — 위임 아키텍처 전반(3계층 중복·결손·DB 도입 경계)
 * **`~/.claude/rules/session-delegation-rules.md` — 세션 기동 표준 SSOT (Issue300)**. `-p` + `--dangerously-skip-permissions` 강제, 게이트를 사용자에게 넘기지 않기
 * `~/.claude/rules/issue-g.md` 규칙2 `* depends:` 필드 정의 (Issue17)
 * `~/_git/___pm/.claude/skills/cdf/index.md` — tmux pane 라우팅

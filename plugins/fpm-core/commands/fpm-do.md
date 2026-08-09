@@ -17,7 +17,7 @@ skill: "fpm-pm-do"
 
 # 실행 모드 (Issue299)
 
-위임 실행은 **비대화 `-p` 가 기본**이다: `claude --dangerously-skip-permissions -p '<프롬프트>'`. 대화형 TUI 로 띄운 뒤 `send-keys` 로 프롬프트를 넣는 방식은 첫 실행 안내(Chrome 확장 등)·편집 승인 게이트에서 **진척 0 으로 멈춘다**(2026-07-26 실측). 사람이 쉘에서 손으로 띄울 땐 별칭 `cc -p '<프롬프트>'` 가 동일하나, **별칭은 대화형 쉘 전용**이라 스크립트·`send-keys`·cron 에서는 풀네임을 쓴다. 규칙 SSOT: [`rules/session-delegation-rules.md`](../rules/session-delegation-rules.md) · 구현: [`skills/fpm-pm-do/SKILL.md`](../skills/fpm-pm-do/SKILL.md) "실행 모드" · 실동작 코드: `~/.bin/pm-do`.
+위임 실행은 **비대화 `-p` 가 기본**이다: `claude --dangerously-skip-permissions -p '<프롬프트>'`. 대화형 TUI 로 띄운 뒤 `send-keys` 로 프롬프트를 넣는 방식은 첫 실행 안내(Chrome 확장 등)·편집 승인 게이트에서 **진척 0 으로 멈춘다**(2026-07-26 실측). 사람이 쉘에서 손으로 띄울 땐 별칭 `cc -p '<프롬프트>'` 가 동일하나, **별칭은 대화형 쉘 전용**이라 스크립트·`send-keys`·cron 에서는 풀네임을 쓴다. 규칙 SSOT: [`rules/session-delegation-rules.md`](../rules/session-delegation-rules.md) · 구현: [`skills/fpm-pm-do/SKILL.md`](../skills/fpm-pm-do/SKILL.md) "실행 모드" · 실동작 코드: `~/.bin/pm-do` · **설계 SSOT: [`_doc_arch/fpm-do-design.md`](../_doc_arch/fpm-do-design.md)**(*왜 이렇게 설계했나*·자산 3벌 동기화 경계·알려진 결함).
 
 # 인자: $ARGUMENTS
 

@@ -93,7 +93,7 @@ def parse_dep_token(tok: str):
     return ("local", None, m.group(1)) if m else None
 
 
-def parse_issue_md(path: Path, warn: list | None = None):
+def parse_issue_md(path: Path, warn: list | None = None, lenient: bool = False):
     """Issue.md → {id: {...}} 순서 보존 dict.
 
     warn 을 주면 `* depends:` 규약 위반을 (kind, 이슈ID, 원문토큰) 으로 수집한다 (Issue343).
@@ -102,12 +102,26 @@ def parse_issue_md(path: Path, warn: list | None = None):
     """
     issues, section = {}, None
     current = None
+    # Issue368: lenient 는 **타 prj 조회 전용** 관용 모드다. 남의 repo 포맷을 강제할 수 없고,
+    #   실재하는 이슈를 "없음" 으로 판정하는 편이 규약 이탈을 눈감는 것보다 나쁘다.
+    #   자기 Issue.md 파싱(lenient=False)은 종전 그대로 엄격 — 회귀 없음.
+    #   ① 섹션 접두 일치: 아카이브는 `# ✅ 완료 (아카이브 — Issue1~250)` 처럼 괄호 부기가 붙는다
+    #   ② 구분자 관용: prj42 는 `## Issue308. 제목` 처럼 콜론 대신 마침표를 쓴다
+    iss_re = (r"^(#{2,3})\s+(Issue[\w_]+)\s*[:.]\s*(.+?)\s*$" if lenient
+              else r"^(#{2,3})\s+(Issue[\w_]+)\s*:\s*(.+?)\s*$")
     for line in path.read_text().splitlines():
         m_sec = re.match(r"^#\s+(.+?)\s*$", line)
-        if m_sec and m_sec.group(1) in SECTIONS:
-            section, current = m_sec.group(1), None
-            continue
-        m_iss = re.match(r"^(#{2,3})\s+(Issue[\w_]+)\s*:\s*(.+?)\s*$", line)
+        if m_sec:
+            head = m_sec.group(1)
+            if head in SECTIONS:
+                section, current = head, None
+                continue
+            if lenient:
+                pre = next((k for k in SECTIONS if head.startswith(k)), None)
+                if pre:
+                    section, current = pre, None
+                    continue
+        m_iss = re.match(iss_re, line)
         if m_iss and section:
             iid, title = m_iss.group(2), m_iss.group(3)
             title = re.sub(r"\s*\((등록|해결|완료)[^)]*\)\s*", "", title).strip()
@@ -250,12 +264,28 @@ class CrossResolver:
                 return k
         return path.name
 
+    # Issue368: 완료분을 옮겨 두는 아카이브 파일명 (대소문자 관례가 repo 마다 갈린다).
+    #   활성 Issue.md 에서 못 찾았다고 "이슈 없음" 으로 단정하면, 아카이브를 운영하는
+    #   프로젝트(prj1·prj3 등)의 선행이 전부 미확인으로 떨어진다 — 실측 2건이 그 사례.
+    ARCHIVES = ("_doc_work/issue_OLD.md", "_doc_work/Issue_OLD.md")
+
     def issues_of(self, path: Path):
-        """대상 프로젝트 Issue.md 파싱 (프로젝트당 1회)."""
+        """대상 프로젝트 Issue.md + 아카이브 파싱 (프로젝트당 1회).
+
+        활성이 우선이고 아카이브는 **없는 키만** 채운다 — 같은 번호가 양쪽에 있으면
+        활성이 현재 상태다.
+        """
         key = str(path.resolve())
         if key not in self._issues:
             f = path / "Issue.md"
-            self._issues[key] = parse_issue_md(f) if f.exists() else {}
+            merged = parse_issue_md(f, lenient=True) if f.exists() else {}
+            for rel in self.ARCHIVES:
+                a = path / rel
+                if not a.exists():
+                    continue
+                for iid, iss in parse_issue_md(a, lenient=True).items():
+                    merged.setdefault(iid, iss)
+            self._issues[key] = merged
         return self._issues[key]
 
     def status(self, ref: str, iid: str):
