@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: 8068d0a42ee3e19e34e143886d7b108dae2cf6dd41974fa1f56c6113ca578eeb
+source_sha: cc84dcb9a3bf9e5874a1befc70f7f6960c2102a2f15ce4d0292eff7efaf4a163
 ---
 
 # 안내
@@ -18,7 +18,7 @@ source_sha: 8068d0a42ee3e19e34e143886d7b108dae2cf6dd41974fa1f56c6113ca578eeb
 
 # 이슈 근거
 
-## Issue362: plugins/fpm-core 번들 표류 16건 — forward 가 막혀 있다
+## Issue362: plugins/fpm-core 번들 표류 16건 — forward 가 막혀 있다 ✅
 * 목적: `fpm-sync` forward 가 *"plugins/fpm-core 가 라이브와 표류"* 로 **중단**된 상태다(로그 2026-08-09 15:13). 배포판이 라이브보다 뒤처져 있어, 번들을 쓰는 소비자는 구버전 동작을 만난다. 특히 `skills/fpm-pm-do` 는 안전 지시 주입·원본 지시 보존 개정이 미반영이라 **위임 세션의 안전 문구가 끊긴다**.
 * depends: 없음
 * 구현 명세:
