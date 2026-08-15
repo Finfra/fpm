@@ -93,6 +93,43 @@ def parse_dep_token(tok: str):
     return ("local", None, m.group(1)) if m else None
 
 
+# Issue390 — `issue-g.md` 기본 섹션 중 **의도적으로 그래프 대상이 아닌** 것들.
+#   여기에 이슈 헤더가 있어도 경고하지 않는다 — 빼는 것이 규약이지 사고가 아니다.
+NON_GRAPH_SECTIONS = ("Issue Management", "🤔 결정사항", "🌱 이슈후보", "📜 참고")
+
+
+def _norm_section(head: str) -> str:
+    """섹션 헤더 비교 키 — **이모지·공백·기호를 걷어낸다** (Issue390).
+
+    `🔥 진행 중` · `🚧 진행중` 이 둘 다 `진행중` 이 되어 같은 섹션으로 인식된다.
+    로컬 오버라이드를 인정하되(그 프로젝트의 규약은 그 프로젝트가 정한다) 맵은 그리게 하려는 것이다.
+    """
+    return re.sub(r"[^\w가-힣]", "", head)
+
+
+_SECTION_KEYS = None
+
+
+def _match_section(head: str):
+    """정규화 키로 맞춘다. 정확 일치 → 접두 일치 순. 못 맞추면 None.
+
+    접두 일치를 남겨 두는 이유: `✅ 완료 (아카이브 — Issue1~250)` 처럼 부기가 붙는다.
+    """
+    global _SECTION_KEYS
+    if _SECTION_KEYS is None:
+        _SECTION_KEYS = [(_norm_section(k), k) for k in SECTIONS]
+    nk = _norm_section(head)
+    if not nk:
+        return None
+    for key, orig in _SECTION_KEYS:
+        if nk == key:
+            return orig
+    for key, orig in _SECTION_KEYS:
+        if nk.startswith(key):
+            return orig
+    return None
+
+
 def parse_issue_md(path: Path, warn: list | None = None, lenient: bool = False):
     """Issue.md → {id: {...}} 순서 보존 dict.
 
@@ -109,18 +146,30 @@ def parse_issue_md(path: Path, warn: list | None = None, lenient: bool = False):
     #   ② 구분자 관용: prj42 는 `## Issue308. 제목` 처럼 콜론 대신 마침표를 쓴다
     iss_re = (r"^(#{2,3})\s+(Issue[\w_]+)\s*[:.]\s*(.+?)\s*$" if lenient
               else r"^(#{2,3})\s+(Issue[\w_]+)\s*:\s*(.+?)\s*$")
+    # Issue390 — 미지 섹션에서 **조용히 사라지던** 이슈를 센다. 아래 경고의 근거다.
+    unknown_head, unknown_hits = None, {}
     for line in path.read_text().splitlines():
         m_sec = re.match(r"^#\s+(.+?)\s*$", line)
         if m_sec:
             head = m_sec.group(1)
             if head in SECTIONS:
-                section, current = head, None
+                section, current, unknown_head = head, None, None
                 continue
-            if lenient:
-                pre = next((k for k in SECTIONS if head.startswith(k)), None)
-                if pre:
-                    section, current = pre, None
-                    continue
+            # Issue390 — **이모지·공백을 무시하고** 맞춰 본다. 로컬 오버라이드 프로젝트가
+            #   `# 🔥 진행 중` 처럼 쓰면 접두 일치로는 안 잡힌다(`🚧 진행중` 의 접두가 아니다).
+            #   실측(m2slide, 2026-08-11): 그 섹션의 이슈가 **총계에서 통째로 빠지고 경고도 없었다**.
+            hit = _match_section(head)
+            if hit:
+                section, current, unknown_head = hit, None, None
+                continue
+            # 여기까지 왔으면 우리가 모르는 섹션이다. `section=None` 이라 이 구간의 이슈는
+            # 버려진다 — 버리는 것 자체는 맞지만 **말은 해야 한다**(아래 경고).
+            section, current, unknown_head = None, None, head
+            continue
+        if (unknown_head and unknown_head not in NON_GRAPH_SECTIONS
+                and re.match(r"^#{2,3}\s+Issue[\w_]+\s*[:.]", line)):
+            unknown_hits[unknown_head] = unknown_hits.get(unknown_head, 0) + 1
+            continue
         m_iss = re.match(iss_re, line)
         if m_iss and section:
             iid, title = m_iss.group(2), m_iss.group(3)
@@ -186,6 +235,17 @@ def parse_issue_md(path: Path, warn: list | None = None, lenient: bool = False):
             parent = iid.rsplit("_", 1)[0]
             if parent in issues:
                 iss["depends"].append(parent)
+    # Issue390 — **조용히 버리지 않는다.** 정규화로도 못 맞춘 섹션에 이슈 헤더가 있었으면
+    #   그 개수를 알린다. 종전에는 총계에서 빠진 채 맵이 정상처럼 그려졌다(m2slide 실측).
+    if unknown_hits:
+        for head, n in unknown_hits.items():
+            sys.stderr.write(
+                "⚠️ 모르는 섹션 '# %s' 안의 이슈 %d건을 건너뛴다 — 맵에 안 나온다\n"
+                "   아는 섹션: %s\n"
+                "   이모지·공백은 무시하고 맞춘다. 그래도 안 맞으면 섹션명을 바꾸거나\n"
+                "   build_issue_map.py 의 SECTIONS 에 추가한다\n"
+                % (head, n, " · ".join(SECTIONS)))
+
     return issues
 
 

@@ -365,32 +365,78 @@ form_js = (open(os.path.expanduser('~/.claude/hooks/fpm-ask-form-template.js'), 
 
 # Issue143: 짝 a모드(..show 렌더) 페이지 탐색 → b 폼에 iframe+링크 임베드.
 # a(Claude Write, cwd htm 폴더)와 b(hook, OUT_DIR fallback /tmp)가 서로 다른 폴더일 수 있어
-# 후보 폴더(OUT_DIR + cwd 의 HTM_DIRS + /tmp/___pm) 합집합에서 hub_htm_*_a_*.htm 중 mtime 최신 1개를 페어로 본다.
-# Issue289: 단일 z_htm 대신 활성 htm/ · 아카이브 z_done/htm/ · legacy z_htm/ 전부를 후보로.
-import glob as _glob, re as _re, html as _htmlmod
+# 후보 폴더(OUT_DIR + cwd 활성 htm/ + /tmp/___pm) 합집합에서 mtime 최신 1개를 페어로 본다.
+# Issue289 는 아카이브(z_done/htm·legacy z_htm)까지 후보에 넣었으나 2026-08-09 되돌린다 —
+#   "직전 ..show" 라는 의미상 아카이브는 페어가 아니고, 일괄 이동으로 mtime 이 동률이라
+#   max() 결과가 비결정적이었다. 실발생: ___common 폼이 6/26 화석(z_done, 게다가 clear
+#   tombstone)을 집어 iframe 이 영구 403 dead link. 아카이브 문서의 링크 유지는 서버
+#   self-heal 소관이지 페어 선택 소관이 아니다.
+# 같은 사고의 결함 3종을 함께 막는다:
+#   1) 확장자 — a모드 산출이 md-first(Issue353_1)로 바뀐 뒤에도 glob 이 .htm 만 봐서 활성
+#      페어를 영구히 못 찾고 매번 아카이브로 폴백했다 → .md/.html 포함, 링크는 확장자별 셸.
+#   2) 나이 가드 — mtime 이 PAIR_MAX_AGE(기본 3600s) 이내인 것만 "직전"으로 인정.
+#   3) 접근성 검증 — 고른 파일이 htm-registry 미등록이거나 htm-cleared tombstone 이면 뺀다.
+#      서버는 화이트리스트 모델이라 링크해봐야 403 이다. registry 파일을 못 읽으면 검증 skip(fail-soft).
+import glob as _glob, re as _re, html as _htmlmod, json as _json, time as _time
 _cand_dirs = []
-_htm_subdirs = (('htm',), ('z_done', 'htm'), ('z_htm',))
-for _d in [out_dir] + ([os.path.join(cwd, '_doc_work', *_s) for _s in _htm_subdirs] if cwd else []) + ['/tmp/___pm']:
+for _d in [out_dir] + ([os.path.join(cwd, '_doc_work', 'htm')] if cwd else []) + ['/tmp/___pm']:
     if _d and os.path.isdir(_d) and _d not in _cand_dirs:
         _cand_dirs.append(_d)
+try:
+    _pair_max_age = float(os.environ.get('PAIR_MAX_AGE', '3600'))
+except ValueError:
+    _pair_max_age = 3600.0
+_now = _time.time()
 _a_files = []
 for _d in _cand_dirs:
-    _a_files += [f for f in _glob.glob(os.path.join(_d, 'hub_htm_*_a_*.htm')) if os.path.isfile(f)]
+    for _ext in ('htm', 'html', 'md'):
+        _a_files += [f for f in _glob.glob(os.path.join(_d, f'hub_htm_*_a_*.{_ext}'))
+                     if os.path.isfile(f) and (_now - os.path.getmtime(f)) <= _pair_max_age]
+_reg_dir = os.path.expanduser('~/_git/___pm/data/hub')
+def _hub_paths(_name, _key):
+    """registry/tombstone json → realpath set. 읽기 실패 시 None(=검증 불가)."""
+    try:
+        with open(os.path.join(_reg_dir, _name), encoding='utf-8') as _fh:
+            _rows = _json.load(_fh)
+    except Exception:
+        return None
+    if _key:
+        return {os.path.realpath(r.get(_key) or '')
+                for r in _rows if isinstance(r, dict) and r.get(_key)}
+    return {os.path.realpath(p) for p in _rows if isinstance(p, str)}
+_reg_paths = _hub_paths('htm-registry.json', 'path')
+_cleared_paths = _hub_paths('htm-cleared.json', None) or set()
+def _servable(_f):
+    _rp = os.path.realpath(_f)
+    if _rp in _cleared_paths:
+        return False              # 사용자가 clear → 서버가 self-heal 도 거부(403)
+    return True if _reg_paths is None else _rp in _reg_paths
+_a_files = [f for f in _a_files if _servable(f)]
 a_pair = max(_a_files, key=lambda f: os.path.getmtime(f)) if _a_files else ''
 if a_pair:
+    _is_md = a_pair.endswith('.md')
     a_title = os.path.basename(a_pair)
     try:
         with open(a_pair, encoding='utf-8') as _fh:
-            _m = _re.search(r'<title>(.*?)</title>', _fh.read(4000), _re.S)
-        if _m and _m.group(1).strip():
-            a_title = _m.group(1).strip()
+            _head = _fh.read(4000)
+        if _is_md:   # md-first 산출엔 <title> 이 없다 — frontmatter title/name → 첫 H1 순
+            _m = (_re.search(r'^title:\s*(.+)$', _head, _re.M)
+                  or _re.search(r'^name:\s*(.+)$', _head, _re.M)
+                  or _re.search(r'^#\s+(.+)$', _head, _re.M))
+            _cap = _m.group(1).strip().strip('"\'') if _m else ''
+        else:
+            _m = _re.search(r'<title>(.*?)</title>', _head, _re.S)
+            _cap = _m.group(1).strip() if _m else ''
+        if _cap:
+            a_title = _cap
             for _pre in (f'{project_name} — ', f'{project_name} - '):
                 if a_title.startswith(_pre):
                     a_title = a_title[len(_pre):]
     except Exception:
         pass
     _t = _htmlmod.escape(a_title)
-    _p = _htmlmod.escape(f'http://{render_host}:{server_port}/htm-doc?path=' + a_pair)  # Issue: http origin 폼에서 file:// iframe 차단 회귀 → hub 서버 경유
+    _shell = 'md-doc' if _is_md else 'htm-doc'
+    _p = _htmlmod.escape(f'http://{render_host}:{server_port}/{_shell}?path=' + a_pair)  # Issue: http origin 폼에서 file:// iframe 차단 회귀 → hub 서버 경유
     _snippet = (
         '<details class="show-pair" open style="margin:1rem 1.5rem;border:1px solid #c9b8e0;border-radius:10px;overflow:hidden;">\n'
         '  <summary style="cursor:pointer;padding:0.6rem 1rem;background:hsl(273,30%,92%);color:#4a2d6b;font-weight:600;">'

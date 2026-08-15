@@ -14,7 +14,8 @@
   "projectList.col.name": "프로젝트명",
   "projectList.col.path": "경로",
   "projectList.col.desc": "설명",
-  "projectList.col.color": "색",
+  "projectList.col.map": "Map",
+  "projectList.mapNone": "이슈맵 없음 — /fpm-issue-map 으로 생성",
   "projectList.toggleColTitle": "hub 자동 렌더 on/off",
   "projectList.openTitle": "Projects.md 프로젝트 목록 보기",
   "projectsMap.openTitle": "Projects.md 의 Project Map 섹션을 렌더한 프로젝트 관계도 열기 (노드 클릭 → VSCode)",
@@ -74,6 +75,7 @@
   "liveSessions.dismissTitle": "이 세션 카드를 hub 목록에서 숨김 (claude 프로세스는 종료하지 않음)",
   "liveSessions.copySidTitle": "세션 ID 복사",
   "liveSessions.issueMapTitle": "이 프로젝트의 이슈 의존 관계도(Issue_map.htm) 열기",
+  "liveSessions.issueMapStaleTitle": "이슈맵이 Issue.md 보다 오래됨 — 내용이 낡았을 수 있음. /fpm-issue-map 으로 재생성",
   "liveSessions.copiedSid": "세션 ID 복사됨",
   "liveSessions.approveTitle": "승인 대기 항목 '{item}' 진행 승인",
   "liveSessions.topicTitle": "{topic} — 클릭: VSCode 세션 탭 열기",
@@ -169,6 +171,7 @@
   "settings.field.hub_single_window": "hub 서버가 호스트(source-IP)당 hub 쉘 창을 1개로 강제할지 — true=2번째 창에 takeover 안내 / false=다중 창 허용",
   "settings.field.hub_lease_ttl": "hub 서버가 hub 쉘 리스를 회수하기까지의 heartbeat 만료(초). 브라우저의 SSE keepalive 가 이 시간 이상 끊기면 회수",
   "settings.field.allow_server_list": "hub 서버 접속 허용 게이트 (source-IP 기준) — true=Servers.md 화이트리스트+자기 자신 허용 / false=자기 자신(bind_host)만 허용, 외부 전부 차단. 변경 시 서버 restart 필요",
+  "settings.field.host_gate": "hub 서버 접속 허용 게이트 (수신 이름=Host 헤더 기준) — true(기본)=bind_host·advertise_host·localhost·hostname(.local)·extra_hosts 만 허용하고 그 외 이름은 421 거부(DNS rebinding 방어) / false=모든 이름 허용(종전). IP 리터럴 Host 는 항상 통과. 변경 시 서버 restart 필요",
   "settings.label.default_browser": "렌더 브라우저",
   "settings.label.browser_open": "브라우저 자동 열기",
   "settings.label.browser_tab_reuse": "탭 재사용",
@@ -194,6 +197,7 @@
   "settings.label.bind_host": "바인드 호스트",
   "settings.label.advertise_host": "어드버타이즈 호스트",
   "settings.label.allow_server_list": "서버 허용목록 게이트",
+  "settings.label.host_gate": "수신 이름 게이트",
   "settings.label.ssh_remote_alias": "SSH 원격 alias",
   "settings.field.ssh_remote_alias": "hub 서버가 원격 브라우저의 open-project/open-session 요청에 vscode-remote://ssh-remote+<alias> 링크로 응답할 때 쓰는 SSH alias (클라이언트 ~/.ssh/config 의 Host 이름, ex: gl). 빈 값=비활성"
 }

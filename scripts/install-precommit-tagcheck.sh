@@ -15,6 +15,8 @@
 #
 # 우회: SKIP_TAGCHECK=1 git commit …  (stderr 경고 동반 — 의도적 예외만)
 # 검사 제외: Issue.md 자신 · _doc_work/** · _doc_arch/** (이력 서술 문맥)
+#            · plugins/** (Issue364 — 동기 산출물이라 태그 저작처가 원본 쪽이고, 번들에서
+#              차단해도 고칠 곳이 여기가 아님. 제외 목록·잔여 구멍 정본은 precommit-tagcheck.py)
 # python3 부재 시 graceful skip (커밋 정상 진행) — install-precommit-scar.sh 와 동일 관례.
 #
 # 다른 pre-commit 블록과 마커(# tagcheck-precommit-start/end)로 공존. 멱등.

@@ -14,7 +14,8 @@
   "projectList.col.name": "Project",
   "projectList.col.path": "Path",
   "projectList.col.desc": "Description",
-  "projectList.col.color": "Color",
+  "projectList.col.map": "Map",
+  "projectList.mapNone": "No issue map — run /fpm-issue-map to build",
   "projectList.toggleColTitle": "hub auto-render on/off",
   "projectList.openTitle": "View Projects.md project list",
   "projectsMap.openTitle": "Open the project map rendered from the Project Map section of Projects.md (click a node to open it in VSCode)",
@@ -74,6 +75,7 @@
   "liveSessions.dismissTitle": "Hide this session card from the hub list (does not terminate the claude process)",
   "liveSessions.copySidTitle": "Copy session ID to clipboard",
   "liveSessions.issueMapTitle": "Open the issue dependency map (Issue_map.htm) for this project",
+  "liveSessions.issueMapStaleTitle": "The issue map is older than Issue.md — it may be out of date. Rebuild with /fpm-issue-map",
   "liveSessions.copiedSid": "Session ID copied",
   "liveSessions.approveTitle": "Approve waiting item '{item}' to proceed",
   "liveSessions.topicTitle": "{topic} — click: open VSCode session tab",
@@ -169,5 +171,6 @@
   "settings.field.hub_single_window": "Whether the hub server forces one hub shell window per host (source-IP) — true=2nd window gets a takeover prompt / false=allow multiple windows",
   "settings.field.hub_lease_ttl": "Heartbeat expiry (sec) before the hub server reclaims a hub shell lease. Reclaimed when the browser's SSE keepalive is missed beyond this",
   "settings.field.allow_server_list": "hub server access gate by source-IP — true=allow the Servers.md whitelist+self / false=allow self (bind_host) only, block all external. Server restart required on change",
+  "settings.field.host_gate": "hub access gate (by received name = Host header) — true (default) allows only bind_host / advertise_host / localhost / hostname(.local) / extra_hosts and rejects other names with 421 (DNS rebinding defense); false allows every name (legacy). IP literal Hosts always pass. Requires server restart",
   "settings.field.ssh_remote_alias": "SSH alias the hub server uses to answer a remote browser's open-project/open-session with a vscode-remote://ssh-remote+<alias> link (a Host name in the client's ~/.ssh/config, e.g. gl). Empty=disabled"
 }

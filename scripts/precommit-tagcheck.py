@@ -25,7 +25,20 @@ HEADING_RE = re.compile(r'^## Issue(\d+(?:_\d+)+|\d+)\s*:', re.M)
 
 # 이력 서술 문맥 — 과거 이슈 번호를 자유롭게 인용하는 것이 정상이므로 검사 제외.
 EXCLUDE_EXACT = {'Issue.md', 'Issue_public.md', 'Issue_map.htm'}
-EXCLUDE_PREFIX = ('_doc_work/', '_doc_arch/', '_doc_base/')
+# `plugins/` 는 위와 이유가 다르다 (Issue364). 번들(`plugins/fpm-core`)은 **동기 산출물**이라
+# 대부분의 파일에 원본이 따로 있고(prj3 `~/.claude/{hooks,commands,agents,skills}` · prj1 자신의
+# `services/hub`·`data/locales`), 태그를 실제로 저작하는 곳은 그 원본이다. 원본은 이 검사를
+# 그대로 받는다. 번들 사본에서 차단해 봐야 **고칠 수 있는 곳이 여기가 아니므로** 조치로
+# 이어지지 않고, 동기 커밋만 구조적으로 막힌다(Issue362 에서 SKIP_TAGCHECK 3회 실발생).
+#
+# ⚠️ 이 제외로 닫히지 **않는** 구멍 2개 — 둘 다 Issue365 로 분리:
+#   1. 번들 태그는 여전히 digest 참조 코퍼스(`fpm-issue-digest.sh` git grep)에 남는다. 번들이
+#      들고 온 prj3 번호가 prj1 번호와 충돌하면 엉뚱한 prj1 이슈가 공개 digest 에 실린다.
+#      뿌리는 bare `IssueN` 이 prj 소속을 표현하지 못한다는 것이라, 경로 제외로는 못 고친다.
+#   2. 라이브 대응이 없는 **번들 전용 파일**(`vscode-ext/`·`CLAUDE.md`·`hooks/fpm-browser-open.sh`
+#      등 12개)은 prj1 에서 직접 저작되는데 `fpm-bundle-sync.sh --check` 도 대상이 아니다
+#      (`sync_file()` 이 `[ -f "$src" ]` 로 조기 반환). 이들은 이제 어느 검사도 받지 않는다.
+EXCLUDE_PREFIX = ('_doc_work/', '_doc_arch/', '_doc_base/', 'plugins/')
 
 
 def git(*args, allow_fail=False):

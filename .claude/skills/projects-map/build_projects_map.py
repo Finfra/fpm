@@ -655,7 +655,7 @@ HTML_HEAD = """<!doctype html>
     cursor: pointer; padding: 0.2rem 0.4rem; border-radius: 6px; opacity: 0.75; }
   .quick-btn:hover { opacity: 1; background: rgba(127,127,127,0.15); }
   #note { cursor: pointer; }
-  #map-canvas { cursor: pointer; }
+  /* Issue375: 맵 배경은 더 이상 클릭 대상이 아니다 — pointer 커서를 주면 거짓 신호가 된다. */
   .meta { color: #777; font-size: 0.85rem; margin-bottom: 1rem; }
   input#filter { width: 100%; box-sizing: border-box; padding: 0.5rem; font-size: 1rem;
     margin-bottom: 1rem; }
@@ -681,6 +681,28 @@ HTML_HEAD = """<!doctype html>
   /* Issue301: hub 응답이 끊기면 배지는 더 이상 현재 상태가 아니다 — 눈에 보이게 표시 */
   .sess-badge.stale { opacity: 0.3; filter: grayscale(1); }
   .sess-slot:not(:empty) { margin-left: 0.25em; }
+  /* Issue371: 노드 hover 팝업 — 프로젝트 축(이 맵)에서 이슈 축(이슈맵)으로 내려가는 통로.
+     세션 배지와 달리 버튼을 눌러야 하므로 커서를 팝업으로 옮기는 동안 살아 있어야 한다
+     (노드 이탈 시 즉시 숨기지 않고 유예를 둔다 — 스크립트 HIDE_MS). */
+  #prj-pop { position: fixed; z-index: 3000; display: none; min-width: 150px;
+    background: #fff; border: 1px solid #ccc; border-radius: 8px; padding: 0.45rem 0.6rem;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.18); font-size: 0.82rem; line-height: 1.35; }
+  #prj-pop .pp-name { font-weight: 600; margin-bottom: 0.35rem; white-space: nowrap; }
+  #prj-pop .pp-id { color: #999; font-weight: 400; margin-left: 0.3em; }
+  #prj-pop .pp-btn { display: block; text-align: center; text-decoration: none;
+    padding: 0.28rem 0.5rem; border-radius: 6px; border: 1px solid #b9c6e4;
+    background: #eef3fd; color: #234; white-space: nowrap; }
+  #prj-pop a.pp-btn:hover { background: #dde7fb; border-color: #8fa6d8; }
+  /* Issue372 3단 — ①맵 없음: 링크 없이 가장 흐리게 · ②맵 문서만(그래프 0): 덜 흐리게 +
+     링크(이슈 목록·완료 이력은 그대로 있다) · ③맵+선수 관계 그래프: 그대로 밝게 */
+  #prj-pop .pp-btn.dim { opacity: 0.35; filter: grayscale(1); cursor: default; }
+  #prj-pop .pp-btn.soft { opacity: 0.62; filter: grayscale(0.45); }
+  #prj-pop a.pp-btn.soft:hover { opacity: 1; filter: none; }
+  @media (prefers-color-scheme: dark) {
+    #prj-pop { background: #26262b; border-color: #45464d; }
+    #prj-pop .pp-btn { background: #2f3444; border-color: #46506b; color: #cfd8ea; }
+    #prj-pop a.pp-btn:hover { background: #39415a; }
+  }
   /* Issue305: 맵을 열자마자 눈에 들어와야 하는 수기 메모(_note.md). 부제 바로 아래
      고정 위치 — 아래로 밀면 스크롤해야 보여서 "열 때마다 상기" 목적이 깨진다. */
   #note { margin: 0 0 1.2rem; padding: 0.7rem 1.1rem; border-left: 4px solid #c9a227;
@@ -997,14 +1019,198 @@ CLICK_SCRIPT_TMPL = """
     location.href = NOTE_HREF;
   });
 
-  // 맵(다이어그램)의 빈 배경 클릭 → Projects.md. 노드 링크(<a>) 위 클릭은 그 링크가 처리하므로 제외.
-  var canvas = document.getElementById('map-canvas');
-  if (canvas) {
-    canvas.addEventListener('click', function (e) {
-      if (e.target.closest('a')) { return; }
-      location.href = PROJECTS_HREF;
+  // Issue375: 맵 배경(#map-canvas) 전역 클릭 → Projects.md 는 제거했다.
+  //   맵이 화면 대부분을 차지해 "빈 곳"이 사실상 페이지 전체였고, 노드를 살짝
+  //   빗나간 클릭·드래그·확대 조작까지 전부 VSCode 를 여는 오작동으로 읽혔다.
+  //   Projects.md 열기는 헤더의 🗂️ 버튼(btn-projects-md)이 단일 진입점이다.
+})();
+</script>
+"""
+
+
+# Issue371: 노드 hover 팝업 — 프로젝트 축(이 맵)에서 이슈 축(이슈맵)으로 내려가는 통로.
+#   이슈맵 유무(`issue_map`)는 hub `/projects-list` 에서 **런타임에** 받는다. 맵은 Projects.md
+#   가 바뀔 때만 재생성되는데 이슈맵은 그보다 자주 생기고 낡으므로, 빌드 시점에 박으면
+#   파일을 여는 순간 거짓이 된다 — 활성 세션 오버레이(Issue299)와 같은 판단이다.
+#   판정 자체는 서버 `_issue_map_visible` 단일 지점이라 hub 카드·Project List 와 어긋나지 않는다.
+POPUP_SCRIPT_TMPL = """
+<script>
+(function () {
+  var HIDE_MS = 260;        // 노드 → 팝업으로 커서를 옮기는 유예. 0 이면 버튼을 누를 수 없다
+  var REFRESH_MS = 60000;   // 이슈맵 유무는 초 단위로 변하지 않는다 — 세션 폴링(5s)과 다른 축
+  var byId = null, pop = null, hideT = null, curId = null, curG = null;
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
     });
   }
+
+  function ensurePop() {
+    if (pop) return pop;
+    pop = document.createElement('div');
+    pop.id = 'prj-pop';
+    pop.addEventListener('mouseenter', function () { clearTimeout(hideT); });
+    pop.addEventListener('mouseleave', hide);
+    document.body.appendChild(pop);
+    return pop;
+  }
+
+  function load() {
+    fetch('/projects-list', { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        if (!d) return;
+        var m = {};
+        (d.projects || []).forEach(function (p) { m[String(p.id)] = p; });
+        byId = m;
+        markNodes();
+      })
+      .catch(function () { /* hub 미가동 — 팝업만 안 뜬다. 맵 본체는 그대로 */ });
+  }
+
+  // ── Issue372: 노드 테두리 표식 (hover 없이 상시) ──────────────────────────────
+  //   왼쪽 점선 = 이슈맵 **문서**가 있다 · 위쪽 점선까지 = **선수 관계 그래프**도 있다.
+  //   hover 팝업만으로는 "어디에 관계도가 있나"를 맵 전체에서 훑을 수 없다.
+  //   ⚠️ SVG `rect` 는 한 변만 파선으로 만들 수 없다(stroke-dasharray 는 둘레 전체에 적용).
+  //   그래서 변마다 `<line>` 을 노드 `<g>` 에 얹는다 — 세션 배지가 `<text>` 를 얹는 것과
+  //   같은 방식이고, `<foreignObject>` 라벨 클리핑에도 걸리지 않는다.
+  var MARK_CLS = 'imap-mark';
+  var MARK_COLOR = '#444';        // 노드 fill 은 프로젝트 파스텔색이라 어두운 선이 양 테마에서 읽힌다
+  var lastMarkKey = null;
+
+  function shapeOf(g) {
+    // 세션 배지(<text>)가 붙으면 g 의 bbox 가 부푼다 → 도형 자신을 잰다
+    return g.querySelector('rect, polygon, ellipse, circle, path') || g;
+  }
+
+  function markKey() {
+    if (!byId) return null;
+    var n = document.querySelectorAll('svg g.node').length;
+    var f = 0, gph = 0;
+    Object.keys(byId).forEach(function (k) {
+      if (byId[k].issue_map_file) f++;
+      if (byId[k].issue_map) gph++;
+    });
+    return n + '|' + f + '|' + gph;
+  }
+
+  function markNodes() {
+    var key = markKey();
+    if (key === null || key === lastMarkKey) return;
+    lastMarkKey = key;
+    document.querySelectorAll('.' + MARK_CLS).forEach(function (n) { n.remove(); });
+    var NS = 'http://www.w3.org/2000/svg';
+    document.querySelectorAll('svg g.node').forEach(function (g) {
+      var id = prjIdOf(g);
+      var p = id && byId[id];
+      if (!p || !p.issue_map_file) return;
+      var b;
+      try { b = shapeOf(g).getBBox(); } catch (e) { return; }
+      function line(x1, y1, x2, y2) {
+        var l = document.createElementNS(NS, 'line');
+        l.setAttribute('x1', x1); l.setAttribute('y1', y1);
+        l.setAttribute('x2', x2); l.setAttribute('y2', y2);
+        l.setAttribute('stroke', MARK_COLOR);
+        l.setAttribute('stroke-width', '2');
+        l.setAttribute('stroke-dasharray', '4 3');
+        l.setAttribute('pointer-events', 'none');   // 노드 클릭(/open-prj)을 가리지 않는다
+        l.setAttribute('class', MARK_CLS);
+        g.appendChild(l);
+      }
+      line(b.x, b.y, b.x, b.y + b.height);                    // ② 왼쪽 — 맵 문서 있음
+      if (p.issue_map) { line(b.x, b.y, b.x + b.width, b.y); } // ③ 위쪽 — 선수 관계 그래프도 있음
+    });
+  }
+
+  // 노드 id 는 `mermaid-<ts>-flowchart-P{id}-{n}` (활성 세션 오버레이와 같은 규약).
+  function prjIdOf(g) {
+    var m = /flowchart-P([^-]+)-/.exec(g.id || '');
+    return m ? m[1] : null;
+  }
+
+  function show(g, id) {
+    var p = byId && byId[id];
+    if (!p) return;   // 목록을 아직 못 받았거나 표에 없는 노드 → 팝업 없음
+    var el = ensurePop();
+    curId = id;
+    // Issue372 3단. ② 는 링크를 건다 — 그래프가 비었다고 문서가 빈 것은 아니다
+    //   (이슈 목록·완료 이력은 그대로 실려 있고 서버도 정상 serve 한다).
+    var href = '/issue-map?cwd=' + encodeURIComponent(p.path);
+    var btn;
+    if (p.issue_map) {
+      btn = '<a class="pp-btn" href="' + href +
+        '" target="_blank" title="이 프로젝트의 이슈 의존 관계도 열기">🗺️ 이슈 맵</a>';
+    } else if (p.issue_map_file) {
+      btn = '<a class="pp-btn soft" href="' + href +
+        '" target="_blank" title="선수 관계 없음 — 관계도는 비었지만 이슈 목록·완료 이력은 볼 수 있다">🗺️ 이슈 맵</a>';
+    } else {
+      btn = '<span class="pp-btn dim" title="이슈맵 없음 — /fpm-issue-map 으로 생성">🗺️ 이슈 맵</span>';
+    }
+    el.innerHTML = '<div class="pp-name">' + esc(p.name) +
+      '<span class="pp-id">#' + esc(p.id) + '</span></div>' + btn;
+    el.style.display = 'block';
+    curG = g;
+    place();
+  }
+
+  // 좌표 계산을 show 에서 떼어낸 이유 — 스크롤·리사이즈 때 **닫는 대신 따라가게** 하려면
+  //   같은 계산이 두 곳에서 필요하다. (닫는 방식은 스크롤 직후 막 연 팝업까지 지웠다)
+  function place() {
+    if (!pop || !curG || pop.style.display === 'none') return;
+    var r = curG.getBoundingClientRect();
+    var left = Math.min(Math.max(4, r.left + r.width / 2 - pop.offsetWidth / 2),
+                        window.innerWidth - pop.offsetWidth - 4);
+    var top = r.top - pop.offsetHeight - 8;
+    if (top < 4) { top = r.bottom + 8; }   // 위쪽 공간이 없으면 아래로 뒤집는다
+    pop.style.left = left + 'px';
+    pop.style.top = top + 'px';
+  }
+
+  function hide() {
+    clearTimeout(hideT);
+    curId = null;
+    curG = null;
+    if (pop) pop.style.display = 'none';
+  }
+
+  document.addEventListener('mouseover', function (e) {
+    var t = e.target;
+    if (!t || !t.closest) return;
+    if (t.closest('#prj-pop')) { clearTimeout(hideT); return; }
+    var g = t.closest('svg g.node');
+    if (!g) return;
+    var id = prjIdOf(g);
+    if (!id) return;
+    clearTimeout(hideT);
+    if (id !== curId) show(g, id);
+  });
+
+  // ⚠️ mouseout 은 **노드 안 자식끼리 옮겨 다닐 때도** 발동한다(라벨 → 테두리 → 배경).
+  //   target 만 보고 숨기면 커서가 노드 위에 그대로 있는데 팝업이 스스로 닫힌다(실측).
+  //   그래서 "어디로 나갔는가"(relatedTarget)를 보고 노드·팝업 **밖으로** 나간 경우만 닫는다.
+  function inZone(el) {
+    return !!(el && el.closest && (el.closest('svg g.node') || el.closest('#prj-pop')));
+  }
+
+  document.addEventListener('mouseout', function (e) {
+    if (!inZone(e.target)) return;
+    if (inZone(e.relatedTarget)) return;   // 노드↔팝업 내부 이동 — 유지
+    clearTimeout(hideT);
+    hideT = setTimeout(hide, HIDE_MS);
+  });
+
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') hide(); });
+  // 스크롤·리사이즈로 노드가 움직이면 팝업도 따라간다. capture 로 내부 스크롤 컨테이너까지 받는다
+  window.addEventListener('scroll', place, true);
+  window.addEventListener('resize', place);
+
+  load();
+  setInterval(load, REFRESH_MS);
+  // mermaid 렌더 완료 시점을 알 수 없다 — 초반엔 촘촘히, 이후 주기적으로 다시 얹는다.
+  //   markNodes 는 key(노드 수·신호 수)가 그대로면 즉시 반환하므로 반복 비용이 없다.
+  [400, 1400, 2600, 4200].forEach(function (ms) { setTimeout(markNodes, ms); });
+  setInterval(markNodes, 5000);
 })();
 </script>
 """
@@ -1189,7 +1395,7 @@ def main():
         warn_html,
         f'<div class="meta">프로젝트 {len(table)}건'
         + (f" · 미할당 편입 {len(missing)}건" if missing else "")
-        + " · 노드 클릭 → VSCode 로 열기 · 맵 빈 곳 클릭 → Projects.md · note 박스 클릭 → _note.md</div>",
+        + " · 노드 클릭 → VSCode 로 열기 · 🗂️ 버튼 → Projects.md · note 박스 클릭 → _note.md</div>",
         note_html,                      # Issue305: 부제 바로 아래 고정 — 열자마자 보이게
         "<!-- PROJECTS-MAP:MERMAID -->",
         '<div id="map-canvas">',
@@ -1206,6 +1412,7 @@ def main():
         "<!-- /PROJECTS-MAP:TREE -->",
         "</details>",
         render_session_script(table),   # Issue299: 활성 세션 오버레이 (</body> 앞)
+        POPUP_SCRIPT_TMPL,              # Issue371: 노드 hover → 이슈맵 진입 팝업
         render_click_script(note_href, projects_href),  # note/Projects.md 클릭 오픈
         HTML_TAIL_SCRIPT,
     ]

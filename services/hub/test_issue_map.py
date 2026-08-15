@@ -33,6 +33,20 @@ def check(name, cond):
 ISSUE_MD_DEPS = "# Issue Management\n\n## Issue2: b\n* depends: Issue1\n* 목적: x\n"
 ISSUE_MD_NODEPS = "# Issue Management\n\n## Issue1: a\n* 목적: x\n"
 
+def _map_html(has_graph: bool) -> str:
+    """생성기(build_issue_map.py L760~778) 산출물 형태를 최소 재현.
+
+    그래프 유무와 무관하게 `ISSUE-MAP:GRAPH:START/END` 블록이 있고, 그 안이
+    렌더된 `<svg>` 냐 "생략했습니다" 안내냐로 갈린다. 서버 판정은 이 블록만 본다.
+    """
+    inner = ('<svg id="my-svg"><g class="node default">Issue1</g></svg>'
+             if has_graph else
+             "<blockquote><p><code>depends</code> 로 이어진 이슈가 없어 "
+             "의존 관계도·임계 경로를 생략했습니다.</p></blockquote>")
+    return ("<html><body>\n<!-- ISSUE-MAP:GRAPH:START -->\n" + inner +
+            "\n<!-- ISSUE-MAP:GRAPH:END -->\n<h2>진행 전 이슈</h2>\n</body></html>")
+
+
 TMP = tempfile.mkdtemp(prefix="issue-map-test-")
 # prjA: Issue.md(depends 有) + Issue_map.htm 보유 (하위 폴더 sub/deep 포함)
 PRJ_A = os.path.join(TMP, "prjA")
@@ -40,7 +54,7 @@ os.makedirs(os.path.join(PRJ_A, "sub", "deep"))
 ISSUE_A = os.path.join(PRJ_A, "Issue.md")
 open(ISSUE_A, "w").write(ISSUE_MD_DEPS)
 MAP_A = os.path.join(PRJ_A, server.ISSUE_MAP_NAME)
-open(MAP_A, "w").write("<html><body><h1>map A</h1></body></html>")
+open(MAP_A, "w").write(_map_html(True))
 # prjB: Issue.md 만 보유 (맵 없음)
 PRJ_B = os.path.join(TMP, "prjB")
 os.makedirs(PRJ_B)
@@ -48,17 +62,17 @@ open(os.path.join(PRJ_B, "Issue.md"), "w").write(ISSUE_MD_DEPS)
 # prjC: Issue.md 자체가 없음 (nPTiR 루트 아님)
 PRJ_C = os.path.join(TMP, "prjC")
 os.makedirs(PRJ_C)
-# prjD: 맵은 있으나 Issue.md 에 depends 0 (Issue284_1 — 아이콘 미노출 대상)
+# prjD: 맵은 있으나 그 맵이 "생략" 안내 (Issue284_1 — 아이콘 미노출 대상)
 PRJ_D = os.path.join(TMP, "prjD")
 os.makedirs(PRJ_D)
 open(os.path.join(PRJ_D, "Issue.md"), "w").write(ISSUE_MD_NODEPS)
 MAP_D = os.path.join(PRJ_D, server.ISSUE_MAP_NAME)
-open(MAP_D, "w").write("<html><body><h1>map D</h1></body></html>")
+open(MAP_D, "w").write(_map_html(False))
 # outside: 화이트리스트 밖 — Issue.md + 맵을 가졌어도 serve 되면 안 됨
 OUT = os.path.join(TMP, "outside")
 os.makedirs(OUT)
 open(os.path.join(OUT, "Issue.md"), "w").write(ISSUE_MD_DEPS)
-open(os.path.join(OUT, server.ISSUE_MAP_NAME), "w").write("<html><body>leak</body></html>")
+open(os.path.join(OUT, server.ISSUE_MAP_NAME), "w").write(_map_html(True))
 
 
 def _clear_cache():
@@ -80,48 +94,81 @@ check("Issue.md 자체 부재 → None", server._issue_map_path(PRJ_C) is None)
 _clear_cache()
 check("빈 cwd → None", server._issue_map_path("") is None)
 
-# --- Issue284_1: 아이콘 노출 조건 = 맵 존재 AND depends 링크 보유 ---
+# --- Issue284_1 / Issue363: 아이콘 노출 조건 = 맵 존재 AND **그 맵이 그래프 보유** ---
 _clear_cache()
-check("depends 有 + 맵 有 → 아이콘 노출", server._issue_map_visible(PRJ_A) is True)
+check("맵에 그래프 有 → 아이콘 노출", server._issue_map_visible(PRJ_A) is True)
 _clear_cache()
-check("depends 無 + 맵 有 → 아이콘 미노출", server._issue_map_visible(PRJ_D) is False)
+check("맵이 '생략' 안내 → 아이콘 미노출", server._issue_map_visible(PRJ_D) is False)
 _clear_cache()
-check("depends 無라도 serve 경로는 유효 (북마크 보존)",
+check("그래프 無라도 serve 경로는 유효 (북마크 보존)",
       server._issue_map_path(PRJ_D) == os.path.realpath(MAP_D))
 _clear_cache()
 check("맵 無 → 아이콘 미노출", server._issue_map_visible(PRJ_B) is False)
 _clear_cache()
 check("빈 cwd → 아이콘 미노출", server._issue_map_visible("") is False)
 
-check("depends 파서: `* depends: Issue1` 인식", server._issue_md_has_depends(ISSUE_A) is True)
-check("depends 파서: depends 없는 Issue.md → False",
-      server._issue_md_has_depends(os.path.join(PRJ_D, "Issue.md")) is False)
-check("depends 파서: 파일 부재 → False",
-      server._issue_md_has_depends(os.path.join(TMP, "nope.md")) is False)
-_DEP_VAR = os.path.join(TMP, "dep-variants.md")
-open(_DEP_VAR, "w").write("* 목적: x\n    * depends: prj16#Issue42, Issue3\n")
-check("depends 파서: 들여쓴 `* depends: prj16#Issue42` 인식",
-      server._issue_md_has_depends(_DEP_VAR) is True)
-_DEP_EMPTY = os.path.join(TMP, "dep-empty.md")
-open(_DEP_EMPTY, "w").write("* depends:\n* depends:   \n")
-check("depends 파서: 값 없는 `* depends:` 는 미인정",
-      server._issue_md_has_depends(_DEP_EMPTY) is False)
+# --- Issue363 회귀 방지: 판정 소스는 `Issue.md` 가 아니라 **서빙될 맵 파일** ---
+#   판정을 "지금 Issue.md 를 재빌드하면 그래프가 나오는가"로 옮겼다가, 실제 그래프
+#   (노드 6개)를 담은 맵의 아이콘이 사라지는 회귀를 냈다(prj1 실측). 아래 두 케이스가
+#   축을 고정한다 — 두 신호가 어긋날 때 **맵 파일이 이긴다**.
+_PRJ_GRAPH_NODEPS = os.path.join(TMP, "prjGraphNodeps")
+os.makedirs(_PRJ_GRAPH_NODEPS)
+open(os.path.join(_PRJ_GRAPH_NODEPS, "Issue.md"), "w").write(ISSUE_MD_NODEPS)
+open(os.path.join(_PRJ_GRAPH_NODEPS, server.ISSUE_MAP_NAME), "w").write(_map_html(True))
+_clear_cache()
+check("Issue363: Issue.md 엔 depends 0 이지만 맵엔 그래프 有 → 아이콘 노출 (회귀 방지)",
+      server._issue_map_visible(_PRJ_GRAPH_NODEPS) is True)
 
-# Issue284_3 — 완료(헤더 ✅ 접미) 이슈에만 달린 depends 는 미카운트
-_DEP_DONE_ONLY = os.path.join(TMP, "dep-done-only.md")
-open(_DEP_DONE_ONLY, "w").write(
-    "## Issue1: a (해결) ✅\n* depends: Issue0\n\n"
-    "### Issue1_2: a sub (해결) ✅\n* depends: Issue0\n"
-)
-check("depends 파서(Issue284_3): 완료 이슈만의 depends → False",
-      server._issue_md_has_depends(_DEP_DONE_ONLY) is False)
-_DEP_MIXED = os.path.join(TMP, "dep-mixed.md")
-open(_DEP_MIXED, "w").write(
-    "## Issue1: a (해결) ✅\n* depends: Issue0\n\n"
-    "## Issue2: b\n* depends: Issue1\n"
-)
-check("depends 파서(Issue284_3): 완료+미완료 혼재 → 미완료 쪽으로 True",
-      server._issue_md_has_depends(_DEP_MIXED) is True)
+_PRJ_NOGRAPH_DEPS = os.path.join(TMP, "prjNographDeps")
+os.makedirs(_PRJ_NOGRAPH_DEPS)
+open(os.path.join(_PRJ_NOGRAPH_DEPS, "Issue.md"), "w").write(ISSUE_MD_DEPS)
+open(os.path.join(_PRJ_NOGRAPH_DEPS, server.ISSUE_MAP_NAME), "w").write(_map_html(False))
+_clear_cache()
+check("Issue363: Issue.md 엔 depends 有 지만 맵은 '생략' → 아이콘 미노출 (원인 B)",
+      server._issue_map_visible(_PRJ_NOGRAPH_DEPS) is False)
+
+# --- Issue363: _issue_map_has_graph 단위 ---
+_G = os.path.join(TMP, "g.htm")
+open(_G, "w").write(_map_html(True))
+check("has_graph: 마커 블록 안 <svg> → True", server._issue_map_has_graph(_G) is True)
+_NG = os.path.join(TMP, "ng.htm")
+open(_NG, "w").write(_map_html(False))
+check("has_graph: 마커 블록 안 생략 안내 → False", server._issue_map_has_graph(_NG) is False)
+# 블록 **밖** 의 <svg>(범례 아이콘 등)에 속지 않는다 — 블록 경계를 실제로 지키는지 검사
+_OUTSIDE = os.path.join(TMP, "svg-outside.htm")
+open(_OUTSIDE, "w").write(
+    "<html><body>\n<!-- ISSUE-MAP:GRAPH:START -->\n<blockquote>생략</blockquote>\n"
+    "<!-- ISSUE-MAP:GRAPH:END -->\n<svg id=\"legend-icon\"></svg>\n</body></html>")
+check("has_graph: 마커 블록 밖 <svg> 는 무시 → False",
+      server._issue_map_has_graph(_OUTSIDE) is False)
+# 마커 도입 전 구버전 맵 — 문서 전체 <svg> 폴백 (아이콘 통째 소실 방지)
+_LEGACY = os.path.join(TMP, "legacy.htm")
+open(_LEGACY, "w").write("<html><body><svg id=\"my-svg\"></svg></body></html>")
+check("has_graph: 마커 없는 구버전 맵 → 문서 전체 <svg> 폴백 True",
+      server._issue_map_has_graph(_LEGACY) is True)
+check("has_graph: 파일 부재 → False",
+      server._issue_map_has_graph(os.path.join(TMP, "nope.htm")) is False)
+
+# --- Issue363(①): stale 표식 — 아이콘 노출 여부는 바꾸지 않는다 ---
+_PRJ_STALE = os.path.join(TMP, "prjStale")
+os.makedirs(_PRJ_STALE)
+_STALE_MAP = os.path.join(_PRJ_STALE, server.ISSUE_MAP_NAME)
+open(_STALE_MAP, "w").write(_map_html(True))
+_STALE_MD = os.path.join(_PRJ_STALE, "Issue.md")
+open(_STALE_MD, "w").write(ISSUE_MD_DEPS)
+os.utime(_STALE_MAP, (1, 1))                 # 맵을 아주 오래된 것으로
+_clear_cache()
+check("Issue363(①): Issue.md 가 맵보다 새것 → stale True",
+      server._issue_map_stale(_PRJ_STALE) is True)
+_clear_cache()
+check("Issue363(①): stale 여도 아이콘 노출 자체는 불변",
+      server._issue_map_visible(_PRJ_STALE) is True)
+os.utime(_STALE_MAP, None)                   # 맵을 다시 최신으로
+_clear_cache()
+check("Issue363(①): 맵이 Issue.md 보다 새것 → stale False",
+      server._issue_map_stale(_PRJ_STALE) is False)
+_clear_cache()
+check("Issue363(①): 맵 부재 → stale False", server._issue_map_stale(PRJ_B) is False)
 
 # TTL 캐시 — 첫 조회 후 파일을 지워도 캐시 유효기간 내엔 같은 값
 _clear_cache()
@@ -190,13 +237,13 @@ def _get(cwd, ip="127.0.0.1"):
 
 try:
     r = _get(PRJ_A)
-    check("등록 프로젝트 + 맵 존재 → 200 HTML", r._status == 200 and b"map A" in r.raw)
+    check("등록 프로젝트 + 맵 존재 → 200 HTML", r._status == 200 and b"ISSUE-MAP:GRAPH:START" in r.raw)
     check("Content-Type text/html",
           (r.raw_headers.get("Content-Type") or "").startswith("text/html"))
 
     r = _get(os.path.join(PRJ_A, "sub", "deep"))
     check("등록 프로젝트 하위 폴더 cwd → 200 (prefix 매치)",
-          r._status == 200 and b"map A" in r.raw)
+          r._status == 200 and b"ISSUE-MAP:GRAPH:START" in r.raw)
 
     r = _get(PRJ_B)
     check("등록 프로젝트 + 맵 부재 → 404",
@@ -204,7 +251,7 @@ try:
 
     r = _get(PRJ_D)
     check("Issue284_1: depends 無(아이콘 미노출) 프로젝트도 직접 URL 은 200",
-          r._status == 200 and b"map D" in r.raw)
+          r._status == 200 and b"ISSUE-MAP:GRAPH:START" in r.raw)
 
     r = _get(OUT)
     check("미등록 cwd(맵 보유) → 403 — 화이트리스트 밖 파일 미유출",
@@ -212,7 +259,7 @@ try:
 
     r = _get(PRJ_A, ip="192.168.0.9")
     check("Issue284_2: LAN 클라이언트도 200 (loopback 전용 게이트 제거 — /htm-doc 등급)",
-          r._status == 200 and b"map A" in r.raw)
+          r._status == 200 and b"ISSUE-MAP:GRAPH:START" in r.raw)
 
     # Issue284_2 게이트 3 — 등록 트리 안의 폴더지만 자체 Issue.md 가 없어 상향 탐색이
     # 등록 트리 **밖**(TMP 루트)의 Issue.md 로 빠져나가는 경우. 무관한 프로젝트의 맵을

@@ -65,6 +65,14 @@ ALLOWLIST_READY = True  # 개방 모드 진입 시 main() 에서 False 로 내�
 # ALLOW_ALL 은 더 이상 토글되지 않음(항상 False) — _ip_allowed 호환용 잔존.
 ALLOW_ALL = False
 
+# Issue379: 수신 이름(Host 헤더) 게이트 — source-IP 게이트(_ip_allowed)의 짝.
+#   _ip_allowed 는 "어디서 왔는가"만 보고 "어느 이름으로 불렸는가"를 안 본다. 그래서
+#   브라우저를 경유하는 DNS rebinding(외부 도메인을 127.0.0.1 로 rebind)은 src 가 루프백이라
+#   그대로 통과했다. 수신 이름을 known 집합으로 제한해 그 표면을 닫는다.
+#   KNOWN_HOSTS 는 main() 에서 1회 산출(순수 문자열 조립, DNS 불요) — 변경 시 restart.
+KNOWN_HOSTS = frozenset()  # 공집합이면 게이트 비활성(fail-open) — 설정 사고가 hub 를 죽이지 않게
+HOST_GATE = True           # yml host_gate. false 면 종전 동작(전 이름 허용)
+
 STATE_DIR = "/tmp/___pm/claude-htm-server"
 INBOX_ROOT = "/tmp/___pm/claude-htm-inbox"
 TMP_OUT_DIR = "/tmp/___pm"  # dashboard agent OUT_DIR fallback (htm 폴더 부재 시)
@@ -111,6 +119,15 @@ DASH_HEARTBEAT_STALE = 1800.0
 # heartbeat TTL — register/heartbeat 후 이 시간 내면 live, 초과 시 terminal.
 # pid 가 주어지면 _pid_alive 가 권위적 신호이고 본 TTL 은 fallback.
 LIVE_TTL = 300.0
+
+# Issue374: live 세션 heartbeat 신선도 상한(초). DASH_HEARTBEAT_STALE 의 live 판.
+# pid 생존만으로 판정하면 **세션보다 오래 사는 호스트 프로세스**(Claude Desktop 이
+# 예약작업 종료 후에도 회수하지 않는 claude-code 호스트 등)가 끝난 세션을 영구
+# live 카드로 남긴다 — 실측 74.9시간(sid e208f4c1, 2026-08-09 예약작업 jobstart).
+# live 는 dashboard runner 와 달리 hook 이 발동할 때만 heartbeat 가 오르고 장시간
+# 유휴가 정상이므로 창을 훨씬 넓게 잡는다(실측 정상 세션 최대 유휴 15.4시간).
+# 초과분은 prune 되나 다음 hook 발동에 재등록되므로 손실은 유휴 구간의 카드뿐.
+LIVE_HEARTBEAT_STALE = 172800.0  # 48h
 
 # 메모리 상태
 projects_lock = threading.Lock()
@@ -419,6 +436,14 @@ HUB_SHELL_HTML = r"""<!DOCTYPE html>
     es.addEventListener("tab-open", function(ev){
       try{ addTab(JSON.parse(ev.data), true); }catch(_){}   // 신규 렌더 → 포커스
     });
+    // Issue378: 서버가 "이 쉘은 더 이상 유효 표면이 아니다" 를 통지 → 현재 모드의 URI 로 자기이동.
+    //   Issue377 의 302 는 새 요청에만 걸려 떠 있는 탭을 교정하지 못했다(수동 새로고침 요구).
+    //   replace 로 이동해 무효 표면을 히스토리에 남기지 않는다(뒤로가기 복귀 차단).
+    es.addEventListener("mode-change", function(ev){
+      var d = {}; try{ d = JSON.parse(ev.data||"{}"); }catch(_){}
+      try{es.close();}catch(_){}
+      location.replace(d.dest || "/hub");
+    });
   }
 
   // Issue194: iframe(/hub 홈 탭 등) 카드 열기(↗) → 내부 탭. 동일 origin postMessage.
@@ -445,6 +470,9 @@ HUB_SHELL_HTML = r"""<!DOCTYPE html>
   function ctOf(u){ u = u || ""; return /_b_/.test(u) ? "form" : (/_c_/.test(u) ? "dashboard" : "response"); }
   function pollDocs(){
     fetch("/boards?_=" + Date.now(), {cache:"no-store"}).then(function(r){return r.json();}).then(function(j){
+      // Issue378: SSE mode-change 폴백. SSE 가 끊긴 구간(서버 재시작·프록시 타임아웃)에는
+      //   서버 통지가 도달하지 않으므로 폴링에서도 같은 판정을 한다(이중 안전망).
+      if(j && j.render_tab_mode && j.render_tab_mode !== "hub-internal"){ location.replace("/hub"); return; }
       var docs = (j && j.htm_docs) || [];
       if(!pollInit){
         docs.forEach(function(d){ if(d.mtime_ts > pollBaseline) pollBaseline = d.mtime_ts; });
@@ -1675,6 +1703,94 @@ def _ip_allowed(client_ip: str) -> bool:
     return False
 
 
+def _normalize_host(raw: str) -> str:
+    """Host 헤더·설정값 → 비교용 정규형. `:port` 분리 · IPv6 `[...]` 해제 ·
+    소문자화 · trailing dot(FQDN 절대표기) 제거. 빈 입력·파손 입력은 빈 문자열."""
+    h = (raw or "").strip()
+    if not h:
+        return ""
+    if h.startswith("["):          # IPv6 리터럴 — `[::1]:9876`
+        end = h.find("]")
+        if end == -1:
+            return ""
+        h = h[1:end]
+    elif h.count(":") == 1:
+        # 콜론 1개 + 뒤가 전부 숫자 → 포트. 콜론이 2개 이상이면 대괄호 없는 bare IPv6
+        # (`::1`)이므로 건드리지 않는다 — 마지막 `:` 뒤를 포트로 보면 `::1` → `:` 로 뭉개진다.
+        head, _, tail = h.partition(":")
+        if tail.isdigit():
+            h = head
+    return h.rstrip(".").lower()
+
+
+def _is_ip_literal(host: str) -> bool:
+    """정규화된 host 가 IP 리터럴인가 (rebinding 판정용)."""
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
+
+
+def _build_known_hosts() -> frozenset:
+    """수신 허용 이름 집합 산출 — bind_host + advertise_host + localhost +
+    hostname(+short+`.local`) + yml extra_hosts. 순수 문자열 조립이라 DNS 불요(bind 지연 0).
+
+    IP 리터럴은 _host_allowed 가 무조건 통과시키므로 판정상 불필요하나,
+    거부 로그에 "무엇이 허용 중인지" 를 그대로 보이기 위해 집합에 남긴다."""
+    names = set()
+    for h in BIND_HOSTS:
+        n = _normalize_host(h)
+        if n and n != "0.0.0.0":  # 와일드카드 bind 는 이름이 아니다
+            names.add(n)
+    setting = _load_hub_setting()
+    adv = _normalize_host(str(setting.get("advertise_host") or ""))
+    if adv:
+        names.add(adv)
+    for extra in (setting.get("extra_hosts") or []):
+        n = _normalize_host(str(extra))
+        if n:
+            names.add(n)
+    names.add("localhost")
+    try:
+        hn = _normalize_host(socket.gethostname())
+    except OSError:
+        hn = ""
+    if hn:
+        names.add(hn)
+        short = hn.split(".")[0]
+        if short:
+            names.add(short)
+            names.add(short + ".local")  # mDNS
+    return frozenset(n for n in names if n)
+
+
+def _host_allowed(raw_host: str, client_ip: str) -> bool:
+    """Issue379: 수신 이름 게이트. 요청이 도달한 소켓이 아니라 **어느 이름으로 불렸는지**를 본다.
+
+    통과 조건:
+      1. 게이트 비활성(host_gate=false) 또는 known 집합 공집합 → fail-open(종전 동작)
+      2. Host 가 IP 리터럴 → 항상 통과. rebinding 은 반드시 도메인 이름을 Host 로 보내므로
+         방어를 약화시키지 않는다. 반대로 게이트 오설정 시 `http://127.0.0.1:9876` 으로
+         항상 복구 가능하게 하여 자물쇠에 갇히는 사고를 구조적으로 막는다
+      3. Host 부재(HTTP/1.0) → 루프백 소스에 한해 통과 (로컬 스크립트·curl)
+      4. known 집합 멤버십"""
+    if not HOST_GATE or not KNOWN_HOSTS:
+        return True
+    host = _normalize_host(raw_host)
+    if not host:
+        if client_ip in LOOPBACK_IPS:
+            return True
+        log(f"[hostgate] DENY(absent) — src={client_ip!r}")
+        return False
+    if _is_ip_literal(host):
+        return True
+    if host in KNOWN_HOSTS:
+        return True
+    log(f"[hostgate] DENY — host={host!r} src={client_ip!r} KNOWN={sorted(KNOWN_HOSTS)}")
+    return False
+
+
 def _load_projects_colors() -> dict:
     """Projects.md 의 📋 프로젝트 테이블에서 cwd 경로 → peacock.color 매핑 추출."""
     global _projects_color_cache, _projects_color_cache_mtime
@@ -1837,12 +1953,8 @@ PROJECTS_MAP_NAME = "Projects_map.htm"
 PROJECTS_MAP_BUILDER = ".claude/skills/projects-map/build_projects_map.py"
 _ISSUE_MAP_MAX_UP = 6
 _ISSUE_MAP_TTL = 30.0            # 탐지 결과 캐시 수명(초) — /hub 폴링 5s 대비 stat 6배 절감
-_issue_map_cache: dict = {}      # cwd(str) -> (expire_ts, path|None, has_deps: bool)
+_issue_map_cache: dict = {}      # cwd(str) -> (expire_ts, path|None, has_graph: bool, stale: bool)
 _issue_map_lock = threading.Lock()
-# Issue284_1: 카드 아이콘 노출 조건 — `Issue.md` 에 `* depends:` 링크가 하나라도 있을 때만.
-#   의존 간선이 0 이면 관계도가 노드 나열에 그쳐 열 가치가 없다(아이콘만 늘어남).
-#   포맷 SSOT: `~/.claude/rules/issue-g.md` 규칙2 — `* depends: Issue<M>` / `prj<N>#Issue<M>`.
-_ISSUE_DEPENDS_RE = re.compile(r"^\s*\*\s*depends:\s*\S")
 # Issue284_3: 이슈 헤더(`## Issue1: …` / `### Issue1_2: …`) 줄이 `✅` 로 끝나면 완료 —
 #   issue-map 스킬(build_issue_map.py)의 done 판정과 동일 신호(섹션명 하드코딩 없음).
 _ISSUE_HEADER_RE = re.compile(r"^#{2,3}\s+Issue")
@@ -1857,56 +1969,60 @@ _ISSUE_EXCLUDED_SECTIONS = {"⏸️ 보류", "🚫 취소"}
 #   `section in DONE_SECTIONS or 헤더 끝 ✅` 로 판정하므로 여기도 두 신호를 함께 본다.
 _ISSUE_DONE_SECTIONS = {"✅ 완료"}
 
+# ── Issue363: 판정 소스를 **서빙될 맵 파일 자신**으로 둔다 ──────────────────────────
+#   카드 🗺️ 는 "누르면 관계도가 보인다"는 약속이다. 그러니 판정이 답해야 할 질문은
+#   *"지금 Issue.md 를 다시 빌드하면 그래프가 나오는가"* 가 아니라
+#   *"지금 서빙될 파일 안에 그래프가 있는가"* 다. 후자를 보면 아이콘과 서빙 결과는
+#   **정의상** 일치한다 — 두 축의 갱신 주기가 달라도 어긋날 수 없다.
+#
+#   ⚠️ 이 설계 이전 두 번의 시도가 모두 같은 이유로 실패했다:
+#     * `Issue.md` 정규식 미러 — 빌더 규칙(`DEP_NULL_TOKENS`·`settled`·고립 노드)을
+#       따라가지 못해 세 번 갈라졌다(Issue290 → Issue361 → Issue363).
+#     * 빌더 in-process import — 미러는 없앴지만 판정축이 여전히 "재빌드하면 나올 결과"라
+#       스냅샷과 어긋났다. prj1 실측에서 **실제 그래프(노드 6개)가 있는 맵의 아이콘이
+#       사라지는** 회귀를 냈다. 축을 바꾼 것이지 없앤 것이 아니었다.
+#
+#   계약: 생성기 `build_issue_map.py` 는 그래프 유무와 무관하게 `ISSUE-MAP:GRAPH:START/END`
+#   블록을 쓰고, 그 안에 그래프면 렌더된 `<svg>`, 아니면 "생략했습니다" 안내를 넣는다
+#   (생성기 L760~778). 따라서 **블록 안의 `<svg` 유무**가 판정이다.
+#   ⚠️ 생성기는 prj3(글로벌 SCAR) 자산이다 — 이 마커 규약을 바꾸려면 양쪽을 함께 고쳐야 한다.
+_ISSUE_MAP_GRAPH_START = "ISSUE-MAP:GRAPH:START"
+_ISSUE_MAP_GRAPH_END = "ISSUE-MAP:GRAPH:END"
+_ISSUE_MAP_HEAD_BYTES = 262144   # 마커 블록은 문서 앞부분(실측 ~100행) — 전량 로드 회피
 
-def _issue_md_has_depends(issue_md: str) -> bool:
-    """Issue.md 에 **맵에 실제로 그려질** 이슈가 선언한 `* depends:` 줄이 1개 이상 있으면 True.
 
-    세 축을 모두 제외해야 맵과 판정이 일치한다 — 어느 하나라도 빠지면 카드엔 🗺️ 가 뜨는데
-    맵은 빈 관계도(생략 안내문)를 렌더하는 불일치가 난다.
+def _issue_map_has_graph(map_path: str) -> bool:
+    """맵 파일이 실제 관계도를 담고 있는가 — `ISSUE-MAP:GRAPH` 블록 안의 `<svg` 유무.
 
-    * 완료 이슈(헤더 줄이 `✅` 로 끝남) — issue-map 은 "자신+후행 모두 완료"를 관계도에서
-      제외하므로, 그런 depends 만 있는 프로젝트는 그래프가 비어 있다 (Issue284_3)
-    * **`✅ 완료` 섹션 이슈** — 헤더 접미사 없이 섹션 소속만으로 완료 표시된 구식 이슈.
-      이 축이 빠져 있어 prj58(전체 90건 완료, depends 9건 전부 완료 섹션)에서 🗺️ 가
-      떴다 (Issue361 실측). 빌더 판정(`build_issue_map.py` L119)과 동일하게 맞춘다
-    * ⏸️ 보류 · 🚫 취소 섹션 이슈 — issue-map 이 노드 자체를 빼므로 그 depends 도 그려지지
-      않는다 (prj3#Issue259 반영. 헤더가 `✅` 가 아니라 완료 축만으로는 못 걸러짐)
+    간선이 0 이면 생성기가 블록 안에 "생략했습니다" 안내만 넣으므로 열 가치가 없다
+    (Issue284_1 의 원래 의도 — 아이콘은 "볼 것이 있을 때만"). 판정 대상이 서빙될
+    파일 자신이라 아이콘과 서빙 결과가 어긋날 수 없다.
 
-    첫 매치에서 조기 종료.
+    마커가 없는 구버전 맵은 문서 전체의 `<svg` 로 폴백한다 — 마커 도입 전 산출물에서
+    아이콘이 통째로 사라지지 않게 하기 위함이다. 읽기 실패는 False(아이콘 숨김).
     """
     try:
-        current_done = False
-        section_done = False
-        excluded_section = False
-        with open(issue_md, encoding="utf-8", errors="replace") as f:
-            for line in f:
-                m_sec = _ISSUE_SECTION_RE.match(line)
-                if m_sec:
-                    sec = m_sec.group(1)
-                    excluded_section = sec in _ISSUE_EXCLUDED_SECTIONS
-                    section_done = sec in _ISSUE_DONE_SECTIONS
-                    current_done = False
-                    continue
-                if _ISSUE_HEADER_RE.match(line):
-                    current_done = section_done or line.rstrip().endswith("✅")
-                    continue
-                if not current_done and not excluded_section and _ISSUE_DEPENDS_RE.match(line):
-                    return True
+        with open(map_path, encoding="utf-8", errors="replace") as f:
+            head = f.read(_ISSUE_MAP_HEAD_BYTES)
     except OSError:
         return False
-    return False
+    i = head.find(_ISSUE_MAP_GRAPH_START)
+    if i < 0:
+        return "<svg" in head
+    j = head.find(_ISSUE_MAP_GRAPH_END, i)
+    return "<svg" in (head[i:] if j < 0 else head[i:j])
 
 
 def _issue_map_scan(cwd: str) -> tuple:
-    """cwd 기준 (맵 절대경로|None, depends 보유 여부) 반환. TTL 캐시."""
+    """cwd 기준 (맵 절대경로|None, 맵이 그래프 보유, 맵 stale 여부) 반환. TTL 캐시."""
     if not cwd:
-        return None, False
+        return None, False, False
     now = time.time()
     with _issue_map_lock:
         hit = _issue_map_cache.get(cwd)
         if hit and hit[0] > now:
-            return hit[1], hit[2]
-    found, has_deps = None, False
+            return hit[1], hit[2], hit[3]
+    found, has_graph, stale = None, False, False
     try:
         d = os.path.realpath(os.path.expanduser(cwd))
         home = os.path.realpath(os.path.expanduser("~"))
@@ -1916,7 +2032,15 @@ def _issue_map_scan(cwd: str) -> tuple:
                 cand = os.path.join(d, ISSUE_MAP_NAME)
                 if os.path.isfile(cand):
                     found = cand
-                    has_deps = _issue_md_has_depends(issue_md)
+                    # Issue363: 판정 대상은 서빙될 파일 자신 — `Issue.md` 를 보지 않는다.
+                    has_graph = _issue_map_has_graph(cand)
+                    # Issue363(①): 맵은 생성 시점 스냅샷이라 `Issue.md` 가 더 새로우면
+                    #   내용이 낡았다. 아이콘 노출 여부는 바꾸지 않고 흐림 표식으로만
+                    #   고지한다 — 재생성은 `/fpm-issue-map` 수동.
+                    try:
+                        stale = os.path.getmtime(issue_md) > os.path.getmtime(cand)
+                    except OSError:
+                        stale = False
                 break
             parent = os.path.dirname(d)
             # 루트·홈 도달 시 중단 ($HOME 자체가 nPTiR 루트인 prj0 은 위 분기에서 이미 처리)
@@ -1924,23 +2048,47 @@ def _issue_map_scan(cwd: str) -> tuple:
                 break
             d = parent
     except OSError:
-        found, has_deps = None, False
+        found, has_graph, stale = None, False, False
     with _issue_map_lock:
-        _issue_map_cache[cwd] = (now + _ISSUE_MAP_TTL, found, has_deps)
-    return found, has_deps
+        _issue_map_cache[cwd] = (now + _ISSUE_MAP_TTL, found, has_graph, stale)
+    return found, has_graph, stale
 
 
 def _issue_map_path(cwd: str):
-    """cwd 기준 이슈맵 문서 절대경로 반환. 없으면 None. (serve 용 — depends 무관)"""
+    """cwd 기준 이슈맵 문서 절대경로 반환. 없으면 None. (serve 용 — 그래프 유무 무관)"""
     return _issue_map_scan(cwd)[0]
 
 
 def _issue_map_visible(cwd: str) -> bool:
-    """카드에 🗺️ 를 렌더할지 여부 — 맵 파일 존재 **AND** depends 링크 보유.
-    serve(`/issue-map`)는 `_issue_map_path` 기준이라, 아이콘이 사라져도 기존 URL 은 살아있다
-    (depends 를 지웠다고 북마크가 404 로 죽지 않음)."""
-    path, has_deps = _issue_map_scan(cwd)
-    return bool(path) and has_deps
+    """카드에 🗺️ 를 렌더할지 여부 — 맵 파일 존재 **AND 그 파일이 그래프를 담고 있음**.
+
+    판정 대상이 서빙될 파일 자신이라 아이콘과 서빙 결과는 정의상 일치한다(Issue363).
+    serve(`/issue-map`)는 `_issue_map_path` 기준이라, 아이콘이 사라져도 기존 URL 은 살아있다.
+
+    ⚠️ 남는 한계: 맵에 그래프가 없는데 `Issue.md` 에 새 depends 가 생긴 경우 아이콘은 뜨지
+    않는다 — 지금 서빙할 것이 없으니 옳은 동작이나, 재생성하면 그래프가 생긴다는 사실은
+    카드에 드러나지 않는다. 맵 자동 갱신은 별개 문제다(생성기가 prj3 소관)."""
+    path, has_graph, _stale = _issue_map_scan(cwd)
+    return bool(path) and has_graph
+
+
+def _issue_map_exists(cwd: str) -> bool:
+    """맵 **파일** 자체가 있는가 — 그래프 유무는 묻지 않는다 (Issue372).
+
+    `_issue_map_visible` 과 갈라 두는 이유: 그래프가 비었다고 문서가 빈 것은 아니다.
+    간선이 0 이어도 이슈 목록·완료 이력은 그대로 실려 있고 `/issue-map` 은 그것을
+    정상 serve 한다(serve 판정은 `_issue_map_path` — 그래프를 보지 않는다).
+    "열 가치가 있는가"(문서 존재)와 "관계도가 있는가"(그래프)는 다른 질문이며,
+    소비처가 둘을 3단으로 표현할 수 있도록 신호를 분리한다."""
+    return bool(_issue_map_scan(cwd)[0])
+
+
+def _issue_map_stale(cwd: str) -> bool:
+    """맵 파일이 `Issue.md` 보다 오래됐는지 (Issue363 ①). 아이콘 표식 전용 부속 신호로,
+    아이콘 노출 여부 자체(`_issue_map_visible`)에는 영향을 주지 않는다 —
+    '낡았다'와 '그릴 것이 없다'는 다른 사실이다."""
+    path, _has_graph, stale = _issue_map_scan(cwd)
+    return bool(path) and stale
 
 
 # Issue316: 카드 배지 — "활성 세션 수" 대신 "미완료 이슈 수"를 보여준다(세션 수는 카드 바디의
@@ -1952,7 +2100,10 @@ _issue_open_count_lock = threading.Lock()
 # 완료 판정은 `_ISSUE_DONE_SECTIONS`(위, `_ISSUE_EXCLUDED_SECTIONS` 옆) 를 공유한다 —
 # 섹션 판정이 1차 신호, 헤더 접미사 `✅` 가 보강 신호. 구식 이슈(Issue230/232/236 등)는
 # 접미사 없이 섹션 소속만으로 완료 표시되므로 두 신호가 모두 필요하다.
-# ⚠️ 두 벌로 두지 않는다 — 갈라지면 카드 아이콘과 배지가 서로 다른 완료 기준을 쓰게 된다(Issue361).
+# ⚠️ Issue363 정정: 카드 **아이콘**은 이제 `Issue.md` 를 아예 보지 않고 맵 파일만 본다.
+#   여기 **배지**(미완료 수)는 `Issue.md` 자체 순회다 — 축이 다르지만 묻는 질문도 다르다
+#   ("볼 관계도가 있는가" vs "미완료가 몇 건인가"). 같은 값을 낼 이유가 없으므로 미러가 아니다.
+#   (구 주석 "두 벌로 두지 않는다"(Issue361)는 depends 판정이 사라져 대상 자체가 없어졌다)
 
 
 def _find_issue_md(cwd: str) -> str | None:
@@ -1979,8 +2130,7 @@ def _find_issue_md(cwd: str) -> str | None:
 
 def _count_open_issues(issue_md: str) -> int:
     """Issue.md 의 미완료 이슈 개수 — 완료(헤더 줄 끝 ✅)·⏸️ 보류·🚫 취소 섹션을 제외한
-    이슈 헤더(`## Issue1:` / `### Issue1_2:`) 개수. `_issue_md_has_depends()` 와 동일한
-    섹션 추적 순회를 재사용한다."""
+    이슈 헤더(`## Issue1:` / `### Issue1_2:`) 개수."""
     count = 0
     try:
         section_done = False
@@ -2102,12 +2252,27 @@ def _htm_state_file(path: str) -> tuple:
 
 def _projects_list_with_htm() -> list:
     """_load_projects_list() 결과에 htm off 상태 주입. htm 상태는 Projects.md mtime 과
-    무관하게 변하므로 캐시 밖에서 매 요청 계산 (state 파일은 소수 → IO 경량)."""
+    무관하게 변하므로 캐시 밖에서 매 요청 계산 (state 파일은 소수 → IO 경량).
+
+    Issue368: Project List 의 `Map` 컬럼용으로 이슈맵 보유 여부도 함께 싣는다. 판정은
+    카드 🗺️ 와 **같은 함수**(`_issue_map_visible`/`_issue_map_stale`)를 쓴다 — 두 화면이
+    같은 프로젝트를 다르게 말하지 않게 하는 것이 목적이라, 여기서 따로 판정하지 않는다.
+    스캔은 TTL 30s 캐시를 공유하고 팝업 열 때만 호출되므로 폴링 비용에 영향이 없다."""
     rows = _load_projects_list()
     out = []
     for r in rows:
-        off, reason = _htm_state(r.get("path", ""))
-        out.append({**r, "htm_off": off, "htm_reason": reason})
+        path = r.get("path", "")
+        off, reason = _htm_state(path)
+        out.append({
+            **r,
+            "htm_off": off,
+            "htm_reason": reason,
+            "issue_map": _issue_map_visible(path),
+            # Issue372: 그래프 유무와 별개로 "맵 문서가 있는가" — 소비처(Projects_map 팝업)가
+            #   ①없음 ②문서만 ③문서+그래프 3단으로 갈라 표현한다. 같은 TTL 캐시를 쓴다.
+            "issue_map_file": _issue_map_exists(path),
+            "issue_map_stale": _issue_map_stale(path),
+        })
     return out
 
 
@@ -2239,6 +2404,12 @@ HUB_SETTING_DEFAULTS = {"feed_limit": 100, "feed_default_visible": True, "feed_p
                         #   Servers.md 와 additive(병합) — 추가 grant. 호스트명 미지원(IP/CIDR 만, DNS 비의존).
                         #   yml 표기: allow_list: [192.168.0.5, 192.168.0.0/24]. yml 전용(UI 미편집). 변경 시 restart.
                         "allow_list": [],
+                        # Issue379: 수신 이름(Host 헤더) 게이트. true(기본)=known 집합 밖 이름은 421.
+                        #   known = bind_host + advertise_host + localhost + hostname(+.local) + extra_hosts.
+                        #   IP 리터럴 Host 는 항상 통과(잠김 방지). 변경 시 restart.
+                        "host_gate": True,
+                        # Issue379: 수신 허용 이름 추가분(리버스 프록시 도메인 등). yml 전용. 변경 시 restart.
+                        "extra_hosts": [],
                         # Issue159: 활성세션 정렬 — updated(최근갱신순) / created(세션 시작순 고정)
                         #   / project(Projects.md 번호순, 미등록 cwd 는 끝)
                         "live_session_order": "updated",
@@ -2573,6 +2744,9 @@ HUB_SETTING_SCHEMA = [
      "apply": "hook", "comment": "Claude Code(렌더 hook)가 채팅에 표시하는 hub|both URL 의 host (생략 시 bind_host fallback). bind_host=0.0.0.0 이면 생략 금지"},
     {"key": "allow_server_list", "tab": "advanced", "widget": "toggle",
      "apply": "restart", "comment": "hub 서버 접속 허용 게이트 (source-IP 기준) — true=Servers.md 화이트리스트+자기 자신 허용 / false=자기 자신(bind_host)만 허용, 외부 전부 차단. 변경 시 서버 restart 필요"},
+    # Issue379: 수신 이름(Host 헤더) 게이트 — 위 source-IP 게이트의 짝
+    {"key": "host_gate", "tab": "advanced", "widget": "toggle",
+     "apply": "restart", "comment": "hub 서버 접속 허용 게이트 (수신 이름=Host 헤더 기준) — true(기본)=bind_host·advertise_host·localhost·hostname(.local)·extra_hosts 만 허용하고 그 외 이름은 421 거부(DNS rebinding 방어) / false=모든 이름 허용(종전). IP 리터럴 Host 는 항상 통과. 변경 시 서버 restart 필요"},
     {"key": "ssh_remote_alias", "tab": "advanced", "widget": "text", "optional": True,
      "apply": "auto", "comment": "hub 서버가 원격 브라우저의 open-project/open-session 요청에 vscode-remote://ssh-remote+<alias> 링크로 응답할 때 쓰는 SSH alias (클라이언트 ~/.ssh/config 의 Host 이름, ex: gl). 빈 값=비활성"},
     # Issue277: 활성세션 행 세션 ID 복사 버튼(📋) 표시 여부
@@ -3573,7 +3747,19 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send_json(403, {"error": "ip not allowed"})
 
+    def _host_gate(self) -> bool:
+        """Issue379: 수신 이름 게이트. 통과=True, 거부 시 421 응답까지 마치고 False.
+        421 Misdirected Request = "이 서버는 그 이름에 대한 권한이 없다"(RFC 7540 9.1.2)."""
+        ip = self.client_address[0] if self.client_address else ""
+        if _host_allowed(self.headers.get("Host", ""), ip):
+            return True
+        self._send_json(421, {"error": "host not allowed"})
+        return False
+
     def do_OPTIONS(self):
+        # Issue379: preflight 도 게이트 대상 — 여기서 막으면 브라우저가 본 요청을 아예 안 보낸다.
+        if not self._host_gate():
+            return
         self._send_json(204, {})
 
     def do_GET(self):
@@ -3582,6 +3768,10 @@ class Handler(BaseHTTPRequestHandler):
         # → 토큰 노출 GET(/boards, /hub)·SSE 까지 일괄 보호.
         if not _ip_allowed(self.client_address[0] if self.client_address else ""):
             self._deny_ip()
+            return
+        # Issue379: 수신 이름 게이트(위 게이트의 짝). src 가 루프백인 DNS rebinding 은
+        # _ip_allowed 를 통과하므로 여기서 이름으로 막는다.
+        if not self._host_gate():
             return
         parsed = urlparse(self.path)
         if parsed.path == "/":
@@ -3762,6 +3952,9 @@ class Handler(BaseHTTPRequestHandler):
         # Issue141: 전역 source-IP 게이트 (do_GET 대칭).
         if not _ip_allowed(self.client_address[0] if self.client_address else ""):
             self._deny_ip()
+            return
+        # Issue379: 수신 이름 게이트 (do_GET 대칭). 쓰기 API 가 rebinding 의 실제 표적이다.
+        if not self._host_gate():
             return
         parsed = urlparse(self.path)
         if parsed.path == "/register":
@@ -4706,6 +4899,10 @@ class Handler(BaseHTTPRequestHandler):
             "htm_docs": htm_docs,
             "hook_feed": hook_feed,
             "important_events": important_events,
+            # Issue378: 떠 있는 탭의 표면 자기교정용. Issue377 의 302 는 새 요청에만 걸리므로
+            #   이미 열린 탭은 모드 변경을 모른 채 무효 표면에 남는다. 양 표면이 이미 /boards 를
+            #   폴링하므로 여기에 실어 보내 신규 폴링·엔드포인트 추가 0 으로 해결한다.
+            "render_tab_mode": _load_hub_setting().get("render_tab_mode"),
             "live_session_limit": _load_hub_setting()["live_session_limit"],  # Issue129: 카드당 세션 행 상한
             "live_session_copy_button": _load_hub_setting()["live_session_copy_button"],  # Issue277: 세션 ID 복사 버튼 표시
             "feed_blink_on_new": _load_hub_setting()["feed_blink_on_new"],  # Issue279: 새 피드 깜빡임
@@ -4915,11 +5112,20 @@ class Handler(BaseHTTPRequestHandler):
             #   pid 주어지면 _pid_alive 가 권위적 — 죽으면 terminal, 살면 force_live.
             #   pid 없으면 heartbeat TTL(LIVE_TTL) fallback. dashboard 와 달리 runner_pid
             #   는 None 으로 둬 카드에 kill 버튼 미노출 (claude 세션 오살 방지).
+            #   Issue374: 단 pid 생존은 **필요조건일 뿐** — heartbeat 가
+            #   LIVE_HEARTBEAT_STALE 을 넘으면 pid 가 살아 있어도 terminal 이다.
             elif entry.get("content_type") == "live":
                 # Issue135: 수동 dismiss tombstone — TTL 내면 live_pid 생존(force_live)
                 #   이어도 표시 제외. sessions 는 유지(pop 안 함) → TTL 만료 후 자동 복귀.
                 #   살아있는 세션의 재등록 heartbeat 부활을 렌더 단계에서 차단.
                 if f"{h}|{sid}" in live_dismissed_snap:
+                    continue
+                # Issue374: pid 생존만으론 부족 — 세션보다 오래 사는 호스트 프로세스가
+                #   있으면(Claude Desktop 예약작업 호스트 등) 끝난 세션이 영구 live 로
+                #   남는다. dashboard 와 동일하게 heartbeat 신선도를 함께 요구한다.
+                #   pid 유무 양쪽 경로에 걸리도록 live_pid 판정 앞에 둔다.
+                if age > LIVE_HEARTBEAT_STALE:
+                    terminal_keys.append((h, sid))
                     continue
                 lp = entry.get("live_pid")
                 if lp is not None:
@@ -4992,6 +5198,8 @@ class Handler(BaseHTTPRequestHandler):
                 #   부족하고 `Issue.md` 에 `* depends:` 간선이 있어야 노출(관계도 가치 有).
                 #   경로는 노출하지 않는다(/issue-map 이 cwd 로 서버측 재계산 — 경로 조작 차단).
                 "issue_map": _issue_map_visible(p.get("cwd", "")),
+                # Issue363: 맵 파일이 Issue.md 보다 오래됨 → 아이콘에 흐림 표식(노출 여부는 불변)
+                "issue_map_stale": _issue_map_stale(p.get("cwd", "")),
                 "open_issue_count": _issue_open_count(p.get("cwd", "")),  # Issue316: 카드 배지 — 미완료 이슈 수
                 "mode": entry.get("mode"),
                 "content_type": entry.get("content_type"),
@@ -5709,6 +5917,15 @@ __WARN__
                         if not cur or cur.get("client_id") != cid:
                             break  # 인계됨(evicted) → 스트림 종료
                         cur["last_seen"] = time.time()
+                # Issue378: 모드 자기교정(서버 주도). 쉘이 살아 있는 동안 render_tab_mode 가
+                #   hub-internal 을 벗어나면 이 쉘은 그 순간부터 무효 표면이다 — Issue377 의
+                #   302 는 새 요청에만 걸리므로 여기서 능동 통지하지 않으면 사용자가 수동
+                #   새로고침할 때까지 무효 표면이 살아 tab-open 을 계속 받는다(중복 표면 재발).
+                #   keepalive 편승이라 추가 연결·주기 0, 반응은 최대 15초.
+                if _load_hub_setting().get("render_tab_mode") != "hub-internal":
+                    self.wfile.write(b'event: mode-change\ndata: {"dest": "/hub"}\n\n')
+                    self.wfile.flush()
+                    break   # 클라가 이동한다 → 스트림 유지 불요
                 self.wfile.write(b": keepalive\n\n")
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, OSError):
@@ -5753,6 +5970,20 @@ __WARN__
         """Issue194: hub 내부 탭 쉘 페이지. 탭 바 + iframe viewport. /hub-events SSE 로
         tab-open 수신 → iframe 탭 생성. tab_close_shortcut 으로 렌더 탭만 닫기(R3)."""
         setting = _load_hub_setting()
+        # Issue377: 역방향 funnel. render_tab_mode 가 표면을 결정한다는 계약은 **양방향**이어야
+        #   하는데 지금까지 `hub-internal → /hub → /hub-shell`(Issue213, _handle_hub) 한쪽만
+        #   있었다. browser-tab 에서 /hub-shell 을 열면 "쓰지 않기로 한 쉘"이 200 으로 뜨고,
+        #   그 쉘이 /hub-events 의 tab-open 을 받아 내부 탭을 만드는 동안 hook 은 같은 모드라
+        #   OS 새 탭도 연다 → 같은 문서가 두 표면에 중복(사용자 혼란 보고).
+        #   → browser-tab 이면 쉘 진입 자체를 /hub 로 되돌려 유효 표면을 1개로 유지한다.
+        #   루프 불가: 두 가드의 조건이 배타(`== hub-internal` vs `!= hub-internal`).
+        #   쿼리는 전달하지 않는다 — `_shell=1` 이 넘어가면 /hub 가 embed 로 오인해 정방향
+        #   가드를 건너뛴다(자기 iframe 용 마커를 top-level 진입에 재사용하게 됨).
+        if setting.get("render_tab_mode") != "hub-internal":
+            self.send_response(302)
+            self.send_header("Location", "/hub")
+            self.end_headers()
+            return
         shortcut = str(setting.get("tab_close_shortcut", "alt+w"))
         single = "true" if setting.get("hub_single_window", True) else "false"
         html = HUB_SHELL_HTML.replace("__SHORTCUT__", json.dumps(shortcut)) \
@@ -9691,9 +9922,14 @@ a.btn-project-list { text-decoration: none; display: inline-flex; align-items: c
 .pl-table th, .pl-table td { border: 1px solid var(--border); padding: 0.35rem 0.55rem; text-align: left; vertical-align: top; }
 .pl-table th { background: var(--code-bg); position: sticky; top: 0; }
 .pl-table tbody tr { cursor: pointer; }
-.pl-table tbody tr:hover td { background: #e8eef9; }
+/* Issue370: hover 행 전체를 그 프로젝트 색으로. Issue368 로 색이 Map 셀 배경이 된 뒤,
+   기존 파란 hover 는 한 행을 두 색으로 쪼개 보이게 했다. 색은 `<tr>` 의 `--pl-color` 한 곳에
+   싣고 셀은 그것을 읽기만 한다 — 셀마다 인라인을 반복하면 같은 값이 7군데로 흩어진다.
+   색 미지정 프로젝트는 fallback 으로 종전 파란 hover 를 그대로 쓴다. */
+.pl-table tbody tr:hover td { background: var(--pl-color, #e8eef9); }
 .pl-table tbody tr.pl-sel td { background: #d4e2fb; box-shadow: inset 3px 0 0 hsl(220,80%,50%); }
-.pl-table tbody tr.pl-sel:hover td { background: #c7d8f7; }
+/* 선택 행도 hover 는 프로젝트 색 — 선택 표식은 배경이 아니라 좌측 box-shadow 바가 담당한다 */
+.pl-table tbody tr.pl-sel:hover td { background: var(--pl-color, #c7d8f7); }
 .pl-table td.pl-id { font-weight: 700; font-size: 1.15em; text-align: center;
   font-variant-numeric: tabular-nums; background: var(--card); white-space: nowrap; }
 /* htm 자동 모드 off 프로젝트: 번호 셀 회색 배경(gray 10%) */
@@ -9714,8 +9950,19 @@ a.btn-project-list { text-decoration: none; display: inline-flex; align-items: c
 .htm-tgl.off .htm-tgl-knob { left: 0.15em; }
 .htm-tgl:focus-visible { outline: 2px solid #36c; outline-offset: 1px; }
 .pl-table td.pl-path code { font-size: 0.92em; background: var(--code-bg); padding: 0.05rem 0.3rem; border-radius: 3px; }
-.pl-table td.pl-color { text-align: center; }
-.pl-swatch { width: 1.5em; height: 1.5em; border-radius: 4px; border: 1px solid rgba(0,0,0,0.25); display: inline-block; }
+/* Issue368: Project List 마지막 컬럼 = `Map`. 색은 스와치를 없애고 셀 배경으로 내렸다
+   (인라인 style 이라 행 hover/선택 배경보다 우선 — 색이 계속 보인다).
+   아이콘 3단 가시성: 보유 0.85(카드 .issue-map 과 동일) / 미보유 0.22 무채색 / hover 1.0 확대. */
+.pl-table td.pl-map { text-align: center; width: 3em; padding: 0.2rem 0.3rem; }
+.pl-map-ico { display: inline-block; font-size: 1.15em; line-height: 1.4; text-decoration: none;
+  opacity: 0.85; transition: opacity 0.12s, transform 0.12s; }
+.pl-map-ico.none { opacity: 0.22; filter: grayscale(1); cursor: default; }
+/* stale 은 카드(0.5/grayscale .6)보다 덜 흐리게 둔다 — 카드는 한 장을 볼 때의 표식이지만
+   표에서는 바로 아래 행의 '맵 없음'(0.22) 과 나란히 놓이므로, 카드 값 그대로면 두 상태가
+   같은 회색 덩어리로 읽힌다. 판정 자체는 카드와 동일 필드를 쓴다(표현만 다름). */
+.pl-map-ico.stale { filter: grayscale(0.4); opacity: 0.62; }
+.pl-table td.pl-map:hover .pl-map-ico, .pl-map-ico:hover { opacity: 1; filter: none; transform: scale(1.25); }
+.pl-map-ico:focus-visible { outline: 2px solid #36c; outline-offset: 1px; }
 /* Issue42: hub 2-컬럼 — .hub-main(2fr) + .hub-feed(1fr) */
 main { padding: 1.5rem; max-width: 1600px; margin: 0 auto; display: flex; gap: 1rem; align-items: flex-start; }
 .hub-main { flex: 2; min-width: 0; }
@@ -9811,6 +10058,9 @@ main { padding: 1.5rem; max-width: 1600px; margin: 0 auto; display: flex; gap: 1
 /* Issue284: 이슈맵(Issue_map.htm) 바로가기 — 숫자 배지 왼쪽 */
 .card-head .issue-map { text-decoration: none; font-size: 0.95em; line-height: 1; opacity: 0.85; }
 .card-head .issue-map:hover { opacity: 1; transform: scale(1.15); }
+/* Issue363: 맵이 Issue.md 보다 오래됨 — 열리기는 하되 '낡음' 을 시각적으로 고지 */
+.card-head .issue-map.stale { filter: grayscale(0.6); opacity: 0.5; }
+.card-head .issue-map.stale:hover { opacity: 0.85; }
 .live-list { list-style: none; margin: 0; padding: 0; }
 .live-item { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0; border-top: 1px solid var(--border); }
 .live-item:first-child { border-top: none; }
@@ -9831,10 +10081,16 @@ main { padding: 1.5rem; max-width: 1600px; margin: 0 auto; display: flex; gap: 1
 /* Issue273: 메인 세션 모델 신호등 배지 (🟣 opus / 🔵 sonnet / 🟢 haiku / 🟠 fable) — origin 배지 옆 */
 .live-model { flex-shrink: 0; font-size: 0.78em; line-height: 1; cursor: help; margin-left: -0.25rem; position: relative; }
 /* Issue221: 네이티브 title 툴팁은 브라우저가 지연(~1.5~2.5s) 소유·조정 불가 → data-tip 커스텀 툴팁으로 즉시 표시(지연 0)
-   Issue281: CSS ::after(position:absolute)는 조상 .card{overflow:hidden}에 잘림 → #live-tip(position:fixed, body 직속)로 전환 */
-#live-tip { position: fixed; z-index: 3000; max-width: 270px; background: #222; color: #fff;
-  padding: 3px 8px; border-radius: 5px; font-size: 11px; line-height: 1.3; white-space: nowrap;
+   Issue281: CSS ::after(position:absolute)는 조상 .card{overflow:hidden}에 잘림 → #live-tip(position:fixed, body 직속)로 전환
+   Issue369: nowrap 폐기 — 툴팁이 행 설명·sid 까지 싣게 되어 max-width 를 nowrap 이 무력화하면 화면을 넘는다.
+   pre-line 으로 줄바꿈을 살리고, overflow-wrap:anywhere 로 공백 없는 sid(UUID)도 끊어 접는다 */
+#live-tip { position: fixed; z-index: 3000; max-width: 340px; background: #222; color: #fff;
+  padding: 4px 8px; border-radius: 5px; font-size: 11px; line-height: 1.35;
+  white-space: pre-line; overflow-wrap: anywhere; text-align: left;
   box-shadow: 0 2px 8px rgba(0,0,0,.35); pointer-events: none; font-weight: 400; }
+/* Issue369: 세션 ID 줄 — 본문과 구분되게 모노스페이스·디밍 */
+#live-tip .tip-sid { display: block; margin-top: 2px; opacity: .75; font-size: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 #live-tip[hidden] { display: none; }
 .live-item[data-origin="terminal"] { cursor: pointer; }
 .live-item[data-origin="terminal"]:hover { background: rgba(127,127,127,.12); }
@@ -10102,6 +10358,14 @@ async function reload() {
     const r = await fetch('/boards?_=' + Date.now(), {cache: 'no-store'});
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
+    // Issue378: 표면 자기교정. 모드가 hub-internal 로 바뀌면 이 standalone /hub 는 무효
+    //   표면이 되므로 쉘로 자기이동한다(Issue377 302 는 새 요청에만 걸려 떠 있는 탭 미교정).
+    //   ⚠️ embed 가드 필수 — /hub 는 쉘의 home 탭 iframe(/hub?_shell=1)으로도 로드된다.
+    //   거기서 이동시키면 iframe 안에 쉘이 다시 뜨는 중첩 재귀(Issue203)가 재발한다.
+    if (window.top === window.self && data.render_tab_mode === 'hub-internal') {
+      location.replace('/hub-shell');
+      return;
+    }
     errorBar.style.display = 'none';
     renderProjects(data.projects || []);
     renderLiveSessions(data.live_sessions || [], data.live_session_limit, data.live_session_copy_button);
@@ -10147,30 +10411,35 @@ function renderLiveSessions(list, limit, showCopy) {
   const groups = new Map();
   for (const s of list) {
     const key = s.cwd || s.name;
-    if (!groups.has(key)) groups.set(key, {cwd: s.cwd, name: s.name, color: s.color, emoji: s.emoji, issueMap: false, openIssueCount: 0, items: []});
+    if (!groups.has(key)) groups.set(key, {cwd: s.cwd, name: s.name, color: s.color, emoji: s.emoji, issueMap: false, issueMapStale: false, openIssueCount: 0, items: []});
     const g = groups.get(key);
     g.items.push(s);
     // Issue284: 그룹 내 한 세션이라도 이슈맵 보유면 카드에 🗺️ 노출
     if (s.issue_map) g.issueMap = true;
+    // Issue363: 같은 cwd 라 값은 동일 — 맵이 Issue.md 보다 낡았으면 아이콘을 흐리게
+    if (s.issue_map_stale) g.issueMapStale = true;
     // Issue316: 같은 cwd 세션은 동일 값 — 그대로 그룹에 복사(마지막 세션 값으로 덮여도 동일).
     g.openIssueCount = s.open_issue_count || 0;
   }
   const rowHtml = (s, extraCls) => {
     // Issue66: 큐 dashboard(supervisor_pid 존재)는 graceful remove, 일반은 stop
+    // Issue369: 행 툴팁이 커스텀(#live-tip)으로 바뀐 이상 자식 버튼에 네이티브 title 을 남기면 둘이 겹쳐 뜬다 → 전부 data-tip 통일
     const killBtn = s.pid
       ? (s.supervisor_pid
-          ? `<button class="card-close" onclick="removeQueueDash('${escapeHtml(s.cwd)}','${escapeHtml(s.token)}',${s.supervisor_pid},'${escapeHtml(s.sid)}',this)" title="${escapeHtml(t('liveSessions.removeQueueTitle', {pid: s.supervisor_pid}))}" aria-label="remove">✕</button>`
-          : `<button class="card-close" onclick="stopRunner('${escapeHtml(s.cwd)}','${escapeHtml(s.token)}',${s.pid},this)" title="${escapeHtml(t('liveSessions.killRunnerTitle', {pid: s.pid}))}" aria-label="kill">✕</button>`)
+          ? `<button class="card-close" onclick="removeQueueDash('${escapeHtml(s.cwd)}','${escapeHtml(s.token)}',${s.supervisor_pid},'${escapeHtml(s.sid)}',this)" data-tip="${escapeHtml(t('liveSessions.removeQueueTitle', {pid: s.supervisor_pid}))}" aria-label="remove">✕</button>`
+          : `<button class="card-close" onclick="stopRunner('${escapeHtml(s.cwd)}','${escapeHtml(s.token)}',${s.pid},this)" data-tip="${escapeHtml(t('liveSessions.killRunnerTitle', {pid: s.pid}))}" aria-label="kill">✕</button>`)
       // Issue132: pid 없는 live(claude) 세션 — dismiss 버튼(프로세스 kill 아님, 카드만 제거)
-      : `<button class="card-close" onclick="dismissSession('${escapeHtml(s.cwd)}','${escapeHtml(s.token)}','${escapeHtml(s.sid)}',this)" title="${escapeHtml(t('liveSessions.dismissTitle'))}" aria-label="dismiss">✕</button>`;
+      : `<button class="card-close" onclick="dismissSession('${escapeHtml(s.cwd)}','${escapeHtml(s.token)}','${escapeHtml(s.sid)}',this)" data-tip="${escapeHtml(t('liveSessions.dismissTitle'))}" aria-label="dismiss">✕</button>`;
     // Issue276: 세션 ID 복사 버튼 (X 왼쪽). /cc-session id 없이 hub 에서 바로 sid 확보.
     //   sid 없는 행(가상/집계)은 미표시. 클릭 위임은 closest('button,a') 로 제외되어 행-클릭 미발동.
     const copyBtn = (s.sid && showCopy)
-      ? `<button class="copy-sid" onclick="copySid('${escapeHtml(s.sid)}',this)" title="${escapeHtml(t('liveSessions.copySidTitle'))}" aria-label="copy session id">📋</button>`
+      // Issue369: 네이티브 title 은 커서 바로 아래에 떠 마우스 포인터에 가린다 → data-tip(#live-tip, 버튼 위쪽 고정)로 전환.
+      //   툴팁 2행 = "세션 ID 복사" + 실제 sid. 복사 전에 어떤 세션인지 눈으로 확인 가능.
+      ? `<button class="copy-sid" onclick="copySid('${escapeHtml(s.sid)}',this)" data-tip="${escapeHtml(t('liveSessions.copySidTitle'))}" data-tip-sid="${escapeHtml(s.sid)}" aria-label="copy session id">📋</button>`
       : '';
     // Issue66 Phase 7: 큐 dashboard 에 waiting_approval 항목이 있으면 승인 버튼
     const approveBtn = (s.supervisor_pid && s.waiting_approval_item)
-      ? `<button class="approve-btn" onclick="approveQueueItem('${escapeHtml(s.cwd)}','${escapeHtml(s.token)}','${escapeHtml(s.sid)}','${escapeHtml(s.waiting_approval_item)}',this)" title="${escapeHtml(t('liveSessions.approveTitle', {item: s.waiting_approval_item}))}">▶ ${escapeHtml(s.waiting_approval_item)}</button>`
+      ? `<button class="approve-btn" onclick="approveQueueItem('${escapeHtml(s.cwd)}','${escapeHtml(s.token)}','${escapeHtml(s.sid)}','${escapeHtml(s.waiting_approval_item)}',this)" data-tip="${escapeHtml(t('liveSessions.approveTitle', {item: s.waiting_approval_item}))}">▶ ${escapeHtml(s.waiting_approval_item)}</button>`
       : '';
     // Issue129: 명령(프롬프트) 전 세션은 title 없음 → "-" 표기 (기존 content_type/'response' fallback 폐기)
     const topic = s.title || '-';
@@ -10194,10 +10463,14 @@ function renderLiveSessions(list, limit, showCopy) {
     const modelBadge = modelDot
       ? `<span class="live-model" data-tip="모델: ${escapeHtml(s.model_id || s.model_tier)}">${modelDot}</span>`
       : '';
-    // Issue131: 행 클릭 → 해당 Claude Code 세션 탭 포커스 (data-sid·data-cwd). title 툴팁으로 전체 표시(ellipsis 보완).
+    // Issue131: 행 클릭 → 해당 Claude Code 세션 탭 포커스 (data-sid·data-cwd). 툴팁으로 전체 표시(ellipsis 보완).
     // Issue104: extraCls 로 초과 행에 live-hidden 부여 (접힘 상태 기본 숨김).
+    // Issue369: 행도 네이티브 title → data-tip. 네이티브를 남겨 두면 자식(📋) 위에서도 조상 title 이 커서 옆에 떠
+    //   커스텀 툴팁과 이중으로 겹친다.
+    // Issue373: 행 툴팁에는 sid 를 붙이지 않는다 — sid 병기는 📋(.copy-sid) 의 역할이다.
+    //   제목 hover 는 "무슨 세션인가"(topic)만 알면 되고, 36자 uuid 는 읽히지 않는 소음이다.
     const cls = 'live-item' + (extraCls ? ' ' + extraCls : '');
-    return `<li class="${cls}" data-sid="${escapeHtml(s.sid)}" data-cwd="${escapeHtml(s.cwd)}" data-origin="${origin}" data-url="${escapeHtml(s.url || '')}" title="${escapeHtml(t('liveSessions.topicTitle', {topic: topic}))}">${originBadge}${modelBadge}<span class="live-topic">${escapeHtml(topic)}</span><span class="live-acts">${approveBtn}${copyBtn}${killBtn}</span></li>`;
+    return `<li class="${cls}" data-sid="${escapeHtml(s.sid)}" data-cwd="${escapeHtml(s.cwd)}" data-origin="${origin}" data-url="${escapeHtml(s.url || '')}" data-tip="${escapeHtml(t('liveSessions.topicTitle', {topic: topic}))}">${originBadge}${modelBadge}<span class="live-topic">${escapeHtml(topic)}</span><span class="live-acts">${approveBtn}${copyBtn}${killBtn}</span></li>`;
   };
   const cards = [...groups.values()].map(g => {
     // Issue129/Issue104: limit 초과 시 첫 (lim-1)개는 표시, 초과분은 live-hidden 으로 렌더(잘라내지 않음)
@@ -10220,8 +10493,14 @@ function renderLiveSessions(list, limit, showCopy) {
     // Issue284: 이슈맵 보유 프로젝트만 🗺️ 렌더(미보유는 아이콘 자체 없음 — 빈 아이콘·404 금지).
     //   서버가 cwd 로 경로를 재계산하므로 링크는 cwd 만 전달. 카드 클릭(VSCode 열기)은
     //   위임 핸들러가 closest('button,a') 로 제외하므로 <a> 만으로 충돌 없음.
+    // Issue363: stale(맵이 Issue.md 보다 오래됨) 이면 흐린 아이콘 + 전용 툴팁. 링크는 그대로 —
+    //   낡은 맵도 여는 것이 못 여는 것보다 낫고, 재생성 방법은 툴팁이 안내한다.
+    //   ⚠️ t() 인자는 **리터럴로** 둔다 — test_i18n_parity.py 의 참조 키 스캔이
+    //   `t('네임스페이스.키')` 정규식이라, 삼항을 t() 안에 넣으면 두 키 모두 검사에서 샌다.
+    const mapTitle = g.issueMapStale ? t('liveSessions.issueMapStaleTitle')
+                                     : t('liveSessions.issueMapTitle');
     const mapLink = g.issueMap
-      ? `<a class="issue-map" href="/issue-map?cwd=${encodeURIComponent(g.cwd)}" target="_blank" data-title="${escapeHtml(g.name)} — Issue Map" onclick="return fpmOpenInShell(event,this)" title="${escapeHtml(t('liveSessions.issueMapTitle'))}">🗺️</a>`
+      ? `<a class="issue-map${g.issueMapStale ? ' stale' : ''}" href="/issue-map?cwd=${encodeURIComponent(g.cwd)}" target="_blank" data-title="${escapeHtml(g.name)} — Issue Map" onclick="return fpmOpenInShell(event,this)" title="${escapeHtml(mapTitle)}">🗺️</a>`
       : '';
     return `<div class="card live${expCls}" data-cwd="${escapeHtml(g.cwd)}" title="{T:common.openVscodeTitle}">
       <div class="card-head" style="background:${escapeHtml(g.color)}">
@@ -11126,17 +11405,27 @@ const plBody = document.getElementById('pl-body');
 
 function renderProjectList(list) {
   if (!list.length) { plBody.innerHTML = '<div class="empty">{T:projectList.empty}</div>'; return; }
+  // Issue368: `Map` 셀 — 판정·툴팁·링크 규약을 카드 🗺️ 와 공유한다(같은 서버 필드, 같은 URL).
+  //   미보유도 아이콘 자리를 비우지 않는다 — 카드는 목록이 아니라 "볼 것이 있을 때만" 뜨는
+  //   자리지만, 표에서는 빈 칸이 "맵 없음"인지 "판정 실패"인지 구분되지 않기 때문이다.
+  //   ⚠️ t() 인자는 리터럴 고정 — test_i18n_parity.py 의 참조 키 스캔이 정규식이다.
+  const mapTitleOk = t('liveSessions.issueMapTitle');
+  const mapTitleStale = t('liveSessions.issueMapStaleTitle');
+  const mapTitleNone = t('projectList.mapNone');
   const rows = list.map(p => {
     const off = !!p.htm_off;
     const reason = off ? (p.htm_reason || 'hub off') : t('projectList.reasonOn');
-    return `<tr data-path="${escapeHtml(p.path)}"${off ? ' class="htm-off"' : ''} data-htm-reason="${escapeHtml(reason)}" title="${escapeHtml(t('projectList.rowTitle', {name: p.name}))}">
+    const mapCell = p.issue_map
+      ? `<a class="pl-map-ico${p.issue_map_stale ? ' stale' : ''}" href="/issue-map?cwd=${encodeURIComponent(p.path)}" target="_blank" data-title="${escapeHtml(p.name)} — Issue Map" onclick="return fpmOpenInShell(event,this)" title="${escapeHtml(p.issue_map_stale ? mapTitleStale : mapTitleOk)}">🗺️</a>`
+      : `<span class="pl-map-ico none" title="${escapeHtml(mapTitleNone)}" aria-hidden="true">🗺️</span>`;
+    return `<tr data-path="${escapeHtml(p.path)}"${off ? ' class="htm-off"' : ''}${p.color ? ` style="--pl-color:${escapeHtml(p.color)}"` : ''} data-htm-reason="${escapeHtml(reason)}" title="${escapeHtml(t('projectList.rowTitle', {name: p.name}))}">
     <td class="pl-toggle"><button type="button" class="htm-tgl ${off ? 'off' : 'on'}" data-path="${escapeHtml(p.path)}" role="switch" aria-checked="${off ? 'false' : 'true'}" aria-label="${escapeHtml(t('projectList.toggleAria', {state: off ? 'off' : 'on', name: p.name}))}" title="${escapeHtml(t('projectList.toggleTitle', {reason: reason}))}"><span class="htm-tgl-knob"></span></button></td>
     <td class="pl-id">${escapeHtml(p.id)}</td>
     <td>${escapeHtml(p.emoji || '')} ${escapeHtml(p.name)}</td>
     <td>${escapeHtml(p.domain)}</td>
     <td class="pl-path"><code>${escapeHtml(p.path)}</code></td>
     <td>${escapeHtml(p.desc)}</td>
-    <td class="pl-color">${p.color ? `<span class="pl-swatch" style="background:${escapeHtml(p.color)}" title="${escapeHtml(p.color)}"></span>` : ''}</td>
+    <td class="pl-map"${p.color ? ` style="background:${escapeHtml(p.color)}"` : ''}>${mapCell}</td>
   </tr>`;
   }).join('');
   // 마스터 상태: 전부 on→on, 전부 off→off, 섞임→mixed
@@ -11147,7 +11436,7 @@ function renderProjectList(list) {
   const masterTitle = masterCls === 'mixed' ? t('projectList.masterMixed', {off: offCnt, total: list.length, target: masterTarget})
     : (masterCls === 'on' ? t('projectList.masterAllOn') : t('projectList.masterAllOff'));
   plBody.innerHTML = `<table class="pl-table"><thead><tr>
-    <th class="pl-toggle" title="{T:projectList.toggleColTitle}"><button type="button" id="htm-tgl-all" class="htm-tgl ${masterCls}" data-target="${masterTarget}" role="switch" aria-checked="${masterCls === 'on' ? 'true' : 'false'}" aria-label="{T:projectList.masterAria}" title="${escapeHtml(masterTitle)}"><span class="htm-tgl-knob"></span></button><div class="pl-toggle-lbl">hub</div></th><th>{T:projectList.col.id}</th><th>{T:projectList.col.name}</th><th>Domain</th><th>{T:projectList.col.path}</th><th>{T:projectList.col.desc}</th><th>{T:projectList.col.color}</th>
+    <th class="pl-toggle" title="{T:projectList.toggleColTitle}"><button type="button" id="htm-tgl-all" class="htm-tgl ${masterCls}" data-target="${masterTarget}" role="switch" aria-checked="${masterCls === 'on' ? 'true' : 'false'}" aria-label="{T:projectList.masterAria}" title="${escapeHtml(masterTitle)}"><span class="htm-tgl-knob"></span></button><div class="pl-toggle-lbl">hub</div></th><th>{T:projectList.col.id}</th><th>{T:projectList.col.name}</th><th>Domain</th><th>{T:projectList.col.path}</th><th>{T:projectList.col.desc}</th><th class="pl-map">{T:projectList.col.map}</th>
   </tr></thead><tbody>${rows}</tbody></table>`;
 }
 
@@ -11218,6 +11507,9 @@ plBody.addEventListener('click', async (e) => {
     } finally { tgl.disabled = false; }
     return;
   }
+  // Issue368: `Map` 아이콘 링크 클릭은 행 선택으로 새지 않게 한다 — 맵을 여는 동작과
+  //   행 선택은 별개이고, 선택 상태가 바뀌면 footer 안내가 엉뚱하게 갱신된다.
+  if (e.target.closest('a')) return;
   // 행 single-click → 선택만 (하이라이트). VSCode 열기는 더블클릭/버튼.
   const tr = e.target.closest('tr[data-path]');
   if (tr) {
@@ -11521,7 +11813,12 @@ setModal.addEventListener('mouseout', e => { if (e.target.closest('.set-badge, .
 const liveTip = document.getElementById('live-tip');
 function liveTipShow(badge) {
   const tip = badge.getAttribute('data-tip'); if (!tip) return;
-  liveTip.textContent = tip; liveTip.hidden = false;
+  liveTip.textContent = tip;
+  // Issue369: data-tip-sid 가 있으면 세션 ID 를 둘째 줄에 붙인다(모노스페이스·디밍).
+  //   textContent + DOM 조립만 사용 — innerHTML 금지(topic 은 임의 문자열이다).
+  const sid = badge.getAttribute('data-tip-sid');
+  if (sid) { const el = document.createElement('span'); el.className = 'tip-sid'; el.textContent = sid; liveTip.appendChild(el); }
+  liveTip.hidden = false;
   const br = badge.getBoundingClientRect();
   const tw = liveTip.offsetWidth, th = liveTip.offsetHeight, gap = 7;
   let left = br.left + br.width/2 - tw/2;
@@ -11532,8 +11829,12 @@ function liveTipShow(badge) {
   liveTip.style.top = top + 'px';
 }
 function liveTipHide() { liveTip.hidden = true; }
-document.addEventListener('mouseover', e => { const b = e.target.closest('.live-origin[data-tip], .live-model[data-tip], .live-badge[data-tip]'); if (b) liveTipShow(b); });
-document.addEventListener('mouseout', e => { if (e.target.closest('.live-origin[data-tip], .live-model[data-tip], .live-badge[data-tip]')) liveTipHide(); });
+// Issue369: .copy-sid 편입 — 세션 ID 복사 버튼도 같은 커스텀 툴팁을 쓴다(네이티브 title 커서 가림 해소)
+//   .live-item 도 편입 — 행 네이티브 title 이 남아 있으면 버튼 위에서도 커서 옆에 떠 같은 가림이 재발한다
+const LIVE_TIP_SEL = '.live-origin[data-tip], .live-model[data-tip], .live-badge[data-tip], '
+  + '.copy-sid[data-tip], .card-close[data-tip], .approve-btn[data-tip], .live-item[data-tip]';
+document.addEventListener('mouseover', e => { const b = e.target.closest(LIVE_TIP_SEL); if (b) liveTipShow(b); });
+document.addEventListener('mouseout', e => { if (e.target.closest(LIVE_TIP_SEL)) liveTipHide(); });
 document.getElementById('btn-settings').addEventListener('click', openSettings);
 document.getElementById('set-lang').addEventListener('click', e => {
   const b = e.target.closest('button[data-lang]'); if (b) switchLang(b.dataset.lang);
@@ -12088,6 +12389,17 @@ def main():
     HOST = BIND_HOSTS[0]  # primary — self-ip·pid·로그·advertise fallback 기준
     # 개방 모드 = bind 주소 중 하나라도 비루프백 (멀티 bind 일반화).
     _open_mode = any(h not in LOOPBACK_IPS for h in BIND_HOSTS)
+
+    # Issue379: 수신 이름 게이트 산출. 순수 문자열 조립(DNS 불요)이라 bind 이전에 동기 실행해도
+    # 다운타임 증가 0 — allowlist(Issue200/332) 처럼 백그라운드로 미룰 이유가 없다.
+    global KNOWN_HOSTS, HOST_GATE
+    HOST_GATE = bool(_load_hub_setting().get("host_gate", True))
+    KNOWN_HOSTS = _build_known_hosts()
+    if HOST_GATE and KNOWN_HOSTS:
+        log(f"[hostgate] 활성 — KNOWN={sorted(KNOWN_HOSTS)} (IP 리터럴 Host 는 항상 통과)")
+    else:
+        _why = "host_gate=false" if not HOST_GATE else "known 집합 공집합"
+        log(f"[hostgate] 비활성({_why}) — 모든 Host 헤더 허용(종전 동작)")
 
     # allow_server_list 분리: source-IP 게이트는 bind_host 와 독립 토글.
     # 기본 True = Servers.md(check=O) 화이트리스트 + self 허용.
