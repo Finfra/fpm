@@ -101,6 +101,8 @@ python3 server.py
 # → http://127.0.0.1:9876/hub
 ```
 
+The memo box at the top of `/projects-map` is editable right in the browser (online editing) and auto-saves to `_note.md` in the project root (gitignored — never committed). On a fresh install the file does not exist yet: a placeholder message is shown, and the file is created on your first edit.
+
 # Uninstall / Clean Reinstall
 
 `sh/uninstall.sh` backs up the install traces and then removes them (idempotent):

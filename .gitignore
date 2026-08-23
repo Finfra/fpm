@@ -50,3 +50,6 @@ data/hub/*.json
 
 # issue-map 산출물 (Issue.md 로부터 재생성 — prj1#Issue286)
 Issue_map.htm
+
+# 개인 수기 메모 — /projects-map 온라인 편집 대상, 커밋 비대상 (prj1#Issue398)
+_note.md
