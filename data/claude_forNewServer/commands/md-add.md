@@ -46,7 +46,7 @@ description: 모든 프로젝트에서 사용 가능한 범용 마크다운 문�
 # 문서 작성
 
 ## Markdown 규칙
-* `~/.claude/rules/md-rules.md`의 Frontmatter·Outline·Bullet·Table 규칙을 준수할 것
+* `~/.claude/_doc_arch/rules-ondemand/md-rules.md`의 Frontmatter·Outline·Bullet·Table 규칙을 준수할 것
 * 프로젝트에 `tags` 관례가 있으면 `tags` 필드도 추가
 
 ## 문서 템플릿
@@ -116,7 +116,7 @@ type: ppt
 ```
 
 * **`type: ppt` 필수**: 슬라이드용임을 표시. 각 H1이 한 슬라이드가 됨
-* **md-rules 예외**: 본문 H1 다수 허용, Outline 규칙 적용 제외 (`~/.claude/rules/md-rules.md` 참조)
+* **md-rules 예외**: 본문 H1 다수 허용, Outline 규칙 적용 제외 (`~/.claude/_doc_arch/rules-ondemand/md-rules.md` 참조)
 
 * **지침**: 템플릿을 빈칸으로 두지 말고, 가진 지식을 활용하여 **초안을 충실히 채워서** 생성함.
 * **주제에 맞는 템플릿 선택**: 기술 문서/메모/회의록/슬라이드 등 주제 성격에 따라 적절한 구조를 선택함.
@@ -150,9 +150,9 @@ type: ppt
 
 ---
 
-# Opus 4.7 실행 제약
+# Opus 4.8 실행 제약
 
-공통 제약은 [`~/.claude/rules/opus-4-7-execution-rules.md`](../rules/opus-4-7-execution-rules.md) 참조.
+공통 제약은 [`~/.claude/rules/opus-4-8-execution-rules.md`](../rules/opus-4-8-execution-rules.md) 참조.
 
 요지:
 * 단계별 종료 조건을 명시, 무한 루프 금지

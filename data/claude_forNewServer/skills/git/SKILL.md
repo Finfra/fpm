@@ -9,13 +9,21 @@ description: Git 작업(status, add, commit, push) 및 checkpoint 검증을 수�
 
 ## 안전 가드 (Safety Guard)
 
-이 스킬을 실행하기 전, 반드시 현재 프로젝트 루트에 `data/finfra-server-access.md`가 존재하는지 확인합니다:
+이 스킬이 지켜야 할 것은 **인덱스 무결성**(아래 절)과 **checkpoint 검증**이다. git 은 로컬 저장소 작업이므로 서버 접근 정보를 요구하지 않는다.
+
+> ⚠️ **제거 이력 (Issue336)**: 과거 이 자리에 `[ -f "data/finfra-server-access.md" ] || exit 1` 가드가 있었다. 그 파일을 가진 프로젝트는 **social·finfraHome 둘뿐**이라 나머지 60여 프로젝트에서 스킬이 항상 즉시 종료됐다. 커밋 이력 추적 결과 `2c9254b Sync: sync-claude-ma` 대량 동기화로 유입된 것이며 git 스킬 고유의 설계가 아니었다. 해당 가드는 실제로 Cafe24 서버에 접속하는 [`curl`](../curl/SKILL.md)·[`ssh`](../ssh/SKILL.md)·[`cdn`](../cdn/SKILL.md)·[`mysql`](../mysql/SKILL.md) 4종에만 유효하며 그쪽은 그대로 둔다.
+
+## 인덱스 무결성 (Issue287)
+
+FUSE·네트워크 마운트 repo 는 인덱스가 조용히 축소될 수 있다. push 전 아래 1줄로 확인:
 
 ```bash
-[ -f "data/finfra-server-access.md" ] || { echo "❌ data/finfra-server-access.md 없음 — Cafe24 서버 접근 정보가 없는 프로젝트입니다. 실행을 취소합니다."; exit 1; }
+[ "$(git ls-files | wc -l)" -ge "$(git ls-tree -r HEAD --name-only | wc -l)" ] || echo "🚨 인덱스가 HEAD 트리보다 작음 — 인덱스 유실 의심"
 ```
 
-파일이 없으면 즉시 중단하고 사용자에게 알립니다.
+* 예방(FUSE repo): `git config core.fsmonitor false` 고정. `git -c core.fsmonitor=...` 호출별 토글 금지
+* 탐지 자동화: PostToolUse hook [`git-tree-shrink-guard.sh`](../../hooks/git-tree-shrink-guard.sh) 가 commit/push 직후 트리 급감을 경고
+* 복구 절차: [`_doc_arch/rules-ondemand/git-index-integrity-rules.md`](../../_doc_arch/rules-ondemand/git-index-integrity-rules.md)
 
 ## 필수 조건 (Prerequisites)
 - `git` 명령어가 설치되어 있어야 함.

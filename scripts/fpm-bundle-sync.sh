@@ -13,6 +13,9 @@
 #      forward 스냅샷 단계(fpm-guard/fpm-sanitize)가 담당하나, 여기서도 최소 반입 원칙을 지킨다.
 #   4. server.py 만 옮기고 의존(i18n.py·assets/)을 빠뜨리면 플러그인이 import 에서 죽는다 →
 #      services/hub 는 파일 단위가 아니라 디렉토리 전체를 동기한다.
+#   5. 목적지는 번들만이 아니다 (prj3#Issue436_3, fbot 2배관) — SCAR 는 plugins/fpm-core 로,
+#      MCP 서버 코드는 repo top-level `mcp/<유닛>/` 로 간다. 후자는 **하위 디렉토리 고정**이며
+#      기존 `mcp/server.py`(fpm MCP)를 덮거나 지우지 않는다.
 #
 # 사용:
 #   scripts/fpm-bundle-sync.sh          # 동기 실행
@@ -67,6 +70,9 @@ else
 fi
 
 # --- 2. hooks / commands / agents — 이름 일치분만 ---
+#   fbot 훅(fbot-*.py|sh · dispatch-session{start,end}.sh, prj3#Issue436_3)은 라이브와 번들의
+#   파일명이 같아 아래 이름 일치 스윕이 그대로 수집한다 — 별도 매핑을 두지 않는다.
+#   신규 fbot 훅을 추가할 때는 번들에 1회 수동 seed 해야 이 스윕의 사정권에 들어온다(원칙: 신규 편입은 수동).
 sync_dir_by_name "$BUNDLE/hooks"    "$GLOBAL/hooks"
 sync_dir_by_name "$BUNDLE/commands" "$GLOBAL/commands"
 sync_dir_by_name "$BUNDLE/agents"   "$GLOBAL/agents"
@@ -91,6 +97,10 @@ sync_skill fpm-pm-do "$GLOBAL/skills/fpm-pm-do"
 sync_skill fpm-pm    "$REPO/.claude/skills/pm"
 sync_skill fpm-cdf   "$REPO/.claude/skills/cdf"
 sync_skill fpm-issue-map "$GLOBAL/skills/issue-map"
+#   fbot-icon 은 예외적으로 번들명 = 라이브명이다 (prj3#Issue436_3).
+#   `fbot-` 자체가 이미 독립 네임스페이스라 fpm- 접두가 중복이고, SKILL.md 본문이
+#   `~/.claude/skills/fbot-icon/scripts/fbot-icon-gen.py` 를 문자열로 참조해 이름을 바꾸면 문서가 거짓이 된다.
+sync_skill fbot-icon "$GLOBAL/skills/fbot-icon"
 
 # --- 4. 런타임 데이터 (i18n catalog + 설치 템플릿) ---
 #   locales 부재 시 hub UI 가 번역 키 그대로 노출되고 test_i18n_parity 가 깨진다.
@@ -105,9 +115,39 @@ else
 fi
 sync_file "$BUNDLE/data/hub_setting_org.yml" "$REPO/data/hub_setting_org.yml"
 
-# --- 5. 실행 권한 (cp 는 mode 를 보존하지 않음) ---
+#   fbot 데이터 자산 (매뉴얼 7종 + 아이콘 카탈로그, prj3#Issue436_3).
+#   ⚠️ 여기서 rsync 를 쓰지 않는 것이 의도다 — icons/ 에는 `{role|bot_id}.svg` 생성물이 함께 있고
+#      그것은 결정론 재생성물이라 배포 대상이 아니다. 이름 일치 스윕이면 번들에 seed 한
+#      catalog.yml 만 따라오고 SVG 는 구조적으로 못 들어온다(제외 규칙을 따로 관리할 필요가 없다).
+sync_dir_by_name "$BUNDLE/data/fbot/manuals" "$GLOBAL/data/fbot/manuals"
+sync_dir_by_name "$BUNDLE/data/fbot/icons"   "$GLOBAL/data/fbot/icons"
+
+# --- 5. mcp — 라이브 MCP 서버 코드 (fbot 2배관 ②, prj3#Issue436_3) ---
+#   목적지가 **번들 밖 repo top-level** 인 첫 사례다. MCP 서버는 플러그인 SCAR 가 아니라
+#   `claude mcp` 등록 대상이라 fpm `mcp/server.py` 와 같은 자리(repo `mcp/`)를 쓴다.
+#
+#   ⚠️ **하위 디렉토리 고정** — `$REPO/mcp/` 자체를 rsync 목적지로 삼으면 기존
+#      `mcp/server.py`·`mcp/README.md`(fpm MCP)가 사정권에 들어온다. 반드시 `mcp/<유닛>/`
+#      까지 내려서 동기하고, --delete 는 쓰지 않는다(번들 원칙 2 와 같은 이유).
+#   ⚠️ 데이터는 코드가 아니다 — learn.db·큐 파일은 `data/aoa` 소관이며 이 경로로 오지 않는다.
+#      그래도 오배치가 조용히 반입되지 않도록 *.db/*.log 를 명시 제외한다.
+MCP_EX=(--exclude='__pycache__/' --exclude='.pytest_cache/' --exclude='.DS_Store' --exclude='*.db' --exclude='*.log')
+sync_mcp_unit() {  # $1=유닛명 — $GLOBAL/mcp/$1 → $REPO/mcp/$1
+  local name="$1" src="$GLOBAL/mcp/$1" dst="$REPO/mcp/$1" flag="" n
+  [ -d "$src" ] || return 0        # 라이브에 없음 = 아직 수렴 전 → no-op
+  if [ "$CHECK" -eq 1 ]; then flag="-n"; else mkdir -p "$dst"; fi
+  n=$(rsync -a $flag --itemize-changes "${MCP_EX[@]}" "$src/" "$dst/" | grep -c '^[>c]')
+  [ "$n" -gt 0 ] || return 0
+  if [ "$CHECK" -eq 1 ]; then drift=$((drift + n)); say "DRIFT mcp/$name ($n)"
+  else changed=$((changed + n)); say "mcp/$name $n 파일 갱신"; fi
+}
+sync_mcp_unit aoa-memory
+sync_mcp_unit aoa-mq
+
+# --- 6. 실행 권한 (cp 는 mode 를 보존하지 않음) ---
+#   hooks/*.py 도 포함한다 — fbot 훅은 파이썬 실행체이고 직접 호출되는 경로가 있다.
 if [ "$CHECK" -eq 0 ]; then
-  for f in "$BUNDLE"/hooks/*.sh "$BUNDLE"/agents/*.sh; do
+  for f in "$BUNDLE"/hooks/*.sh "$BUNDLE"/hooks/*.py "$BUNDLE"/agents/*.sh; do
     [ -f "$f" ] && [ ! -x "$f" ] && chmod +x "$f"
   done
 fi

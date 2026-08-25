@@ -65,9 +65,11 @@ print(line)
 [ -z "$SID" ] && exit 0
 [ -z "$LABEL" ] && exit 0   # 빈 프롬프트(첨부만 등) → 갱신 생략, 기존 label 보존
 
-# pid: JSON 값이 있고 정수면 사용, 아니면 훅 부모 pid(=claude 세션) fallback
-PID="$PID_JSON"
-case "$PID" in ''|*[!0-9]*) PID="$PPID" ;; esac
+# prj3#Issue428: $PPID 직등록 금지 — 단명 wrapper pid 가 live_pid 를 덮어써 세션이
+#   hub 카드에서 사라졌다(prj9a 실측). lib 단일 지점으로 생존 확인 + claude 승격.
+# shellcheck source=lib/claude-pid.sh
+. "$HOME/.claude/hooks/lib/claude-pid.sh"
+PID=$(fpm_resolve_claude_pid "$PID_JSON" "$PPID")
 [ -z "$CWD" ] && exit 0   # Issue179: PWD fallback 제거 — hook 컨텍스트 PWD 는 frontmost 반영 위험(세션 오귀속), doc-register.sh:43 표준 정합
 case "$CWD" in /*) ;; *) exit 0 ;; esac   # 절대경로만
 

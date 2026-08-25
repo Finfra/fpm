@@ -152,9 +152,25 @@ if [[ "$CHECK_SCAR" -eq 1 ]]; then
         else
             fail "marketplace 미등록: $FPM_MKT_NAME (sh/install.sh 재실행)"
         fi
-        # 9) plugin
+        # 9) plugin — Issue391: 저작 머신에서는 미설치가 **정상**이므로 FAIL 로 보지 않는다.
+        #   저작 머신(jm4)은 `~/.claude` 에 라이브 SCAR 원본을 두고 그것을 직접 쓴다.
+        #   여기에 fpm-core 를 설치하면 같은 SCAR 가 이중 등록된다(방증: 타 플러그인도 전부 disabled).
+        #   판정 신호는 **`~/.claude/commands/` 의 라이브 SCAR 존재 하나뿐**이다 —
+        #   플러그인은 `~/.claude/plugins/{cache,data,marketplaces}/` 로 경로가 분리되므로 섞이지 않는다.
+        #   ⚠️ `REPO_DIR == $FPM_BASE` 를 조건에 넣지 말 것: REPO_DIR 은 스크립트 자기 위치라
+        #      소비자 머신에서도 항상 참이라 판별력이 0이다(2026-08-17 실측).
+        authoring=0
+        for _c in "${FPM_SCAR_COMMANDS[@]}"; do
+            [[ -f "$HOME/.claude/commands/${_c}.md" ]] && { authoring=1; break; }
+        done
         if claude plugin list 2>/dev/null | grep -qF "$FPM_PLUGIN_NAME"; then
-            ok "플러그인 설치: $FPM_PLUGIN_NAME"
+            if [[ "$authoring" -eq 1 ]]; then
+                warn "플러그인 설치됨: $FPM_PLUGIN_NAME — 그런데 ~/.claude 에 라이브 SCAR 도 있다(이중 등록 의심)"
+            else
+                ok "플러그인 설치: $FPM_PLUGIN_NAME"
+            fi
+        elif [[ "$authoring" -eq 1 ]]; then
+            ok "플러그인 미설치: $FPM_PLUGIN_NAME — 저작 머신(~/.claude 라이브 SCAR 보유)이므로 정상"
         else
             fail "플러그인 미설치: $FPM_PLUGIN_NAME (claude plugin install)"
         fi
@@ -259,6 +275,25 @@ if [[ -n "${FPM_FLATFILE_SRC_REL_REPO:-}" && ${#FPM_FLATFILE_FILES[@]} -gt 0 ]];
             [[ -n "$ff_missing" ]] && fail "flat_file: 선언했으나 디스크 없음 →$ff_missing (삭제/rename? scar-manifest.yml 갱신 후 gen 재실행)"
             [[ -n "$ff_undecl" ]] && fail "flat_file: 디스크에 있으나 yml 미선언 →$ff_undecl (scar-manifest.yml payloads.flat_file.files 에 추가 후 gen 재실행)"
         fi
+    fi
+fi
+
+# ── 12. flat_file 사본 ↔ prj3 원본 drift (Issue388) ───────────
+#   항목11 은 **선언 ↔ 사본**만 본다. 사본은 prj3(~/.claude) 글로벌 SCAR 의 복사물이므로
+#   원본이 바뀌면 사본은 조용히 늙는데, 매니페스트와 사본이 같이 늙으면 항목11 은 서로
+#   일치해서 PASS 를 낸다 — 원본을 보는 눈이 없었던 것이 표류를 몇 달 방치한 원인이다.
+#   (2026-08-16 실측: 29개 중 원본과 일치한 것은 1개, 10개는 원본에 그 경로가 없었음)
+#   판정은 sh/scar-flatfile-sync.sh --check 에 위임한다 — 사본 재생성과 판정 로직이
+#   갈라지면 "검사는 통과하는데 재생성하면 바뀌는" 상태가 다시 생긴다.
+if [[ -x "$REPO_DIR/sh/scar-flatfile-sync.sh" ]]; then
+    sec "── flat_file 사본 ↔ prj3 원본 drift ──"
+    if [[ ! -d "$HOME/.claude" ]]; then
+        warn "prj3 원본 없음: ~/.claude (이 머신은 SCAR 원본 미보유 — 사본 표류 점검 생략)"
+    elif ff_out="$(bash "$REPO_DIR/sh/scar-flatfile-sync.sh" --check 2>&1)"; then
+        ok "flat_file 사본: prj3 원본과 일치"
+    else
+        fail "flat_file 사본이 prj3 원본과 표류 — 해소: sh/scar-flatfile-sync.sh"
+        printf '%s\n' "$ff_out" | sed 's/^/        /'
     fi
 fi
 

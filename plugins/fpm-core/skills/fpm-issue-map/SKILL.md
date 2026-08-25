@@ -56,6 +56,9 @@ python3 "$BIM"
 # 파싱 결과만 확인 (파일 미생성) — 형식 오류 진단용
 python3 "$BIM" --check
 
+# 파싱·판정 결과를 JSON 으로 stdout 출력 (htm 미생성·mmdc 미호출) — 기계 소비용
+python3 "$BIM" --json
+
 # 교착(순환 대기) 진단만 출력 (파일 미생성)
 python3 "$BIM" --deadlock
 
@@ -126,13 +129,29 @@ open -a Firefox "file://$PWD/Issue_map.htm"
 python3 "$BIM" --all
 ```
 
+# 기계 출력 `--json` (Issue436_3)
+
+파싱·판정 결과를 stdout 에 **순수 JSON 1건**으로 출력한다. htm 을 생성하지 않고 mmdc 도 호출하지 않으므로 빠르고 무의존이다. 경고류는 전부 stderr 로 나간다. 소비처는 fbot-taskmgr(착수 판정 재료) 등 — **판정은 htm 렌더와 동일 지점(`blocking_of`)을 공유**하므로 소비처가 착수 가능을 재판정하지 않는다.
+
+```json
+{"root": "<프로젝트 절대경로>", "generated": <epoch int>,
+ "issues": [{"id": "Issue5", "title": "...", "section": "🚧 진행중",
+             "state": "done|held|blocked|unknown|startable",
+             "depends": ["Issue3", "prj1#Issue286"], "blocked_by": [], "startable": true}],
+ "cross": [{"ref": "prj1#Issue286", "status": "done|blocked|unknown"}]}
+```
+
+* `startable` = 미완료이고 미해소 선행이 0인 이슈 (`state == "startable"` 과 동치)
+* `blocked_by` = 미완료 로컬 선행 + 미완료 타 prj 선행 + **미확인** 타 prj 선행. 미확인은 `startable` 이 아니다(거짓 안전 신호 금지)
+* `held` = 보류·취소 유령 노드 — 기다려도 자동 해제되지 않음
+
 # 타 프로젝트 연동 · 교착 진단 (Issue252)
 
 `* depends: prj1#Issue286` 처럼 **다른 프로젝트를 기다리는 선행**을 그래프에 편입한다. 편입 전에는 이런 이슈가 지도상 "착수 가능"으로 보였다 — 실제로는 남의 프로젝트를 기다리는 중인데도.
 
 ## 참조 표기 해석
 
-경로 SSOT 는 `~/_git/___pm/projects/{번호}`(= 대상 경로 1줄). 아래 표기를 모두 흡수한다.
+경로 SSOT 는 **projects 레지스트리 디렉토리**의 `{번호}` 파일(= 대상 경로 1줄)이다. 레지스트리 위치는 하드코딩하지 않고 `~/.info/__pmBasePath.txt` 의 1줄(= projects 디렉토리 절대경로 **그 자체**, 추가 join 금지)로 해석한다 (Issue436_3 — fpm MCP `_base_dir()` 동일 규약). 파일 부재·무효 시 cross-prj 조회만 스킵하고(stderr 경고 1줄) 로컬 렌더는 정상 동작한다. 아래 표기를 모두 흡수한다.
 
 | 표기 | 해석 |
 | :--- | :--- |
@@ -153,7 +172,7 @@ python3 "$BIM" --all
 | ⛔ 대기 | 빨강 | 선행 미완료 → 차단 |
 | ⚠️ 미확인 | 회색 점선 | 대상 prj·이슈를 못 찾음 → **차단 여부 판정 불가** |
 
-**미확인을 "착수 가능"으로 부르지 않는다.** 못 읽은 것을 안전으로 오인하면 이슈맵이 거짓 신호를 준다. 미확인은 표기 오타이거나 `~/_git/___pm/projects/` 에 매핑이 없는 prj 다.
+**미확인을 "착수 가능"으로 부르지 않는다.** 못 읽은 것을 안전으로 오인하면 이슈맵이 거짓 신호를 준다. 미확인은 표기 오타이거나 projects 레지스트리에 매핑이 없는 prj 다.
 
 ## 교착(순환 대기) 진단
 

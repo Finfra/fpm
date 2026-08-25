@@ -6,6 +6,8 @@ date: 2026-05-31
 model: sonnet
 ---
 
+> tools: 전체 상속 — dashboard 오케스트레이터 — runner 기동·데이터 갱신·임의 topic 작업을 중계한다 (Issue407 판정: 오케스트레이터)
+
 > ⚠️ **글로벌 SCAR 변경 가드 (Issue46)**: 본 agent 는 모든 프로젝트가 공유. cwd ≠ `~/.claude/` 면 즉시 수정 금지 → `~/.claude/Issue.md` 이슈 등록 후 처리. 설계 정본 SSOT: `~/_git/___pm/_doc_arch/hub_board_tmux_design.md`. 절차: `~/.claude/rules/global-scar-change-rules.md`
 
 # dashboard agent

@@ -63,7 +63,8 @@ flowchart TD
 | `sh/update.sh`            | payloads.plugin            | git pull(셸) + marketplace/plugin update        |
 | `sh/uninstall.sh`         | shell + payloads.plugin    | 셸 블록 제거 + plugin uninstall (마켓 보존)     |
 | `sh/publish-scar.sh`      | payloads.plugin            | 소스 → 마켓 발행(rsync --delete)                |
-| `sh/check.sh`             | shell + payloads.plugin    | 설치 검증 + SCAR drift 대조                     |
+| `sh/check.sh`             | shell + plugin + flat_file | 설치 검증 + SCAR drift 대조 (항목11·12)         |
+| `sh/scar-flatfile-sync.sh` | payloads.flat_file        | 사본을 prj3 원본에서 재생성 + `--check` 표류 게이트 (Issue388) |
 | `remote.sh` (to-be)       | payloads.flat_file         | 원격 `~/.claude` 플랫파일 배포(rsync_delete + protect) |
 | `remove.sh` (to-be)       | payloads.flat_file         | `flat_file.files` 정밀 삭제, `protect` 보존     |
 
@@ -96,12 +97,39 @@ yml 은 **사람이 편집하는 SSOT** 이고 자동 write 는 없다. 대신 "
   생성기가 `FPM_FLATFILE_SRC_REL_REPO`·`FPM_FLATFILE_FILES` 를 install_manifest.sh 에 방출하므로 check.sh 는 zero-dep 으로 검사
 * **통합 검사**: `bash sh/gen-install-manifest.sh --check` 가 ① yml→install_manifest.sh 투영 동기 ② yml `files[]` ↔ 디스크 를 한 번에 검사 (drift 시 exit 2)
 
+### ⚠️ 위 검사만으로는 사본이 늙는 것을 못 잡는다 (Issue388)
+
+위 3종은 전부 **선언(yml·파생물) ↔ 사본(디스크)** 축만 본다. 그런데 `claude_forNewServer/` 는
+prj3(`~/.claude`) 글로벌 SCAR 의 **사본**이므로 축이 하나 더 있다 — **사본 ↔ 원본**이다.
+
+* 원본이 움직여도 사본은 아무 신호를 내지 않는다. 그리고 **선언과 사본이 같이 늙으면 서로 일치**하므로 기존 검사는 전부 PASS 를 낸다
+* 실측(2026-08-16): 29개 중 원본과 일치한 것 **1개**, 원본에 그 경로가 아예 없는 것 **10개**(이동 5·폐기 5). 그동안 `check.sh` 항목11 은 계속 PASS 였다
+* 해소: [`sh/scar-flatfile-sync.sh`](../sh/scar-flatfile-sync.sh) 가 재생성·판정을 모두 담당하고, `check.sh` **항목12** 가 그 `--check` 를 위임 호출한다. 재생성과 판정을 한 스크립트에 두는 이유는 둘이 갈라지면 *"검사는 통과하는데 재생성하면 바뀌는"* 상태가 다시 생기기 때문이다
+* 단방향 불변식: **prj3 → prj1 만.** 사본을 원본에 되쓰지 않는다
+
 ## pre-commit 게이트 (Issue240_4)
 
 * 설치: `bash scripts/install-precommit-scar.sh` (멱등, 마커 가드, 다른 hook 블록과 공존)
 * 동작: 커밋 시 `gen-install-manifest.sh --check` 실행 → drift 면 **커밋 거부**(exit 1).
   python3/pyyaml/생성기 부재 시 graceful skip(커밋 정상) — 최소 환경 무해
 * 효과: yml↔파생↔디스크가 어긋난 채 커밋되는 것을 원천 차단 → 두 페이로드 모두 stale 진입 봉쇄
+
+### 사본 반입 예외 — flat_file ↔ tagcheck 구조적 충돌 (Issue388)
+
+`claude_forNewServer/` 는 **prj3 파일을 그대로 복사한 것**이고, 그 파일들의 주석·본문에는
+**prj3 이슈 번호**가 박혀 있다. 반면 tagcheck 는 **prj1 의 `Issue.md`** 를 기준으로 번호 존재를
+검증한다. 따라서 사본을 재생성해 커밋할 때마다 tagcheck 가 반드시 위반을 낸다.
+
+* 실측(2026-08-16): 사본 재생성 1회에 위반 **78건**. 전부 `data/claude_forNewServer/` 하위
+* 성격: `plugins/fpm-core` 의 **번들 반입 예외**([`_doc_arch/fpm-sync-deploy.md`](../_doc_arch/fpm-sync-deploy.md))와 **동일한 구조적 충돌**이다. 경로만 다르다
+* 해소: `SKIP_TAGCHECK=1 git commit …` — 사본 반입분에 한해 정당한 예외
+* ⚠️ **오용 금지 판정**: 위반 목록의 경로가 `data/claude_forNewServer/` 하위인지 **먼저 확인**한다.
+  그 밖(`data/scar-manifest.yml`·`data/claude_forNewServer.md` 등 **prj1 자체 파일**)이 걸렸다면
+  진짜 오타·미등록이므로 번호를 교정하거나 이슈를 등록한다.
+    - 실제로 2026-08-16 커밋에서 prj1 자체 파일 2건이 섞여 있었다 — 사본 반입분에 묻어
+      함께 통과할 뻔했다. `SKIP_TAGCHECK` 을 붙이기 전에 목록을 눈으로 훑는 이유가 이것이다
+    - prj1 문서에서 prj3 이슈를 가리켜야 하면 `IssueN` **토큰을 쓰지 말고** 내용으로 서술한다
+      (교차 prj 번호는 tagcheck 가 구분하지 못한다)
 
 ## 권장 작업 순서
 

@@ -69,17 +69,19 @@ payloads:
         - fpm-cdf
         - fpm-board
         - fpm-board-server
+        - fpm-do                # 구 fpm-pm-do 커맨드의 현재 이름 (스킬 fpm-pm-do 는 별도 존속)
         - fpm-hub
         - fpm-hub-server
+        - fpm-issue-map
         - fpm-new-project
         - fpm-pm-del
-        - fpm-pm-do
         - fpm-pm-new
         - fpm-pm-query
         - fpm-pm-update
         - fpm-show
       skills:
         - fpm-cdf
+        - fpm-issue-map
         - fpm-pm
         - fpm-pm-do
       agents:
@@ -94,37 +96,38 @@ payloads:
     src_rel_repo: data/claude_forNewServer       # 끝 슬래시는 소비 스크립트가 rsync 시 부여
     dest_rel_home: .claude
     rsync_delete: true        # ★ orphan prune. false 면 소스에서 지운 파일이 원격에 잔존(=원 버그).
+    # 사본의 원본 (prj3 글로벌 SCAR). files[] 는 이 경로 기준으로도 해석된다 —
+    #   즉 <origin_rel_home>/<file> 을 <src_rel_repo>/<file> 로 복사한 것이 사본이다.
+    #   재생성·표류검사: sh/scar-flatfile-sync.sh (Issue388). 단방향 prj3 → prj1, prj3 는 읽기 전용.
+    origin_rel_home: ".claude"
     # 정밀 삭제·검증·dry-run 용 전체 인벤토리 (src_rel_repo 기준 상대경로).
     #   rsync_delete 가 자동 prune 하지만, remove.sh(to-be) 가 selective 삭제할 때 본 목록을 사용.
     #   SCAR 추가·삭제·rename 시 본 목록을 함께 갱신해야 drift 가 안 생긴다.
+    #   ⚠️ 경로는 **원본(prj3)의 현재 실제 위치**를 그대로 쓴다. 사본에서 임의로 평탄화하면
+    #      함께 배포되는 CLAUDE.md 의 상대 링크가 대상 서버에서 죽는다(Issue388 실측 원인).
     files:
       - CLAUDE.md
       - Harness.md
       - commands/design-doc.md
-      - commands/gstack-plan.md
-      - commands/gstack-report.md
-      - commands/gstack-retro-report.md
       - commands/issue-closer-g.md
       - commands/issue-fix-g.md
       - commands/issue-reg-g.md
       - commands/md-add.md
       - commands/needs.md
-      - commands/new-project.md
-      - rules/change-detect-rules.md
       - rules/info-files.md
       - rules/issue-g.md
       - rules/language-rules.md
-      - rules/md-rules.md
       - rules/naming-rules.md
-      - rules/nptir-rules.md
-      - rules/opus-4-7-execution-rules.md
-      - rules/refs-rules.md
+      - rules/opus-4-8-execution-rules.md
+      - _doc_arch/rules-ondemand/change-detect-rules.md
+      - _doc_arch/rules-ondemand/md-rules.md
+      - _doc_arch/rules-ondemand/nptir-rules.md
+      - _doc_arch/rules-ondemand/refs-rules.md
       - skills/dev-g/SKILL.md
       - skills/dev-w/SKILL.md
       - skills/doc-work-archive/SKILL.md
       - skills/git/SKILL.md
       - skills/git/scripts/git_wrapper.sh
-      - skills/gstack/SKILL.md
       - skills/issue-g/SKILL.md
       - skills/issue-w/SKILL.md
     # rsync --delete / remove.sh 가 dest 에서 절대 지우면 안 되는 대상 서버 사용자 데이터.
@@ -138,6 +141,14 @@ payloads:
       - "settings.local.json"
       - "memory/"
       - "*.local.*"
+    # protect 보다 **우선하는** 반출 경로 (rsync: --include 를 --exclude 앞에 배치).
+    #   조건부 로드 룰 4종이 rules/ → _doc_arch/rules-ondemand/ 로 이동했는데(prj3 조건부 로드 재편)
+    #   protect 가 `_doc_arch/` 를 통째로 막고 있어, 예외가 없으면 배포에서 조용히 누락되고
+    #   함께 나가는 CLAUDE.md 의 조건부 로드 표가 전부 죽은 링크가 된다.
+    #   protect 의 본래 의도는 "대상 서버가 스스로 쓴 _doc_arch 문서를 보존"이므로,
+    #   우리가 ship 하는 rules-ondemand/ 하위만 예외로 두는 것이 의도에 부합한다.
+    protect_exceptions:
+      - "_doc_arch/rules-ondemand/"
 
 # ── 소비 스크립트 계약 (어느 스크립트가 무엇을 읽는가) ────────────────────────
 #   문서화 전용(스크립트가 파싱하지 않음). 상세 계약은 data/scar-manifest.md.
@@ -155,8 +166,13 @@ consumers:
     reads: [payloads.plugin]
     note: 소스 → 마켓 발행(rsync --delete). install_manifest.sh(파생) 경유.
   - script: sh/check.sh
-    reads: [shell, payloads.plugin]
-    note: 설치 검증 + SCAR drift 대조. install_manifest.sh(파생) 경유.
+    reads: [shell, payloads.plugin, payloads.flat_file]
+    note: 설치 검증 + SCAR drift 대조. install_manifest.sh(파생) 경유. 항목11=선언↔사본,
+          항목12=사본↔prj3 원본(scar-flatfile-sync.sh --check 위임, Issue388).
+  - script: sh/scar-flatfile-sync.sh
+    reads: [payloads.flat_file]
+    note: 사본(src_rel_repo) 을 원본(origin_rel_home) 에서 재생성 + --check 표류 게이트.
+          yml 직독(파생물 미경유 — 매니페스트 갱신 직후 파생물 생성기가 아직 실패하는 구간이 있음).
   - script: remote.sh        # to-be (Issue240 범위 외)
     reads: [payloads.flat_file]
     note: 원격 서버 ~/.claude 플랫파일 배포. rsync_delete + protect 적용.

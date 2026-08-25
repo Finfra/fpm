@@ -43,11 +43,12 @@ FPM_SCAR_COMMANDS=(
     fpm-cdf
     fpm-board
     fpm-board-server
+    fpm-do
     fpm-hub
     fpm-hub-server
+    fpm-issue-map
     fpm-new-project
     fpm-pm-del
-    fpm-pm-do
     fpm-pm-new
     fpm-pm-query
     fpm-pm-update
@@ -55,6 +56,7 @@ FPM_SCAR_COMMANDS=(
 )
 FPM_SCAR_SKILLS=(
     fpm-cdf
+    fpm-issue-map
     fpm-pm
     fpm-pm-do
 )
@@ -69,30 +71,25 @@ FPM_FLATFILE_FILES=(
     CLAUDE.md
     Harness.md
     commands/design-doc.md
-    commands/gstack-plan.md
-    commands/gstack-report.md
-    commands/gstack-retro-report.md
     commands/issue-closer-g.md
     commands/issue-fix-g.md
     commands/issue-reg-g.md
     commands/md-add.md
     commands/needs.md
-    commands/new-project.md
-    rules/change-detect-rules.md
     rules/info-files.md
     rules/issue-g.md
     rules/language-rules.md
-    rules/md-rules.md
     rules/naming-rules.md
-    rules/nptir-rules.md
-    rules/opus-4-7-execution-rules.md
-    rules/refs-rules.md
+    rules/opus-4-8-execution-rules.md
+    _doc_arch/rules-ondemand/change-detect-rules.md
+    _doc_arch/rules-ondemand/md-rules.md
+    _doc_arch/rules-ondemand/nptir-rules.md
+    _doc_arch/rules-ondemand/refs-rules.md
     skills/dev-g/SKILL.md
     skills/dev-w/SKILL.md
     skills/doc-work-archive/SKILL.md
     skills/git/SKILL.md
     skills/git/scripts/git_wrapper.sh
-    skills/gstack/SKILL.md
     skills/issue-g/SKILL.md
     skills/issue-w/SKILL.md
 )

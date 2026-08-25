@@ -69,8 +69,8 @@ Issue1, Issue2, Issue3, ...
 ```markdown
 ## Issue[번호]: [제목] (등록: YYYY-MM-DD)
 * 목적: 한 줄 요약
-* plan: `_doc_work/z_done/plan/{주제}_plan.md`   ← 있을 때만
-* task: `_doc_work/z_done/tasks/{주제}_task.md`   ← 있을 때만
+* plan: `_doc_work/plan/{주제}_plan.md`   ← 있을 때만
+* task: `_doc_work/plan/{주제}_task.md`   ← 있을 때만
 * 상세:
     - 상세 내용 1
     - 상세 내용 2
@@ -135,8 +135,10 @@ Issue1, Issue2, Issue3, ...
 
 ### 3. 완료 (Close)
 ```
-구현 → 검증 → ✅ 완료로 이동 → 커밋 해시 기록 → commit
+구현 → 검증 → ✅ 완료 섹션 헤더 바로 아래(최상단)로 이동 → 커밋 해시 기록 → commit
 ```
+
+**삽입 위치 규칙**: `✅ 완료` 섹션은 **완료 시각 역순(newest first)**으로 유지. 새로 종결되는 이슈는 항상 섹션 헤더 바로 아래(최상단)에 삽입. 이슈 번호 오름차순으로 섹션 끝에 append 금지 — 이슈 번호와 완료 순서는 무관함. 사용자가 최근 작업을 빠르게 확인할 수 있도록 함.
 
 ## 공통 커맨드
 
@@ -257,12 +259,16 @@ macOS 앱 프로젝트의 `<project>/.claude/skills/issue.md` 상단:
 
 ---
 
-# Opus 4.7 실행 제약
+# Opus 4.8 실행 제약
 
-공통 제약은 [`~/.claude/rules/opus-4-7-execution-rules.md`](../../rules/opus-4-7-execution-rules.md) 참조 (종료 조건·재시도·루프 상한·리터럴 해석·사용자 승인 지점).
+공통 제약은 [`~/.claude/rules/opus-4-8-execution-rules.md`](../../rules/opus-4-8-execution-rules.md) 참조 (종료 조건·재시도·루프 상한·리터럴 해석·사용자 승인 지점).
 
 이 스킬 특화 제약:
 * 각 워크플로우 단계는 명시된 종료 조건 충족 시에만 다음 단계로 진행
 * 외부 명령 실패 시 기본 재시도 1회, 실패 지속 시 사용자에게 원인 보고
 * 파일·git·외부 시스템 변경은 dry-run 또는 승인 절차 포함
 * 애매 표현("시도해봐", "필요 시", "가능하면") 금지 — 조건문으로 해석
+
+# 레이어링 설계 참조
+
+본 스킬은 SCAR 3-tier 레이어링의 L1(글로벌) 레이어. 도메인 분기(L2: `issue-m`, `issue-w`)와 참조 규약은 [`~/_git/___pm/_doc_arch/scar-layering-design.md`](~/_git/___pm/_doc_arch/scar-layering-design.md) 참조.

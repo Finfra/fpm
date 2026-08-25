@@ -28,6 +28,7 @@
 set -u
 
 . "$HOME/.claude/hooks/hub-scope.sh"
+. "$HOME/.claude/hooks/lib/ask-common.sh"   # Issue424_2: 공용 컨텍스트 5블록 (SID·이름/색·OUT_DIR·서버·브라우저)
 
 input=$(cat)
 
@@ -66,96 +67,13 @@ fi
 # Issue360_4: 위 hook_input_parse 가 이미 뽑아 둔 값을 재사용(python3 재기동 제거).
 session_id="$HOOK_SESSION_ID"
 
-SID="$session_id"
-if [ -z "$SID" ] && [ -n "$cwd" ]; then
-  SID=$(CWD_VAL="$cwd" python3 -c "
-import hashlib, os
-cwd = os.environ.get('CWD_VAL', '')
-print(hashlib.md5(cwd.encode('utf-8')).hexdigest()[:12] if cwd else 'unknown')")
-fi
-SID=$(printf '%s' "$SID" | tr -c 'A-Za-z0-9-' '-' | cut -c1-32)
+ask_ctx_sid "$session_id" "$cwd"
 
-# Issue157: 색 = peacock.color 실색 (.vscode/settings.json walk-up → Projects.md → hsl 해시 fallback)
-# name = peacock 찾은 프로젝트 루트 basename (htm/z_htm 등 하위폴더 보정)
-read -r PROJECT_NAME PROJECT_COLOR <<< "$(CWD_VAL="$cwd" python3 <<'PYEOF'
-import hashlib, os, re
-cwd = os.environ.get('CWD_VAL', '')
-root = ''
-hexcol = ''
-d = cwd
-while d and d != '/':
-    p = os.path.join(d, '.vscode', 'settings.json')
-    if os.path.isfile(p):
-        try:
-            m = re.search(r'"peacock\.color"\s*:\s*"(#[0-9A-Fa-f]{3,8})"', open(p, encoding='utf-8').read())
-            if m:
-                hexcol = m.group(1); root = d; break
-        except Exception:
-            pass
-    d = os.path.dirname(d)
-if not hexcol:
-    bt = chr(96)
-    try:
-        for line in open(os.path.expanduser('~/_git/___pm/Projects.md'), encoding='utf-8'):
-            cells = [c.strip().strip(bt) for c in line.split('|')]
-            paths = [c for c in cells if c.startswith('~/') or c.startswith('/')]
-            hexes = [c for c in cells if re.fullmatch(r'#[0-9A-Fa-f]{3,8}', c)]
-            if paths and hexes:
-                ph = os.path.expanduser(paths[0]).rstrip('/')
-                if (cwd == ph or cwd.startswith(ph + '/')) and len(ph) > len(root or ''):
-                    root = ph; hexcol = hexes[-1]
-    except Exception:
-        pass
-def _hex_to_hsl(hx):
-    hx = hx.lstrip('#')
-    if len(hx) == 3:
-        hx = ''.join(c*2 for c in hx)
-    r = int(hx[0:2],16)/255.0; g = int(hx[2:4],16)/255.0; b = int(hx[4:6],16)/255.0
-    mx = max(r,g,b); mn = min(r,g,b); l = (mx+mn)/2.0; dlt = mx-mn
-    if dlt == 0:
-        return 0.0, 0.0, l
-    s = dlt/(2-mx-mn) if l > 0.5 else dlt/(mx+mn)
-    if mx == r: h = ((g-b)/dlt) % 6
-    elif mx == g: h = (b-r)/dlt + 2
-    else: h = (r-g)/dlt + 4
-    return h*60, s, l
-if hexcol:
-    h, s, l = _hex_to_hsl(hexcol)
-else:
-    hsh = hashlib.md5(cwd.encode('utf-8')).hexdigest()[:8] if cwd else ''
-    if hsh:
-        h = int(hsh[:4], 16) % 360; s = 0.55; l = 0.85
-    else:
-        h = 220; s = 0.30; l = 0.85
-# Issue157: 가독성 보장 — 너무 밝은 peacock(>82%)는 darken, 채도 클램프. hue(프로젝트 정체성) 유지.
-if l > 0.82: l = 0.80
-if s > 0.72: s = 0.72
-if s < 0.40: s = 0.45
-color = 'hsl(%d,%d%%,%d%%)' % (round(h), round(s*100), round(l*100))
-name = os.path.basename(root or cwd) or cwd or 'unknown'
-print(name.replace(' ', '_'), color.replace(' ', ''))
-PYEOF
-)"
+# Issue157: 이름·색 산출 — ask-common.sh (구판 .vscode walk-up. hub-trigger 와의 divergence 는 lib 헤더 참조)
+ask_ctx_project_meta "$cwd"
 
-# OUT_DIR (Issue289: 활성 htm/ → legacy z_htm/ → htm/ 신규. fpm-hub-trigger.sh 와 동일 규칙)
-_htm_dir_of() {  # $1=프로젝트 루트 → htm 출력 폴더 경로(없으면 빈 문자열)
-  [ -d "$1/_doc_work/htm" ] && { printf '%s' "$1/_doc_work/htm"; return; }
-  [ -d "$1/_doc_work/z_htm" ] && { printf '%s' "$1/_doc_work/z_htm"; return; }
-  [ -d "$1/_doc_work" ] && { mkdir -p "$1/_doc_work/htm" && printf '%s' "$1/_doc_work/htm"; return; }
-  printf ''
-}
-
-OUT_DIR=""
-if [ -n "$cwd" ] && [ -d "$cwd/_doc_work" ]; then
-  OUT_DIR=$(_htm_dir_of "$cwd")
-elif [ -n "$cwd" ]; then
-  sub_found=$(find "$cwd" -mindepth 2 -maxdepth 2 -type d -name "_doc_work" 2>/dev/null | head -1)
-  [ -n "$sub_found" ] && OUT_DIR=$(_htm_dir_of "$(dirname "$sub_found")")
-fi
-if [ -z "$OUT_DIR" ]; then
-  OUT_DIR="/tmp/___pm"
-  mkdir -p "$OUT_DIR"
-fi
+# OUT_DIR (Issue289) — ask-common.sh (활성 htm/ → z_htm/ → 신규 → /tmp)
+ask_ctx_out_dir "$cwd"
 
 # 질문 JSON 추출
 questions_json=$(printf '%s' "$input" | python3 -c "
@@ -172,42 +90,25 @@ if [ "$questions_json" = "[]" ] || [ -z "$questions_json" ]; then
   exit 0
 fi
 
-# Issue45: ___pm htm-server 가용성 판정 (가정: 항상 가용)
-SERVER_PORT="${HTM_SERVER_PORT:-9876}"
-HEALTH_URL="http://127.0.0.1:${SERVER_PORT}/healthz"
-SERVER_TOKEN=""
-CWD_HASH=""
-INBOX_DIR=""
-
-health=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 "$HEALTH_URL" 2>/dev/null)
-if [ "$health" = "200" ] && [ -n "$cwd" ]; then
-  cwd_enc=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$cwd")
-  reg=$(curl -s --max-time 5 -X POST "http://127.0.0.1:${SERVER_PORT}/register?cwd=${cwd_enc}" 2>/dev/null)
-  SERVER_TOKEN=$(printf '%s' "$reg" | python3 -c "
-import json,sys
-try: print(json.load(sys.stdin).get('token',''))
-except: pass" 2>/dev/null)
-  CWD_HASH=$(printf '%s' "$reg" | python3 -c "
-import json,sys
-try: print(json.load(sys.stdin).get('cwd_hash',''))
-except: pass" 2>/dev/null)
-  if [ -n "$SERVER_TOKEN" ] && [ -n "$CWD_HASH" ]; then
-    INBOX_DIR="/tmp/___pm/claude-htm-inbox/${CWD_HASH}"
-  fi
-fi
+# Issue45: ___pm htm-server 가용성 판정 — ask-common.sh (실패 시 아래 fail-loud)
+ask_ctx_server "$cwd"
 
 # Issue45: 서버 실패 시 fail-loud — paste-back fallback 없음
 if [ -z "$SERVER_TOKEN" ] || [ -z "$CWD_HASH" ] || [ -z "$INBOX_DIR" ]; then
-  python3 <<PYEOF
-import json
+  # Issue424_2: 구분자 인용 + env 주입 — 미인용 heredoc 은 백틱이 명령 치환으로 실행되는
+  #   취약 패턴이다(marker-detect 에서 실발생 — 이스케이프 누락 시 안내 명령어가 증발).
+  #   여기는 이스케이프로 버티고 있었지만 같은 병의 예방 차원에서 패턴 자체를 없앤다.
+  HEALTH="$health" python3 <<'PYEOF'
+import json, os
+health = os.environ.get('HEALTH', '')
 reason = (
     "## hub Mode 활성이나 ___pm htm-server 미가용\n\n"
-    f"healthz={'200' if '$health' == '200' else '$health'} / register 실패. "
+    f"healthz={'200' if health == '200' else health} / register 실패. "
     "Mode A paste-back fallback 은 Issue45(2026-05-19) 에서 제거됨. "
     "form 자동 회수 단일 경로만 지원.\n\n"
     "### 조치 (사용자 선택)\n"
-    "1. **서버 시작 후 재시도**: \`/dashboard-server start\` 실행 → 본 질문 재호출\n"
-    "2. **hub 모드 해제**: \`..hub stop\` 입력 → AskUserQuestion 채팅 UI 로 정상 복귀\n\n"
+    "1. **서버 시작 후 재시도**: `/dashboard-server start` 실행 → 본 질문 재호출\n"
+    "2. **hub 모드 해제**: `..hub stop` 입력 → AskUserQuestion 채팅 UI 로 정상 복귀\n\n"
     "### 채팅 응답 의무\n"
     "Claude 는 본 deny 를 받으면 사용자에게 위 두 옵션을 명확히 제시하고 입력 대기. "
     "임의로 작업 계속 시도 금지."
@@ -221,23 +122,8 @@ PYEOF
   exit 0
 fi
 
-# Issue130: browser_focus + default_browser 토글 (Issue128 확장)
-HUB_SETTING_FILE="$HOME/_git/___pm/data/hub_setting.yml"
-# default_browser: firefox(기본)/chrome/edge/safari, 미지원 값은 .app 절대 경로로 해석
-_db=$(grep -E '^[[:space:]]*default_browser:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//; s/^"//; s/"$//')
-case "$_db" in
-  ""|firefox|Firefox) _app="Firefox" ;;
-  chrome|Chrome)      _app="Google Chrome" ;;
-  edge|Edge)          _app="Microsoft Edge" ;;
-  safari|Safari)      _app="Safari" ;;
-  *)                  _app="$_db" ;;
-esac
-# browser_focus: false(기본)=백그라운드 open(-g, 포커스 미탈취), true=foreground
-if grep -qE '^[[:space:]]*browser_focus:[[:space:]]*true' "$HUB_SETTING_FILE" 2>/dev/null; then
-  HTM_OPEN_CMD="open -a \"$_app\""; _focus="true"
-else
-  HTM_OPEN_CMD="bash \"$HOME/_git/___pm/plugins/fpm-core/hooks/fpm-browser-open.sh\" -a \"$_app\" -f false -r false"; _focus="false"  # Issue173: helper 경유(focus 복원). Chrome open -g self-activate 방지. -r false=폼 새 탭(Issue153)
-fi
+# Issue130/173: 브라우저 open 커맨드 — ask-common.sh
+ask_ctx_browser
 
 # Issue172: b모드 폼도 hub 서버 경유(:9876)로 open — file:// 직접 open 폐기.
 #   원인(이미지1): file:// 은 register-doc 미경유 → 원격/타기기 단절 + /tmp 경로.

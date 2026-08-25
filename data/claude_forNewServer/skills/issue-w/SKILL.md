@@ -26,6 +26,13 @@ date: 2026-03-29
 
 ---
 
+# HWM 규칙 (재발 방지 redundancy)
+
+> **HWM은 부모 이슈 번호만 증가** — 서브 이슈(`Issue{N}_{M}`) 등록 시 HWM 불변. 위반 시 메인 이슈 번호 gap 누적.
+> 상세: `~/.claude/skills/issue-g/SKILL.md` "서브 이슈 형식" / 등록 절차: `~/.claude/commands/issue-reg-g.md` 절차 2-0.
+
+---
+
 # 웹 프로젝트 이슈 형식 확장
 
 ## 배포/인프라 이슈
@@ -81,9 +88,9 @@ date: 2026-03-29
 
 ---
 
-# Opus 4.7 실행 제약
+# Opus 4.8 실행 제약
 
-공통 제약은 [`~/.claude/rules/opus-4-7-execution-rules.md`](../../rules/opus-4-7-execution-rules.md) 참조 (종료 조건·재시도·루프 상한·리터럴 해석·사용자 승인 지점).
+공통 제약은 [`~/.claude/rules/opus-4-8-execution-rules.md`](../../rules/opus-4-8-execution-rules.md) 참조 (종료 조건·재시도·루프 상한·리터럴 해석·사용자 승인 지점).
 
 이 스킬 특화 제약:
 * 각 워크플로우 단계는 명시된 종료 조건 충족 시에만 다음 단계로 진행

@@ -3087,6 +3087,42 @@ def _dash_session_candidate_paths(cwd: str, entry: dict) -> set:
         return {dp.strip()}
 
 
+# Issue394: 서버가 디스크로 내보내는 텍스트에서 hub 토큰을 지운다.
+#
+# 배경 — `const TOKEN`(SESSION_SHELL_HTML) 은 `Cache-Control: no-store` 로 **HTTP 응답에만**
+# 실리고 서버가 파일로 쓰지 않는다. 그런데도 `_doc_work/htm/` 에 토큰이 박힌 파일이 쌓였다.
+# 실측한 유입 경로 3종 중 둘(파일 기반 `..ask` 폼 · queue-runner shim)은 SPA 이관·코드 제거로
+# 이미 소멸했고, **살아 있는 마지막 경로가 턴 아카이브**다 — Claude 응답 본문에 라이브 뷰
+# URL(`/s/{h}/{sid}?token=…`)이 들어가면 `_write_turn_archive()` 가 그대로 파일로 굳힌다.
+#
+# 토큰을 안 만들 수는 없으니 **파일로 나가는 길목에서 지운다**. 마스킹은 비가역이고
+# 아카이브는 읽기 전용 기록물이라 기능 손실이 없다(링크를 다시 쓰려면 어차피 재등록한다).
+_TOKEN_CTX_RE = re.compile(r"(?i)\b(token)(\s*[=:]\s*[\"']?)([0-9a-f]{32})")
+TOKEN_REDACTED = "<redacted:hub-token>"
+
+
+def redact_tokens(text: str) -> str:
+    """텍스트에서 hub 토큰을 마스킹한다. 2중 그물 — 문맥 + 실제 값 대조.
+
+    * 문맥 규칙 `token=<32hex>` — 아직 발급된 적 없는 값·과거 세대까지 걸러낸다
+    * 값 대조 — `projects` 에 실재하는 토큰은 문맥이 없어도(맨 hex 로 적혀도) 지운다
+
+    문맥 규칙만 쓰면 값만 덩그러니 적힌 경우를 놓치고, 값 대조만 쓰면 이미 만료된
+    과거 토큰이 그대로 파일에 남는다. 둘 다 필요하다."""
+    if not text:
+        return text
+    out = _TOKEN_CTX_RE.sub(lambda m: m.group(1) + m.group(2) + TOKEN_REDACTED, text)
+    try:
+        with projects_lock:
+            live = {p.get("token") for p in projects.values() if isinstance(p, dict)}
+    except Exception:
+        live = set()
+    for tok in live:
+        if isinstance(tok, str) and len(tok) == 32 and tok in out:
+            out = out.replace(tok, TOKEN_REDACTED)
+    return out
+
+
 def persist_tokens() -> None:
     """projects dict를 tokens.json에 flush."""
     try:
@@ -3162,9 +3198,24 @@ def load_sessions() -> None:
                 # Issue99: pid 없는 live 세션은 레거시(구 계약)·식별 불가 → 복원 제외.
                 #   재시작 후 pid 죽은 live 세션도 _pid_alive 로 어차피 terminal 이지만,
                 #   no-pid 는 복원 단계에서 차단해 좀비 카드 잔존을 원천 제거.
+                # Issue397: 단 gc_meta.shell_pid(등록 pid 의 부모)가 살아있는 claude
+                #   세션 프로세스면 오염 pid 소실분(prj3#428)이다 — pid 를 승격해
+                #   복원한다. 식별 가능해지므로 좀비 카드 위험 없음(_pid_alive 게이트 유효).
                 if val.get("content_type") == "live" and val.get("live_pid") is None:
-                    filtered += 1
-                    continue
+                    gm = val.get("gc_meta") if isinstance(val.get("gc_meta"), dict) else {}
+                    sp = gm.get("shell_pid")
+                    try:
+                        sp = int(sp) if sp is not None else None
+                    except (TypeError, ValueError):
+                        sp = None
+                    if sp and _pid_alive(sp) and _claude_proc_like(sp):
+                        val["live_pid"] = sp
+                        gm["for_pid"] = sp
+                        log(f"load_sessions: live_pid promoted via gc_meta.shell_pid — "
+                            f"sid={sid} pid={sp} (Issue397)")
+                    else:
+                        filtered += 1
+                        continue
                 sessions[(h, sid)] = val
                 restored += 1
         if filtered:
@@ -3183,6 +3234,72 @@ def _pid_alive(pid: int) -> bool:
         return False
     except Exception:
         return False
+
+
+def _claude_proc_like(pid) -> bool:
+    """Issue397: pid 가 claude 세션 프로세스인지 ps 로 판정 — live_pid 승격 안전 게이트.
+    훅 lib/claude-pid.sh 의 _fpm_is_claude_proc 와 동일 기준: comm basename 이 claude
+    계열이거나 args 가 claude 배포본(cli.js·native-binary)일 때만 True.
+    VSCode extension host(Code Helper) 등 세션보다 오래 사는 호스트로의 오승격을 막는다
+    (오승격되면 끝난 세션이 영구 live 로 남는다 — Issue374 와 같은 계열 위험)."""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    try:
+        comm = subprocess.run(["ps", "-o", "comm=", "-p", str(pid)],
+                              capture_output=True, text=True, timeout=2).stdout.strip()
+    except Exception:
+        return False
+    if comm.rsplit("/", 1)[-1] in ("claude", "claude-code"):
+        return True
+    try:
+        args = subprocess.run(["ps", "-o", "args=", "-p", str(pid)],
+                              capture_output=True, text=True, timeout=2).stdout
+    except Exception:
+        return False
+    return (("claude" in args and "cli.js" in args) or "claude-code" in args
+            or "native-binary/claude" in args)
+
+
+def _try_promote_live_pid(h, sid, entry):
+    """Issue397: 죽은·소실 live_pid 를 gc_meta.shell_pid(등록 pid 의 부모)로 승격 시도.
+
+    배경: 훅이 단명 wrapper pid 를 등록하면(prj3#428) 등록 직후 pid 가 죽어
+    live_pid 가 pop 되고, 세션이 LIVE_TTL(300s) 경로로 강등돼 idle 5분 후 카드에서
+    사라진다(prj9a 실측 — 생존 4세션 중 2개만 표시). _capture_gc_meta 가 등록 pid 의
+    부모를 shell_pid 로 캡처해 두므로, 그 부모가 살아있는 claude 세션 프로세스면
+    pid 권위를 복구할 수 있다(실측: 등록 pid 46775 사망 → shell_pid 45312 = 실세션).
+
+    성공 시 sessions·entry 양쪽 live_pid 갱신 후 새 pid 반환, 실패 시 None.
+    시도는 세션당 1회(gc_meta.promote_tried) — terminal 후보는 매 폴링(5s) 재판정되므로
+    가드 없으면 죽은 세션마다 ps 가 TERMINAL_TTL(1h) 동안 반복된다."""
+    gm = entry.get("gc_meta")
+    if not isinstance(gm, dict) or gm.get("promote_tried"):
+        return None
+    with sessions_lock:
+        cur = sessions.get((h, sid))
+        if cur is not None and isinstance(cur.get("gc_meta"), dict):
+            cur["gc_meta"]["promote_tried"] = True
+    gm["promote_tried"] = True
+    sp = gm.get("shell_pid")
+    try:
+        sp = int(sp) if sp is not None else None
+    except (TypeError, ValueError):
+        return None
+    if not sp or not _pid_alive(sp) or not _claude_proc_like(sp):
+        return None
+    with sessions_lock:
+        cur = sessions.get((h, sid))
+        if cur is not None:
+            cur["live_pid"] = sp
+            if isinstance(cur.get("gc_meta"), dict):
+                cur["gc_meta"]["for_pid"] = sp
+    entry["live_pid"] = sp
+    gm["for_pid"] = sp
+    log(f"_collect_live_sessions: live_pid promoted via gc_meta.shell_pid — "
+        f"sid={sid} pid={sp} (Issue397)")
+    return sp
 
 
 # --- Issue280: 세션 GC (세션·터미널 pane 강제 종료) ---------------------------
@@ -3679,6 +3796,35 @@ def path_within_serve_roots(abs_path: str, cwd_real: str) -> bool:
     return os.path.dirname(abs_path) == tmp_real
 
 
+# Issue393: /data·/view 가 cwd 하위 자격증명을 내주던 구멍.
+#   확장자 allowlist(.json/.yaml/.yml)만으로는 부족했다 — cwd 가 `~/.claude` 인 등록에서
+#   `~/.claude/.credentials.json`(Claude OAuth)이 "cwd 하위 + .json" 이라는 이유로 통과해
+#   정상 토큰에 200 을 반환했다(2026-08-16 실측). 파일권한 0600 이 HTTP 로 우회된 것이다.
+#   토큰은 cwd 단위 장수명 고정값(Issue392 판정)이라, 토큰 1건 유출이 곧 상위 자격증명
+#   열람으로 사다리를 놓는다.
+_SENSITIVE_BASENAMES = frozenset({"credentials.json", "id_rsa", "id_ed25519"})
+_SENSITIVE_SUFFIXES = (".key", ".pem", ".p12", ".pfx")
+
+
+def path_is_sensitive(abs_path: str) -> bool:
+    """렌더·데이터 serve 가 읽으면 안 되는 파일인가.
+
+    **dotfile 을 통째로 막는다** — 렌더가 dotfile 을 읽을 정당한 사유가 없고,
+    자격증명 파일명을 일일이 열거하는 블랙리스트는 새 파일이 생길 때마다 뒤처진다.
+    dotfile 차단이 1차이고 아래 이름·확장자 목록은 보조다.
+
+    ⚠️ 판정 기준은 **basename** 이다. `<name>.dash.json`(dashboard 인라인 렌더)처럼
+    이름 *안에* 점이 있는 것은 dotfile 이 아니므로 그대로 통과한다 — 실제 산출물이
+    전부 이 형태라 기존 렌더는 영향받지 않는다.
+    """
+    base = os.path.basename(abs_path)
+    if base.startswith("."):
+        return True
+    if base in _SENSITIVE_BASENAMES:
+        return True
+    return base.endswith(_SENSITIVE_SUFFIXES)
+
+
 def sse_broadcast(cwd_h: str, event: str, data: dict, sid=None) -> int:
     """SSE push.
     Issue17 Phase 1: sid 인자 추가.
@@ -3975,6 +4121,10 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/clear-done":
             self._handle_clear_done(parsed)
             return
+        # Issue394: 프로젝트 토큰 회전 (유출 의심 시 즉시 무효화)
+        if parsed.path == "/token-rotate":
+            self._handle_token_rotate(parsed)
+            return
         if parsed.path == "/kill-empty-live":
             self._handle_kill_empty_live(parsed)
             return
@@ -4023,6 +4173,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/open-projects-md":
             self._handle_open_projects_md(parsed)
+            return
+        # Issue398: projects-map note 박스 인라인 편집 저장
+        if parsed.path == "/projects-map/note":
+            self._handle_projects_map_note(parsed)
             return
         if parsed.path == "/open-settings-yml":
             self._handle_open_settings_yml(parsed)
@@ -4105,6 +4259,51 @@ class Handler(BaseHTTPRequestHandler):
             "color": meta["color"],
             "port": PORT,
             "new": new,
+        })
+
+    def _handle_token_rotate(self, parsed):
+        """Issue394: 프로젝트 토큰 회전. `?cwd=<abs>` 1건, `?all=1` 전량.
+
+        토큰은 `cwd` 단위 장수명 고정값이라(Issue392 판정) **무효화 수단이 없었다** —
+        유일한 방법이 `/hub reset`(전량 wipe + 재기동)이었고, 그건 SSE·dashboard 를
+        전부 끊는다. 회전 하나 하자고 서버를 내리게 만들면 아무도 회전하지 않는다.
+
+        여기서는 메모리 엔트리만 지우고 flush 한다 — 다음 `POST /register` 가 새 uuid 를
+        민팅하므로 **재기동이 필요 없다**. 비용은 그 프로젝트의 열린 탭이 401 이 되는 것뿐이고,
+        다시 렌더하면 복구된다.
+
+        127.0.0.1 trust — 구 토큰을 인증에 요구하지 않는다. 요구하면 *"토큰을 잃어버렸다·
+        유출됐다"* 는 정작 필요한 상황에서 못 쓴다(자물쇠를 여는 데 잃어버린 열쇠를 요구하는 꼴).
+        `/clear-done`·`/feed-clear` 와 같은 등급이다."""
+        client_ip = self.client_address[0] if self.client_address else ""
+        if not _ip_allowed(client_ip):
+            self._send_json(403, {"error": "localhost only"})
+            return
+        qs = parse_qs(parsed.query)
+        rotate_all = (qs.get("all", ["0"])[0] or "0").lower() in ("1", "true", "yes")
+        cwd = get_cwd_param(parsed)
+        if not rotate_all and (not cwd or not os.path.isabs(cwd)):
+            self._send_json(400, {"error": "missing or non-absolute cwd (or pass all=1)"})
+            return
+        with projects_lock:
+            if rotate_all:
+                targets = list(projects.keys())
+            else:
+                h = cwd_hash(cwd)
+                p = projects.get(h)
+                targets = [h] if p and p.get("cwd") == cwd else []
+            rotated = [{"cwd_hash": t, "cwd": projects[t].get("cwd"),
+                        "name": projects[t].get("name")} for t in targets]
+            for t in targets:
+                del projects[t]
+        persist_tokens()
+        log(f"POST /token-rotate — invalidated {len(rotated)} project token(s) "
+            f"(all={rotate_all}); next /register mints fresh")
+        self._send_json(200, {
+            "status": "ok",
+            "rotated_count": len(rotated),
+            "rotated": rotated,
+            "note": "다음 /register 가 새 토큰을 발급한다. 열려 있던 탭은 401 — 다시 렌더하면 복구.",
         })
 
     def _handle_answer(self, parsed):
@@ -5135,7 +5334,12 @@ class Handler(BaseHTTPRequestHandler):
                         #   전부 terminal 로 분류돼 📡 활성 세션이 통째로 비었다.
                         #   heartbeat 가 신선하면 pid 를 신뢰하지 않고 TTL 로 판정하고,
                         #   죽은 live_pid 는 제거해 이후 dedup 오염을 막는다.
-                        if age <= LIVE_TTL:
+                        # Issue397: pop 전에 gc_meta.shell_pid(등록 pid 의 부모) 승격을
+                        #   1회 시도 — 부모가 살아있는 claude 세션이면 pid 권위를 복구해
+                        #   idle 5분 후 소실(LIVE_TTL 강등)을 원천 차단한다.
+                        if _try_promote_live_pid(h, sid, entry) is not None:
+                            force_live = True
+                        elif age <= LIVE_TTL:
                             with sessions_lock:
                                 cur = sessions.get((h, sid))
                                 if cur is not None and cur.get("live_pid") == lp:
@@ -5148,10 +5352,14 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         force_live = True
                 else:
-                    if age > LIVE_TTL:
+                    # Issue397: live_pid 소실분(과거 pop 잔재)도 승격 1회 시도 후 TTL 판정.
+                    if _try_promote_live_pid(h, sid, entry) is not None:
+                        force_live = True
+                    elif age > LIVE_TTL:
                         terminal_keys.append((h, sid))
                         continue
-                    force_live = True
+                    else:
+                        force_live = True
                 # 카드 제목 (Issue127 후속): VSCode 탭 제목(ai-title) 최우선 — 세션 JSONL 의
                 #   aiTitle 이 VSCode 가 표시하는 제목의 SSOT. hub 카드를 VSCode 와 일치시킴.
                 #   ai-title 미생성(세션 극초기)이면 live_label(프롬프트 요약), 그다음 win fallback.
@@ -6206,7 +6414,9 @@ __WARN__
         `doc-work-archive` 스킬의 age·keep-N 정리 대상에 자동으로 포함되기 위해서다.
         별도 수명주기를 만들면 정리되지 않는 파일 더미가 생긴다.
         """
-        texts = [b.get("text", "") for b in blocks if b.get("kind") == "text"]
+        # Issue394: 파일로 굳기 **전에** 토큰을 지운다. 라이브 뷰 URL(`?token=…`)이
+        # 응답 본문에 섞이면 아카이브가 곧 자격증명 파일이 된다 — 실측 2건 발생.
+        texts = [redact_tokens(b.get("text", "")) for b in blocks if b.get("kind") == "text"]
         if not texts:
             return ""
         out_dir = os.path.join(cwd, "_doc_work", "htm")
@@ -6220,7 +6430,8 @@ __WARN__
         sid_frag = re.sub(r"[^A-Za-z0-9]", "", sid)[:8] or "sess"
         name = f"hub_htm_{ts}_a_turn-{sid_frag}-{last_seq}.md"
         path = os.path.join(out_dir, name)
-        title = (question or "세션 턴 기록").strip().replace("\n", " ")[:80]
+        # title 도 사용자 입력 유래라 같은 그물을 통과시킨다 (frontmatter 로도 파일에 남는다)
+        title = redact_tokens((question or "세션 턴 기록").strip().replace("\n", " "))[:80]
         head = (f"---\ntitle: {title}\nsid: {sid}\n---\n\n"
                 f"> 이 문서는 hub 서버가 턴 종료 시 자동 생성한 아카이브입니다"
                 f" (Issue353_3 렌더 게이트).\n\n")
@@ -7408,6 +7619,11 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             log(f"GET /data — path outside cwd rejected: {abs_path}")
             self._send_json(403, {"error": "path outside cwd"})
             return
+        # Issue393: confinement 를 통과해도 dotfile·자격증명은 거부 (cwd 하위여도 마찬가지)
+        if path_is_sensitive(abs_path):
+            log(f"GET /data — sensitive path rejected: {os.path.basename(abs_path)}")
+            self._send_json(403, {"error": "path not allowed"})
+            return
         if not abs_path.endswith((".json", ".yaml", ".yml")):
             self._send_json(403, {"error": "extension not allowed"})
             return
@@ -7983,6 +8199,13 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             src_mtime = os.path.getmtime(src)
         except OSError:
             return  # 소스 없음 → 재빌드 불가
+        # Issue398: note 인라인 편집은 `_note.md` 만 갱신한다 — 소스 2개 중 최신을 기준으로
+        # 삼아야 새로고침이 방금 저장한 메모를 되돌려 보여준다. 부재는 무시(선택 파일).
+        try:
+            src_mtime = max(src_mtime,
+                            os.path.getmtime(os.path.join(REPO_ROOT, "_note.md")))
+        except OSError:
+            pass
         try:
             out_mtime = os.path.getmtime(out_path)
         except OSError:
@@ -8001,6 +8224,40 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             log(f"GET /projects-map — rebuilt (Projects.md stale): {out_path}")
         except Exception as e:
             log(f"GET /projects-map — rebuild skipped: {e}")
+
+    def _handle_projects_map_note(self, parsed):
+        """Issue398: note 박스 인라인 편집 저장 — `{REPO_ROOT}/_note.md` 고정 경로 기록.
+
+        `/projects-map` GET 과 같은 등급의 게이트(do_POST 공통 `_ip_allowed` + host gate)만
+        적용한다 — 대상 경로가 REPO_ROOT 고정이라 traversal 입력면이 없고, 평문 md 로만
+        기록한다. 쓰기는 tmp → `os.replace` 원자 교체 — 초단위 자동 저장과 새로고침
+        재빌드(`_rebuild_projects_map_if_stale`)가 겹쳐도 절반 파일을 읽지 않게.
+        """
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        if length <= 0 or length > 64 * 1024:
+            self._send_json(400, {"error": "invalid content length (1..65536)"})
+            return
+        try:
+            body = json.loads(self.rfile.read(length).decode("utf-8"))
+        except Exception as e:
+            self._send_json(400, {"error": f"invalid JSON: {e}"})
+            return
+        md = body.get("md")
+        if not isinstance(md, str):
+            self._send_json(400, {"error": "md (string) is required"})
+            return
+        md = md.replace("\r\n", "\n").strip()
+        path = os.path.join(REPO_ROOT, "_note.md")
+        tmp = path + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(md + ("\n" if md else ""))
+            os.replace(tmp, path)
+        except OSError as e:
+            self._send_json(500, {"error": f"write failed: {e}"})
+            return
+        log(f"POST /projects-map/note — saved {len(md.encode('utf-8'))}B")
+        self._send_json(200, {"status": "saved"})
 
     def _handle_view(self, parsed):
         """Issue16_2: dashboard·form HTML을 동일 origin(http://127.0.0.1)으로 serve.
@@ -8021,6 +8278,12 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         if not path_within_serve_roots(abs_path, cwd_real):
             log(f"GET /view — path outside cwd rejected: {abs_path}")
             self._send_json(403, {"error": "path outside cwd"})
+            return
+        # Issue393: /data 와 동일 게이트. dash 인라인 렌더보다 **앞**에 둔다 —
+        #   뒤에 두면 `.dash.json` 분기가 먼저 먹어 dotfile 이 렌더 경로로 빠져나간다.
+        if path_is_sensitive(abs_path):
+            log(f"GET /view — sensitive path rejected: {os.path.basename(abs_path)}")
+            self._send_json(403, {"error": "path not allowed"})
             return
         # Issue35: .dash.{json,yaml,yml} 동적 렌더 (인라인 dashboard HTML wrapper)
         # Issue138: cwd/token 전달 — 컨트롤바(stop/kill/refresh) /control 호출 wiring
@@ -10092,6 +10355,23 @@ main { padding: 1.5rem; max-width: 1600px; margin: 0 auto; display: flex; gap: 1
 #live-tip .tip-sid { display: block; margin-top: 2px; opacity: .75; font-size: 10px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 #live-tip[hidden] { display: none; }
+/* Issue383: 📋 클릭 메뉴 — "복사할지 내용을 볼지" 를 명시적 2지선다로.
+   종전 Issue300 은 같은 선택을 "녹색 상태에서 재클릭" 이라는 숨은 모드로 제공했는데,
+   툴팁이 복사만 안내해 발견이 불가능했고 3초 타이머로 원복되면 그 모드도 사라졌다. */
+#sid-menu { position: fixed; z-index: 3100; min-width: 168px; padding: 4px;
+  background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+  border-radius: 7px; box-shadow: 0 4px 16px rgba(0,0,0,.28); font-size: 12px; }
+#sid-menu[hidden] { display: none; }
+#sid-menu button { display: flex; align-items: center; gap: 0.45rem; width: 100%;
+  padding: 0.34rem 0.5rem; background: none; border: 0; border-radius: 5px;
+  color: inherit; font: inherit; text-align: left; cursor: pointer; }
+#sid-menu button:hover:not(:disabled) { background: rgba(127,127,127,.16); }
+#sid-menu button:disabled { opacity: .38; cursor: default; }
+/* 메뉴 머리 — 어느 세션에 대한 메뉴인지. 잘못된 행에 대고 누르는 사고 방지 */
+#sid-menu .sid-menu-head { padding: 0.2rem 0.5rem 0.3rem; margin-bottom: 2px;
+  border-bottom: 1px solid var(--border); opacity: .7; font-size: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .live-item[data-origin="terminal"] { cursor: pointer; }
 .live-item[data-origin="terminal"]:hover { background: rgba(127,127,127,.12); }
 .live-acts { display: flex; align-items: center; gap: 0.3rem; flex-shrink: 0; }
@@ -10315,6 +10595,7 @@ section.sec-collapsed .htm-bar-right { display: none; }
 </div>
 <div id="set-tip" hidden></div>
 <div id="live-tip" hidden></div>
+<div id="sid-menu" hidden></div>
 <script>
 // Issue169 Stage8: 클라이언트 i18n — 서버가 주입한 사전(window.__i18n)·언어(window.__lang).
 //   t(key, vars): 사전 조회 후 {var} 보간. 누락 키 → key 자체(가시화). vars 값은 그대로 삽입(호출부에서 escape).
@@ -10433,9 +10714,11 @@ function renderLiveSessions(list, limit, showCopy) {
     // Issue276: 세션 ID 복사 버튼 (X 왼쪽). /cc-session id 없이 hub 에서 바로 sid 확보.
     //   sid 없는 행(가상/집계)은 미표시. 클릭 위임은 closest('button,a') 로 제외되어 행-클릭 미발동.
     const copyBtn = (s.sid && showCopy)
-      // Issue369: 네이티브 title 은 커서 바로 아래에 떠 마우스 포인터에 가린다 → data-tip(#live-tip, 버튼 위쪽 고정)로 전환.
-      //   툴팁 2행 = "세션 ID 복사" + 실제 sid. 복사 전에 어떤 세션인지 눈으로 확인 가능.
-      ? `<button class="copy-sid" onclick="copySid('${escapeHtml(s.sid)}',this)" data-tip="${escapeHtml(t('liveSessions.copySidTitle'))}" data-tip-sid="${escapeHtml(s.sid)}" aria-label="copy session id">📋</button>`
+      // Issue383: 클릭 → 즉시 복사가 아니라 2지선다 메뉴(복사 / 내용 보기).
+      // Issue384: hover 툴팁을 걷어낸다. 툴팁이 "복사 / 내용 보기" 라는 선택지를 미리 보여 주는 바람에
+      //   이미 열린 메뉴로 읽혔는데, 정작 pointer-events:none 이라 고르려고 마우스를 가져가면
+      //   버튼을 벗어나 사라졌다. 같은 자리에 진짜 메뉴를 띄우는 쪽이 맞다(sid 는 메뉴 머리에 있다).
+      ? `<button class="copy-sid" onclick="sidMenuOpen(this)" aria-haspopup="menu" aria-label="${escapeHtml(t('liveSessions.sidMenuTitle'))}">📋</button>`
       : '';
     // Issue66 Phase 7: 큐 dashboard 에 waiting_approval 항목이 있으면 승인 버튼
     const approveBtn = (s.supervisor_pid && s.waiting_approval_item)
@@ -10507,7 +10790,10 @@ function renderLiveSessions(list, limit, showCopy) {
         <span class="name">${escapeHtml(g.emoji || '📁')} ${escapeHtml(g.name)}</span>
         <span class="head-right">${mapLink}<span class="live-badge" data-tip="미완료 이슈 ${g.openIssueCount}개 · 세션 ${g.items.length}개">${g.openIssueCount}</span></span>
       </div>
-      <div class="card-body"><ul class="live-list">${rows}</ul></div>
+      <!-- Issue384: title="" 로 카드의 네이티브 title 상속을 끊는다. 카드에 붙은 title(위 .card.live)은
+           세션 행 위에서도 커서 옆에 떠, 행·버튼의 커스텀 툴팁·메뉴와 이중으로 겹쳤다(Issue369 가
+           자식에서 없앤 겹침이 조상 레벨로 남아 있었다). 행별 안내는 .live-item[data-tip] 이 더 정확하다. -->
+      <div class="card-body"><ul class="live-list" title="">${rows}</ul></div>
     </div>`;
   });
   lg.innerHTML = cards.join('');
@@ -10520,21 +10806,85 @@ function renderLiveSessions(list, limit, showCopy) {
 //   버튼을 늘리지 않고 세션 이동을 얹기 위한 2단 클릭. 녹색 유지 시간은 두 번째 클릭 여유를
 //   위해 1.2s → 3s. 문서: noteForHuman.md "숨은 기능".
 //   ⚠️ origin=terminal 세션은 VSCode 로 포커스 불가(Issue177) → JSONL transcript 뷰어로 폴백.
-function copySid(sid, btn) {
-  // Issue300: 이미 녹색(copied) → 이번 클릭은 복사가 아니라 세션 이동
-  if (btn && btn.classList.contains('copied')) {
-    const row = btn.closest('.live-item[data-sid]');
-    if (btn._sidTimer) { clearTimeout(btn._sidTimer); btn._sidTimer = null; }
-    btn.textContent = '📋';
-    btn.classList.remove('copied');
-    if (row && row.dataset.origin === 'terminal') {
-      const topicEl = row.querySelector('.live-topic');
-      openSessionViewer(row.dataset.url || '', topicEl ? topicEl.textContent : '세션');
-    } else if (row) {
-      openSession(row.dataset.cwd, row.dataset.sid);
-    }
-    return;
+// Issue383: 📋 클릭 2지선다 메뉴. Issue300 의 "녹색 재클릭 = 세션 이동" 숨은 모드를 대체한다
+//   (기능 제거가 아니라 같은 선택을 발견 가능한 형태로 승격 — 그쪽은 툴팁이 복사만 안내해
+//    아무도 찾을 수 없었고, 3초 타이머로 원복되면 선택지 자체가 사라졌다).
+const sidMenu = document.getElementById('sid-menu');
+function sidMenuClose() { sidMenu.hidden = true; sidMenu.innerHTML = ''; sidMenu.dataset.sid = ''; }
+function sidMenuOpen(btn) {
+  const row = btn.closest('.live-item[data-sid]');
+  if (!row) return;
+  const sid = row.dataset.sid || '';
+  // Issue384: 같은 세션 메뉴가 이미 열려 있으면 아무것도 하지 않는다(멱등).
+  //   ① hover 로 열리게 된 이상 "재호출 = 토글" 은 성립하지 않는다 — 5초 reload 가 행을 다시 그리면
+  //      커서 아래에서 mouseover 가 재발화하는데, 그때 토글로 닫으면 마우스를 올려둔 채 메뉴가 저 혼자 깜빡인다.
+  //   ② 다른 세션 버튼으로 옮겨 간 경우는 아래로 흘러 그 세션 메뉴로 교체된다.
+  if (!sidMenu.hidden && sidMenu.dataset.sid === sid) return;
+  liveTipHide();                                      // 툴팁과 겹쳐 뜨지 않게
+  const url = row.dataset.url || '';
+  const topicEl = row.querySelector('.live-topic');
+  const topic = topicEl ? topicEl.textContent : '세션';
+  // url 이 빈 세션(transcript 미해석)은 항목을 비활성 — 눌러도 아무 일 없는 항목을
+  // 살아 있는 것처럼 두지 않는다. 이유는 title 로 노출한다.
+  const viewDisabled = url ? '' : ' disabled title="' + escapeHtml(t('liveSessions.sidMenuViewNoUrl')) + '"';
+  sidMenu.innerHTML =
+      `<div class="sid-menu-head">${escapeHtml(sid)}</div>`
+    + `<button type="button" data-act="copy">📋 <span>${escapeHtml(t('liveSessions.sidMenuCopy'))}</span></button>`
+    + `<button type="button" data-act="view"${viewDisabled}>👁 <span>${escapeHtml(t('liveSessions.sidMenuView'))}</span></button>`;
+  sidMenu.hidden = false;
+  sidMenu.dataset.sid = sid;   // Issue384: 어느 세션 메뉴인지 — 리렌더 후 멱등 판정의 기준
+  // 위치: 버튼 아래 정렬. 화면 밖으로 나가면 안쪽으로 당기고, 아래 공간이 없으면 위로.
+  const br = btn.getBoundingClientRect(), mr = sidMenu.getBoundingClientRect(), gap = 6;
+  let left = Math.min(br.left, window.innerWidth - mr.width - 8);
+  let top = br.bottom + gap;
+  if (top + mr.height > window.innerHeight - 8) top = Math.max(8, br.top - mr.height - gap);
+  sidMenu.style.left = Math.max(8, left) + 'px';
+  sidMenu.style.top = top + 'px';
+  sidMenu.onclick = e => {
+    const b = e.target.closest('button[data-act]');
+    if (!b || b.disabled) return;
+    const act = b.dataset.act;
+    sidMenuClose();
+    if (act === 'copy') copySid(sid, btn);
+    // Issue383 핵심: origin 무관하게 뷰어. 종전에는 terminal 만 뷰어이고 vscode·zed 는
+    //   에디터 탭 포커스로 빠져 브라우저에서 대화 내용을 볼 경로가 아예 없었다.
+    else if (act === 'view') openSessionViewer(url, topic);
+  };
+}
+// 바깥 클릭·ESC·스크롤로 닫기 (capture 로 먼저 받아 행-클릭 위임보다 앞서 처리)
+document.addEventListener('mousedown', e => {
+  if (sidMenu.hidden) return;
+  if (e.target.closest('#sid-menu') || e.target.closest('.copy-sid')) return;
+  sidMenuClose();
+}, true);
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !sidMenu.hidden) sidMenuClose(); });
+window.addEventListener('scroll', () => { if (!sidMenu.hidden) sidMenuClose(); }, true);
+// Issue384: hover 로 연다. 클릭 전용이던 종전(Issue383)에는 같은 자리 툴팁이 선택지를 미리 보여 줘
+//   "떠 있는 메뉴" 로 읽혔고, 그리로 마우스를 가져가면 버튼을 벗어나 사라져 고를 수가 없었다.
+//   클릭 경로는 그대로 살려 둔다 — 터치·키보드(포커스+Enter)에는 hover 가 없다.
+const SID_HOVER_IN = 220;    // hover intent — 지나가다 스친 것만으로 열리지 않게 하는 지연
+const SID_HOVER_OUT = 260;   // 버튼 → 메뉴 사이 간격(gap 6px)을 건너는 동안의 유예
+let sidOpenTimer = null, sidCloseTimer = null;
+document.addEventListener('mouseover', e => {
+  const btn = e.target.closest('.copy-sid');
+  if (btn) {
+    clearTimeout(sidOpenTimer); clearTimeout(sidCloseTimer);
+    sidOpenTimer = setTimeout(() => sidMenuOpen(btn), SID_HOVER_IN);
+  } else if (e.target.closest('#sid-menu')) {
+    clearTimeout(sidCloseTimer);   // 메뉴 위에 있는 동안은 닫지 않는다
   }
+});
+document.addEventListener('mouseout', e => {
+  if (!e.target.closest('.copy-sid, #sid-menu')) return;
+  // 버튼 ↔ 메뉴 사이의 이동은 이탈이 아니다. 이 브리지가 빠지면 고르러 가는 도중에 닫혀
+  //   Issue384 가 고치려던 바로 그 증상(가져가면 사라짐)이 메뉴 쪽에서 재발한다.
+  const rt = e.relatedTarget;
+  if (rt && rt.closest && rt.closest('.copy-sid, #sid-menu')) return;
+  clearTimeout(sidOpenTimer); clearTimeout(sidCloseTimer);
+  sidCloseTimer = setTimeout(sidMenuClose, SID_HOVER_OUT);
+});
+
+function copySid(sid, btn) {
   function ok() {
     if (!btn) return;
     const orig = btn.textContent;
@@ -11812,6 +12162,9 @@ setModal.addEventListener('mouseout', e => { if (e.target.closest('.set-badge, .
 // Issue281: 활성 세션 카드의 🆚/모델 배지 툴팁 — .card{overflow:hidden}에 안 잘리게 body 직속 #live-tip 사용
 const liveTip = document.getElementById('live-tip');
 function liveTipShow(badge) {
+  // Issue384: 세션 작업 메뉴가 열려 있는 동안은 툴팁을 띄우지 않는다. 5초 reload 가 행을 다시 그리면
+  //   커서 아래 요소가 교체돼 mouseover 가 재발화하고, sidMenuOpen 이 꺼 둔 툴팁이 메뉴 위로 되살아난다(실측).
+  if (!sidMenu.hidden) return;
   const tip = badge.getAttribute('data-tip'); if (!tip) return;
   liveTip.textContent = tip;
   // Issue369: data-tip-sid 가 있으면 세션 ID 를 둘째 줄에 붙인다(모노스페이스·디밍).
@@ -11829,10 +12182,10 @@ function liveTipShow(badge) {
   liveTip.style.top = top + 'px';
 }
 function liveTipHide() { liveTip.hidden = true; }
-// Issue369: .copy-sid 편입 — 세션 ID 복사 버튼도 같은 커스텀 툴팁을 쓴다(네이티브 title 커서 가림 해소)
-//   .live-item 도 편입 — 행 네이티브 title 이 남아 있으면 버튼 위에서도 커서 옆에 떠 같은 가림이 재발한다
+// Issue369: .live-item 편입 — 행 네이티브 title 이 남아 있으면 버튼 위에서도 커서 옆에 떠 가림이 재발한다
+// Issue384: .copy-sid 는 목록에서 뺐다 — 그 버튼은 이제 툴팁이 아니라 hover 메뉴를 띄운다(둘은 같은 자리를 다툰다)
 const LIVE_TIP_SEL = '.live-origin[data-tip], .live-model[data-tip], .live-badge[data-tip], '
-  + '.copy-sid[data-tip], .card-close[data-tip], .approve-btn[data-tip], .live-item[data-tip]';
+  + '.card-close[data-tip], .approve-btn[data-tip], .live-item[data-tip]';
 document.addEventListener('mouseover', e => { const b = e.target.closest(LIVE_TIP_SEL); if (b) liveTipShow(b); });
 document.addEventListener('mouseout', e => { if (e.target.closest(LIVE_TIP_SEL)) liveTipHide(); });
 document.getElementById('btn-settings').addEventListener('click', openSettings);

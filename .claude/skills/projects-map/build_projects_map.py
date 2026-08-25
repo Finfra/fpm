@@ -654,7 +654,8 @@ HTML_HEAD = """<!doctype html>
   .quick-btn { font-size: 1.25rem; line-height: 1; border: none; background: none;
     cursor: pointer; padding: 0.2rem 0.4rem; border-radius: 6px; opacity: 0.75; }
   .quick-btn:hover { opacity: 1; background: rgba(127,127,127,0.15); }
-  #note { cursor: pointer; }
+  /* Issue398: note 는 클릭-열기가 아니라 그 자리에서 바로 고치는 편집면이다. */
+  #note { cursor: text; }
   /* Issue375: 맵 배경은 더 이상 클릭 대상이 아니다 — pointer 커서를 주면 거짓 신호가 된다. */
   .meta { color: #777; font-size: 0.85rem; margin-bottom: 1rem; }
   input#filter { width: 100%; box-sizing: border-box; padding: 0.5rem; font-size: 1rem;
@@ -706,11 +707,19 @@ HTML_HEAD = """<!doctype html>
   /* Issue305: 맵을 열자마자 눈에 들어와야 하는 수기 메모(_note.md). 부제 바로 아래
      고정 위치 — 아래로 밀면 스크롤해야 보여서 "열 때마다 상기" 목적이 깨진다. */
   #note { margin: 0 0 1.2rem; padding: 0.7rem 1.1rem; border-left: 4px solid #c9a227;
-    border-radius: 0 8px 8px 0; background: #fdf9e8; font-size: 0.67rem; }
+    border-radius: 0 8px 8px 0; background: #fdf9e8; font-size: 0.67rem;
+    transition: border-left-color 0.2s ease; }
   #note p { margin: 0.25rem 0; }
   #note ul { list-style: disc; padding-left: 1.3rem; margin: 0.25rem 0; }
   #note li { margin: 0.15rem 0; }
   #note.placeholder { color: #999; font-style: italic; }
+  #note:focus { outline: 1px dashed #c9a227; outline-offset: 2px; }
+  /* Issue398: 편집 순간 왼쪽 금색 바가 사라지고(syncing), 서버 동기화 완료 1초 뒤
+     다시 나타난다 — 바 복귀 = 저장됨. '.' 입력은 즉시 동기화·즉시 복귀.
+     (배경 흐림 방식은 사용자 피드백으로 폐기 — 눈에 안 들어옴)
+     실패는 sync-err(빨간 바)로 남긴다 — 내용은 브라우저에 있어 다음 입력이 재시도. */
+  #note.syncing { border-left-color: transparent; }
+  #note.sync-err { border-left-color: #c0392b; background: #fdf1f0; }
   .deadloop { background: #fdf1f0; border: 1px solid #e0a49c; border-left: 4px solid #c0392b;
     border-radius: 8px; padding: 0.8rem 1.1rem; margin: 1rem 0; }
   .deadloop ul { list-style: disc; padding-left: 1.4rem; margin: 0.5rem 0; }
@@ -725,6 +734,8 @@ HTML_HEAD = """<!doctype html>
     body { background: #1e1e1e; color: #ddd; }
     #note { background: #26230f; border-left-color: #a8871f; }
     #note.placeholder { color: #8a8a8a; }
+    #note.syncing { border-left-color: transparent; }
+    #note.sync-err { background: #2a1614; border-left-color: #c0392b; }
     .deadloop { background: #2a1614; border-color: #7a3a32; }
     .deadloop small { color: #d9a49c; }
     #misc { background: #202024; border-color: #3a3b40; }
@@ -781,7 +792,9 @@ document.querySelectorAll('.copy-btn').forEach(function (btn) {
 #   않으므로(untracked + exclude), 공개측에서 빌더를 돌리면 자동으로 이 문구가 뜬다.
 #   별도 `--public` 플래그를 두지 않는 이유 — 호출부마다 플래그를 넘겨야 하는데,
 #   파일 부재만으로 이미 같은 결과가 나온다.
-NOTE_PLACEHOLDER = "_note.md의 내용"
+# Issue398 후속: 빈 상태(앱 첫 시작·공개 미러 설치 직후)에 저장 위치·온라인 편집 가능을 안내.
+NOTE_PLACEHOLDER = ("메모 없음 — 여기에 바로 입력하세요 (온라인 수정 가능). "
+                    "gitignore 된 _note.md 에 저장됩니다.")
 
 
 # ── 활성 세션 오버레이 (Issue299) ────────────────────────────────────────
@@ -1014,15 +1027,103 @@ CLICK_SCRIPT_TMPL = """
     location.href = PROJECTS_HREF;
   });
 
-  // Issue305 연장: note 박스 자체를 눌러도 _note.md 를 바로 연다.
-  document.getElementById('note').addEventListener('click', function () {
-    location.href = NOTE_HREF;
-  });
+  // Issue398: note 박스 클릭 → VSCode 오픈은 제거했다 — 클릭은 이제 인라인 편집 진입이다.
+  //   (구 Issue305 연장 동작. VSCode 로 열려면 헤더의 📝 버튼이 단일 진입점.)
 
   // Issue375: 맵 배경(#map-canvas) 전역 클릭 → Projects.md 는 제거했다.
   //   맵이 화면 대부분을 차지해 "빈 곳"이 사실상 페이지 전체였고, 노드를 살짝
   //   빗나간 클릭·드래그·확대 조작까지 전부 VSCode 를 여는 오작동으로 읽혔다.
   //   Projects.md 열기는 헤더의 🗂️ 버튼(btn-projects-md)이 단일 진입점이다.
+})();
+</script>
+"""
+
+
+# Issue398: note 박스 인라인 편집 — 저장 버튼 없이 초단위 자동 동기화.
+#   input → .syncing(왼쪽 바 숨김) → 1초 throttle 로 POST /projects-map/note → 성공 1초 뒤
+#   바 복귀(= 저장됨 신호). '.' 입력은 즉시 flush + 즉시 복귀(1초 대기 생략). 실패 시 .sync-err 유지 — 내용은
+#   브라우저 DOM 에 남아 있으므로 다음 입력·pagehide sendBeacon 이 재시도한다.
+#   직렬화는 렌더 DOM → md 역변환(li → "* ", 그 외 블록 → 평문 줄) — read_note 가
+#   지원하는 부분집합(bullet·문단)과 정확히 왕복한다.
+NOTE_EDIT_SCRIPT = """
+<script>
+(function () {
+  var note = document.getElementById('note');
+  if (!note || !note.isContentEditable) return;
+  var dirty = false, timer = null, restoreT = null;
+
+  function textOf(el) {
+    return (el.textContent || '').replace(/\\u00a0/g, ' ').trim();
+  }
+
+  function serialize() {
+    if (note.classList.contains('placeholder')) return '';
+    var lines = [];
+    Array.prototype.forEach.call(note.childNodes, function (n) {
+      if (n.nodeType === 3) {              // 직접 타이핑된 bare 텍스트
+        var t = n.textContent.trim();
+        if (t) lines.push(t);
+        return;
+      }
+      if (n.nodeType !== 1) return;
+      if (n.tagName === 'UL' || n.tagName === 'OL') {
+        Array.prototype.forEach.call(n.querySelectorAll('li'), function (li) {
+          var t = textOf(li);
+          if (t) lines.push('* ' + t);
+        });
+      } else {                             // p · div(Enter 로 생긴 블록) · 기타
+        var t = textOf(n);
+        if (t) lines.push(t);
+      }
+    });
+    return lines.join('\\n');
+  }
+
+  function restore() {
+    if (!dirty) note.classList.remove('syncing');
+  }
+
+  function flush(immediate) {
+    if (timer) { clearTimeout(timer); timer = null; }
+    dirty = false;
+    fetch('/projects-map/note', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ md: serialize() })
+    }).then(function (r) {
+      if (!r.ok) throw new Error('http ' + r.status);
+      note.classList.remove('sync-err');
+      if (restoreT) clearTimeout(restoreT);
+      if (immediate) restore();                       // '.' — 1초 대기 생략
+      else restoreT = setTimeout(restore, 1000);      // 동기화 후 1초 뒤 왼쪽 바 복귀
+    }).catch(function () {
+      dirty = true;                                   // 미반영 — 다음 입력·pagehide 가 재시도
+      note.classList.add('sync-err');
+    });
+  }
+
+  note.addEventListener('focus', function () {
+    if (note.classList.contains('placeholder')) {     // 폴백 문구는 실내용이 아니다
+      note.classList.remove('placeholder');
+      note.textContent = '';
+    }
+  });
+
+  note.addEventListener('input', function (e) {
+    dirty = true;
+    note.classList.add('syncing');                    // 수정 순간 왼쪽 바 숨김
+    if (e && typeof e.data === 'string' && e.data.indexOf('.') !== -1) {
+      flush(true);                                    // 마침표 → 즉시 동기화·즉시 원복
+      return;
+    }
+    if (!timer) timer = setTimeout(function () { timer = null; flush(false); }, 1000);
+  });
+
+  window.addEventListener('pagehide', function () {   // 마지막 키입력 1초 창 유실 방지
+    if (!dirty || !navigator.sendBeacon) return;
+    navigator.sendBeacon('/projects-map/note',
+      new Blob([JSON.stringify({ md: serialize() })], { type: 'application/json' }));
+  });
 })();
 </script>
 """
@@ -1243,8 +1344,12 @@ def read_note(root):
     raw = ""
     if path.exists():
         raw = path.read_text(encoding="utf-8").strip()
+    # Issue398: 박스 자체가 편집면 — 타이핑만으로 hub POST /projects-map/note 에 자동 저장.
+    attrs = ('contenteditable="true" spellcheck="false" '
+             'title="직접 수정 — 자동 저장 (_note.md)"')
     if not raw:
-        return (f'<div id="note" class="placeholder">{html.escape(NOTE_PLACEHOLDER)}</div>',
+        return (f'<div id="note" class="placeholder" {attrs}>'
+                f'{html.escape(NOTE_PLACEHOLDER)}</div>',
                 NOTE_PLACEHOLDER)
 
     parts, bullets = [], []
@@ -1266,7 +1371,7 @@ def read_note(root):
             flush()
             parts.append(f"<p>{html.escape(s)}</p>")
     flush()
-    return ('<div id="note">' + "".join(parts) + "</div>", raw)
+    return (f'<div id="note" {attrs}>' + "".join(parts) + "</div>", raw)
 
 
 def main():
@@ -1395,7 +1500,7 @@ def main():
         warn_html,
         f'<div class="meta">프로젝트 {len(table)}건'
         + (f" · 미할당 편입 {len(missing)}건" if missing else "")
-        + " · 노드 클릭 → VSCode 로 열기 · 🗂️ 버튼 → Projects.md · note 박스 클릭 → _note.md</div>",
+        + " · 노드 클릭 → VSCode 로 열기 · 🗂️ 버튼 → Projects.md · note 박스 직접 수정 → _note.md 자동 저장</div>",
         note_html,                      # Issue305: 부제 바로 아래 고정 — 열자마자 보이게
         "<!-- PROJECTS-MAP:MERMAID -->",
         '<div id="map-canvas">',
@@ -1414,6 +1519,7 @@ def main():
         render_session_script(table),   # Issue299: 활성 세션 오버레이 (</body> 앞)
         POPUP_SCRIPT_TMPL,              # Issue371: 노드 hover → 이슈맵 진입 팝업
         render_click_script(note_href, projects_href),  # note/Projects.md 클릭 오픈
+        NOTE_EDIT_SCRIPT,               # Issue398: note 인라인 편집 — 초단위 자동 동기화
         HTML_TAIL_SCRIPT,
     ]
     out_path.write_text("\n".join(body), encoding="utf-8")

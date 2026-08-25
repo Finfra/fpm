@@ -38,7 +38,7 @@ date: 2026-04-19
 | 주제 키워드          | 기본 경로                                          |
 | :------------------- | :------------------------------------------------- |
 | `harness`, `arch`    | `_doc_arch/Harness/{주제}.md`                    |
-| `folder-*`           | `_doc_arch/folder_arch.md`                       |
+| `folder-*`           | `~/_git/___pm/_doc_arch/folder_arch.md` (글로벌 SSOT) |
 | `*-usage`            | `_doc_arch/{주제}.md`                            |
 | 그 외                | `_doc_arch/{주제}-design.md`                     |
 
@@ -52,7 +52,7 @@ date: 2026-04-19
 2. `# 관련 자료` 섹션에 후보 링크 자동 삽입:
    - 루트 `Harness.md` (존재 시)
    - 주제와 매칭되는 `rules/{주제}-rules.md` (Grep으로 탐색)
-   - 주제와 매칭되는 `_doc_work/z_done/plan/{주제}_plan.md`
+   - 주제와 매칭되는 `_doc_work/plan/{주제}_plan.md`
 3. `/md-rule-apply {파일경로}` 실행하여 검증
 
 ### Case B: 기존 파일에 섹션 추가 (파일 있음, 섹션명 미지정)
@@ -109,7 +109,12 @@ date: {YYYY-MM-DD}
 
 1. `/md-rule-apply {파일경로}` 실행 — Frontmatter·Outline·Bullet·Table 검증
 2. `# 관련 자료` 섹션 1개 이상 링크 확인 (고립 문서 방지)
-3. SSOT 중복 확인: Grep으로 동일 내용이 `rules/`·루트 `Harness.md`·`_doc_work/z_done/plan/`에 있는지 탐색 → 발견 시 사용자 보고 + 참조 링크로 축약 제안
+3. SSOT 중복 확인: Grep으로 동일 내용이 `rules/`·루트 `Harness.md`·`_doc_work/plan/`에 있는지 탐색 → 발견 시 사용자 보고 + 참조 링크로 축약 제안
+4. **연결 SCAR 동기 점검 (Case B/C — 설계 변경 시 의무)**: 갱신한 `_doc_arch/` 문서를 구현·참조하는 SCAR(command/rule/skill/agent)를 식별하여, 그 본문이 변경된 설계와 어긋나는지 점검:
+   - 식별: `grep -rln '{변경 문서 파일명 또는 주제 키워드}' ~/.claude/{commands,rules,skills,agents}` 로 역참조 SCAR 수집. `# 관련 자료`의 역링크 대상도 포함
+   - 점검: 변경된 섹션 내용 ↔ 각 SCAR 본문의 실행 단계·정책 서술이 정합한지 대조
+   - 보고: 불일치 SCAR 를 **동기 갱신 필요 목록**으로 보고 (글로벌 SCAR 변경 가드 — cwd ≠ `~/.claude/` 면 자동 수정 대신 `~/.claude/Issue.md` 이슈 등록 권고가 최소 동작. cwd = `~/.claude/` 면 동기 갱신 진행)
+   - **방향 구분**: 3항(SSOT 중복 방지)은 *같은 정보 두 곳 → 한 곳 축약*, 본 4항(설계→구현 동기)은 *설계 A 변경 → A 구현 SCAR B 본문 갱신*. `_doc_arch`=왜/어떻게, SCAR 본문=실행 단계로 부분 중복 불가피 → 설계 변경 시 양쪽 갱신 필요. 상세: [`doc-design-rules.md`](../_doc_arch/doc-design-rules.md) "`_doc_arch` 설계 변경 → 연결 SCAR 본문 동기"
 
 # 산출물
 
@@ -121,11 +126,11 @@ date: {YYYY-MM-DD}
 
 * 필수 참조: [`_doc_arch/doc-design-rules.md`](../_doc_arch/doc-design-rules.md)
     - 작성 시점 (언제 `_doc_arch/`에 둘지)
-    - `_doc_arch/` vs `_doc_work/z_done/plan/` 분리 기준
+    - `_doc_arch/` vs `_doc_work/plan/` 분리 기준
     - SSOT 중복 방지 우선순위
     - 필수 섹션 목록
-* 관련: [`rules/nptir-rules.md`](../rules/nptir-rules.md) — nPTiR 루트 위치 판정
-* 관련: [`rules/md-rules.md`](../rules/md-rules.md) — 마크다운 포맷
+* 관련: [`_doc_arch/rules-ondemand/nptir-rules.md`](../_doc_arch/rules-ondemand/nptir-rules.md) — nPTiR 루트 위치 판정
+* 관련: [`_doc_arch/rules-ondemand/md-rules.md`](../_doc_arch/rules-ondemand/md-rules.md) — 마크다운 포맷
 * 관련: [`rules/naming-rules.md`](../rules/naming-rules.md) — 파일명 kebab-case
 
 # 사용 예시
@@ -152,8 +157,7 @@ date: {YYYY-MM-DD}
 | 커맨드           | 용도                                   | 저장 위치                        |
 | :--------------- | :------------------------------------- | :------------------------------- |
 | `/design-doc`    | 영속적 설계 SSOT                       | `_doc_arch/`                   |
-| `/needs`, `/sp-plan`, `/gstack-plan` | 이슈별 실행 계획      | `_doc_work/z_done/plan/`                |
-| `/gstack-report` | 이슈 완료 결과물                       | `_doc_work/z_done/report/`              |
+| `/needs`, `/sp-plan` | 이슈별 실행 계획                  | `_doc_work/plan/`                |
 | `/md-add`        | 범용 마크다운 생성                     | 경로 자유 (주로 docs/)           |
 
 # 종료 조건
@@ -161,11 +165,12 @@ date: {YYYY-MM-DD}
 * 파일 생성·갱신 확인
 * `/md-rule-apply` 검증 통과
 * SSOT 중복 체크 완료 (발견 시 사용자 보고만, 자동 수정 금지)
+* (Case B/C) 연결 SCAR 동기 점검 완료 (불일치 시 동기 갱신 또는 이슈 등록 보고)
 * 사용자 확인 없이 `z_old/` 이동·파일 삭제 금지
 
-# Opus 4.7 실행 제약
+# Opus 4.8 실행 제약
 
-공통 제약은 [`~/.claude/rules/opus-4-7-execution-rules.md`](../rules/opus-4-7-execution-rules.md) 참조. 본 커맨드 특화 제약:
+공통 제약은 [`~/.claude/rules/opus-4-8-execution-rules.md`](../rules/opus-4-8-execution-rules.md) 참조. 본 커맨드 특화 제약:
 
 * 기존 `_doc_arch/` 문서 **전체 재작성 금지** — 섹션 단위 Edit만 허용
 * 폐기(`--deprecate`) 실행 시 사용자 승인 후 이동, 원본 삭제 금지
@@ -176,7 +181,7 @@ date: {YYYY-MM-DD}
 # 참조
 
 * [`~/.claude/_doc_arch/doc-design-rules.md`](../_doc_arch/doc-design-rules.md) — `_doc_arch/` 운영 SSOT
-* [`~/.claude/rules/nptir-rules.md`](../rules/nptir-rules.md) — nPTiR 상위 규칙
-* [`~/.claude/rules/md-rules.md`](../rules/md-rules.md) — 마크다운 포맷
+* [`~/.claude/_doc_arch/rules-ondemand/nptir-rules.md`](../_doc_arch/rules-ondemand/nptir-rules.md) — nPTiR 상위 규칙
+* [`~/.claude/_doc_arch/rules-ondemand/md-rules.md`](../_doc_arch/rules-ondemand/md-rules.md) — 마크다운 포맷
 * [`~/.claude/commands/md-add.md`](md-add.md) — 범용 마크다운 생성
 * [`~/.claude/commands/md-rule-apply.md`] — 마크다운 규칙 검증

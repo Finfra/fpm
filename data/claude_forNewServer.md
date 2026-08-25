@@ -16,36 +16,48 @@ nPTiR (needs/Plan/Task/issue/Report) + SCAR (Skills/Commands/Agents/Rules) 글�
 
 # 포함 목록
 
-| 경로                                | 역할                                  |
-| :---------------------------------- | :------------------------------------ |
-| `CLAUDE.md`                         | 글로벌 설정 (nPTiR·SCAR 진입점)       |
-| `Harness.md`                        | 글로벌 SCAR 인덱스                    |
-| `rules/language-rules.md`           | 언어·문체 규칙                        |
-| `rules/md-rules.md`                 | 마크다운 작성 규칙                    |
-| `rules/naming-rules.md`             | 파일·폴더 네이밍 규칙                 |
-| `rules/nptir-rules.md`              | nPTiR 워크플로우 전체 규칙            |
-| `rules/issue-g.md`                  | 이슈 관리 공통 규칙                   |
-| `rules/refs-rules.md`               | _doc_work/refs/ 참고자료 관리 규칙    |
-| `rules/change-detect-rules.md`      | 변경 탐지 3종 병렬 규칙               |
-| `rules/info-files.md`               | 정보 파일 저장 규칙                   |
-| `rules/opus-4-7-execution-rules.md` | Opus 4.7 실행 제약                    |
-| `commands/issue-reg-g.md`           | 이슈 등록 (General)                   |
-| `commands/issue-fix-g.md`           | 이슈 해결 (General)                   |
-| `commands/issue-closer-g.md`        | 이슈 종결 (General)                   |
-| `commands/needs.md`                 | nPTiR 진입 (needs 단계)               |
-| `commands/design-doc.md`            | 설계 문서 관리 (_doc_arch/)         |
-| `commands/new-project.md`           | 프로젝트 초기화                       |
-| `commands/md-add.md`                | 마크다운 파일 생성                    |
-| `commands/gstack-plan.md`           | gstack × nPTiR 계획                   |
-| `commands/gstack-report.md`         | gstack × nPTiR 보고서                 |
-| `commands/gstack-retro-report.md`   | gstack × nPTiR 회고                   |
-| `skills/issue-g/SKILL.md`           | 이슈 워크플로우 글로벌 스킬           |
-| `skills/dev-g/SKILL.md`             | 개발 주기 글로벌 스킬                 |
-| `skills/dev-w/SKILL.md`             | 웹 개발 특화 스킬                     |
-| `skills/issue-w/SKILL.md`           | 이슈 워크플로우 (웹 도메인)           |
-| `skills/doc-work-archive/SKILL.md`  | _doc_work z_done 아카이브 스킬        |
-| `skills/git/SKILL.md`               | git 작업 스킬                         |
-| `skills/gstack/SKILL.md`            | gstack 스킬                           |
+> ⚠️ **본 표는 사람이 읽는 사본이다.** 기계 SSOT 는 [`scar-manifest.yml`](scar-manifest.yml) `payloads.flat_file.files[]` 이고, 실제 파일은 [`sh/scar-flatfile-sync.sh`](../sh/scar-flatfile-sync.sh) 가 prj3 원본에서 재생성한다. 목록을 손으로 고치지 말고 yml 을 고친 뒤 스크립트를 돌린다 (Issue388).
+
+| 경로                                             | 역할                                  |
+| :----------------------------------------------- | :------------------------------------ |
+| `CLAUDE.md`                                      | 글로벌 설정 (nPTiR·SCAR 진입점)       |
+| `Harness.md`                                     | 글로벌 SCAR 인덱스                    |
+| `rules/language-rules.md`                        | 언어·문체 규칙                        |
+| `rules/naming-rules.md`                          | 파일·폴더 네이밍 규칙                 |
+| `rules/issue-g.md`                               | 이슈 관리 공통 규칙                   |
+| `rules/info-files.md`                            | 정보 파일 저장 규칙                   |
+| `rules/opus-4-8-execution-rules.md`              | Opus 4.8 실행 제약                    |
+| `_doc_arch/rules-ondemand/md-rules.md`           | 마크다운 작성 규칙 (조건부 로드)      |
+| `_doc_arch/rules-ondemand/nptir-rules.md`        | nPTiR 워크플로우 규칙 (조건부 로드)   |
+| `_doc_arch/rules-ondemand/refs-rules.md`         | _doc_work/refs/ 관리 (조건부 로드)    |
+| `_doc_arch/rules-ondemand/change-detect-rules.md`| 변경 탐지 3종 병렬 (조건부 로드)      |
+| `commands/issue-reg-g.md`                        | 이슈 등록 (General)                   |
+| `commands/issue-fix-g.md`                        | 이슈 해결 (General)                   |
+| `commands/issue-closer-g.md`                     | 이슈 종결 (General)                   |
+| `commands/needs.md`                              | nPTiR 진입 (needs 단계)               |
+| `commands/design-doc.md`                         | 설계 문서 관리 (_doc_arch/)           |
+| `commands/md-add.md`                             | 마크다운 파일 생성                    |
+| `skills/issue-g/SKILL.md`                        | 이슈 워크플로우 글로벌 스킬           |
+| `skills/dev-g/SKILL.md`                          | 개발 주기 글로벌 스킬                 |
+| `skills/dev-w/SKILL.md`                          | 웹 개발 특화 스킬                     |
+| `skills/issue-w/SKILL.md`                        | 이슈 워크플로우 (웹 도메인)           |
+| `skills/doc-work-archive/SKILL.md`               | _doc_work z_done 아카이브 스킬        |
+| `skills/git/SKILL.md`                            | git 작업 스킬                         |
+| `skills/git/scripts/git_wrapper.sh`              | git 스킬 래퍼 스크립트                |
+
+## 2026-08-16 목록 변경 (Issue388)
+
+원본(prj3)이 움직였는데 사본이 따라가지 않아 몇 달치 표류가 쌓여 있었다. 실측 29개 중 원본과 일치한 것은 1개뿐이었다.
+
+| 변경 | 대상 | 사유 |
+| :--- | :--- | :--- |
+| **경로 이동** | `rules/{md,nptir,refs,change-detect}-rules.md` → `_doc_arch/rules-ondemand/` | 조건부 로드 룰로 재편(prj3). 상시 로드 비용 절감 |
+| **개명** | `rules/opus-4-7-execution-rules.md` → `opus-4-8-execution-rules.md` | 모델 세대 갱신 |
+| **제거** | `commands/gstack-{plan,report,retro-report}.md` · `skills/gstack/SKILL.md` | prj3 원본에서 폐기됨 — 사본에만 잔존하던 유령 |
+| **제거** | `commands/new-project.md` | prj3 원본에서 폐기 (`fpm-pm-new` 계열로 대체) |
+| **추가** | `skills/git/scripts/git_wrapper.sh` | 이미 배포되고 있었으나 표에서 누락돼 있던 항목 |
+
+⚠️ `_doc_arch/rules-ondemand/` 는 `protect[]` 의 `_doc_arch/` 에 걸리므로 **`protect_exceptions[]` 예외가 없으면 배포에서 조용히 빠진다.** 그러면 함께 나가는 `CLAUDE.md` 의 조건부 로드 표가 전부 죽은 링크가 된다.
 
 # 설치 방법
 
@@ -67,18 +79,24 @@ nPTiR (needs/Plan/Task/issue/Report) + SCAR (Skills/Commands/Agents/Rules) 글�
 TARGET_HOST="user@server.example.com"
 SRC="$HOME/_git/___pm/data/claude_forNewServer/"
 
+# ⚠️ 순서 중요 — rsync 는 먼저 매칭되는 규칙이 이긴다. include 를 exclude 앞에 둔다.
+#   scar-manifest.yml payloads.flat_file.protect_exceptions[] 에 해당 (Issue388).
+#   빠뜨리면 조건부 로드 룰 4종이 조용히 배포되지 않고 CLAUDE.md 참조가 죽는다.
+INCL=(--include '_doc_arch/' --include '_doc_arch/rules-ondemand/' \
+      --include '_doc_arch/rules-ondemand/**')
+
 # 보존 대상(대상 서버 사용자 데이터) — scar-manifest.yml payloads.flat_file.protect 와 동일
 EXCL=(--exclude 'Issue.md' --exclude 'projects/' --exclude '_doc_work/' \
       --exclude '_doc_arch/' --exclude 'settings.json' --exclude 'settings.local.json' \
       --exclude 'memory/' --exclude '*.local.*')
 
 # dry-run 먼저 확인 (--delete 로 지워질 orphan 까지 미리 표시)
-rsync -avzn --delete "${EXCL[@]}" --progress \
+rsync -avzn --delete "${INCL[@]}" "${EXCL[@]}" --progress \
   "$SRC" \
   "${TARGET_HOST}:~/.claude/"
 
 # 확인 후 실제 실행
-rsync -avz --delete "${EXCL[@]}" --progress \
+rsync -avz --delete "${INCL[@]}" "${EXCL[@]}" --progress \
   "$SRC" \
   "${TARGET_HOST}:~/.claude/"
 ```
@@ -88,16 +106,20 @@ rsync -avz --delete "${EXCL[@]}" --progress \
 ```bash
 SRC="$HOME/_git/___pm/data/claude_forNewServer/"
 DEST="$HOME/.claude/"
+INCL=(--include '_doc_arch/' --include '_doc_arch/rules-ondemand/' \
+      --include '_doc_arch/rules-ondemand/**')
 EXCL=(--exclude 'Issue.md' --exclude 'projects/' --exclude '_doc_work/' \
       --exclude '_doc_arch/' --exclude 'settings.json' --exclude 'settings.local.json' \
       --exclude 'memory/' --exclude '*.local.*')
 
 # dry-run
-rsync -avzn --delete "${EXCL[@]}" "$SRC" "$DEST"
+rsync -avzn --delete "${INCL[@]}" "${EXCL[@]}" "$SRC" "$DEST"
 
 # 실제 실행
-rsync -avz --delete "${EXCL[@]}" "$SRC" "$DEST"
+rsync -avz --delete "${INCL[@]}" "${EXCL[@]}" "$SRC" "$DEST"
 ```
+
+> 🚨 **jm4 에서 로컬 설치를 실행하지 말 것** — `DEST` 가 곧 prj3 원본(`~/.claude`)이다. 사본을 원본에 되쓰면 단방향 원칙이 깨지고, `--delete` 가 사본에 없는 원본 파일을 지운다. 이 절은 **원본을 보유하지 않은 다른 머신** 전용이다 (Issue388).
 
 ## 설치 후 확인
 

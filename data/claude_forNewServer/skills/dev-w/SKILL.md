@@ -113,9 +113,9 @@ dev-g의 완료 프로토콜에 다음 단계를 **코드 커밋 전에** 추가
 
 ---
 
-# Opus 4.7 실행 제약
+# Opus 4.8 실행 제약
 
-공통 제약은 [`~/.claude/rules/opus-4-7-execution-rules.md`](../../rules/opus-4-7-execution-rules.md) 참조 (종료 조건·재시도·루프 상한·리터럴 해석·사용자 승인 지점).
+공통 제약은 [`~/.claude/rules/opus-4-8-execution-rules.md`](../../rules/opus-4-8-execution-rules.md) 참조 (종료 조건·재시도·루프 상한·리터럴 해석·사용자 승인 지점).
 
 이 스킬 특화 제약:
 * 각 워크플로우 단계는 명시된 종료 조건 충족 시에만 다음 단계로 진행

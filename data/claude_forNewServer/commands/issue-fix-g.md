@@ -11,6 +11,26 @@ date: 2026-03-30
 
 ## 절차
 
+### 0. 진입 가드 — `(!)` 약식 이슈 착수 차단 (필수, Issue268)
+
+구현에 들어가기 **전에** 대상 이슈 제목을 확인함:
+
+```bash
+grep -n "^#\{2,3\} Issue{번호}:" Issue.md
+```
+
+제목에 **`(!)` 마커가 있으면 그 이슈는 착수 불가 상태**임 — `(!)` 는 "해결책이 아직 정해지지 않았다"는 표식이므로 고칠 대상이 아님. 아래대로 처리하고 **구현으로 넘어가지 않음**:
+
+1. 즉시 중단하고 사용자에게 보고: "Issue{번호}는 `(!)` 약식 이슈(해결책 미정)라 fix 대상이 아님. 승격이 선행되어야 함"
+2. 승격 절차 안내 — `(!)` 마커 제거 + `* 상세`·`* 구현 명세` 작성 (번호·이력 유지, 재등록 없음)
+3. 승격 시점에 통상 Q1/Q2 triage 를 적용하여 등급 판정 + 등급에 맞는 산출물(plan/task/report) 준비
+4. 승격이 끝난 뒤 본 커맨드를 다시 호출
+
+* **`/dev` 경유 호출도 예외 없음** — 비대화 자동 진행 원칙은 "모호한 선택을 기본값으로 결정"하는 것이지 착수 금지를 우회하는 근거가 아님. 여기서 사이클을 멈추고 승격 필요를 보고할 것
+* **본 가드가 `(!)` 오용을 잡는 실질적 강제 지점**임. 등록 측 가드(`issue-reg-g` 0-1)를 통과해 잘못 붙은 마커도 여기서 한 번 더 걸림
+* 마커가 **없으면** 무조건 통과 — 아래 1단계로 진행
+* 설계 근거: `_doc_arch/lightweight-issue-design.md` 「의미」 2항(fix 게이트) · `rules/issue-g.md` 규칙2 예외 조항
+
 ### 1. 문제 분석
 
 - 이슈 원인 분석
@@ -30,7 +50,7 @@ date: 2026-03-30
 
 - **필수**: `* 구현 명세` 섹션에 변경 내용 기술 (어떤 파일의 어떤 로직을 어떻게 변경했는지)
 - **선택**: 아키텍처·구조 변경 시 관련 문서 업데이트
-- **report 생성 시**: `_doc_work/z_done/report/{주제}_issue{번호}_report.md` 규칙 준수
+- **report 생성 시**: `_doc_work/report/{주제}_issue{번호}_report.md` 규칙 준수
     - `{주제}`: Issue.md의 `* plan:` / `* task:` 경로에서 주제명 추출, 없으면 이슈 제목 기반으로 결정
     - `{번호}`: 현재 이슈 번호 (ex: `Issue5` → `5`)
 
@@ -64,16 +84,20 @@ date: 2026-03-30
 * 병렬 에이전트 전원 완료 + 결과 통합 검증 통과
 * 하나라도 실패 시 즉시 중단, 사용자 보고
 
-상세 규칙: [`~/.claude/_doc_arch/sp-nptir-rules.md`](../_doc_arch/sp-nptir-rules.md) 참조.
+상세 규칙: [`~/_git/___pm/_doc_arch/sp-nptir-rules.md`](~/_git/___pm/_doc_arch/sp-nptir-rules.md) 참조.
 
 ---
 
-# Opus 4.7 실행 제약
+# Opus 4.8 실행 제약
 
-공통 제약은 [`~/.claude/rules/opus-4-7-execution-rules.md`](../rules/opus-4-7-execution-rules.md) 참조.
+공통 제약은 [`~/.claude/rules/opus-4-8-execution-rules.md`](../rules/opus-4-8-execution-rules.md) 참조.
 
 요지:
 * 단계별 종료 조건을 명시, 무한 루프 금지
 * 외부 명령 실패 시 재시도 1회, 2회 실패 시 사용자 보고
 * 파일 삭제·git push·외부 시스템 변경은 사용자 승인 후 수행
 * 애매 표현 금지, 조건문으로 해석
+
+# 레이어링 설계 참조
+
+본 커맨드는 SCAR 3-tier 레이어링의 L1(글로벌) 레이어. 도메인 분기(L2: `/issue-fix-m`, `/issue-fix-w`)와 Skill ↔ Command 짝 구조는 [`~/_git/___pm/_doc_arch/scar-layering-design.md`](~/_git/___pm/_doc_arch/scar-layering-design.md) 참조.

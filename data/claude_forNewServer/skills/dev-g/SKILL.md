@@ -17,12 +17,30 @@ description: "모든 프로젝트에서 사용 가능한 이슈 기반 개발 �
 - `/dev` — 자동 모드 (Issue.md 우선순위 기반)
 - `/dev [N]` — 이슈후보 N번 즉시 등록 및 진행
 
+## 비대화 자동 진행 원칙 (CRITICAL)
+
+`/dev`는 **사용자 확인·질문 없이 끝까지 자동 진행**하기 위해 설계된 래퍼다. 중간 사용자 확인이 필요하면 `/issue-reg`, `/issue-fix`, `/issue-closer`를 **직접** 호출하라.
+
+* **금지**: `/dev` 흐름 안에서 `AskUserQuestion` 호출, "확인해 주세요", "선택해 주세요" 등 사용자 응답 대기
+* **자동 결정**: 하위 커맨드(`/issue-reg`, `/issue-fix`, `/issue-closer`)가 정의한 "사용자에게 확인" 단계는 `/dev` 경유 시 **기본값으로 자동 결정**하고 그 결정 사항을 응답에 기록
+    - triage 판정 모호 (중간 vs 단순): **단순으로 처리**, plan/task 미생성 (가장 보수적)
+    - 서브 이슈 판정 모호: **일반 이슈로 처리** (HWM +1)
+    - 그 외 모호 시: 최소 변경 옵션 선택 + 결정 근거 기록
+* **예외 (대화 허용)**: 사용자 승인 필수 지점(`rules/opus-4-8-execution-rules.md § 5`)인 파일 삭제·`git push`·외부 시스템 변경·결제는 그대로 승인 요구. 자동 결정으로 우회 금지
+
+`/dev` 자동 결정으로 잘못 판정된 경우 사용자가 후속 보정 가능하도록 **모든 자동 결정은 최종 응답에 한 줄 기록**:
+
+```
+* 자동 결정: triage 모호 → 단순 처리 (plan 미생성)
+* 자동 결정: 서브 이슈 판정 모호 → Issue42 일반 이슈로 등록
+```
+
 ## 실행 로직
 
 ### Case A: 인자가 있는 경우 (후보 번호 N)
 
 1. `Issue.md`의 `# 🌱 이슈후보` 섹션에서 N번 항목 식별
-2. **nPTiR 파일 확인**: `_doc_work/z_done/plan/`, `_doc_work/z_done/tasks/`에서 이 이슈후보와 관련된 파일 탐색
+2. **nPTiR 파일 확인**: `_doc_work/plan/` 에서(plan·task 동거) 이 이슈후보와 관련된 파일 탐색
     - 있으면: 이슈 등록 시 자동 연결 (`/issue-reg` 3-1 단계)
     - 없으면: **생성하지 않음** — plan/task는 사용자가 명시적으로 요청할 때만 생성
 3. `/issue-reg`로 이슈 등록 (진행중 상태로 전환, plan/task 파일 자동 연결)
@@ -114,7 +132,7 @@ task가 크거나 독립 서브태스크 다수일 때 superpowers 자동화 스
 
 | 상황                                    | 권장 SP 스킬                              | 호출 조건                                    |
 | :-------------------------------------- | :---------------------------------------- | :------------------------------------------- |
-| plan 파일 기반 다단계 실행              | `superpowers:executing-plans`             | `_doc_work/z_done/plan/{주제}_plan.md` 존재 시      |
+| plan 파일 기반 다단계 실행              | `superpowers:executing-plans`             | `_doc_work/plan/{주제}_plan.md` 존재 시      |
 | 독립 서브태스크 다수 (상태 공유 없음)   | `superpowers:subagent-driven-development` | Claude Code 등 subagent 지원 환경            |
 | 다중 버그·다중 도메인 동시 수정         | `superpowers:dispatching-parallel-agents` | 세부 가이드는 `/issue-fix-g` 병렬 섹션 참조  |
 
@@ -123,16 +141,20 @@ task가 크거나 독립 서브태스크 다수일 때 superpowers 자동화 스
 * SP 자동화 스킬 호출 **전**에 이슈가 이미 `# 🚧 진행중`에 등록되어 있어야 함 (필수 전제 준수)
 * SP 출력의 jargon 풀이·체크포인트는 task 진행 기록에 보존 (요약 시에도 제거 금지)
 * 종료 조건: SP 스킬 완료 → 기존 완료 프로토콜(커밋·해시·`/issue-closer`·알림) 순차 진행
-* 상세 규칙: [`~/.claude/_doc_arch/sp-nptir-rules.md`](../../_doc_arch/sp-nptir-rules.md) 참조
+* 상세 규칙: [`~/_git/___pm/_doc_arch/sp-nptir-rules.md`](~/_git/___pm/_doc_arch/sp-nptir-rules.md) 참조
 
 ---
 
-# Opus 4.7 실행 제약
+# Opus 4.8 실행 제약
 
-공통 제약은 [`~/.claude/rules/opus-4-7-execution-rules.md`](../../rules/opus-4-7-execution-rules.md) 참조 (종료 조건·재시도·루프 상한·리터럴 해석·사용자 승인 지점).
+공통 제약은 [`~/.claude/rules/opus-4-8-execution-rules.md`](../../rules/opus-4-8-execution-rules.md) 참조 (종료 조건·재시도·루프 상한·리터럴 해석·사용자 승인 지점).
 
 이 스킬 특화 제약:
 * 각 워크플로우 단계는 명시된 종료 조건 충족 시에만 다음 단계로 진행
 * 외부 명령 실패 시 기본 재시도 1회, 실패 지속 시 사용자에게 원인 보고
 * 파일·git·외부 시스템 변경은 dry-run 또는 승인 절차 포함
 * 애매 표현("시도해봐", "필요 시", "가능하면") 금지 — 조건문으로 해석
+
+# 레이어링 설계 참조
+
+본 스킬은 SCAR 3-tier 레이어링의 L1(글로벌) 레이어. 도메인 분기(L2: `dev-m`, `dev-w`)와 참조 규약은 [`~/_git/___pm/_doc_arch/scar-layering-design.md`](~/_git/___pm/_doc_arch/scar-layering-design.md) 참조.

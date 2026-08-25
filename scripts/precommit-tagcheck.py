@@ -20,7 +20,12 @@ import re
 import subprocess
 import sys
 
-TAG_RE = re.compile(r'\bIssue(\d+(?:_\d+)+|\d+)\b')
+# ⚠️ **cross-prj 접두는 로컬 이슈가 아니다** (prj3#Issue436 배포 라운드에서 실발생).
+# `prj3#Issue436`·`prj5#Issue70` 은 **타 prj 이슈 참조**라 이 repo 의 Issue.md 에 있을 리 없다.
+# 접두 없이 매칭하면 정식 표기(SCAR cross-project reference format)를 쓸 때마다 커밋이 막히고,
+# 그때마다 SKIP_TAGCHECK 로 우회하게 되어 검사 자체가 무력해진다 — L37 이 예고한 그 구멍이다.
+# `(?<!#)` 로 `#` 뒤를 배제하고, prj 접두 토큰도 함께 배제한다.
+TAG_RE = re.compile(r'(?<![#\w])(?<!prj)Issue(\d+(?:_\d+)+|\d+)\b')
 HEADING_RE = re.compile(r'^## Issue(\d+(?:_\d+)+|\d+)\s*:', re.M)
 
 # 이력 서술 문맥 — 과거 이슈 번호를 자유롭게 인용하는 것이 정상이므로 검사 제외.

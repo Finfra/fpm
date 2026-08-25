@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: 7f90eaf4b9765ded20f7fcf2abf89216a949928249be748d3f17b80ac286c8d1
+source_sha: 6388e563d882014fbade41341d32e938a97d9b8bf29d0275612e0ced23e40d3c
 ---
 
 # 안내
@@ -17,6 +17,79 @@ source_sha: 7f90eaf4b9765ded20f7fcf2abf89216a949928249be748d3f17b80ac286c8d1
 `scripts/fpm-issue-digest.sh` 가 덮어쓴다.
 
 # 이슈 근거
+
+## Issue398: projects-map 메모(note 박스) 실시간 인라인 편집 — 저장 버튼 없는 초단위 자동 동기화 ✅
+* 목적: `/projects-map` 의 `_note.md` 메모 박스가 읽기 전용(클릭 시 VSCode 오픈)이라 브라우저에서 즉석 수정이 불가. 저장 버튼 없이 타이핑만으로 서버(`_note.md`)에 자동 반영되게 한다
+* 구현 명세:
+    - builder: `read_note` contenteditable 부여, NOTE_EDIT_SCRIPT(DOM→md 직렬화·1s throttle·`.` 즉시 flush·pagehide sendBeacon·sync-err 표시) 추가, 안내 문구 갱신
+    - hub 서버: `POST /projects-map/note` 신설 — `{md}` 수신 → `_note.md` tmp+`os.replace` 원자 기록. `_rebuild_projects_map_if_stale` stale 판정에 `_note.md` mtime 포함
+
+## Issue397: live 세션 live_pid 사망 시 gc_meta.shell_pid 승격 복구 — 오염 pid 방어 ✅
+* 목적: 훅이 단명 pid 를 등록(prj3#Issue428)하면 서버가 `live_pid` 를 pop 하고 복구 경로가 없어, 살아있는 세션이 LIVE_TTL(300s) 경과 후 카드에서 사라짐(prj9a 실측 — 생존 4세션 중 2개만 표시). 훅 수정과 별개로 서버측 방어선을 추가
+* depends: 없음 (prj3#Issue428 훅 수정과 상호 독립 — 양쪽 모두 단독으로 증상 완화)
+* 구현 명세:
+    - `_claude_proc_like(pid)` 헬퍼 신설 — `ps -o comm=,args=` 로 basename claude|claude-code 또는 args 에 claude 배포본 cli.js/native-binary 매칭
+    - pop 분기 진입 시 승격 1회 시도 → 성공 시 live_pid 교체 + gc_meta 재캡처 + log, 실패 시 현행 pop 유지
+    - ps 호출은 live_pid 사망 시에만 발생(희귀 경로) — 폴링 비용 순증 0
+    - 검증: 단명 pid 등록 시뮬레이션으로 승격 확인 + 기존 test_session_gc.py 회귀 통과
+
+## Issue391: check.sh 가 저작 머신(host)을 소비자로 오판해 상시 FAIL 1건 ✅
+* 목적: Issue389 로 인벤토리 FAIL 3건을 없앴는데 `플러그인 미설치: fpm-core` FAIL 이 남는다. 그런데 **host 에서는 미설치가 정상**이다 — 경보 피로를 없애려다 마지막 1건이 남아 `check.sh` 는 여전히 rc=1 이다
+* 구현 명세:
+    - 판정: `REPO_DIR` 이 `$FPM_BASE` 이면서 `~/.claude` 에 라이브 SCAR 가 존재하면 **저작 머신**
+    - 저작 머신에서는 플러그인 설치 항목을 FAIL → **skip 또는 WARN** 으로 강등 (소비자 머신 동작은 불변)
+    - 검증: host 에서 `bash sh/check.sh` rc=0 · 소비자 머신(host·host)에서는 기존대로 FAIL 유지
+
+## Issue396: `fpm-backup-repo.sh` 의 push 가 git 문법상 성립하지 않는다 — `--all --tags` 동시 사용 불가 ✅
+* 목적: prj3 배선 중 실측된 버그. [`scripts/fpm-backup-repo.sh`](scripts/fpm-backup-repo.sh) 의 `--push` 경로가 **한 번도 성공할 수 없는 명령**을 쓰고 있었다. 백업 실행체 자신이 백업을 못 하는 상태였다 (prj3 위임)
+* 구현 명세:
+    - push 를 2회로 분리: `push --all` → `push --tags`. 각각 독립 실패 메시지(브랜치/태그)로 어느 쪽이 죽었는지 드러낸다
+    - 헤더 주석에 재발 방지 근거 3줄 기재 — "합치면 push 가 통째로 실패해 백업이 안 된다"
+    - 검증: scratch repo 로 결합=fatal / 분리=성공 + 원격 refs(`heads/main`·`heads/develop`·`tags/v1`) 실측. `bash -n` 통과
+
+## Issue388: `data/claude_forNewServer/` 공개 사본이 prj3 원본과 drift — 몇 달 전 SCAR 가 배포되고 있다 ✅
+* 목적: Issue386 판정 중 실측. 공개 배포되는 글로벌 SCAR 사본이 원본과 어긋난 채 굳었다. 사본 방식은 원본이 움직이면 **조용히 늙는다** — 실패 신호가 없다
+* depends: Issue386
+* 구현 명세:
+    - 판정 먼저: ⓐ 사본을 원본에서 **재생성**(동기 스크립트 + drift check) 하는가 ⓑ 매니페스트를 현행에 맞게 줄이는가
+    - drift 검사를 [`sh/check.sh`](sh/check.sh) 에 편입해 **실패 신호를 만든다** — 사본 방식을 유지하려면 이것이 필수 조건
+    - ⚠️ prj3 파일을 prj1 이 고치지 않는다(단방향 prj3 → prj1 사본)
+
+## Issue386: prj3(~/.claude) 백업·미러 체계 판정 — 위임 회신 ✅
+* 목적: prj3 가 remote 없는 로컬 단일 사본이라는 문제에 대해, prj1 의 publishable 체계를 재사용할지 **prj1 이 판정**해 회신한다 (prj3#Issue416 위임)
+* 구현 명세:
+    - 신설: [`scripts/fpm-backup-repo.sh`](scripts/fpm-backup-repo.sh) — repo 무관 오프사이트 백업. prj1·prj3 공용
+    - 기본 **읽기 전용 점검**(gitleaks 이력 스캔 + 로컬↔원격 tip 대조), 쓰기는 `--push` 명시 시에만. 삭제 전파(`--mirror`) 금지 — 로컬 실수 삭제가 백업까지 지우면 백업이 아니라 복제다
+    - **push 여부와 무관하게 항상 신선도를 대조하고 불일치를 non-zero 로 보고**한다. Issue387 의 실패 모드("백업은 있는데 최신이 아니다")를 구조적으로 검출하기 위함
+    - ⚠️ 위임 범위 준수: prj3 저장소 **무수정**(읽기 전용 실측만), 원격 push **미실행**(승인 필요 → Issue387)
+
+## Issue384: 📋 세션 작업 메뉴를 hover 로 연다 — 툴팁이 메뉴로 오인돼 클릭 불가였던 문제 ✅
+* depends: Issue383
+* 목적: 사용자 보고 — *"팝업은 나오는데 마우스 가져가면 팝업이 사라져서 클릭을 할 수가 없음."* Issue383 이 없애려던 **"발견 불가능"** 병이 툴팁 문구 층에서 그대로 재발했다
+
+## Issue383: 📋 세션 ID 복사 버튼을 2지선다로 — 복사 / 세션 내용 새 창 보기 ✅
+* 목적: **VSCode·Zed 세션은 브라우저에서 대화 내용을 볼 경로가 아예 없다.** 활성 세션 행 클릭은 origin 별로 갈리는데([server.py:10530](services/hub/server.py#L10530)) `terminal` 만 `openSessionViewer()` 로 뷰어를 열고, `vscode`·`zed` 는 에디터 탭 포커스로 빠진다. 즉 에디터 세션의 내용을 hub 에서 읽으려면 방법이 없다. 📋 버튼 자리에서 **복사 / 내용 보기**를 고르게 하여 이 비대칭을 없앤다
+* 구현 명세:
+    - ⚠️ **UX 분기 — 착수 전 택일 필요**:
+        - **(A) 클릭 시 소형 메뉴 (권장)**: 📋 클릭 → 버튼 아래 2항목 메뉴(📋 ID 복사 / 👁 내용 보기). hover 팝업보다 접근성·모바일·오작동 면에서 안전하고, 기존 `#live-tip` hover 툴팁과 **충돌하지 않는다**
+        - **(B) hover 팝업 (요청 원문)**: hover 로 팝업. 단 `.copy-sid` 는 이미 hover 에 툴팁을 띄우므로 **둘이 겹친다** — 툴팁을 팝업으로 대체하거나 지연을 둬야 하고, 포인터가 팝업으로 이동하는 사이 사라지는 고전적 문제를 처리해야 한다(선례: Issue275 hover 후 ~2.5s 지연 팝업, [debug_TECH.md](_doc_work/debug_TECH.md))
+    - 메뉴 항목 2종: `copySid(sid, btn)` 재사용 · `openSessionViewer(url, topic)` 재사용
+    - `s.url` 이 빈 세션은 "내용 보기" 항목을 **비활성**(회색)으로 렌더 — 눌러도 아무 일 없는 항목을 살아 있는 것처럼 두지 않는다
+    - 위임 핸들러가 `closest('button,a')` 로 버튼을 제외하므로([server.py:10434](services/hub/server.py#L10434)) 메뉴 클릭이 행-클릭을 발동시키지 않는지 확인
+    - `live_session_copy_button` 토글(Issue277)과의 관계 정리 — false 면 메뉴 자체가 없어지므로 "내용 보기"도 함께 사라진다. 이것이 의도인지 판단(아니면 옵션 의미를 재정의)
+    - locales [ko.json](data/locales/ko.json)/[en.json](data/locales/en.json) 문자열 추가, 2원 사본([services/hub/server.py](services/hub/server.py) + [plugins/fpm-core](plugins/fpm-core/services/hub/server.py)) 동시 반영
+    - 검증: vscode·zed·terminal 3 origin 각각에서 메뉴 2항목 동작 · 행 클릭 회귀 없음 · 툴팁 이중 표시 없음
+
+## Issue381: fpm 미러가 45커밋 뒤처져 host hub 는 여전히 구버전 — 고친 것이 소비자에 도달하지 않는다 ✅
+* depends: Issue377, Issue378
+* 목적: hub 수정이 **host 에서만 산다**. host 은 hub 서버를 `~/_git/fpm`(공개 미러 배포본)에서 돌리는데 그 미러가 45커밋 뒤처져 있어, Issue377(양방향 funnel)·Issue378(자기이동)·Issue379(Host 게이트)가 host 에는 하나도 없다. 사용자가 최초 보고한 "URL 2종 혼란"의 host 쪽 절반이 **미수정 상태로 남아 있다**. 배포 경로를 돌려 고친 것을 소비자까지 도달시킨다
+* 구현 명세:
+    - ① `fpm-sync forward` — ___pm → fpm 공개 반영. `data/publishable-policy.yml` 필터 경유(개인정보 가드는 결정적 sh 헬퍼가 집행)
+    - ② 45커밋 누적분이므로 **반영 후 diff 리뷰 필수** — 이번 세션 3이슈 외 Issue361~374 대의 변경이 함께 나간다. 공개 반출 부적합 문자열이 섞이지 않았는지 확인
+    - ③ `fpm-sync deploy` — 버전 bump + push. ⚠️ **공개 미러 push = 외부 시스템 변경 → 사용자 승인 필수**(글로벌 룰 §5)
+    - ④ 소비자 전파 — 배포 후 host·host `plugin update` 까지 수행해야 실제로 반영된다(배포만 하고 멈추면 소비자는 계속 구버전)
+    - ⑤ 검증: host 에서 `/hub-shell` → 302 `/hub` · `/boards` 에 `render_tab_mode` 존재 확인
+    - ⚠️ 타 머신(host) 서비스 재시작을 수반한다 — systemd 관리이므로 재시작 방법을 확인하고 진행
 
 ## Issue379: hub 가 Host 헤더를 판정하지 않아 임의 도메인으로 200 응답 — DNS rebinding 표면 ✅
 * 목적: hub 는 `bind_host` 3소켓(`127.0.0.1`·`<lan-ip>`·`<tailnet-ip>`)에 도달하기만 하면 **`Host` 헤더가 무엇이든 200** 을 준다. `curl -H 'Host: evil.example' http://127.0.0.1:9876/hub` → 200 실측(2026-08-15). Issue141 의 source-IP 게이트(`_ip_allowed`)는 **어디서 왔는가**만 보고 **어느 이름으로 불렸는가**를 안 보므로, 브라우저를 경유하는 DNS rebinding 은 src 가 loopback 이라 그대로 통과한다. 수신 이름을 known-host 집합으로 제한해 이 표면을 닫는다

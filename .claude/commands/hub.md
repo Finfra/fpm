@@ -6,7 +6,7 @@ date: 2026-05-19
 
 # 트리거
 
-`/hub <subcmd>` — 서버 lifecycle `<subcmd>`: `start`, `stop`, `restart`, `status`, `disable`, `enable`, `clear`, `reset`
+`/hub <subcmd>` — 서버 lifecycle `<subcmd>`: `start`, `stop`, `restart`, `status`, `disable`, `enable`, `clear`, `token-rotate`, `reset`
 
 > **⚠️ 토글 vs 서버 구분 (Issue200)**: `/hub on|off [all]` 은 본 커맨드가 아니라 글로벌 hook(`fpm-hub-trigger.sh`)이 처리하는 **자동 렌더 토글**이다 (서버 프로세스와 무관).
 > * `/hub on` / `/hub off` = **프로젝트 단위**(현재 cwd) 자동 렌더 토글
@@ -220,6 +220,27 @@ curl -sS -X POST http://127.0.0.1:9876/clear-done | python3 -m json.tool
 
 세션/토큰 파일 청소가 필요하면 본 커맨드 대신 `/hub restart` 사용 (메모리 상태도 초기화됨).
 
+## token-rotate (Issue394)
+
+프로젝트 토큰을 **무효화**한다. 유출 의심·정리 목적. 인자 없으면 현재 `$PWD`, `all` 이면 전량.
+
+토큰은 `cwd` 단위 **장수명 고정값**이라(Issue392 판정) 설계상 만료가 없다. 본 서브커맨드가 유일한 무효화 수단이다 — 종전에는 `/hub reset`(전량 wipe + 재기동)뿐이어서 SSE·dashboard 를 전부 끊어야 했다.
+
+```bash
+CWD_ARG="${1:-$PWD}"
+if [ "$CWD_ARG" = "all" ]; then
+  Q="all=1"
+else
+  Q="cwd=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1]))' "$CWD_ARG")"
+fi
+curl -sS -X POST "http://127.0.0.1:9876/token-rotate?$Q" | python3 -m json.tool
+```
+
+* **서버 재기동 불요** — 메모리 엔트리 제거 + `tokens.json` flush 만 한다. 다음 `POST /register` 가 새 uuid 를 민팅한다
+* **비용**: 그 프로젝트의 열려 있던 탭이 `401`. 다시 렌더하면 복구된다. 다른 프로젝트는 무영향
+* **구 토큰 무효 확인**(값 미출력): 회전 전 토큰으로 `GET /data` 가 `401` 이면 성공
+* 127.0.0.1 trust — 구 토큰을 요구하지 않는다. 요구하면 *"토큰을 잃어버렸다"* 는 정작 필요한 상황에서 못 쓴다
+
 ## reset
 
 **full wipe + restart**. 순서:
@@ -272,6 +293,7 @@ curl -s http://127.0.0.1:9876/healthz
 | `enable`   | `launchctl enable` + bootstrap (disable 복원) | — |
 | `start`    | bootstrap(plist) 또는 nohup fallback | — |
 | `restart`  | bootout → 포트 비움 → bootstrap/nohup | — |
+| `token-rotate [<cwd>\|all]` | 프로젝트 토큰 무효화 (재기동 불요, 다음 `/register` 가 새로 발급) | — |
 
 # 참조
 

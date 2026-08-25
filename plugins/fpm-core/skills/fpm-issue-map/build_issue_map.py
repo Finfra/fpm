@@ -11,7 +11,7 @@ mmdc 로 SVG 선렌더한 뒤 자립형 HTML 문서로 조립한다.
 
 사용 (nPTiR 루트 = Issue.md 위치에서 실행 — 경로는 플러그인 번들/글로벌 2단계 해석, Issue316):
     python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/skills/{fpm-issue-map|issue-map}/build_issue_map.py"
-        [--check] [--all] [--deadlock] [--no-cross] [--out Issue_map.htm]
+        [--check] [--json] [--all] [--deadlock] [--no-cross] [--out Issue_map.htm]
 """
 
 import argparse
@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.parse
 from datetime import date
 from pathlib import Path
@@ -60,10 +61,29 @@ EDGE_REF = "#9a9a9a"    # 참조 관계 · 미확인 (차단 판정 불가)
 EDGE_HELD = "#8a7ab0"   # 선행이 보류·취소 → 차단이나 자동 해제 없음 (Issue259)
 
 # ── 타 프로젝트 연동 (Issue252) ──────────────────────────────────────────
-# prj 번호 → 경로 SSOT. 파일 하나당 경로 1줄(ex: projects/1 = "~/_git/___pm").
-PROJECTS_DIR = Path.home() / "_git" / "___pm" / "projects"
+# prj 번호 → 경로 SSOT = projects 레지스트리 디렉토리. 파일 하나당 경로 1줄
+# (ex: projects/1 = 대상 prj 루트 경로). 위치는 하드코딩하지 않는다 (Issue436_3):
+# ~/.info/__pmBasePath.txt 의 1줄이 projects 디렉토리 절대경로 **그 자체**다.
+# 추가 join 절대 금지(`/projects` 를 덧붙이면 projects/projects 파손 → cross-prj 전멸).
+# fpm MCP server.py `_base_dir()` 와 동일 규약. 부재 시 개인 경로 폴백 금지.
+PM_BASE_FILE = Path.home() / ".info" / "__pmBasePath.txt"
 MAX_HOPS = 3        # 교착 탐색: prj 경계를 넘는 최대 홉 (opus-4-8 루프 상한 준수)
 MAX_PROJECTS = 20   # 교착 탐색: 열어 볼 프로젝트 상한
+
+
+def resolve_projects_dir():
+    """projects 레지스트리 디렉토리 resolver — 파일 값을 그대로 쓴다 (Issue436_3).
+
+    부재·빈 값·디렉토리 아님 → None. 호출측(CrossResolver)이 cross-prj 조회만
+    스킵하고 로컬 단일 prj 렌더는 정상 진행한다.
+    """
+    if not PM_BASE_FILE.is_file():
+        return None
+    raw = PM_BASE_FILE.read_text().strip()
+    if not raw:
+        return None
+    p = Path(os.path.expanduser(os.path.expandvars(raw)))
+    return p if p.is_dir() else None
 
 
 # ── 파싱 ────────────────────────────────────────────────────────────────
@@ -71,6 +91,36 @@ MAX_PROJECTS = 20   # 교착 탐색: 열어 볼 프로젝트 상한
 DEP_NULL_TOKENS = {"없음", "-", "n/a", "none", "na"}
 # 규약상 유효한 prj 참조 (rules/issue-g.md 규칙2) — 이름 표기는 위반 (Issue343 P2)
 PRJ_REF_RE = re.compile(r"^prj[0-9]+[a-z]?$")
+
+
+def split_deps(s: str):
+    """`* depends:` 값을 **괄호 밖 쉼표**로만 자른다.
+
+    ⚠️ 종전 `s.split(",")` 은 괄호 **안쪽** 쉼표까지 분리자로 봤다. 실측(2026-08-16):
+
+        * depends: prj5#Issue66 (완료 — `bdc1fb7`, `0a232ff`)
+
+    이 한 줄이 두 조각으로 갈려 뒤쪽 `` `0a232ff`) `` 가 파싱 실패로 경고에 올랐다.
+    커밋 해시를 **둘 이상** 적은 완료 주석에서만 나타나므로 오래 안 보였다
+    (해시 1개짜리는 멀쩡하다). 경고만 나고 앞 조각은 정상 파싱돼 **의존 자체는
+    그려졌지만**, 매 실행 거짓 경고가 쌓이면 진짜 위반을 가린다(Issue343 취지).
+
+    `parse_dep_token` 이 괄호를 지우긴 하나 그건 **자른 뒤**라 늦다 — 자르는 단계에서
+    괄호 깊이를 봐야 한다.
+    """
+    out, buf, depth = [], [], 0
+    for ch in s:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        if ch == "," and depth == 0:
+            out.append("".join(buf))
+            buf = []
+        else:
+            buf.append(ch)
+    out.append("".join(buf))
+    return [x for x in out if x.strip()]
 
 
 def parse_dep_token(tok: str):
@@ -194,7 +244,7 @@ def parse_issue_md(path: Path, warn: list | None = None, lenient: bool = False):
             continue
         m_dep = re.match(r"^\*\s+depends\s*:\s*(.+?)\s*$", line)
         if m_dep:
-            for d in m_dep.group(1).split(","):
+            for d in split_deps(m_dep.group(1)):
                 parsed = parse_dep_token(d)
                 if not parsed:
                     # Issue343 P1: 조용히 버리면 그 의존이 지도에서 통째로 사라진다.
@@ -285,17 +335,21 @@ class CrossResolver:
     def __init__(self, root: Path, enabled=True):
         self.root = root.resolve()
         self.enabled = enabled
-        self.projects = self._load_projects()
+        self.projects_dir = resolve_projects_dir() if enabled else None
+        if enabled and self.projects_dir is None:
+            print(f"⚠️ projects 레지스트리 없음({PM_BASE_FILE} 부재·무효) — "
+                  "cross-prj 조회 스킵, 로컬 이슈만 렌더", file=sys.stderr)
+        self.projects = self._load_projects(self.projects_dir)
         self._issues = {}                       # {경로str: {id: issue}} 파싱 캐시
         self.unresolved = []                    # [(ref, iid, 사유)]
 
     @staticmethod
-    def _load_projects():
+    def _load_projects(projects_dir):
         """{'prj1': Path, '___pm': Path, '.claude': Path, '~/.claude': Path, …}"""
         out = {}
-        if not PROJECTS_DIR.is_dir():
+        if projects_dir is None:
             return out
-        for f in sorted(PROJECTS_DIR.iterdir()):
+        for f in sorted(projects_dir.iterdir()):
             if not f.is_file() or not f.name.isdigit():
                 continue
             try:
@@ -679,22 +733,35 @@ def fit_svg(s: str) -> str:
 
 
 # ── HTML 조립 ───────────────────────────────────────────────────────────
+def blocking_of(iss, issues, resolver=None):
+    """미해소 선행 판정의 **단일 지점** (Issue436_3) — status_text(HTML)·emit_json(--json) 공용.
+
+    반환 (local, ext_blocked, unknown):
+        local        미완료 로컬 선행 id 목록
+        ext_blocked  미완료로 확인된 타 prj 선행 ("prj1#IssueN")
+        unknown      확인 실패한 타 prj 선행 — '착수 가능' 으로 부르면 거짓 안전 신호
+    """
+    local = [d for d in iss["depends"] if d in issues and not issues[d]["done"]]
+    ext_blocked, unknown = [], []
+    cross = resolver is not None and resolver.enabled     # --no-cross 면 기존 동작 유지
+    for ref, dep_iid in (iss["ext"] if cross else []):    # 타 prj 선행도 차단 요인 (Issue252)
+        st = resolver.status(ref, dep_iid)
+        if st["ok"] and not st["done"]:
+            ext_blocked.append(f"{ref}#{dep_iid}")
+        elif not st["ok"]:
+            unknown.append(f"{ref}#{dep_iid}")
+    return local, ext_blocked, unknown
+
+
 def status_text(iss, issues, resolver=None):
     if iss["done"]:
         return "✅ 완료" + (f" ({iss['commit']})" if iss["commit"] else "")
     if iss["note"]:
         return iss["note"]
+    local, ext_blocked, unknown = blocking_of(iss, issues, resolver)
     # 보류·취소 선행은 '기다리면 풀리는 차단' 이 아니므로 상태 문구에 그 사실을 남긴다 (Issue259)
     blockers = [f"{d} {SECTIONS[issues[d]['section']][0]}" if issues[d]["ghost"] else d
-                for d in iss["depends"] if d in issues and not issues[d]["done"]]
-    unknown = []
-    cross = resolver is not None and resolver.enabled     # --no-cross 면 기존 동작 유지
-    for ref, dep_iid in (iss["ext"] if cross else []):    # 타 prj 선행도 차단 요인 (Issue252)
-        st = resolver.status(ref, dep_iid)
-        if st["ok"] and not st["done"]:
-            blockers.append(f"{ref}#{dep_iid}")
-        elif not st["ok"]:
-            unknown.append(f"{ref}#{dep_iid}")
+                for d in local] + ext_blocked
     if blockers:
         return f"⛔ 차단 ({', '.join(blockers)})"
     # 못 읽은 외부 선행을 '착수 가능' 으로 부르면 거짓 안전 신호가 된다
@@ -750,6 +817,11 @@ def build_cross_section(issues, resolver, cycles):
             f"대기 중 {blocked}건은 <strong>단순 대기</strong>이며, 선행이 완료되면 자동으로 풀립니다."
             "</p></blockquote>")
 
+    # 경로 SSOT 문구는 resolver 값 기반 동적 출력 (Issue436_3 — 개인 경로 하드코딩 금지)
+    ssot_html = (f"<code>{html.escape(str(resolver.projects_dir))}/&#123;번호&#125;</code>"
+                 if resolver.projects_dir
+                 else f"<code>{html.escape(str(PM_BASE_FILE))}</code> 미설정 — cross-prj 미조회")
+
     return f"""<!-- ISSUE-MAP:CROSS:START -->
 <h2>타 프로젝트 연동</h2>
 <div class="wrap">
@@ -758,7 +830,7 @@ def build_cross_section(issues, resolver, cycles):
 {table}
 </table>
 </div>
-<p>다른 프로젝트의 <code>Issue.md</code> 를 직접 열어 상태를 확인한 결과입니다(경로 SSOT: <code>~/_git/___pm/projects/&#123;번호&#125;</code>). 관계도에서는 점선 테두리 노드로 그려집니다.</p>
+<p>다른 프로젝트의 <code>Issue.md</code> 를 직접 열어 상태를 확인한 결과입니다(경로 SSOT: {ssot_html}). 관계도에서는 점선 테두리 노드로 그려집니다.</p>
 
 <h3>교착(순환 대기) 진단</h3>
 {verdict_html}
@@ -1078,6 +1150,49 @@ def print_deadlock_report(issues, resolver, cycles):
               "선행 완료 시 자동 해제")
 
 
+def emit_json(issues, resolver, root: Path) -> None:
+    """--json: 파싱·판정 결과를 기계 소비용 JSON 으로 stdout 출력 (Issue436_3).
+
+    htm 미생성·mmdc 미호출 — 빠르고 무의존. 판정은 blocking_of(status_text 와
+    동일 지점) 재사용만 한다 — 소비처(fbot-taskmgr)가 착수 가능을 재판정하지 않는다.
+    경고류는 전부 stderr 로 나가므로 stdout 은 항상 순수 JSON 1건이다.
+    """
+    out_issues = []
+    for iss in issues.values():
+        local, ext_blocked, unknown = blocking_of(iss, issues, resolver)
+        if iss["done"]:
+            state = "done"
+        elif iss["ghost"]:                     # 보류·취소 유령 — 기다려도 자동 해제 없음
+            state = "held"
+        elif local or ext_blocked:
+            state = "blocked"
+        elif unknown:                          # 미확인은 '착수 가능' 이 아니다 (거짓 안전 신호 금지)
+            state = "unknown"
+        else:
+            state = "startable"
+        out_issues.append({
+            "id": iss["id"],
+            "title": iss["title"],
+            "section": iss["section"],
+            "state": state,
+            "depends": list(iss["depends"]) + [f"{r}#{d}" for r, d in iss["ext"]],
+            "blocked_by": local + ext_blocked + unknown,
+            "startable": state == "startable",
+        })
+    cross = []
+    if resolver is not None and resolver.enabled:
+        for iss in issues.values():
+            for ref, dep_iid in iss["ext"]:
+                st = resolver.status(ref, dep_iid)
+                cross.append({
+                    "ref": f"{ref}#{dep_iid}",
+                    "status": ("done" if st["done"]
+                               else ("blocked" if st["ok"] else "unknown")),
+                })
+    print(json.dumps({"root": str(root), "generated": int(time.time()),
+                      "issues": out_issues, "cross": cross}, ensure_ascii=False))
+
+
 def print_dep_warnings(warn: list) -> None:
     """`* depends:` 규약 위반을 stderr 로 보고 (Issue343).
 
@@ -1106,6 +1221,8 @@ def main():
     ap.add_argument("--out", default="Issue_map.htm")
     ap.add_argument("--issue", default="Issue.md")
     ap.add_argument("--check", action="store_true", help="파싱 결과만 출력 (파일 미생성)")
+    ap.add_argument("--json", dest="as_json", action="store_true",
+                    help="파싱·판정 결과를 JSON 으로 stdout 출력 (htm 미생성·mmdc 미호출)")
     ap.add_argument("--all", action="store_true",
                     help="정리 완료 노드(완료 + 후행도 전부 완료)까지 그래프에 표시")
     ap.add_argument("--no-cross", action="store_true",
@@ -1130,6 +1247,11 @@ def main():
     resolver = CrossResolver(root, enabled=not args.no_cross)
     demote_self_refs(issues, resolver)
     cycles = resolver.deadlocks(issues)
+
+    if args.as_json:                        # Issue436_3 — 기계 출력, htm 경로 완전 미진입
+        emit_json(issues, resolver, root)
+        print_dep_warnings(dep_warn)
+        return
 
     if args.deadlock:
         print_deadlock_report(issues, resolver, cycles)
