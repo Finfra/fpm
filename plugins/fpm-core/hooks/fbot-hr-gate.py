@@ -35,7 +35,8 @@ import subprocess
 import sys
 import time
 
-DEFAULT_AOA_DIR = os.path.join(os.path.expanduser("~"), "_git", "___common", "data", "aoa")
+# 경로 계약 (Issue450) — env 가 정식 설정. 미설정 시 제품 중립 기본(prj5 미클론 머신 대응).
+DEFAULT_AOA_DIR = os.path.join(os.path.expanduser("~"), ".claude", "data", "aoa")
 
 # role 카탈로그 SSOT — fbot-icon 스킬 소유 (fbot-arch.md §조직 role 등록 절차 ⑤단계)
 CATALOG_PATH = os.path.join(os.path.expanduser("~"), ".claude", "data", "fbot", "icons", "catalog.yml")
@@ -48,6 +49,10 @@ BUDGET_NS = "fbot:budget"  # registry.kv 예산 원장 네임스페이스 (regis
 CIRCLED = {1: "①", 2: "②", 3: "③", 4: "④", 5: "⑤"}
 
 STATE_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fbot-state.py")
+# 아이콘 생성기 — fbot-icon 스킬 소유(카탈로그와 같은 SSOT). 색·도형·경로 규약을 여기서
+#   복제하지 않고 `gen --json` 으로 **물어본다**(fbot-arch §F1 판정 단일 지점).
+ICON_GEN = os.path.join(os.path.expanduser("~"), ".claude", "skills", "fbot-icon",
+                        "scripts", "fbot-icon-gen.py")
 
 
 class FbotError(Exception):
@@ -161,6 +166,30 @@ def active_count(con: sqlite3.Connection) -> int:
     return con.execute("SELECT COUNT(*) AS c FROM bot WHERE state != 'checkout'").fetchone()["c"]
 
 
+def ensure_bot_icon(bot_id: str, role: str) -> tuple:
+    """채용 시 개체 아이콘을 생성하고 (상대경로, 개체색) 을 돌려준다.
+
+    왜 채용 경로에 있는가 — 아이콘·색은 레지스트리 레코드의 필드이고, 그 레코드를 만드는
+    유일한 지점이 채용이다(prj3#Issue438 실측: 이 배선이 없어 13봇 중 12봇의 icon 이 NULL
+    이었고, color 에는 role 기본색이 들어가 같은 role 봇이 전부 동색이었다).
+
+    실패는 fail-soft — 아이콘은 **표시 품질**이지 채용 판정 요소가 아니다. 다만 조용히
+    넘기지 않고 (None, None) 을 돌려 호출부가 경고를 기록하게 한다.
+    """
+    if not os.path.exists(ICON_GEN):
+        return (None, None)
+    try:
+        proc = subprocess.run(
+            [sys.executable, ICON_GEN, "gen", "--role", role, "--bot-id", bot_id, "--json"],
+            capture_output=True, text=True, timeout=10)
+        if proc.returncode != 0:
+            return (None, None)
+        d = json.loads(proc.stdout)
+        return (d.get("rel_path"), d.get("color"))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return (None, None)
+
+
 def emit(obj) -> None:
     print(json.dumps(obj, ensure_ascii=False, indent=2))
 
@@ -236,18 +265,25 @@ def cmd_hire(args) -> int:
         con.close()
 
     # ── 채용 완료 = fbot-state.py register 호출 (등록 로직 중복 구현 금지) ──
+    # 아이콘·개체색은 생성기에 물어본다. 계약은 "종류별 동형 도형 + **개체별** 색"이므로
+    #   role 기본색은 생성기가 실패했을 때의 최후 폴백일 뿐이다.
+    icon_rel, icon_color = ensure_bot_icon(args.bot_id, args.role)
     reg_cmd = [
         sys.executable, STATE_PY, "register",
         "--bot-id", args.bot_id, "--role", args.role, "--title", args.title,
         "--career", args.career,
-        "--color", args.color or load_catalog()[args.role],
+        "--color", args.color or icon_color or load_catalog()[args.role],
     ]
     if args.parent:
         reg_cmd += ["--parent", args.parent]
     if args.prj is not None:
         reg_cmd += ["--prj", str(args.prj)]
-    if args.icon:
-        reg_cmd += ["--icon", args.icon]
+    if args.icon or icon_rel:
+        reg_cmd += ["--icon", args.icon or icon_rel]
+    if getattr(args, "tmux_target", None):
+        reg_cmd += ["--tmux-target", args.tmux_target]
+    if getattr(args, "session_id", None):
+        reg_cmd += ["--session-id", args.session_id]
     proc = subprocess.run(reg_cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         # register 실패 → 차감분 환불 후 fail-loud (예산 유령 차감 금지)
@@ -267,13 +303,19 @@ def cmd_hire(args) -> int:
         )
     bot = json.loads(proc.stdout).get("bot", {})
 
-    emit({
+    out = {
         "ok": True, "action": "hire", "verdict": "허가",
         "bot_id": args.bot_id, "role": args.role, "depth": depth,
         "active_before": actives,
         "budget": {"ns": BUDGET_NS, "month": month, "spent": spent_after, "limit": budget_limit},
         "bot": bot,
-    })
+    }
+    if not icon_rel:
+        # 아이콘 생성 실패는 채용을 막지 않지만 조용히 넘기지도 않는다 — hub 카드가
+        #   색 dot 으로만 뜨는 이유를 나중에 추적할 수 있어야 한다.
+        out["warning"] = ("아이콘 생성 실패 — 개체 아이콘 없이 등록됨"
+                          f" (생성기: {ICON_GEN}). hub 는 role 아이콘·색 dot 으로 폴백한다")
+    emit(out)
     return 0
 
 
@@ -340,6 +382,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--career", default="probation", help="기본 probation (채용 = 수습 시작)")
     sp.add_argument("--icon", default=None)
     sp.add_argument("--color", default=None, help="생략 시 role 카탈로그 base 색")
+    # Issue448 ② — 스폰 시점에 실행 형태를 알면 결속을 함께 기록한다.
+    #   ⚠️ 모르면 넘기지 않는다(NULL). Agent 형태는 pane 이 없고, tmux 위임도 창을
+    #   나중에 만들면 hire 시점엔 미상이다 — 그 경우 출근 훅이 채운다.
+    sp.add_argument("--tmux-target", default=None, help="tmux 'session:window.pane' (모르면 생략)")
+    sp.add_argument("--session-id", default=None, help="claude 세션 id (모르면 생략)")
     sp.set_defaults(func=cmd_hire)
 
     sp = sub.add_parser("check", help="일반 위임(비봇) — 깊이·동시 상주만, 등록·차감 없음")

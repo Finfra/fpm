@@ -1,0 +1,35 @@
+# aoa 운영 정책 — **배포 기본값 템플릿** (Issue451 ②)
+#
+# 이 파일은 정본이 아니다. 소비자 머신의 정본은 `$AOA_MEMORY_DIR/policy.yml`
+# (미설정 시 `~/.claude/data/aoa/policy.yml`) 이며, sh/fbot-bootstrap.sh 가
+# **부재 시에만 복사**하고 이미 있으면 **없는 키만 덧붙인다**(기존 값 불변).
+#
+# 형식은 `key: value` 평면만 — 의존성 0 파서(mcp/aoa-memory/policy.py,
+# hooks/fbot-*.py 정규식)가 이 형식을 전제한다. 중첩 금지.
+
+# ── 에이징 ── 삭제되는 것은 파생·이력·회전 데이터뿐이다. 지식(instinct)은 영속.
+observation_retention_days: 90
+job_retention_days: 30
+
+# ── consolidation ──
+learn_consolidation_enabled: true
+consolidation_strategy: stats      # stats(무과금 집계) | llm(Batch API — 예산 한도·API 키 필수)
+consolidation_model:               # 🔴 빈 값이 기본. llm 전환 시 모델 ID 를 여기에만 기입
+consolidation_budget_monthly_tokens: 0   # 🔴 0 = 미지정 → llm 전략은 fail-loud (한도 명시 강제)
+consolidation_grace_days: 90
+
+# ── job 실행 ──
+lease_ttl_secs: 300
+job_max_attempts: 2
+
+# ── fbot (핀봇 게이트) ── 판정 단일 지점은 hooks/fbot-hr-gate.py·fbot-taskmgr.py.
+#    이 수치를 코드나 다른 스크립트에 복제하지 말 것. 보수적 초기값이며 실측 재산정 대상.
+fbot_spawn_depth_limit: 3          # 스폰 깊이 상한
+fbot_concurrent_limit: 5           # 동시 상주 상한 (state != checkout 인 봇 수)
+fbot_spawn_budget_monthly: 30      # 월 스폰(채용) 건수 상한
+fbot_dispatch_monthly_limit: 30    # 작업핀봇 수요측 — 월 배분 상한
+fbot_dispatch_concurrent_limit: 3  # 작업핀봇 수요측 — 동시 배분 상한
+
+# ── fbot 보고 ── Discord 발신 대상(채널 id 또는 `user:<id>`). 비우면 폴백 사다리로 내려간다.
+#    값 없이 두는 것이 기본 — 외부 발신 개시는 사용자 결정 사항이다.
+fbot_report_discord_target:

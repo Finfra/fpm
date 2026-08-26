@@ -22,7 +22,8 @@ set -euo pipefail
 
 WIDGET="${1:-}"
 # DB 경로 knob 은 fbot-state.py·fbot-checkout.sh 와 **같은 env**(AOA_MEMORY_DIR)
-AOA_DIR="${AOA_MEMORY_DIR:-$HOME/_git/___common/data/aoa}"
+# 경로 계약 (Issue450) — env 가 정식 설정. 미설정 시 제품 중립 기본(prj5 미클론 머신 대응).
+AOA_DIR="${AOA_MEMORY_DIR:-$HOME/.claude/data/aoa}"
 DB="$AOA_DIR/registry.db"
 
 if [[ -z "$WIDGET" ]]; then

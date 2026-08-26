@@ -26,8 +26,15 @@ CLI
          B: 배분 후 진행 신호 없음 — bot 부재·퇴근·lease 만료)
         → 재시도 카운트(상한 RETRY_LIMIT — opus 룰 §2) → 초과 시 에스컬레이션:
         aoa-mq enqueue helper `--alert` 호출(직접 큐 파일 Write 금지).
+        진입 시 `sweep`(완료 감지)을 **선행**한다.
+    sweep    [--dry-run]
+        완료 감지(Issue438 ④): 배분 워커가 `checkout` + 그 봇의 `fbot_session` job 이
+        done(배분 생성 이후) 이면 배분 완료 → job status=done 갱신 + **묶음 1회** 통지
+        (aoa-mq `--alert --from-bot fbot-taskmgr`). watch 는 이 스윕을 **선행** 실행한다 —
+        완료한 워커도 퇴근 상태라 순서를 바꾸면 정상 완료가 거짓 에스컬레이션이 된다.
     status
-        이번 달 배분 수·상한·활성 배분 목록.
+        이번 달 배분 수·상한·활성 배분 목록 + **취소 집계**(이번 달 건수·최근 5건
+        사유). 취소는 `done` 과 합산하지 않는다 — 성과가 아니다(Issue446).
 
 설계 원칙 (fbot-state.py·fbot-hr-gate.py 승계)
 * 표준 라이브러리만 사용(무의존). policy.yml·fbot.yml 은 평탄 키라 정규식으로 읽는다.
@@ -50,7 +57,8 @@ import sys
 import time
 import uuid
 
-DEFAULT_AOA_DIR = os.path.join(os.path.expanduser("~"), "_git", "___common", "data", "aoa")
+# 경로 계약 (Issue450) — env 가 정식 설정. 미설정 시 제품 중립 기본(prj5 미클론 머신 대응).
+DEFAULT_AOA_DIR = os.path.join(os.path.expanduser("~"), ".claude", "data", "aoa")
 
 # issue-map 이미터 (s3 확장 ① — 파서 재사용, htm 스크레이핑 금지)
 ISSUE_MAP_PY = os.path.join(
@@ -63,7 +71,7 @@ HR_GATE_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fbot-hr-g
 
 # aoa-mq 등록 helper (직접 큐 파일 Write 금지 — helper 경유만)
 MQ_ENQUEUE_SH = os.path.join(
-    os.path.expanduser("~"), "_git", "___common", ".claude", "agents", "aoa-mq-enqueue.sh"
+    os.path.expanduser("~"), ".claude", "mcp", "aoa-mq", "aoa-mq-enqueue.sh"
 )
 
 BOT_ID = "fbot-taskmgr"  # 기록 귀속 주체 (F4 — 전역 1개, 계약 §조직 개체 스코프)
@@ -73,6 +81,11 @@ POLICY_KEYS = ("fbot_dispatch_monthly_limit", "fbot_dispatch_concurrent_limit")
 
 DISPATCH_NS = "fbot:dispatch"  # registry.kv 배분 원장 네임스페이스 (HR ns=fbot:budget 과 분리)
 JOB_KIND = "fbot_dispatch"     # registry.job 배분 기록 kind
+SESSION_JOB_KIND = "fbot_session"  # 퇴근 훅(fbot-checkout.sh)이 남기는 세션 기록 kind
+# 통지 워터마크 — 배분에 매이지 않은 봇 세션 완료를 어디까지 알렸는지(Issue438 ④ 명세 정합).
+#   배분 완료는 job status 전이가 곧 중복 방지지만, 세션 완료는 그 보장이 없어 워터마크가 필요하다.
+NOTIFY_NS = "fbot:notify"
+NOTIFY_SESSION_KEY = "session_watermark"
 
 # 재시도 상한 — opus-4-8-execution-rules §2 (2회 연속 실패 시 보고·대기). 정책 수치가
 # 아니라 실행 규칙 상수라 policy.yml 에 넣지 않는다.
@@ -236,6 +249,38 @@ def active_dispatches(con: sqlite3.Connection) -> list:
     return out
 
 
+def cancelled_dispatches(con: sqlite3.Connection) -> list:
+    """취소(cancelled) 배분 전체 — 종결분이라 `active_dispatches` 가 보지 않는 축이다.
+
+    왜 별도 함수인가 (Issue446) — `cancel` 경로 신설로 `cancelled` 상태가 생겼으나 관측이
+    따라오지 않아 원장에만 존재하고 어느 뷰에도 안 나왔다. ⚠️ **`done` 과 합산 금지** —
+    분리한 이유가 "취소를 성과로 집계하지 않는 것" 이다(cmd_cancel 주석 참조).
+
+    시각 키가 2종인 것은 이력 때문이다: `cancel` 명령이 쓰는 `cancelled_at` 과, 명령
+    신설 이전에 중역핀봇이 직접 UPDATE 로 화해한 건의 `swept_at`. 둘 다 없으면 생성
+    시각으로 떨어진다 — 시각 부재를 "취소 없음" 으로 읽지 않기 위한 폴백이다.
+    주체 키도 같은 이유로 `cancelled_by`/`detected_by` 2종을 본다.
+    """
+    rows = con.execute(
+        "SELECT * FROM job WHERE kind = ? AND status = 'cancelled' ORDER BY created_at",
+        (JOB_KIND,),
+    ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        for k in ("payload", "result"):
+            try:
+                d[k] = json.loads(d[k]) if d[k] else {}
+            except json.JSONDecodeError:
+                d[k] = {"raw": d[k]}
+        res = d["result"]
+        d["cancelled_at"] = res.get("cancelled_at") or res.get("swept_at") or d["created_at"]
+        d["cancelled_by"] = res.get("cancelled_by") or res.get("detected_by") or "unknown"
+        out.append(d)
+    out.sort(key=lambda d: d["cancelled_at"])
+    return out
+
+
 def emit(obj) -> None:
     print(json.dumps(obj, ensure_ascii=False, indent=2))
 
@@ -261,12 +306,14 @@ def judge_demand_guard(con, pol) -> dict:
             "active": len(active), "concurrent_limit": c_limit}
 
 
-# ── 에스컬레이션 (mq enqueue helper 경유 — 제안까지만, 사람 응답 대기) ──────
+# ── mq alert 발신 (helper 경유 — 제안까지만, 사람 응답 대기) ────────────────
 
-def escalate(message: str) -> str:
+def mq_alert(message: str) -> str:
     """aoa-mq 에 alert 등록. 직접 큐 파일 Write 금지 — helper 경유만.
 
-    여기서 끝이다 — 등록된 건의 후속 처리(`[컨펌]` 포함)는 사람 몫이다.
+    에스컬레이션(watch)과 완료 통지(sweep)의 **공용 발신구**다. 여기서 끝이다 —
+    등록된 건의 후속 처리(`[컨펌]` ACK 포함)는 사람 몫이다(계약 §호출 경계).
+    ⚠️ 호출측은 **건당 1회가 아니라 묶음 1회**로 부른다 (Issue399 규약: 통지 1회·묶음).
     """
     if not os.path.exists(MQ_ENQUEUE_SH):
         raise FbotError(f"aoa-mq enqueue helper 없음: {MQ_ENQUEUE_SH}")
@@ -281,6 +328,234 @@ def escalate(message: str) -> str:
             f"{(proc.stderr or proc.stdout).strip()}"
         )
     return proc.stdout.strip()
+
+
+# ── 완료 감지·통지 (Issue438 ④ — 상태 전이 시점 통지) ──────────────────────
+
+def detect_completions(con: sqlite3.Connection) -> list:
+    """미종결 배분 중 **완료된 것**을 골라낸다.
+
+    판정(계약 Issue438 ④): 배분의 워커 봇이 `checkout` 이고, 그 봇 귀속
+    `fbot_session` job(status=done — 퇴근 훅이 남긴다)이 **배분 생성 이후**에
+    존재하면 배분 완료다.
+
+    ⚠️ `created_at >= 배분 시각` 조건이 핵심이다 — 같은 bot_id 로 재배분한 경우
+    직전 배분의 낡은 세션 기록이 새 배분을 완료로 오판하는 것을 막는다.
+    ⚠️ reap(lease 만료 강제 퇴근)은 세션 기록을 남기지 않는다 — 즉 **퇴근 상태만으로는
+    완료가 아니다**. 그 경우는 watch 의 적체 B 판정으로 남는다(오판 금지).
+    """
+    found = []
+    for job in active_dispatches(con):
+        wid = job["payload"].get("worker_bot_id")
+        if not wid:
+            continue
+        bot = con.execute("SELECT state FROM bot WHERE bot_id = ?", (wid,)).fetchone()
+        if bot is None or bot["state"] != "checkout":
+            continue
+        row = con.execute(
+            "SELECT id, created_at FROM job"
+            " WHERE kind = ? AND status = 'done' AND owner = ? AND created_at >= ?"
+            " ORDER BY created_at DESC LIMIT 1",
+            (SESSION_JOB_KIND, wid, job["created_at"]),
+        ).fetchone()
+        if row is None:
+            continue
+        found.append({
+            "job_id": job["id"], "from_status": job["status"],
+            "issue": job["payload"].get("issue"), "role": job["payload"].get("role"),
+            "worker_bot_id": wid, "session_job_id": row["id"],
+            "completed_at": row["created_at"],
+        })
+    return found
+
+
+def session_watermark(con: sqlite3.Connection) -> int:
+    """세션 완료 통지 워터마크. 부재 시 **오늘 자정**으로 출발한다.
+
+    왜 0 이 아닌가 — 0 이면 첫 실행에서 과거 전체(누적 세션 기록)를 한꺼번에 알린다.
+    왜 '지금'이 아닌가 — 그러면 오늘 이미 끝난 작업을 영영 못 알린다. 자정이 그 사이다.
+    """
+    row = con.execute("SELECT value FROM kv WHERE ns = ? AND key = ?",
+                      (NOTIFY_NS, NOTIFY_SESSION_KEY)).fetchone()
+    if row is not None:
+        try:
+            return int(row["value"])
+        except (TypeError, ValueError):
+            pass
+    return int(time.mktime(time.strptime(time.strftime("%Y-%m-%d"), "%Y-%m-%d")))
+
+
+def detect_session_completions(con: sqlite3.Connection, watermark: int) -> list:
+    """**배분에 매이지 않은** 봇 세션 완료를 골라낸다 (Issue438 ④).
+
+    왜 필요한가 (2026-08-26 실측) — `detect_completions()` 는 `active_dispatches` 만 돈다.
+    즉 taskmgr 로 배분된 작업만 완료가 통지된다. 그런데 봇을 fpm-do 로 **직접 위임**하면
+    배분 원장에 없으므로, 봇이 일을 끝내도 **아무도 알리지 않는다**. 나래의 prj61 검토가
+    정확히 그랬고 사람이 폴링해서야 알았다 — Issue438 이 없애려던 상황 그 자체다.
+
+    계약 ④ 는 "배분 완료·QA 판정 등 **상태 전이 시점**에 통지" 다. 판정의 기준은
+    배분 원장이 아니라 **봇이 일을 마쳤는가** 여야 한다.
+
+    중복 방지: 배분 완료는 job status 전이가 구조적 보장이 되지만, 세션 기록은 done 인 채로
+    남으므로 워터마크로 막는다. 배분으로 이미 통지된 세션은 `session_job_id` 역참조로 뺀다.
+    """
+    rows = con.execute(
+        "SELECT id, owner, created_at FROM job"
+        " WHERE kind = ? AND status = 'done' AND created_at > ?"
+        " ORDER BY created_at",
+        (SESSION_JOB_KIND, watermark),
+    ).fetchall()
+    if not rows:
+        return []
+    claimed = {
+        r["sid"] for r in con.execute(
+            "SELECT json_extract(result, '$.session_job_id') AS sid FROM job"
+            " WHERE kind = ? AND result IS NOT NULL", (JOB_KIND,)).fetchall()
+        if r["sid"]
+    }
+    out = []
+    for r in rows:
+        if r["id"] in claimed:
+            continue   # 배분 완료로 이미 통지된 세션 — 두 번 알리지 않는다
+        bot = con.execute("SELECT title, current_task FROM bot WHERE bot_id = ?",
+                          (r["owner"],)).fetchone()
+        out.append({
+            "session_job_id": r["id"], "bot_id": r["owner"],
+            "title": (bot["title"] if bot else None) or r["owner"],
+            "task": (bot["current_task"] if bot else None) or "",
+            "completed_at": r["created_at"],
+        })
+    return out
+
+
+def run_sweep(dry_run: bool = False) -> dict:
+    """완료 감지 → job status=done 갱신 → **묶음 1회** 통지.
+
+    통지 규약(Issue399 승계 · 계약 §호출 경계): 여러 건이 동시에 완료돼도 mq 등록은
+    **1건**이다. 건당 발신은 소음이 되고, 소음이 되면 사람이 통지를 끄게 된다.
+    이미 done 으로 넘긴 배분은 다음 sweep 의 후보 집합(open/blocked)에서 빠지므로
+    재통지가 구조적으로 불가능하다 — 별도 중복 마커를 두지 않는 이유다.
+    """
+    now = int(time.time())
+    con = connect()
+    try:
+        done = detect_completions(con)
+        wm = session_watermark(con)
+        sessions = detect_session_completions(con, wm)
+        if dry_run or not (done or sessions):
+            return {"detected": len(done), "completed": done,
+                    "sessions_detected": len(sessions), "sessions": sessions,
+                    "watermark": wm, "enqueued": None,
+                    "mode": "dry-run" if dry_run else "apply"}
+        con.execute("BEGIN IMMEDIATE")
+        for c in done:
+            con.execute(
+                "UPDATE job SET status = 'done', blocked_since = NULL, result = ?"
+                " WHERE id = ? AND status IN ('open','blocked')",
+                (json.dumps({"verdict": "completed", "detected_by": BOT_ID,
+                             "session_job_id": c["session_job_id"],
+                             "from_status": c["from_status"], "swept_at": now},
+                            ensure_ascii=False), c["job_id"]),
+            )
+        # 워터마크는 통지 **전** 같은 트랜잭션에서 전진시킨다. 통지가 실패하면 그 예외로
+        #   sweep 이 끝나고, 워터마크만 앞서 있어 재통지는 없다 — 유실 대신 중복을 막는 선택이다.
+        #   (통지 실패는 mq_alert 이 FbotError 로 시끄럽게 알리므로 조용히 사라지지 않는다.)
+        if sessions:
+            newest = max(x["completed_at"] for x in sessions)
+            con.execute(
+                "INSERT INTO kv (ns, key, value, expires_at, updated_at, updated_by)"
+                " VALUES (?,?,?,NULL,?,?)"
+                " ON CONFLICT(ns, key) DO UPDATE SET"
+                "   value = excluded.value, updated_at = excluded.updated_at",
+                (NOTIFY_NS, NOTIFY_SESSION_KEY, str(newest), now, BOT_ID),
+            )
+        con.execute("COMMIT")
+    finally:
+        con.close()
+
+    # 통지는 커밋 **후** 1회 — 쓰기가 실패한 건을 완료로 알리지 않는다.
+    #   배분 완료와 세션 완료를 **한 건으로 묶는다**(계약 ④ "묶음 발신"). 건당 발신은
+    #   소음이 되고, 소음이 되면 사람이 통지를 끈다.
+    parts = []
+    if done:
+        parts.append("배분 완료 {}건 — {}".format(len(done), " · ".join(
+            f"{c['issue'] or '?'}({c['role'] or '?'}/{c['worker_bot_id']})"
+            + ("[에스컬레이션 해소]" if c["from_status"] == "blocked" else "")
+            for c in done)))
+    if sessions:
+        parts.append("봇 작업 완료 {}건 — {}".format(len(sessions), " · ".join(
+            f"{x['title']}" + (f": {x['task'][:40]}" if x["task"] else "")
+            for x in sessions)))
+    msg = "[fbot-taskmgr] " + " / ".join(parts)
+    enq = mq_alert(msg)   # 실패 시 FbotError — 조용히 삼키지 않는다(통지 유실 금지)
+    return {"detected": len(done), "completed": done,
+            "sessions_detected": len(sessions), "sessions": sessions,
+            "watermark": wm, "enqueued": enq, "message": msg, "mode": "apply"}
+
+
+def cmd_sweep(args) -> int:
+    """완료 감지 스윕 — 상태 전이 시점 통지의 진입점(tick worker 주기 편입)."""
+    out = run_sweep(dry_run=args.dry_run)
+    emit({"ok": True, "action": "sweep", **out})
+    return 0
+
+
+def cmd_cancel(args) -> int:
+    """배분 취소 — 완료가 아니라 **무의미해진 배분의 명시 종결**이다.
+
+    왜 필요한가 (2026-08-26 실측 — 중역핀봇 처분건):
+      `detect_completions()` 는 reap(lease 만료 강제 퇴근)된 워커를 완료로 보지 않는다.
+      세션 done 기록이 없으니 보수적으로 남기는 것이 **옳다**(오판 금지 — 그 주석 참조).
+      빠져 있던 것은 그 다음이다: 배분이 **다른 주체가 일을 끝내버려 무의미해진** 경우
+      종결할 경로가 없어 `open`/`blocked` 로 영구 잔류한다. `open` 은 동시 상한(WIP)을
+      포화시켜 **신규 배분을 전면 차단**한다 — 실측에서 3/3 포화로 조직이 멈춰 있었다.
+      경로가 없으니 중역핀봇이 registry.db 를 직접 UPDATE 했다. 그 우회를 없애는 것이 본 명령이다.
+
+    ⚠️ 완료(`sweep`)와 취소(`cancel`)는 **다른 사건**이다. 취소는 워커가 일을 했다고 주장하지
+      않으며, status 를 `done` 이 아니라 `cancelled` 로 둔다 — `done` 에 섞으면 `/fbot` 의
+      "오늘 완료 N건" 집계가 오염된다(취소가 성과로 잡힌다).
+    ⚠️ `--reason` 필수 — 근거 없는 원장 정리를 금지한다. 누가·왜 지웠는지 남지 않는 취소는
+      나중에 "이 배분은 왜 사라졌나" 를 되짚을 수 없다.
+    ⚠️ mq 통지 없음 — 취소는 사람·중역이 **알고서 명시 호출**하는 사건이라 되알림이 노이즈다
+      (sweep 의 통지는 무인 주기가 발견한 사건이라 성격이 다르다).
+    """
+    con = connect()
+    try:
+        targets = [j for j in active_dispatches(con)
+                   if (args.job_id and j["id"] == args.job_id)
+                   or (args.issue and j["payload"].get("issue") == args.issue)]
+        if not targets:
+            key = args.job_id or args.issue
+            # Reject 는 **수요측 가드 판정 번호** 전용이다(①~⑤) — 취소 대상 부재는 그 축이 아니다.
+            raise FbotError(f"취소 대상 없음: {key} — 미종결(open/blocked) 배분이 아니다")
+        rows = [{"job_id": j["id"], "issue": j["payload"].get("issue"),
+                 "role": j["payload"].get("role"), "worker_bot_id": j["payload"].get("worker_bot_id"),
+                 "from_status": j["status"]} for j in targets]
+        if args.dry_run:
+            emit({"ok": True, "action": "cancel", "mode": "dry-run",
+                  "count": len(rows), "targets": rows})
+            return 0
+        now = int(time.time())
+        # BEGIN IMMEDIATE — 판정과 쓰기 사이에 sweep 이 같은 건을 done 으로 옮겼을 수 있다.
+        con.execute("BEGIN IMMEDIATE")
+        applied = []
+        for r in rows:
+            cur = con.execute(
+                "UPDATE job SET status = 'cancelled', result = ? WHERE id = ? AND status = ?",
+                (json.dumps({"verdict": args.verdict, "reason": args.reason,
+                             "cancelled_by": args.by, "from_status": r["from_status"],
+                             "cancelled_at": now}, ensure_ascii=False),
+                 r["job_id"], r["from_status"]),
+            )
+            if cur.rowcount == 1:
+                applied.append(r)
+        con.execute("COMMIT")
+    finally:
+        con.close()
+    skipped = [r for r in rows if r not in applied]
+    emit({"ok": True, "action": "cancel", "mode": "apply", "verdict": args.verdict,
+          "cancelled": applied, "skipped_raced": skipped, "count": len(applied)})
+    return 0
 
 
 # ── 서브커맨드 ──────────────────────────────────────────────────────────────
@@ -403,9 +678,14 @@ def cmd_dispatch(args) -> int:
 
 
 def cmd_watch(args) -> int:
-    """진행 감시 — 적체 2종 판정 → 재시도 카운트(상한 RETRY_LIMIT) → 초과 시 에스컬레이션."""
+    """진행 감시 — **완료 스윕 선행** → 적체 2종 판정 → 재시도 카운트 → 초과 시 에스컬레이션.
+
+    ⚠️ 순서가 계약이다. 완료한 워커도 `checkout` 이라 적체 B 와 겉모습이 같다 —
+    스윕을 뒤에 두면 정상 완료가 먼저 에스컬레이션되어 거짓 경보가 된다.
+    """
     pol = load_policy()
     now = int(time.time())
+    swept = run_sweep(dry_run=False)   # 선행 — 완료분은 done 으로 빠져 적체 판정 대상에서 제외
     stalls, retried, escalated = [], [], []
 
     con = connect()
@@ -428,7 +708,7 @@ def cmd_watch(args) -> int:
                 msg = (f"[fbot-taskmgr] 배분 적체 에스컬레이션 — job {job['id']} "
                        f"(이슈 {job['payload'].get('issue', '?')}): {reason}. "
                        f"재시도 {RETRY_LIMIT}회 초과 — 사람 판단 필요")
-                enq = escalate(msg)
+                enq = mq_alert(msg)
                 con.execute(
                     "UPDATE job SET status = 'blocked', blocked_since = ?, attempts = ? WHERE id = ?",
                     (now, attempts, job["id"]),
@@ -470,7 +750,7 @@ def cmd_watch(args) -> int:
                     msg = (f"[fbot-taskmgr] 미배분 적체 에스컬레이션 — {data['root']} "
                            f"이슈 {it['id']} 이(가) 착수 가능 상태로 감시 {seen}회 연속 미배분. "
                            f"배분 또는 보류 판단 필요")
-                    item["enqueued"] = escalate(msg)
+                    item["enqueued"] = mq_alert(msg)
                     escalated.append({"issue": it["id"], "reason": "미배분 적체",
                                       "enqueued": item["enqueued"]})
                 idle_pending.append(item)
@@ -481,6 +761,7 @@ def cmd_watch(args) -> int:
         con.close()
 
     out = {"ok": True, "action": "watch", "now": now,
+           "swept": {"detected": swept["detected"], "enqueued": swept["enqueued"]},
            "stall_count": len(stalls), "stalls": stalls,
            "retried": retried, "escalated": escalated}
     if args.cwd is not None:
@@ -492,15 +773,20 @@ def cmd_watch(args) -> int:
 
 
 def cmd_status(args) -> int:
-    """이번 달 배분 수·상한·활성 배분 목록."""
+    """이번 달 배분 수·상한·활성 배분 목록 + 취소 집계(Issue446 — 완료와 분리)."""
     pol = load_policy()
     month = month_key()
     con = connect()
     try:
         spent = dispatched_this_month(con, month)
         actives = active_dispatches(con)
+        cancels = cancelled_dispatches(con)
     finally:
         con.close()
+    # 취소는 **별도 축**이다 — dispatch.spent(예산 차감분)에서 빼지도, done 에 더하지도
+    #   않는다. 예산은 이미 쓴 것이고 성과는 아니다. 그 둘을 동시에 성립시키는 유일한
+    #   표현이 "따로 세어 따로 보여주기" 다 (Issue446).
+    month_cancels = [c for c in cancels if month_key(c["cancelled_at"]) == month]
     emit({
         "ok": True, "action": "status", "month": month,
         "dispatch": {"ns": DISPATCH_NS, "spent": spent,
@@ -515,6 +801,18 @@ def cmd_status(args) -> int:
              "created_at": j["created_at"], "blocked_since": j["blocked_since"]}
             for j in actives
         ],
+        "cancelled": {
+            "total": len(cancels), "month": len(month_cancels),
+            # 사유는 `cancel --reason` 이 강제해 원장에 이미 있다 — 여기서 지어내지 않는다.
+            "recent": [
+                {"job_id": c["id"], "issue": c["payload"].get("issue"),
+                 "role": c["payload"].get("role"),
+                 "worker_bot_id": c["payload"].get("worker_bot_id"),
+                 "verdict": c["result"].get("verdict"), "reason": c["result"].get("reason"),
+                 "cancelled_by": c["cancelled_by"], "cancelled_at": c["cancelled_at"]}
+                for c in cancels[-5:][::-1]
+            ],
+        },
     })
     return 0
 
@@ -544,7 +842,21 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--cwd", default=None, help="지정 시 미배분 startable 적체(A)도 판정")
     sp.set_defaults(func=cmd_watch)
 
-    sp = sub.add_parser("status", help="이번 달 배분 수·상한·활성 배분 목록")
+    sp = sub.add_parser("sweep", help="완료 감지 — 워커 퇴근+세션 done 배분을 done 처리 + 묶음 통지 1회")
+    sp.add_argument("--dry-run", action="store_true", help="감지까지만 — 갱신·통지 없음")
+    sp.set_defaults(func=cmd_sweep)
+
+    sp = sub.add_parser("cancel", help="배분 취소 — 무의미해진 배분을 사유와 함께 명시 종결(완료 아님)")
+    g = sp.add_mutually_exclusive_group(required=True)
+    g.add_argument("--job-id", default=None, help="배분 job id 지정")
+    g.add_argument("--issue", default=None, help="이슈 ID 로 지정 (ex: Issue329 — 동일 이슈 전건)")
+    sp.add_argument("--reason", required=True, help="취소 사유(필수) — 근거 없는 원장 정리 금지")
+    sp.add_argument("--verdict", default="cancelled_obsolete", help="판정 코드(기본 cancelled_obsolete)")
+    sp.add_argument("--by", default=os.environ.get("FBOT_ID", "human"), help="취소 주체 bot_id(기본 $FBOT_ID)")
+    sp.add_argument("--dry-run", action="store_true", help="대상 조회까지만 — 갱신 없음")
+    sp.set_defaults(func=cmd_cancel)
+
+    sp = sub.add_parser("status", help="이번 달 배분 수·상한·활성 배분 목록 + 취소 집계(완료와 분리)")
     sp.set_defaults(func=cmd_status)
 
     return p

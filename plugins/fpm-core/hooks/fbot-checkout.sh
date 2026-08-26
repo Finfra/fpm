@@ -30,7 +30,8 @@ input=$(cat)
 CLAUDE_DIR="$HOME/.claude"
 # DB 경로 knob 은 fbot-state.py 와 **같은 env**(AOA_MEMORY_DIR) — 훅과 헬퍼가 서로 다른
 #   DB 를 보면 상태와 kv 가 조용히 갈라진다.
-DB="${AOA_MEMORY_DIR:-$HOME/_git/___common/data/aoa}/registry.db"
+# 경로 계약 (Issue450) — env 가 정식 설정. 미설정 시 제품 중립 기본(prj5 미클론 머신 대응).
+DB="${AOA_MEMORY_DIR:-$HOME/.claude/data/aoa}/registry.db"
 STATE_PY="$CLAUDE_DIR/hooks/fbot-state.py"
 HANDOFF="$CLAUDE_DIR/.fbot-handoff/$FBOT_ID.json"
 
@@ -97,5 +98,11 @@ fi
 
 # 상태 전이는 단일 지점 경유(규칙5). 헬퍼 부재 시 no-op.
 [ -f "$STATE_PY" ] && python3 "$STATE_PY" transition --bot-id "$FBOT_ID" --to checkout >/dev/null 2>&1
+
+# Issue442 — 세션 id 마커 회수. heartbeat 폴백이 읽는 캐시라 퇴근하면 의미가 없다.
+#   남겨두면 UUID 이름 파일이 세션 수만큼 무한 누적된다(자기 상태 파일 — 규칙8 예외).
+if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
+  rm -f "$CLAUDE_DIR/.fbot-handoff/sid-$CLAUDE_CODE_SESSION_ID.id" 2>/dev/null || true
+fi
 
 exit 0

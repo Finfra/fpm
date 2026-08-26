@@ -24,7 +24,8 @@ set -uo pipefail
 CLAUDE_DIR="$HOME/.claude"
 # DB 경로 knob 은 fbot-state.py·fbot-tick.sh 와 **같은 env**(AOA_MEMORY_DIR)를 쓴다 —
 #   훅과 헬퍼가 서로 다른 DB 를 보면 상태와 kv 가 조용히 갈라진다.
-DB="${AOA_MEMORY_DIR:-$HOME/_git/___common/data/aoa}/registry.db"
+# 경로 계약 (Issue450) — env 가 정식 설정. 미설정 시 제품 중립 기본(prj5 미클론 머신 대응).
+DB="${AOA_MEMORY_DIR:-$HOME/.claude/data/aoa}/registry.db"
 STATE_PY="$CLAUDE_DIR/hooks/fbot-state.py"
 # 🚧 매뉴얼 경로 규약은 s5 확정 대기(fbot-arch.md 미해결 표). 그때까지 데이터 자산 규약
 #    (`~/.claude/data/fbot/`)을 따르고, 파일이 없으면 조용히 건너뛴다.
@@ -33,6 +34,26 @@ MANUAL_DIR="${FBOT_MANUAL_DIR:-$CLAUDE_DIR/data/fbot/manuals}"
 # 상태 헬퍼는 다른 워커가 소유한다. 부재 시 전이는 건너뛰되 매뉴얼·kv 주입은 계속한다.
 fbot_state() { [ -f "$STATE_PY" ] || return 0; python3 "$STATE_PY" "$@" >/dev/null 2>&1 || true; }
 
+# --- 실행 형태 결속 (Issue448 ②) ---------------------------------------------
+# tmux pane 과 세션 id 를 봇 레코드에 적어 둔다. "이 pane 의 claude 가 등록된 봇인가" 를
+#   물을 수 있게 하는 데이터 원천이며 Issue445 의 3값 판정이 이것을 소비한다.
+# ⚠️ 값이 없으면 **기록하지 않는다**(NULL 유지). Agent 서브에이전트는 pane 이 원래 없다 —
+#   NULL 은 "미등록" 이 아니라 "pane 기반 판정 불가" 다. 이 구분이 무너지면 소비처가
+#   fail-open 에서 fail-wrong 으로 바뀐다.
+bind_args=()
+if [ -n "${TMUX_PANE:-}" ] && command -v tmux >/dev/null 2>&1; then
+  # TMUX_PANE 은 '%12' 형태의 pane id 다. 소비처(fpm-do)가 쓰는 'session:window.pane'
+  #   표기로 정규화해 둔다 — 표기가 두 가지면 역조회가 조용히 빗나간다.
+  tgt=$(tmux display-message -p -t "${TMUX_PANE}" '#{session_name}:#{window_name}.#{pane_index}' 2>/dev/null || true)
+  [ -n "$tgt" ] && bind_args+=(--tmux-target "$tgt")
+fi
+[ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && bind_args+=(--session-id "$CLAUDE_CODE_SESSION_ID")
+# ⚠️ bash 3.2(macOS 기본) + `set -u` 에서 빈 배열 전개는 unbound 오류다 — `+` 확장으로 감싼다
+[ -n "${bind_args[*]+x}" ] && fbot_state bind --bot-id "$FBOT_ID" "${bind_args[@]}"
+
+# ⚠️ Issue441 — 전이가 current_task 를 비운다(fbot-state.py: checkin/checkout 에서
+#   last_task 로 옮기고 NULL). 출근 훅이 따로 지우지 않는 이유는 판정 단일 지점 원칙
+#   (규칙5) 때문이다 — 상태와 함께 움직이는 필드는 상태 헬퍼가 소유한다.
 fbot_state transition --bot-id "$FBOT_ID" --to checkin
 
 # --- role 판정: 스폰 env 우선, 없으면 레지스트리 1회 조회 -------------------
