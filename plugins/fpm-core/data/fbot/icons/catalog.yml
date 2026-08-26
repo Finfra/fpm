@@ -1,0 +1,9 @@
+# fbot 아이콘 카탈로그 — 사람 편집 가능. 형식: {role}: shape=<도형> base=<#hex> label=<한글> tags=<t1|t2>
+# 도형 어휘: star shield hexagon triangle grid check magnifier
+exec: shape=star base=#B8860B label=중역핀봇 tags=보고|승인
+hr: shape=shield base=#2E6E4E label=인사핀봇 tags=채용|게이트
+taskmgr: shape=hexagon base=#3A5FA0 label=작업핀봇 tags=배분|모니터링
+architect: shape=triangle base=#7A4FA0 label=설계핀봇 tags=설계|점검
+planner: shape=grid base=#A0623A label=기획자핀봇 tags=plan|task
+qa: shape=check base=#3A8A8A label=QA핀봇 tags=검증|판정
+research: shape=magnifier base=#6E6E3A label=리서치핀봇 tags=조사|선례

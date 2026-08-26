@@ -53,3 +53,9 @@ Issue_map.htm
 
 # 개인 수기 메모 — /projects-map 온라인 편집 대상, 커밋 비대상 (prj1#Issue398)
 _note.md
+
+# fbot 아이콘 카탈로그 — 배포 페이로드. 전역 gitignore 의 macOS `Icon?` 패턴이
+#   core.ignorecase(APFS 기본) 하에서 `icons/` 디렉토리를 통째로 삼켜, 카탈로그가
+#   미러에 한 번도 실리지 않았다(fg1 클론 실측 0 파일). 디렉토리→내용 순으로 명시 해제.
+!plugins/fpm-core/data/fbot/icons/
+!plugins/fpm-core/data/fbot/icons/*
