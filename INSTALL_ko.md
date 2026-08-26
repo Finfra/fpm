@@ -1,7 +1,7 @@
 ---
 name: INSTALL_ko
-description: fpm 설치 가이드 — cdf/sshf 셸 함수, hub 서버, Keyboard Maestro, 폐쇄망 설치
-date: 2026-06-21
+description: fpm 설치 가이드 — cdf/sshf 셸 함수, hub 서버, 갱신 경로, 선택 구성요소(fbot/MCP), 폐쇄망 설치
+date: 2026.08.26
 ---
 
 > 🌐 [English](INSTALL.md) | **한국어**
@@ -102,6 +102,42 @@ python3 server.py
 ```
 
 `/projects-map` 상단의 메모 박스는 브라우저에서 바로 수정(온라인 편집)할 수 있고, 프로젝트 루트의 `_note.md` 에 자동 저장됩니다 (gitignore 대상 — 커밋되지 않음). 처음 설치 직후에는 파일이 없어 안내 문구만 표시되고, 첫 입력 시 생성됩니다.
+
+# 갱신
+
+이미 설치한 뒤 최신으로 올릴 때. fpm 은 머신에 **두 계층**으로 도착하며, 한쪽만 갱신하면 반쪽 상태가 됨(`cdf` 는 최신인데 hub·hook 은 구버전, 혹은 그 반대). `sh/update.sh` 가 둘을 한 번에 처리함:
+
+```bash
+cd ~/_git/fpm
+bash sh/update.sh
+```
+
+| 계층 | 위치 | 출처 | `update.sh` 가 실행하는 것 |
+| :--- | :--- | :--- | :--- |
+| **셸** (`cdf`·`sshf`·hub) | `~/_git/fpm` (`$FPM_BASE`) | 본 저장소 | `git pull --ff-only` |
+| **SCAR** (hooks·commands·agents·skills) | Claude Code 플러그인 디렉토리 | `f-claude-plugins` 마켓 | `claude plugin marketplace update` + `claude plugin update fpm-core@f-claude-plugins` |
+
+```bash
+bash sh/update.sh --shell-only   # git pull 만
+bash sh/update.sh --scar-only    # 플러그인만
+```
+
+* SCAR 갱신 후 **Claude Code 재시작** 필요 — 플러그인은 기동 시 로드됨
+* `claude` CLI 가 `PATH` 에 없으면 SCAR 쪽만 경고 후 건너뜀(셸 전용 사용자는 정상). 비대화 ssh 에서는 앞에 `export PATH="$HOME/.local/bin:$PATH"` 를 붙일 것
+* `git pull --ff-only` 실패 = 히스토리 분기(버전 스킴 리셋 시 발생). `Projects.md`·`Servers.md` 백업 → 재클론 → `bash sh/install.sh --clean`
+* `bash sh/install.sh` 재실행도 멱등이며 플러그인을 함께 갱신하므로 갱신 경로로 쓸 수 있음. `sh/update.sh` 는 그 중 갱신만 떼어낸 빠른 쪽
+
+# 선택 구성요소 (fbot / MCP)
+
+저장소에는 `sh/install.sh` 가 **자동 배선하지 않는** 자산도 함께 실림. 설정 전까지는 비활성이라, 건너뛰어도 기본 설치에는 영향 없음.
+
+| 구성요소 | 실리는 위치 | 상태 |
+| :--- | :--- | :--- |
+| fpm MCP 서버 | `mcp/server.py` | 수동 등록 — [mcp/README.md](mcp/README.md) 참조 |
+| `aoa-mq`·`aoa-memory` MCP 서버 | `mcp/aoa-mq/`, `mcp/aoa-memory/` | 수동 등록 (`claude mcp add`) |
+| fbot hook + 역할 매뉴얼 | `plugins/fpm-core/hooks/fbot-*`, `plugins/fpm-core/data/fbot/` | 플러그인과 함께 설치되나 **자립적이지 않음** — 아래 참조 |
+
+⚠️ **fbot hook 은 아직 이식성이 없음.** 데이터 저장소와 MCP 소스를 `~/_git/___common/…` 에서 해소하는데 이 경로는 어떤 fpm 설치도 만들지 않으며, `fbot-tick.sh` 는 인터프리터 기본값이 `/opt/homebrew/bin/python3`(macOS Homebrew 전용 — Linux 에 없음)임. 활성화하려면 `AOA_MEMORY_DIR`·`AOA_MQ_DIR`·`FBOT_PYTHON` 을 실제 위치로 지정할 것. 지정하지 않으려면 fbot 을 켜지 말 것. 알려진 제약으로 추적 중.
 
 # 제거 / 클린 재설치
 

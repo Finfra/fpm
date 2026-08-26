@@ -1,7 +1,7 @@
 ---
 name: INSTALL
-description: fpm install guide — cdf/sshf shell functions, hub server, Keyboard Maestro, air-gapped install
-date: 2026-06-21
+description: fpm install guide — cdf/sshf shell functions, hub server, update path, optional fbot/MCP components, air-gapped install
+date: 2026.08.26
 ---
 
 > 🌐 **English** | [한국어](INSTALL_ko.md)
@@ -102,6 +102,42 @@ python3 server.py
 ```
 
 The memo box at the top of `/projects-map` is editable right in the browser (online editing) and auto-saves to `_note.md` in the project root (gitignored — never committed). On a fresh install the file does not exist yet: a placeholder message is shown, and the file is created on your first edit.
+
+# Update
+
+Already installed and want the latest? fpm reaches your machine in **two layers**, and updating only one leaves you half-stale (`cdf` current but hub/hooks old, or the reverse). `sh/update.sh` does both in one shot:
+
+```bash
+cd ~/_git/fpm
+bash sh/update.sh
+```
+
+| Layer | Where it lives | Source | What `update.sh` runs |
+| :--- | :--- | :--- | :--- |
+| **Shell** (`cdf`/`sshf`/hub) | `~/_git/fpm` (`$FPM_BASE`) | this repo | `git pull --ff-only` |
+| **SCAR** (hooks/commands/agents/skills) | Claude Code plugin dir | `f-claude-plugins` marketplace | `claude plugin marketplace update` + `claude plugin update fpm-core@f-claude-plugins` |
+
+```bash
+bash sh/update.sh --shell-only   # git pull only
+bash sh/update.sh --scar-only    # plugin only
+```
+
+* **Restart Claude Code** after a SCAR update — the plugin is loaded at startup.
+* `claude` CLI not on `PATH`? The SCAR half is skipped with a warning (this is normal for shell-only users). Over non-interactive SSH prepend `export PATH="$HOME/.local/bin:$PATH"`.
+* `git pull --ff-only` fails → your history diverged (this happens when the version scheme is reset). Back up `Projects.md`/`Servers.md`, re-clone, then `bash sh/install.sh --clean`.
+* Re-running `bash sh/install.sh` is idempotent and also updates the plugin, so it works as an update path too. `sh/update.sh` is the narrower, faster one.
+
+# Optional Components (fbot / MCP)
+
+The repo also ships pieces that `sh/install.sh` does **not** wire up for you. They are inert until you configure them — a default install is unaffected if you skip this section.
+
+| Component | Shipped at | Status |
+| :--- | :--- | :--- |
+| fpm MCP server | `mcp/server.py` | Register manually — see [mcp/README.md](mcp/README.md) |
+| `aoa-mq` / `aoa-memory` MCP servers | `mcp/aoa-mq/`, `mcp/aoa-memory/` | Register manually (`claude mcp add`) |
+| fbot hooks + role manuals | `plugins/fpm-core/hooks/fbot-*`, `plugins/fpm-core/data/fbot/` | Installed with the plugin, but **not self-contained** — see below |
+
+⚠️ **The fbot hooks are not portable yet.** They resolve their datastore and MCP source from `~/_git/___common/…`, a path that no fpm install creates, and `fbot-tick.sh` defaults its interpreter to `/opt/homebrew/bin/python3` (macOS Homebrew only — absent on Linux). Point `AOA_MEMORY_DIR`, `AOA_MQ_DIR` and `FBOT_PYTHON` at real locations before enabling them, or leave fbot off. Tracked as a known limitation.
 
 # Uninstall / Clean Reinstall
 
