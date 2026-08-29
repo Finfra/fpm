@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: d286cdf2a47150fc32d2c2accd9616c227c69e19509d6cf8e79c3e3cdc74142c
+source_sha: 25c9912e0f1b295d93c4720d6224bfbf5576f2242089b7e6bf334d5235fbba5a
 ---
 
 # 안내
@@ -17,6 +17,14 @@ source_sha: d286cdf2a47150fc32d2c2accd9616c227c69e19509d6cf8e79c3e3cdc74142c
 `scripts/fpm-issue-digest.sh` 가 덮어쓴다.
 
 # 이슈 근거
+
+## Issue415: 공개 digest 에 `\1` 리터럴이 새겨진다 — awk 는 replacement 백레퍼런스를 지원하지 않는다 (등록: 2026-08-30, 해결: 2026-08-30, commit: `(본 커밋)`) ✅
+* 목적: 공개 미러로 나가는 [`Issue_public.md`](Issue_public.md) 에 `Issue{385}(비공개)\1가드로 검사하지만` 같은 **깨진 문자열**이 (여기 `{}` 는 digest 자기치환을 피하려는 표기) 실린다. 공개 산출물이라 그대로 배포되고, 읽는 사람에게는 오타로 보인다
+* 구현 명세:
+    - ① 캡처가 필요 없는 방식으로 — `index()`+`substr()` 로 토큰을 직접 스캔해 치환하는 awk 함수. 뒤 문자가 `[0-9_]` 면 다른 번호의 일부이므로 건너뛰고, 그 외(문자열 끝 포함)면 `(비공개)` 를 붙인다
+    - ② 기존 두 `gsub`(중간·문자열 끝)을 **함수 하나로 통합** — 끝 케이스는 "뒤 문자가 빈 문자열" 로 자연히 처리된다. 두 벌로 두면 한쪽만 고쳐지는 사고가 난다
+    - ③ 이미 오염된 `Issue_public.md` 는 digest **재생성**으로 교정(수기 편집 금지 — 생성물이다)
+    - 검증: 재생성 후 `Issue_public.md` 에 `\1` **0건** · `Issue{N}(비공개)` 뒤 원문 한 글자가 **보존**될 것 · `Issue{385}` 와 `Issue{3850}` 이 구분될 것(접두 오치환 없음)
 
 ## Issue413: 마켓 발행과 forward 자동 bump 가 서로를 앞질러 무결성 검사가 상시 FAIL 이다 ✅
 * 목적: 저작 머신에서 check.sh 항목 13(설치본 무결성)이 **거의 항상 FAIL** 이다. 원인은 표류가 아니라 **두 자동화의 순서**다. 상시 FAIL 은 진짜 표류를 묻는다 — 항목 13 이 존재하는 이유를 무력화한다
@@ -47,11 +55,11 @@ source_sha: d286cdf2a47150fc32d2c2accd9616c227c69e19509d6cf8e79c3e3cdc74142c
     - 검증: 미러를 건드리지 않은 상태의 reverse → **후보 0건**(현재는 20건) · 미러에서 1파일만 고친 뒤 → **그 1건만** 후보 · 그 상태에서 forward 도 같은 판정을 낼 것(교착 없음)
 
 ## Issue410: `do_forward` 에 DST(미러) 브랜치 가드가 없다 — 미러가 `main` 이 아니면 배포가 엉뚱한 사유로 중단된다 ✅
-* 목적: `deploy` 는 `$SRC`(prj1) 브랜치를 Issue385(비공개)\1가드로 검사하지만 **`$DST`(미러) 브랜치는 판정하지 않는다.** 비대칭이라 미러가 `develop`·`fix/*` 에 체크아웃돼 있으면 F5-1 미흡수 가드가 **엉뚱한 사유로** 발화해 배포가 중단되고, bump 는 이미 끝난 뒤라 버전 번호만 소비된다
+* 목적: `deploy` 는 `$SRC`(prj1) 브랜치를 Issue385(비공개) 가드로 검사하지만 **`$DST`(미러) 브랜치는 판정하지 않는다.** 비대칭이라 미러가 `develop`·`fix/*` 에 체크아웃돼 있으면 F5-1 미흡수 가드가 **엉뚱한 사유로** 발화해 배포가 중단되고, bump 는 이미 끝난 뒤라 버전 번호만 소비된다
 * depends: Issue409
 * 구현 명세:
     - ① [`scripts/fpm-sync.sh`](scripts/fpm-sync.sh) `do_forward` 진입부(F5-1 **앞**)에 DST 브랜치 판정 추가. `$DST` 가 `main` 이 아니면 fail-loud `exit 1` + 조치 문구를 `switch main` 으로 명시. 우회는 `FPM_ALLOW_DST_BRANCH=1`
-    - ② 집행 등급 **enforce** — Issue385(비공개)\1`$SRC` 가드)와 대칭. advisory 경고 금지
+    - ② 집행 등급 **enforce** — Issue385(비공개)(`$SRC` 가드)와 대칭. advisory 경고 금지
     - ③ `sh/check.sh` 에 소비자 브랜치 경고(advisory) 추가 — `$FPM_BASE` 가 `main` 이 아니면 경고
     - 검증: 미러를 임시 브랜치에 두고 `forward` → 새 메시지로 중단 · `main` 복귀 후 정상 통과 · `FPM_ALLOW_DST_BRANCH=1` 우회 동작
 
@@ -159,8 +167,8 @@ source_sha: d286cdf2a47150fc32d2c2accd9616c227c69e19509d6cf8e79c3e3cdc74142c
 * 구현 명세:
     - 신설: [`scripts/fpm-backup-repo.sh`](scripts/fpm-backup-repo.sh) — repo 무관 오프사이트 백업. prj1·prj3 공용
     - 기본 **읽기 전용 점검**(gitleaks 이력 스캔 + 로컬↔원격 tip 대조), 쓰기는 `--push` 명시 시에만. 삭제 전파(`--mirror`) 금지 — 로컬 실수 삭제가 백업까지 지우면 백업이 아니라 복제다
-    - **push 여부와 무관하게 항상 신선도를 대조하고 불일치를 non-zero 로 보고**한다. Issue387(비공개)\1의 실패 모드("백업은 있는데 최신이 아니다")를 구조적으로 검출하기 위함
-    - ⚠️ 위임 범위 준수: prj3 저장소 **무수정**(읽기 전용 실측만), 원격 push **미실행**(승인 필요 → Issue387(비공개)\1
+    - **push 여부와 무관하게 항상 신선도를 대조하고 불일치를 non-zero 로 보고**한다. Issue387(비공개) 의 실패 모드("백업은 있는데 최신이 아니다")를 구조적으로 검출하기 위함
+    - ⚠️ 위임 범위 준수: prj3 저장소 **무수정**(읽기 전용 실측만), 원격 push **미실행**(승인 필요 → Issue387(비공개))
 
 ## Issue384: 📋 세션 작업 메뉴를 hover 로 연다 — 툴팁이 메뉴로 오인돼 클릭 불가였던 문제 ✅
 * depends: Issue383
