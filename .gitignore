@@ -59,3 +59,7 @@ _note.md
 #   미러에 한 번도 실리지 않았다(fg1 클론 실측 0 파일). 디렉토리→내용 순으로 명시 해제.
 !plugins/fpm-core/data/fbot/icons/
 !plugins/fpm-core/data/fbot/icons/*
+
+# projects-map 산출물 (Projects.md 로부터 재생성 — sh/install.sh 4-3 이 부재 시 생성)
+Projects_map.htm
+Projects_map.md
