@@ -11,6 +11,11 @@ restart_cmd: "PID=$(cat /tmp/___pm/claude-htm-server/pid 2>/dev/null); [ -n \"$P
 
 syntax_check: "python3 -m py_compile {file}"
 
+# prj3#Issue466 — 재시작 전후 pid 를 비교해 "교체됐는가" 를 판정한다.
+#   health 는 "응답한다" 만 보므로, restart_cmd 가 kill 을 건너뛰어 구 프로세스가
+#   살아 있어도 통과해 버린다(실발생). 이 필드가 그 축을 메운다.
+pid_file: "/tmp/___pm/claude-htm-server/pid"
+
 health_check: "curl -sf localhost:9876/healthz"
 
 debounce_sec: 2
