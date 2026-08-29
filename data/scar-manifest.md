@@ -63,8 +63,10 @@ flowchart TD
 | `sh/update.sh`            | payloads.plugin            | git pull(셸) + marketplace/plugin update        |
 | `sh/uninstall.sh`         | shell + payloads.plugin    | 셸 블록 제거 + plugin uninstall (마켓 보존)     |
 | `sh/publish-scar.sh`      | payloads.plugin            | 소스 → 마켓 발행(rsync --delete)                |
-| `sh/check.sh`             | shell + plugin + flat_file | 설치 검증 + SCAR drift 대조 (항목11·12)         |
+| `sh/check.sh`             | shell + plugin + flat_file | 설치 검증 + SCAR drift 대조 (항목11·12·12-2)    |
 | `sh/scar-flatfile-sync.sh` | payloads.flat_file        | 사본을 prj3 원본에서 재생성 + `--check` 표류 게이트 (Issue388) |
+| `sh/scar-hooks-check.sh`  | payloads.plugin (`scar.hooks`·`hooks_origin_rel_home`·`hooks_bundle_only`) | 번들 `hooks/` 3방향 대조 — **검사 전용**(동기는 `fpm-bundle-sync.sh`) (Issue412) |
+| `scripts/fpm-bundle-sync.sh` | (yml 미참조 — 경로 하드코딩) | 번들 `hooks/`·`commands/`·`agents/`·`services/hub` 의 **유일한 writer**. 라이브(prj3·prj1) → 번들 단방향 |
 | `remote.sh` (to-be)       | payloads.flat_file         | 원격 `~/.claude` 플랫파일 배포(rsync_delete + protect) |
 | `remove.sh` (to-be)       | payloads.flat_file         | `flat_file.files` 정밀 삭제, `protect` 보존     |
 
@@ -106,6 +108,16 @@ prj3(`~/.claude`) 글로벌 SCAR 의 **사본**이므로 축이 하나 더 있�
 * 실측(2026-08-16): 29개 중 원본과 일치한 것 **1개**, 원본에 그 경로가 아예 없는 것 **10개**(이동 5·폐기 5). 그동안 `check.sh` 항목11 은 계속 PASS 였다
 * 해소: [`sh/scar-flatfile-sync.sh`](../sh/scar-flatfile-sync.sh) 가 재생성·판정을 모두 담당하고, `check.sh` **항목12** 가 그 `--check` 를 위임 호출한다. 재생성과 판정을 한 스크립트에 두는 이유는 둘이 갈라지면 *"검사는 통과하는데 재생성하면 바뀌는"* 상태가 다시 생기기 때문이다
 * 단방향 불변식: **prj3 → prj1 만.** 사본을 원본에 되쓰지 않는다
+
+### 같은 축이 `plugin.hooks` 에도 있었다 (Issue412, 2026-08-29 해소)
+
+`plugins/fpm-core/hooks/` 도 prj3 `~/.claude/hooks/` 의 **사본**이다. 다만 결손 양상이 달랐다 — 내용 표류는 [`fpm-bundle-sync.sh`](../scripts/fpm-bundle-sync.sh) 가 이미 동기·검사하고 있었고, 없던 것은 **선언**이었다.
+
+* `scar:` 인벤토리가 `commands`·`skills`·`agents` 만 열거해 `hooks` 는 대조 대상이 아니었다 → `scar.hooks[]` 신설(파일 규약이 달라 **확장자 포함 실파일명**을 적는다)
+* 저작 원본 선언 부재 → `hooks_origin_rel_home: .claude/hooks` 신설. `src_rel_repo`(무엇을 배포하는가)와 **개념이 다르다**
+* 번들 전용 자산(`fpm-browser-open.sh`·`hooks.json`)의 판정 근거가 스크립트 **주석**에만 있어 기계가 못 읽었다 → `hooks_bundle_only[]` 신설
+* 검사는 [`sh/scar-hooks-check.sh`](../sh/scar-hooks-check.sh) 가 3방향(선언→디스크 · 디스크→선언 · 사본↔원본)으로 수행하고 `check.sh` **항목 12-2** 가 위임 호출한다
+* ⚠️ `scar-flatfile-sync.sh` 와 달리 **재생성 기능을 넣지 않았다.** 번들 hooks 에는 이미 writer(`fpm-bundle-sync.sh`)가 있어 두 번째를 만들면 판정 축이 갈라진다(Issue414 교착과 같은 구조). flatfile 쪽에 겸용을 둔 이유는 거기엔 기존 writer 가 **없었기** 때문이다
 
 ## pre-commit 게이트 (Issue240_4)
 

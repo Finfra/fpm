@@ -7,11 +7,13 @@
 #
 # 검사 항목:
 #   [셸]  1. sh/fpm.sh 부트스트랩 파일 존재
+#         1-2. 설치본 브랜치 = main (Issue410, advisory)
 #         2. rc(zshrc/bashrc) 에 fpm 마커 블록 + FPM_BASE export
 #         3. ~/.info/__pmBasePath.txt → <repo>/projects 일치
 #         4. projects/ 스캐폴드 (필수 인덱스)
 #         5. 운영 필수 파일 (FPM_ORG_FILES) + 요구 섹션 결손 (FPM_ORG_SECTIONS, Issue407)
 #         5-2. 프로젝트 맵 산출물 (FPM_PROJECTS_MAP_OUT, Issue407)
+#         12-2. 번들 hooks 사본 ↔ prj3 원본 (Issue412 — scar-hooks-check.sh 위임)
 #         6. cdf 함수 로드 여부 (sh/fpm.sh source)
 #   [SCAR] 7. claude CLI 존재
 #          8. marketplace 등록 (FPM_MKT_NAME)
@@ -74,6 +76,25 @@ if [[ -f "$FUNC_FILE" ]]; then
     ok "부트스트랩 존재: $FPM_BOOTSTRAP_REL_REPO"
 else
     fail "부트스트랩 없음: $FUNC_FILE (sh/install.sh 재실행 필요)"
+fi
+
+# ── 1-2. 소비자 브랜치 (Issue410, advisory) ────────────────────
+#   설치본($FPM_BASE)이 main 이 아니면 `git pull --ff-only` 가 배포를 받지 못한다.
+#   실측(2026-08-29 fg1): develop 체크아웃 상태로 남아 VERSION 이 0.6.3 에 정체 —
+#   배포는 정상 완료됐는데 소비자에게만 도달하지 않아 원인 추적이 어려웠다.
+#   집행 등급 **advisory** — check.sh 는 읽기 전용 진단이라 차단 수단이 없다.
+#   enforce 짝은 저작 머신 쪽 `do_forward` 의 F5-0 DST 브랜치 가드다(scripts/fpm-sync.sh).
+if [[ -d "$REPO_DIR/.git" ]]; then
+    cur_br="$(git -C "$REPO_DIR" symbolic-ref --short HEAD 2>/dev/null || true)"
+    if [[ "$cur_br" == "main" ]]; then
+        ok "설치본 브랜치: main"
+    elif [[ -z "$cur_br" ]]; then
+        warn "설치본이 detached HEAD — 배포 pull 불가. 조치: git -C $REPO_DIR switch main"
+    else
+        warn "설치본 브랜치가 '$cur_br' — 배포는 main 으로만 나간다(pull --ff-only 실패). 조치: git -C $REPO_DIR switch main"
+    fi
+else
+    warn "설치본이 git repo 가 아님: $REPO_DIR — 배포 pull 경로 없음(tarball 설치?)"
 fi
 
 # ── 2. rc 블록 + FPM_BASE export ──────────────────────────────
@@ -356,6 +377,25 @@ if [[ -x "$REPO_DIR/sh/scar-flatfile-sync.sh" ]] && fpm_is_authoring; then
     fi
 fi
 
+# ── 12-2. 번들 hooks 사본 ↔ prj3 원본 drift (Issue412) ────────
+#   항목 12 의 hooks 판(flat_file 이 아니라 plugin 페이로드). 왜 별도인가:
+#   `scar:` 인벤토리는 commands·skills·agents 만 열거했고 파일 규약(`<name>.md`)이 달라
+#   hooks 는 **애초에 대조 대상이 아니었다**. 그 사이 구멍이 셋 있었다 —
+#     ① 번들에서 훅이 사라져도 무신호(bundle-sync 는 번들 디렉토리를 순회하므로)
+#     ② 미선언 훅(인벤토리 SSOT 결손)
+#     ③ prj3 에 원본이 없는 훅이 "번들 전용" 인지 "폐기된 훅의 잔재" 인지 판정 근거 부재
+#   판정은 sh/scar-hooks-check.sh 에 위임한다 — 항목 12 와 같은 구조(검사 로직을
+#   check.sh 에 복제하면 매니페스트 파싱이 두 벌이 되어 갈라진다).
+if [[ -x "$REPO_DIR/sh/scar-hooks-check.sh" ]] && fpm_is_authoring; then
+    sec "── 번들 hooks 사본 ↔ prj3 원본 drift ──"
+    if hk_out="$(bash "$REPO_DIR/sh/scar-hooks-check.sh" --quiet 2>&1)"; then
+        ok "번들 hooks: 선언 ↔ 디스크 ↔ prj3 원본 일치"
+    else
+        fail "번들 hooks 표류 — 상세·조치는 아래"
+        printf '%s\n' "$hk_out" | sed 's/^/        /'
+    fi
+fi
+
 # ── 에디터 어댑터·런처 (Issue327) ─────────────────────────────
 if [[ -f "$REPO_DIR/sh/fpm_editors.sh" ]]; then
     ok "sh/fpm_editors.sh 존재"
@@ -397,6 +437,7 @@ fi
 #      타 플러그인(fBanner·fBoard 등)은 **구조적으로 검사 대상이 아니다**.
 sec "── 설치본 무결성 (fpm-core 내용 해시) ──"
 INTEGRITY_SRC=""
+INTEGRITY_KIND=""
 # 🔴 활성 설치본은 **installed_plugins.json 의 installPath** 가 정본이다 (2026-08-29 fg1 실측).
 #   캐시에는 구버전 디렉토리가 그대로 쌓인다(fg1: 0.3.6·0.4.0·0.5.6·0.5.7 4개 공존).
 #   glob 순회로 첫 매치를 잡으면 **활성본이 아닌 것**을 검사해 엉뚱한 FAIL 을 낸다 —
@@ -415,16 +456,21 @@ for k,v in (d.get("plugins") or {}).items():
             p=e.get("installPath")
             if p: print(p); sys.exit(0)
 ' "$_installed_json" "$FPM_PLUGIN_NAME" 2>/dev/null || true)"
-    [[ -n "$_active" && -f "$_active/.fpm-integrity.json" ]] && INTEGRITY_SRC="$_active"
+    [[ -n "$_active" && -f "$_active/.fpm-integrity.json" ]] && { INTEGRITY_SRC="$_active"; INTEGRITY_KIND="installed"; }
 fi
 # 폴백: ① 마켓 클론(플러그인 미설치 소비자) ② repo 번들(저작 머신)
+#   ⚠️ 대상이 무엇인지를 **기록**한다 (Issue413 ②) — 세 후보는 검사의 **의미가 다르다**.
+#      installed·market 은 "발행본과 같은가"(무결성)를 묻지만, repo 번들은 설치본이 아니라
+#      **발행 대기 소스**다. 저작 머신에는 설치본이 아예 없다(항목 14 가 "플러그인 미등록"
+#      으로 이미 판정한다). 검사 대상이 없는 곳에서 무결성 FAIL 을 내는 것이 상시 FAIL 의
+#      절반이었다 — 나머지 절반은 아래 "발행 대기" 판정이 담당한다.
 if [[ -z "$INTEGRITY_SRC" ]]; then
-    for _cand in \
-        "$HOME/.claude/plugins/marketplaces/$FPM_MKT_NAME/$FPM_PLUGIN_NAME" \
-        "$REPO_DIR/$FPM_PLUGIN_SRC_REL_REPO"
-    do
-        [[ -f "${_cand%/}/.fpm-integrity.json" ]] && { INTEGRITY_SRC="${_cand%/}"; break; }
-    done
+    _mkt_clone="$HOME/.claude/plugins/marketplaces/$FPM_MKT_NAME/$FPM_PLUGIN_NAME"
+    if [[ -f "$_mkt_clone/.fpm-integrity.json" ]]; then
+        INTEGRITY_SRC="$_mkt_clone"; INTEGRITY_KIND="market"
+    elif [[ -f "$REPO_DIR/$FPM_PLUGIN_SRC_REL_REPO/.fpm-integrity.json" ]]; then
+        INTEGRITY_SRC="$REPO_DIR/$FPM_PLUGIN_SRC_REL_REPO"; INTEGRITY_KIND="bundle"
+    fi
 fi
 
 if [[ -z "$INTEGRITY_SRC" ]]; then
@@ -471,16 +517,70 @@ PYEOF
 )" && _int_rc=0 || _int_rc=$?
     _ver="$(printf '%s' "$_int_out" | awk -F'\t' '$1=="VERSION"{print $2" ("$3")"}')"
     _cnt="$(printf '%s' "$_int_out" | awk -F'\t' '$1=="COUNT"{print $2}')"
+    # ── 발행 대기 판정 (Issue413 ③) ───────────────────────────────────────────
+    #   repo 번들에서 매니페스트보다 **버전이 앞선** 것은 표류가 아니라 **정상적인 미발행**
+    #   상태다. `forward` 의 자동 patch bump 가 커밋마다 번들 plugin.json 을 갱신하므로,
+    #   발행 직후 아무 커밋이나 하면 즉시 이 상태가 된다 — 그것을 FAIL 로 내면 항목 13 은
+    #   **상시 FAIL** 이 되고, 상시 FAIL 은 진짜 표류를 묻는다(이 검사가 존재하는 이유를
+    #   무력화한다). 2026-08-29 실측 루프: 0.6.6 발행 → 커밋 → 0.6.7 bump → FAIL →
+    #   0.6.7 발행 → 커밋 → 0.6.8 … 수렴하지 않았다.
+    #   ⚠️ **버전이 같은데 내용이 다른 것(②형)은 여전히 FAIL 이다** — 그것만이 진짜 표류다.
+    _bundle_ver=""
+    if [[ "$INTEGRITY_KIND" == "bundle" ]]; then
+        _bundle_ver="$(python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1]))["version"])
+except Exception: pass' "$INTEGRITY_SRC/.claude-plugin/plugin.json" 2>/dev/null || true)"
+    fi
+    _man_ver="$(printf '%s' "$_int_out" | awk -F'\t' '$1=="VERSION"{print $2}')"
+    # 버전 bump 로만 달라지는 파일 — 번들 안에서 write_version_files 가 건드리는 유일한 대상
+    _verfile=".claude-plugin/plugin.json"
+    #   EXTRA(매니페스트에 없는 파일)도 저작 번들에서는 **미발행 신규 파일**이다 —
+    #   소비자에서의 "로컬 추가물" 과 의미가 다르므로 대상별로 나눠 센다.
+    _real_diff="$(printf '%s' "$_int_out" \
+        | awk -F'\t' -v vf="$_verfile" '($1=="CHANGED" && $2!=vf) || $1=="MISSING"{print $2}')"
+    #   ⚠️ 단, 생성기는 **git 미추적 파일을 의도적으로 제외**한다(발행은 추적분만 실린다 —
+    #      ex: `vscode-ext/*.vsix` 빌드 산출물). 그것까지 미발행으로 세면 저작 머신에서
+    #      영구 경고가 되고, 영구 경고는 진짜 경고를 묻는다. 추적분만 미발행으로 센다.
+    if [[ "$INTEGRITY_KIND" == "bundle" ]]; then
+        _extra_list="$(printf '%s' "$_int_out" | awk -F'\t' '$1=="EXTRA"{print $2}')"
+        if [[ -n "$_extra_list" ]]; then
+            _extra_tracked=""
+            while IFS= read -r _e; do
+                [[ -n "$_e" ]] || continue
+                git -C "$INTEGRITY_SRC" ls-files --error-unmatch -- "$_e" >/dev/null 2>&1 \
+                    && _extra_tracked="${_extra_tracked}${_extra_tracked:+
+}$_e"
+            done <<< "$_extra_list"
+            [[ -n "$_extra_tracked" ]] && _real_diff="$(printf '%s\n%s' "$_real_diff" "$_extra_tracked" | grep . || true)"
+        fi
+    fi
+
     if [[ "$_int_rc" -eq 0 ]]; then
         ok "무결성 일치: fpm-core ${_ver} — ${_cnt}개 파일 sha256 전건 일치 ($INTEGRITY_SRC)"
+    elif [[ "$INTEGRITY_KIND" == "bundle" && -n "$_bundle_ver" && -n "$_man_ver" \
+            && "$_bundle_ver" != "$_man_ver" && -z "$_real_diff" ]]; then
+        ok "발행 대기: 번들 v${_bundle_ver} > 발행본 v${_man_ver} — 미발행 1건(버전 bump). 내용 표류 없음"
+    elif [[ "$INTEGRITY_KIND" == "bundle" && -n "$_bundle_ver" && -n "$_man_ver" \
+            && "$_bundle_ver" != "$_man_ver" ]]; then
+        _n_unpub="$(printf '%s\n' "$_real_diff" | grep -c . || true)"
+        warn "발행 대기: 번들 v${_bundle_ver} > 발행본 v${_man_ver} — 미발행 ${_n_unpub}건(아래). 발행: sh/publish-scar.sh 또는 fpm-sync.sh deploy --with-marketplace"
+        printf '%s\n' "$_real_diff" | sed 's/^/      미발행: /'
     else
         fail "무결성 불일치: fpm-core ${_ver} — 아래 파일의 내용이 발행본과 다르다 (번호가 같아도 내용이 다른 ②형)"
         printf '%s\n' "$_int_out" | awk -F'\t' '$1=="CHANGED"{print "      변조/구버전: "$2} $1=="MISSING"{print "      누락: "$2}'
-        printf '      → 복구: claude plugin update %s  (또는 마켓 재발행)\n' "$FPM_PLUGIN_NAME"
+        if [[ "$INTEGRITY_KIND" == "bundle" ]]; then
+            printf '      → 저작 머신 번들이다. 버전이 같은데 내용이 다르다 = 매니페스트 미갱신.\n'
+            printf '        복구: sh/gen-integrity-manifest.sh 후 커밋(발행 직전 재생성이 정상 경로)\n'
+        else
+            printf '      → 복구: claude plugin update %s  (또는 마켓 재발행)\n' "$FPM_PLUGIN_NAME"
+        fi
     fi
     # EXTRA 는 소비자 로컬 추가물일 수 있어 FAIL 로 올리지 않는다(거짓 경고 억제 — prj3#Issue452 교훈)
+    #   저작 번들에서는 위 "발행 대기" 판정이 이미 미발행분으로 합산해 보고했으므로 중복 경고하지 않는다.
     _extra_n="$(printf '%s' "$_int_out" | awk -F'\t' '$1=="COUNT"{print $5}')"
-    [[ "${_extra_n:-0}" -gt 0 ]] && warn "매니페스트에 없는 파일 ${_extra_n}건(설치본 추가물 — 로컬 편집 가능성)"
+    if [[ "${_extra_n:-0}" -gt 0 && "$INTEGRITY_KIND" != "bundle" ]]; then
+        warn "매니페스트에 없는 파일 ${_extra_n}건(설치본 추가물 — 로컬 편집 가능성)"
+    fi
 fi
 
 # ── 14. 실행본 출처 (prj3#Issue461) ───────────────────────────────────────────

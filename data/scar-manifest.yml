@@ -102,6 +102,58 @@ payloads:
         - fpm-pm-do
       agents:
         - fpm-board
+      # hooks (Issue412) — 다른 3종과 **파일 규약이 다르다**: `commands/<name>.md` 같은
+      #   확장자 규약이 없고 `hooks/<파일명 그대로>` 다. 그래서 확장자를 포함해 적는다.
+      #   이 목록이 "번들이 무엇을 ship 하는가" 의 SSOT — 종전엔 선언이 아예 없어서
+      #   **번들에서 훅이 사라져도 아무 신호가 없었다**(2026-08-29 실측: fbot-heartbeat.sh 를
+      #   지우고 fpm-bundle-sync.sh --check 를 돌리면 "표류 없음"). 그 훅을 hooks.json 이
+      #   참조하고 있어도 배포본에서 파일만 빠져 소비자 런타임에서 깨진다.
+      hooks:
+        - dispatch-sessionend.sh
+        - dispatch-sessionstart.sh
+        - fbot-agent-bind.sh
+        - fbot-board-init.sh
+        - fbot-board-monitor.sh
+        - fbot-checkin.sh
+        - fbot-checkout.sh
+        - fbot-exec-report.py
+        - fbot-heartbeat.sh
+        - fbot-hr-gate.py
+        - fbot-manual-review.py
+        - fbot-schedule.sh
+        - fbot-state.py
+        - fbot-taskmgr.py
+        - fbot-tick.sh
+        - fbot-worker-plist.sh
+        - fbot-worker-unit.sh
+        - fpm-ask-form-template.js
+        - fpm-ask-intercept.sh
+        - fpm-ask-marker-detect.sh
+        - fpm-ask-question-guard.sh
+        - fpm-board-notify.sh
+        - fpm-browser-open.sh
+        - fpm-hub-doc-register.sh
+        - fpm-hub-session-end.sh
+        - fpm-hub-session-register.sh
+        - fpm-hub-session-topic.sh
+        - fpm-hub-trigger.sh
+        - hooks.json
+    # ── hooks 정본 판정 (Issue412 ①, 2026-08-29) ─────────────────────────────
+    #   **정본은 prj3(`~/.claude/hooks/`) 이고 번들은 사본이다.** 근거:
+    #     ① 이름 일치 27건이 **전건 내용 일치**이고 prj3 가 상위집합(prj3 전용 45건)
+    #     ② 동기 코드가 이미 그렇게 돼 있다 — scripts/fpm-bundle-sync.sh 의
+    #        `sync_dir_by_name "$BUNDLE/hooks" "$GLOBAL/hooks"` 가 prj3 를 src 로 잡는다
+    #     ③ flat_file 페이로드도 같은 `origin_rel_home` 규약을 쓴다(구조 일관)
+    #   ⚠️ `src_rel_repo: plugins/fpm-core` 와 모순되지 않는다 — 그 키는 *"무엇을 배포하는가"*
+    #      (페이로드 소스)이고, 아래는 *"어디서 저작되는가"*(저작 원본)다. 두 개념이 한 키에
+    #      겹쳐 보였던 것이 Issue412 가 "선언과 실운영이 어긋난다" 고 본 이유다.
+    hooks_origin_rel_home: ".claude/hooks"
+    # 번들 전용 훅 — prj3 에 대응 원본이 **없는 것이 정상**인 배포 전용 자산.
+    #   여기 없는데 원본에도 없으면 orphan(폐기된 훅의 잔재)이다. 종전엔 이 판정 근거가
+    #   fpm-bundle-sync.sh **주석**에만 있어 기계가 읽지 못했다(Issue412 ④).
+    hooks_bundle_only:
+      - fpm-browser-open.sh   # 배포 전용 브라우저 오픈 헬퍼 (prj1 저작)
+      - hooks.json            # 플러그인 훅 등록 매니페스트 — 번들 고유 산출물
 
   # 경로 2: 원격 서버 ~/.claude 플랫파일 배포 (고객/타 서버 — claude CLI 플러그인 미가용 환경).
   #   install/update: rsync src → dest, rsync_delete: true 로 orphan prune (★ 버그 해법)
@@ -184,7 +236,17 @@ consumers:
   - script: sh/check.sh
     reads: [shell, payloads.plugin, payloads.flat_file]
     note: 설치 검증 + SCAR drift 대조. install_manifest.sh(파생) 경유. 항목11=선언↔사본,
-          항목12=사본↔prj3 원본(scar-flatfile-sync.sh --check 위임, Issue388).
+          항목12=사본↔prj3 원본(scar-flatfile-sync.sh --check 위임, Issue388),
+          항목12-2=번들 hooks 3방향(scar-hooks-check.sh 위임, Issue412).
+  - script: sh/scar-hooks-check.sh
+    reads: [payloads.plugin]
+    note: 번들 hooks/ 3방향 대조(선언↔디스크↔prj3 원본). **검사 전용** — 동기는
+          scripts/fpm-bundle-sync.sh 가 유일한 writer 이므로 두 번째 writer 를 만들지 않는다(Issue412).
+          yml 직독(파생물 미경유 — scar-flatfile-sync.sh 와 같은 이유).
+  - script: scripts/fpm-bundle-sync.sh
+    reads: []
+    note: yml 을 읽지 않는다(경로 하드코딩). 번들 hooks/commands/agents/services 의 유일한 writer.
+          위 checker 가 이 스크립트를 조치 경로로 지목하므로 함께 적어 둔다.
   - script: sh/scar-flatfile-sync.sh
     reads: [payloads.flat_file]
     note: 사본(src_rel_repo) 을 원본(origin_rel_home) 에서 재생성 + --check 표류 게이트.
