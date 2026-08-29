@@ -233,7 +233,10 @@ SETTINGS_FILE="$HOME/.claude/settings.json"
 INSTALLED_FILE="$HOME/.claude/plugins/installed_plugins.json"
 manual_hooks=0
 if [[ -f "$SETTINGS_FILE" ]]; then
-    manual_hooks="$(grep -cF '.claude/hooks/fpm-' "$SETTINGS_FILE" 2>/dev/null || true)"
+    #   ⚠️ fpm- 뿐 아니라 fbot- 도 센다 (prj3#Issue453) — 핀봇 훅(출근·퇴근·heartbeat·
+    #      Agent 결속)이 플러그인 hooks.json 으로 배선되면서 settings.json 수동 블록과
+    #      이중 발화할 수 있는 대상이 되었다. 원 가드는 fpm- 만 봐서 이 4종을 못 잡았다.
+    manual_hooks="$(grep -cE '\.claude/hooks/(fpm|fbot)-' "$SETTINGS_FILE" 2>/dev/null || true)"
     manual_hooks="${manual_hooks:-0}"
 fi
 plugin_active=0
@@ -241,7 +244,7 @@ if [[ -f "$INSTALLED_FILE" ]] && grep -qF "\"$FPM_PLUGIN_NAME@" "$INSTALLED_FILE
     plugin_active=1
 fi
 if [[ "$manual_hooks" -gt 0 && "$plugin_active" -eq 1 ]]; then
-    fail "hook 이중 등록: settings.json 수동 fpm hook ${manual_hooks}개 + $FPM_PLUGIN_NAME 플러그인 동시 활성 → 동일 hook 2회 실행. 한쪽만 유지 (플러그인 단일화 권장: settings.json 의 fpm hook 블록 삭제)"
+    fail "hook 이중 등록: settings.json 수동 fpm/fbot hook ${manual_hooks}개 + $FPM_PLUGIN_NAME 플러그인 동시 활성 → 동일 hook 2회 실행. 한쪽만 유지 (플러그인 단일화 권장: settings.json 의 fpm hook 블록 삭제)"
 elif [[ "$manual_hooks" -gt 0 ]]; then
     ok "hook 단일 등록: settings.json 수동 ${manual_hooks}개 (플러그인 미설치 — 이중 등록 없음)"
 elif [[ "$plugin_active" -eq 1 ]]; then
@@ -250,10 +253,27 @@ else
     warn "fpm hook 미등록: settings.json 수동 블록·$FPM_PLUGIN_NAME 플러그인 모두 없음 (hub/dashboard hook 비활성)"
 fi
 
+# ── 저작 머신 판별 (prj3#Issue452) — 항목 11·12 공용 ────────────────────────────
+#   왜 필요한가 (2026-08-28 fg1 실측): 항목 11·12 는 **저작 머신 전용 검사**인데
+#   소비자에서도 돌아 FAIL 2건을 영구히 냈다. 거짓 경고는 진짜 경고를 묻는다.
+#     * 11 — 소비자는 `_doc_arch/` 가 publishable policy 의 exclude 라 **애초에 못 받는다**.
+#            선언에는 있고 디스크엔 없으니 구조적으로 FAIL 이다(자산 집합이 경로별로 다름)
+#     * 12 — prj3 **원본**과 대조하는데 소비자에는 원본이 없다. `~/.claude` 는 설치본이라
+#            표류로 잡히는 것이 당연하다
+#   판정 신호는 항목 9(Issue391)와 같다 — `~/.claude/commands/` 의 라이브 SCAR 존재 하나뿐.
+#   ⚠️ `REPO_DIR == $FPM_BASE` 는 판별력 0(소비자에서도 참) — 조건에 넣지 말 것.
+fpm_is_authoring() {
+    local _c
+    for _c in "${FPM_SCAR_COMMANDS[@]}"; do
+        [[ -f "$HOME/.claude/commands/${_c}.md" ]] && return 0
+    done
+    return 1
+}
+
 # ── 11. flat_file 페이로드 drift (선언 ↔ 디스크 양방향, Issue240_3) ─────────
 #   원격 ~/.claude 플랫파일 배포 인벤토리(FPM_FLATFILE_FILES) ↔ 실제 소스 디렉토리 대조.
 #   claude CLI 무관·--no-scar 무관(repo 무결성). 소스 디렉토리 부재면 skip.
-if [[ -n "${FPM_FLATFILE_SRC_REL_REPO:-}" && ${#FPM_FLATFILE_FILES[@]} -gt 0 ]]; then
+if [[ -n "${FPM_FLATFILE_SRC_REL_REPO:-}" && ${#FPM_FLATFILE_FILES[@]} -gt 0 ]] && fpm_is_authoring; then
     sec "── flat_file 페이로드 drift (선언 ↔ 디스크) ──"
     FF_SRC="$REPO_DIR/$FPM_FLATFILE_SRC_REL_REPO"
     if [[ ! -d "$FF_SRC" ]]; then
@@ -285,7 +305,7 @@ fi
 #   (2026-08-16 실측: 29개 중 원본과 일치한 것은 1개, 10개는 원본에 그 경로가 없었음)
 #   판정은 sh/scar-flatfile-sync.sh --check 에 위임한다 — 사본 재생성과 판정 로직이
 #   갈라지면 "검사는 통과하는데 재생성하면 바뀌는" 상태가 다시 생긴다.
-if [[ -x "$REPO_DIR/sh/scar-flatfile-sync.sh" ]]; then
+if [[ -x "$REPO_DIR/sh/scar-flatfile-sync.sh" ]] && fpm_is_authoring; then
     sec "── flat_file 사본 ↔ prj3 원본 drift ──"
     if [[ ! -d "$HOME/.claude" ]]; then
         warn "prj3 원본 없음: ~/.claude (이 머신은 SCAR 원본 미보유 — 사본 표류 점검 생략)"
@@ -322,6 +342,106 @@ if [[ -f "$REPO_DIR/sh/fpm_editors.sh" ]]; then
     fi
 else
     fail "sh/fpm_editors.sh 없음 — 경로 런처(v/z) 미제공"
+fi
+
+# ── 13. 설치본 무결성 대조 (prj3#Issue457) ────────────────────────────────────
+#   왜 필요한가 (fg1 실측 2026-08-28): 어긋남 ②형 — **"같은 번호, 다른 내용"** —
+#   은 번호 비교로 **원리적으로 탐지 불가**하다. `plugin update` 가 버전이 같아 갱신을
+#   건너뛰므로 소비자는 영원히 구버전에 머문다. 실제로 마켓 `0.5.5` 이름표 아래
+#   8/23 내용물이 있었고(hooks md5 불일치·파일 부재) 어떤 경고도 나지 않았다.
+#
+#   해법은 **내용 해시 대조**뿐이다. 번들 안의 `.fpm-integrity.json`(생성:
+#   sh/gen-integrity-manifest.sh, publish 직전)과 설치본 실물 sha256 을 비교한다.
+#
+#   🔴 검사 범위는 **fpm-core 하나**다 — prj20 마켓은 7개 플러그인 공유이고 각자 버전이
+#      다르다. 매니페스트가 fpm-core 번들 **안**에 있고 그 안의 상대경로만 열거하므로
+#      타 플러그인(fBanner·fBoard 등)은 **구조적으로 검사 대상이 아니다**.
+sec "── 설치본 무결성 (fpm-core 내용 해시) ──"
+INTEGRITY_SRC=""
+# 🔴 활성 설치본은 **installed_plugins.json 의 installPath** 가 정본이다 (2026-08-29 fg1 실측).
+#   캐시에는 구버전 디렉토리가 그대로 쌓인다(fg1: 0.3.6·0.4.0·0.5.6·0.5.7 4개 공존).
+#   glob 순회로 첫 매치를 잡으면 **활성본이 아닌 것**을 검사해 엉뚱한 FAIL 을 낸다 —
+#   실제로 0.5.7 이 활성인데 0.5.6 을 집어 거짓 불일치를 냈다.
+_installed_json="$HOME/.claude/plugins/installed_plugins.json"
+if [[ -f "$_installed_json" ]]; then
+    _active="$(python3 -c '
+import json,sys
+try:
+    d=json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+for k,v in (d.get("plugins") or {}).items():
+    if k.split("@")[0]==sys.argv[2]:
+        for e in (v if isinstance(v,list) else [v]):
+            p=e.get("installPath")
+            if p: print(p); sys.exit(0)
+' "$_installed_json" "$FPM_PLUGIN_NAME" 2>/dev/null || true)"
+    [[ -n "$_active" && -f "$_active/.fpm-integrity.json" ]] && INTEGRITY_SRC="$_active"
+fi
+# 폴백: ① 마켓 클론(플러그인 미설치 소비자) ② repo 번들(저작 머신)
+if [[ -z "$INTEGRITY_SRC" ]]; then
+    for _cand in \
+        "$HOME/.claude/plugins/marketplaces/$FPM_MKT_NAME/$FPM_PLUGIN_NAME" \
+        "$REPO_DIR/$FPM_PLUGIN_SRC_REL_REPO"
+    do
+        [[ -f "${_cand%/}/.fpm-integrity.json" ]] && { INTEGRITY_SRC="${_cand%/}"; break; }
+    done
+fi
+
+if [[ -z "$INTEGRITY_SRC" ]]; then
+    warn "무결성 매니페스트 부재(.fpm-integrity.json) — 구버전 설치본이거나 미발행. 'sh/gen-integrity-manifest.sh' 후 재발행 필요"
+else
+    _int_out="$(python3 - "$INTEGRITY_SRC" <<'PYEOF'
+import hashlib, json, os, sys
+root = sys.argv[1]
+man = json.load(open(os.path.join(root, '.fpm-integrity.json')))
+EXCLUDE_NAMES = {'.fpm-integrity.json', '.DS_Store'}
+EXCLUDE_DIRS  = {'.git', '__pycache__', 'node_modules', '.pytest_cache'}
+EXCLUDE_SUFFIX = ('.pyc', '.pyo', '.log', '.tmp')
+
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as fh:
+        for c in iter(lambda: fh.read(1 << 20), b''):
+            h.update(c)
+    return h.hexdigest()
+
+actual = {}
+for r, dirs, files in os.walk(root):
+    dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
+    for f in files:
+        if f in EXCLUDE_NAMES or f.endswith(EXCLUDE_SUFFIX):
+            continue
+        full = os.path.join(r, f)
+        if os.path.islink(full) or not os.path.isfile(full):
+            continue
+        actual[os.path.relpath(full, root)] = sha256(full)
+
+exp = man.get('files', {})
+changed = sorted(k for k in set(exp) & set(actual) if exp[k] != actual[k])
+missing = sorted(set(exp) - set(actual))
+extra   = sorted(set(actual) - set(exp))
+bad = len(changed) + len(missing)
+print('VERSION\t%s\t%s' % (man.get('version', '?'), (man.get('git_sha') or '?')[:8]))
+print('COUNT\t%d\t%d\t%d\t%d' % (len(exp), len(changed), len(missing), len(extra)))
+for k in changed[:10]: print('CHANGED\t%s' % k)
+for k in missing[:10]: print('MISSING\t%s' % k)
+for k in extra[:5]:    print('EXTRA\t%s' % k)
+sys.exit(1 if bad else 0)
+PYEOF
+)" && _int_rc=0 || _int_rc=$?
+    _ver="$(printf '%s' "$_int_out" | awk -F'\t' '$1=="VERSION"{print $2" ("$3")"}')"
+    _cnt="$(printf '%s' "$_int_out" | awk -F'\t' '$1=="COUNT"{print $2}')"
+    if [[ "$_int_rc" -eq 0 ]]; then
+        ok "무결성 일치: fpm-core ${_ver} — ${_cnt}개 파일 sha256 전건 일치 ($INTEGRITY_SRC)"
+    else
+        fail "무결성 불일치: fpm-core ${_ver} — 아래 파일의 내용이 발행본과 다르다 (번호가 같아도 내용이 다른 ②형)"
+        printf '%s\n' "$_int_out" | awk -F'\t' '$1=="CHANGED"{print "      변조/구버전: "$2} $1=="MISSING"{print "      누락: "$2}'
+        printf '      → 복구: claude plugin update %s  (또는 마켓 재발행)\n' "$FPM_PLUGIN_NAME"
+    fi
+    # EXTRA 는 소비자 로컬 추가물일 수 있어 FAIL 로 올리지 않는다(거짓 경고 억제 — prj3#Issue452 교훈)
+    _extra_n="$(printf '%s' "$_int_out" | awk -F'\t' '$1=="COUNT"{print $5}')"
+    [[ "${_extra_n:-0}" -gt 0 ]] && warn "매니페스트에 없는 파일 ${_extra_n}건(설치본 추가물 — 로컬 편집 가능성)"
 fi
 
 # ── 요약 ──────────────────────────────────────────────────────

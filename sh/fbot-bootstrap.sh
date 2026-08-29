@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# fbot-bootstrap.sh — aoa 데이터 루트 최초 생성 (Issue451 ②·멱등)
+# fbot-bootstrap.sh — aoa 데이터 루트 최초 생성 (prj3#Issue451 ②·멱등)
 #
 # 왜 필요한가 (2026-08-26 fg1 실측):
 #   fbot 진입점(fbot-state.py·fbot-taskmgr.py·fbot-hr-gate.py)은 registry.db·policy.yml 이
@@ -26,7 +26,7 @@ err()  { printf '\033[31m[fbot-bootstrap]\033[0m %s\n' "$1" >&2; }
 DRY=0
 [[ "${1:-}" == "--dry-run" ]] && DRY=1
 
-# ── python3 해석 (Issue451 ① 과 동일 계약 — 절대경로 하드코딩 금지) ──
+# ── python3 해석 (prj3#Issue451 ① 과 동일 계약 — 절대경로 하드코딩 금지) ──
 resolve_python() {
     local c
     if [[ -n "${FBOT_PYTHON:-}" ]]; then printf '%s' "$FBOT_PYTHON"; return 0; fi

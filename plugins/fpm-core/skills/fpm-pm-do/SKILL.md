@@ -288,6 +288,10 @@ resolve_cmd() {
 | **비대화(기본)** | `FPM_SESSION_ORIGIN=pm-do claude --dangerously-skip-permissions -p '<프롬프트>'` | 위임·자동화 전부 | 게이트 없음. 끝나면 프로세스 종료 → 완료 판정이 명확 |
 | 대화형(예외) | `FPM_SESSION_ORIGIN=pm-do claude --dangerously-skip-permissions` + send-keys | 사람이 중간 개입할 작업 | **첫 실행 안내·승인 게이트에서 멈춘다**. 사람이 붙어 있을 때만 |
 
+* `FBOT_ID=<봇>` 는 **봇 결속 신호**다(prj3#Issue438) — 봇으로 스폰할 때 command-prefix 로 함께 붙인다.
+    - ⚠️ **호출자 셸의 env 는 전달되지 않는다.** tmux 새 창은 tmux **서버**의 env 를 상속하므로 `FBOT_ID=x fpm-do …` 처럼 호출해도 대상 세션에는 닿지 않는다
+    - 빠뜨리면 봇으로 띄운 세션이 **일반 세션으로 뜬다** — 출근 훅 미발화·작업이 봇 이름에 귀속되지 않음(계약 F4)·hub 봇 카드에 미표시. 실발생 2026-08-26
+    - 실제 형태: `FBOT_ID=fbot-exec-narae FPM_SESSION_ORIGIN=pm-do claude --dangerously-skip-permissions -p '<프롬프트>'`
 * `FPM_SESSION_ORIGIN=pm-do` 는 **기동자 신호**다(Issue342 S3) — hub 카드가 위임 세션을 사람이 띄운 세션과 구분한다. 빠뜨려도 위임 자체는 동작하나 카드에서 출처가 미상이 된다. ⚠️ **Issue351 이후로는 안전 지시 주입의 열쇠이기도 하다** — 빠뜨리면 방어선이 사라진다(아래)
 
 ## 안전 지시는 어디서 오는가 (Issue351)

@@ -23,7 +23,14 @@ FORCE=0
 TOPIC="bots"
 OUT_DIR="$HOME/.claude/_doc_work/htm"          # 전역 싱글턴 — cwd 무관 고정
 DATA_FILE="$OUT_DIR/${TOPIC}.dash.yaml"
-MONITOR="$HOME/.claude/hooks/fbot-board-monitor.sh"
+# 형제 hook 경로 (Issue460 — Issue451 과 같은 결함이 남아 있던 자리)
+#   소비자는 SCAR 를 **플러그인**으로 받으므로 `~/.claude/hooks` 가 존재하지 않는다.
+#   훅 자체는 플러그인 경로에서 정상 발화하는데(env·매뉴얼 주입까지 성공) 그 안에서
+#   부르는 헬퍼만 `~/.claude/hooks` 를 가리켜 **조용히 실패**했다 — fg1 실측:
+#   `SID`·`FBOT_ID` 는 정상 도착하는데 `bind`·`transition` 이 안 먹어 결속·전이가 0.
+#   자기 위치가 곧 형제들의 위치다. 개발 머신(prj3)에서도 같은 값이 나온다.
+_HOOKS_SELF="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+MONITOR="$_HOOKS_SELF/fbot-board-monitor.sh"
 INTERVAL="${FBOT_BOARD_INTERVAL:-10}"          # sec — 사용자 명시 우선(board_policy interval_default=5 상회)
 
 if [[ ! -x "$MONITOR" ]]; then
@@ -58,7 +65,19 @@ if live and not force:
 mon = '$HOME/.claude/hooks/fbot-board-monitor.sh'
 doc = {
     "title": topic,
-    "status": "running",
+    # ⚠️ **`running` 이 아니다** (Issue455, 2026-08-29). init 은 data 파일만 준비하고
+    #   runner 는 사용자가 `..board bots` 를 입력할 때 뜬다 — 그 사이를 `running` 으로
+    #   적으면 **거짓 running 카드**가 된다(실사고: 08-25 12:00 mtime 에 status=running·
+    #   pid=null 인 파일이 hub 에서 가동 중으로 렌더).
+    #   내부 모순도 있었다 — 아래 `pid: None` 은 위 덮어쓰기 보호 조건
+    #   (`status=="running" and isinstance(pid,int)`)을 **구조적으로 만족할 수 없다**.
+    #   자기가 만든 파일이 자기 보호를 못 받는 상태였다.
+    # ⚠️ 값은 계약 3종(`running|stopped|done` — board.md L110) 안에서 고른다.
+    #   `pending` 은 계약 밖이라 소비처 아이콘·판정이 정의돼 있지 않다.
+    # ⚠️ 수용측 완화(prj1#Issue403 mtime 강등)로 대체하지 않은 이유 — 그쪽은 **늙은 것**을
+    #   잡는 장치이고 여기는 **처음부터 틀린 것**이라 성격이 다르다. 갓 만든 파일은
+    #   mtime 이 새것이라 그 강등에 걸리지 않는다.
+    "status": "stopped",
     # 기존 값 보존 → 재실행 멱등(sha 동일)
     "started_at": old.get("started_at") or time.strftime("%Y-%m-%dT%H:%M:%S"),
     "pid": None,

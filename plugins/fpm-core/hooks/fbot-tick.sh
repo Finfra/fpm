@@ -12,6 +12,14 @@ set -u
 #      사용자명이 다른 머신에서는 그 자체로 죽는다.
 #   launchd 는 셸 프로파일을 읽지 않는다 → plist EnvironmentVariables 가 데이터 위치를 준다.
 #   코드는 $HOME/.claude 사본을 쓴다(모듈 구성 동일). 데이터 위치와 코드 위치는 별개 축이다.
+# 스케줄 판정 TZ 고정 (Issue454 함정 ①) — 플랫폼 간 동작 분기 차단.
+#   아래 게이트 2종은 벽시계에 의존한다: 매뉴얼 개정(`date +%u` 월요일)·daily report
+#   (`date +%Y-%m-%d` 날짜 경계). macOS launchd 는 **로컬 TZ**(jm4 실측 Asia/Seoul)로 돌지만
+#   Linux user 세션은 **`Etc/UTC`** 다(fg1 실측) — 그대로 두면 같은 코드가 **9시간 갈린다**.
+#   TZ 를 여기서 명시해 양쪽을 일치시킨다. jm4 는 이미 Asia/Seoul 이라 **값이 안 바뀐다**(무회귀).
+#   ⚠️ 타이머 발화 주기(30분·15분)는 TZ 무관이다 — 어긋나는 것은 tick 안의 날짜 판정뿐이다.
+export TZ="${FBOT_TZ:-Asia/Seoul}"
+
 AOA_DIR="${AOA_MEMORY_DIR:-$HOME/.claude/data/aoa}"
 SRC="${AOA_HOME:-$HOME/.claude/mcp/aoa-memory}"
 # python3 해석 (Issue451 ①) — 절대경로 하드코딩 금지.
@@ -57,8 +65,16 @@ rotate() {
   [ -n "$sz" ] && [ "$sz" -gt "$LOG_MAX_BYTES" ] && mv -f "$f" "$f.1"
   return 0
 }
-rotate "$HOME/Library/Logs/fbot/aoa-${unit}.out.log"
-rotate "$HOME/Library/Logs/fbot/aoa-${unit}.err.log"
+# 로그 위치 플랫폼 분기 (Issue454) — `~/Library/Logs` 는 macOS 전용 규약이다.
+#   launchd: plist 의 StandardOutPath/ErrorPath 가 그 파일로 리다이렉트하므로 회전이 필요하다.
+#   systemd: stdout 을 **journald** 가 받는다(파일 리다이렉트 없음) → 아래 경로는 보통
+#            존재하지 않고 rotate 는 무해하게 통과한다. 회전은 journald 가 소유한다.
+case "$(uname -s)" in
+  Darwin) FBOT_LOG_DIR="${FBOT_LOG_DIR:-$HOME/Library/Logs/fbot}" ;;
+  *)      FBOT_LOG_DIR="${FBOT_LOG_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/fbot}" ;;
+esac
+rotate "$FBOT_LOG_DIR/aoa-${unit}.out.log"
+rotate "$FBOT_LOG_DIR/aoa-${unit}.err.log"
 
 export AOA_MEMORY_DIR="$AOA_DIR"
 rc=0

@@ -10,6 +10,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fbot-agent-bind.sh",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -23,6 +33,16 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fpm-hub-doc-register.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fbot-heartbeat.sh",
+            "timeout": 5
           }
         ]
       }
@@ -52,6 +72,12 @@
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fpm-hub-session-register.sh",
             "timeout": 5,
             "statusMessage": "Registering hub live session..."
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fbot-checkin.sh",
+            "timeout": 10,
+            "statusMessage": "fbot 출근 처리..."
           }
         ]
       }
@@ -63,6 +89,11 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fpm-hub-session-end.sh",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fbot-checkout.sh",
+            "timeout": 10
           }
         ]
       }

@@ -55,6 +55,7 @@ FPM_SCAR_COMMANDS=(
     fpm-show
 )
 FPM_SCAR_SKILLS=(
+    fbot-icon
     fpm-cdf
     fpm-issue-map
     fpm-pm

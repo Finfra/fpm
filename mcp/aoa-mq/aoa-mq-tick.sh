@@ -2,15 +2,15 @@
 # aoa-mq-tick.sh — aoa-mq 메시지 큐 tick 처리기 (설계 SSOT: _doc_arch/aoa-mq.md)
 #
 # 호출 계약: 기본은 시간 게이트 없음 — 호출되면 무조건 실행. `--gate <sec>` 를 준 호출자에
-# 한해 공유 게이트 파일(.last-tick)로 억제한다(옵트인 — Issue37 F3-4).
+# 한해 공유 게이트 파일(.last-tick)로 억제한다(옵트인 — prj3#Issue37 F3-4).
 # 자체 가드는 .tick.lock(동시 실행 방지) 하나뿐.
 # 트리거: hub 타이머(htm-server daemon thread, 주 구동자) · jmDashboard aoaMqGate() spawn
-#         (prj57 Issue6, 보조) · 수동 직접 실행.
+#         (prj57 prj3#Issue6, 보조) · 수동 직접 실행.
 #
 # 처리 순서: lock → register → inbox 소비 → watch 폴링 → due 판정 → 질의 렌더
 #            → 과다 누적 경고 → queue_done retention
 #
-# 시간축/통지축 분리 (Issue37 F3-3): MCP 승격(F3-2) 이후 통지 계층은 세션이 살아 있을 때
+# 시간축/통지축 분리 (prj3#Issue37 F3-3): MCP 승격(F3-2) 이후 통지 계층은 세션이 살아 있을 때
 # 중복이다 — session-inbox.sh 넛지와 MCP `aoa_mq_list` 가 같은 사실을 이미 전달한다.
 # 세션 활성 시에는 통지(inbox 소비·폼 렌더·누적 경고)를 건너뛰고 시간축 고유 처리
 # (watch 폴링·due 판정·post 실행·handoff 전이·retention)만 수행한다.
@@ -28,15 +28,19 @@ while [ $# -gt 0 ]; do
     *)              shift ;;
   esac
 done
-# AOA_MQ_DIR: sandbox 테스트용 오버라이드 (미설정 시 운영 경로)
-MQ_DIR="${AOA_MQ_DIR:-$HOME/_git/___common/data/aoa/mq}"
+# 경로 계약 (prj3#Issue450) — prj5(___common) 를 전제하지 않는다.
+#   AOA_MQ_DIR 은 sandbox 전용이 아니라 **정식 설정**이다. 미설정 시 제품 중립 기본으로 떨어진다.
+MQ_DIR="${AOA_MQ_DIR:-$HOME/.claude/data/aoa/mq}"
 QUEUE="$MQ_DIR/queue"
 QDONE="$MQ_DIR/queue_done"
 HANDOFF="$MQ_DIR/handoff"
 LOCK="$MQ_DIR/.tick.lock"
 POLICY="$MQ_DIR/policy.yml"
 LOG="$MQ_DIR/tick.log"
-CWD="$HOME/_git/___common"
+# 렌더 대상 프로젝트 — htm 산출물과 /answer 회수의 cwd 가 된다.
+#   AOA_MQ_CWD 로 지정하고, 없으면 $HOME/.claude 로 떨어진다(prj5 미클론 머신 대응).
+CWD="${AOA_MQ_CWD:-$HOME/.claude}"
+CWD_NAME="$(basename "$CWD")"
 # 렌더 산출물 폴더 — 활성 htm/ → legacy z_htm/ → htm/ 신규 (prj1#Issue289 / prj3#Issue258).
 # 판정 규칙은 fpm-hub-trigger.sh `_htm_dir_of()` 와 동일. z_htm 하드코딩은 마이그레이션 후에도
 # 폴더를 매 tick 재생성하는 원인이었음 (mq 20260719-201758-001).
@@ -52,7 +56,7 @@ STAT=/usr/bin/stat
 # IP 무관 고정·전 tailnet 기기 해석·가독성. 과거 raw IP 우회(commit 9031c44)는 jm4 자기해석
 # 실패 때문이었으나, 근본원인=macOS 시스템 resolver 의 ts.net split-DNS 누락(tailscaled·MagicDNS
 # 정상)으로 재진단되어 /etc/resolver/ts.net(→100.100.100.100) 영속 수리 → hostname 부활.
-# hub advertise_host(prj1 Issue267)와 통일. tailscaled 미가용 시 .local fallback.
+# hub advertise_host(prj1 prj3#Issue267)와 통일. tailscaled 미가용 시 .local fallback.
 TS_BIN=$(command -v tailscale || echo /Applications/Tailscale.app/Contents/MacOS/Tailscale)
 TS_HOST=$("$TS_BIN" status --json 2>/dev/null | "$JQ" -r '.Self.DNSName // empty' 2>/dev/null | sed 's/\.$//')
 ADVERTISE_HOST="${TS_HOST:-host-1.local}"
@@ -69,23 +73,23 @@ pol() { # $1=key $2=default
   printf '%s' "${v:-$2}"
 }
 
-LAST_TICK="$MQ_DIR/.last-tick"                         # 공유 게이트 파일 (Issue37 F3-4)
+LAST_TICK="$MQ_DIR/.last-tick"                         # 공유 게이트 파일 (prj3#Issue37 F3-4)
 SESSION_TOUCH="$MQ_DIR/.last-session-touch"            # MCP 가 갱신하는 세션 활성 마커 (F3-3)
 
 LOCK_STALE_MINS=$(pol lock_stale_mins 30)
 RENDER_MAX=$(pol render_max_items 30)
 OVERFLOW=$(pol overflow_warn_count 20)
 RETENTION=$(pol done_retention_days 0)
-ALLOW_POST_EXEC=$(pol allow_post_exec false)          # 사후 셸 자동 spawn 게이트 1/2 (Issue20)
+ALLOW_POST_EXEC=$(pol allow_post_exec false)          # 사후 셸 자동 spawn 게이트 1/2 (prj3#Issue20)
 POST_WL=$(pol post_exec_whitelist "" | tr -d ' ')     # 사후 셸 게이트 2/2 — basename 쉼표 목록
-DIGEST_SH="$(dirname "$0")/aoa-mq-digest.sh"           # 읽기용 digest 재생성기 (Issue20)
-ENQUEUE_SH="$(dirname "$0")/aoa-mq-enqueue.sh"         # 등록·재스케줄 helper — snooze 가 --reschedule 로 위임 (Issue63)
+DIGEST_SH="$(dirname "$0")/aoa-mq-digest.sh"           # 읽기용 digest 재생성기 (prj3#Issue20)
+ENQUEUE_SH="$(dirname "$0")/aoa-mq-enqueue.sh"         # 등록·재스케줄 helper — snooze 가 --reschedule 로 위임 (prj3#Issue63)
 SESSION_WINDOW=$(pol session_active_window 5400)       # 세션 활성 판정 창(초, 기본 90분 — F3-3)
 
 # CSV 멤버십: $1=쉼표목록 $2=값 (사후 whitelist 판정 등)
 in_csv() { case ",$1," in *",$2,"*) return 0 ;; *) return 1 ;; esac; }
 
-# ── 0.5 시간 게이트 (옵트인 — Issue37 F3-4) ─────────────────────────
+# ── 0.5 시간 게이트 (옵트인 — prj3#Issue37 F3-4) ─────────────────────────
 # 기본(GATE_SEC=0)은 종전 계약 그대로 "호출되면 무조건 실행"이다. 수동 실행·alert kick 이
 # 즉시 도는 성질을 깨지 않기 위해서다(설계 SSOT "책임 분리" 절의 근거).
 # 게이트를 건 호출자(hub 타이머)만 억제되며, 게이트 파일은 **어느 경로로 실행하든** 갱신되므로
@@ -146,7 +150,7 @@ jupd() { # $1=file $2...=jq args
   if "$JQ" "$@" "$f" > "$tmp" 2>/dev/null; then mv "$tmp" "$f"; else rm -f "$tmp"; log "jq 갱신 실패: $f"; fi
 }
 
-finalize() { # $1=file $2=terminal_status  — 종결: 상태 기록 → handoff 기록 → queue_done/ mv → confirm spawn → 결과 통지 (Issue12/15)
+finalize() { # $1=file $2=terminal_status  — 종결: 상태 기록 → handoff 기록 → queue_done/ mv → confirm spawn → 결과 통지 (prj3#Issue12/15)
   local f="$1" st="$2" base exec_note=""
   jupd "$f" --arg st "$st" --arg ts "$NOW_ISO" '.status=$st | .acked=true | .ack_ts=$ts'
   base=$(basename "$f")
@@ -156,7 +160,7 @@ finalize() { # $1=file $2=terminal_status  — 종결: 상태 기록 → handoff
     "$f" > "$HANDOFF/$base" 2>/dev/null || log "handoff 기록 실패(무시): $base"
   mv "$f" "$QDONE/$base"
   log "종결($st) → queue_done: $base (handoff 기록)"
-  # on_response confirm 자동 실행 (Issue15) — 이중 게이트: allow_on_confirm_exec(기본 false) + exec_whitelist(기본 빈 값)
+  # on_response confirm 자동 실행 (prj3#Issue15) — 이중 게이트: allow_on_confirm_exec(기본 false) + exec_whitelist(기본 빈 값)
   if [ "$st" = "confirmed" ]; then
     local kind cmd wl cmd_base hr_gate
     kind=$("$JQ" -r '.on_response.confirm.kind // empty' "$QDONE/$base" 2>/dev/null)
@@ -202,7 +206,7 @@ finalize() { # $1=file $2=terminal_status  — 종결: 상태 기록 → handoff
         || log "응답 통지 실패(무시): $base"
     fi
   fi
-  # 읽기용 digest: 종결 항목을 월단위 archive 에 append + Aoa-mq-list 재생성 (Issue20)
+  # 읽기용 digest: 종결 항목을 월단위 archive 에 append + Aoa-mq-list 재생성 (prj3#Issue20)
   [ -x "$DIGEST_SH" ] && "$DIGEST_SH" --archive "$QDONE/$base" >/dev/null 2>&1 || true
 }
 
@@ -243,7 +247,7 @@ consume_inbox() {
       ack)     finalize "$mf" acked_done ;;
       defer)   log "defer(닫기·다음 tick 재표시): $id" ;;  # 비종결 — 상태 유지, 다음 tick 재노출. inbox 파일만 제거(하단 rm)
       snooze)
-        # Issue63: snooze 를 재구현하지 않고 --reschedule 에 **위임**한다.
+        # prj3#Issue63: snooze 를 재구현하지 않고 --reschedule 에 **위임**한다.
         #   종전에는 여기서 "지금 시각 +Nd" 를 직접 계산해 원래 시각(19:00 등)이 매번 소실됐다.
         #   due_ts 를 바꾸는 경로를 하나로 모으면 시각 보존이 그쪽 규칙으로 공짜로 따라온다.
         #   AOA_MQ_LOCK_HELD=1 — 이 tick 이 이미 .tick.lock 을 쥐고 있으므로 helper 는 락을 다시 잡지 않는다.
@@ -262,7 +266,7 @@ consume_inbox() {
 }
 consume_inbox
 
-# ── 4. watch 폴링 (board_status + pane_regex — Issue14) ─────────────
+# ── 4. watch 폴링 (board_status + pane_regex — prj3#Issue14) ─────────────
 SENT_BASE=$(grep -E '^[[:space:]]*sentinel_base:' "$HOME/_git/___pm/data/board_policy.yml" 2>/dev/null \
             | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//')
 SENT_BASE="${SENT_BASE:-/tmp/___pm}"
@@ -316,7 +320,7 @@ for mf in "$QUEUE"/*.json; do
   fi
 done
 
-# ── 5.5 사후(kind=post) due 자동 처리 (Issue20) ─────────────────────
+# ── 5.5 사후(kind=post) due 자동 처리 (prj3#Issue20) ─────────────────────
 # post 항목은 폼 질의를 거치지 않는다:
 #   · 슬래시 명령(/…)      → headless bash 실행 불가 → handoff 위임(판단 가능한 세션이 소비·실행) 후 종결
 #   · 셸 명령(whitelist 통과) → detached spawn 실행 후 종결
@@ -372,7 +376,7 @@ if [ -n "$pending_items" ] && [ -n "$TOKEN" ]; then
   TS=$("$DATE" '+%Y%m%d_%H%M%S')
   FORM="$HTM_DIR/hub_htm_${TS}_b_aoa-mq-ask.htm"
   # same-origin 상대경로 — 페이지를 연 host(.local/tailnet IP/MagicDNS 무관)로 POST 회귀.
-  # file:// 직접 열람 시에만 127.0.0.1 fallback (Issue17 — 구 127.0.0.1 하드코딩은 폰에서 "서버 미응답")
+  # file:// 직접 열람 시에만 127.0.0.1 fallback (prj3#Issue17 — 구 127.0.0.1 하드코딩은 폰에서 "서버 미응답")
   ANSWER_PATH="/answer?cwd=$cwd_enc&token=$TOKEN&sid=aoa-mq"
   {
     cat <<HTMLHEAD
@@ -381,7 +385,7 @@ if [ -n "$pending_items" ] && [ -n "$TOKEN" ]; then
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="icon" href="/fpm-icon.png">
-<title>___common — aoa-mq 확인 요청</title>
+<title>${CWD_NAME} — aoa-mq 확인 요청</title>
 <style>
  body{font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",sans-serif;max-width:820px;margin:0 auto;padding:1rem 1.2rem 3rem;line-height:1.7;color:#222;background:#fff;}
  h1{font-size:1.2rem;background:hsl(186,72%,80%);color:#1a1a1a;padding:0.8rem 1.2rem;border-radius:8px;}
@@ -452,7 +456,7 @@ CARD
     echo "</body></html>"
   } > "$FORM"
 
-  # 채널 에스컬레이션 (Issue267 후속): 배치 내 최대 ask_count 기준 시간당 1단계씩 승급
+  # 채널 에스컬레이션 (prj3#Issue267 후속): 배치 내 최대 ask_count 기준 시간당 1단계씩 승급
   #   0회째(첫 due) → discord 만 · 1회째 → 무통지(hub 등록만, 조용히 대기) · 2회째+ → vscode 강제
   # register-doc(hub 등록)은 ack 폼 자체라 단계 무관 항상 실행.
   max_asks=0
@@ -525,10 +529,10 @@ if [ "${qcount:-0}" -gt "$OVERFLOW" ] && [ "$SESSION_ACTIVE" -eq 0 ]; then
   # 실발송은 openclaw CLI 존재 + 사용자 확인 정책(FIXME: dry-run 무시 특성) 고려해 로그 우선.
 fi
 
-# ── 7.5 미소비 handoff — stale 상태 전이 + nag 백오프 (Issue25 신설 / Issue26 개편) ──
-# Issue25 는 적체를 "감지·통지"만 했다. 상태가 안 변하니 매 tick 동일 문구가 반복됐고(무한 nag),
+# ── 7.5 미소비 handoff — stale 상태 전이 + nag 백오프 (prj3#Issue25 신설 / prj3#Issue26 개편) ──
+# prj3#Issue25 는 적체를 "감지·통지"만 했다. 상태가 안 변하니 매 tick 동일 문구가 반복됐고(무한 nag),
 # 결국 사용자가 통지를 껐다 — 알림이 행동을 못 만들면 알림 자체가 무력해진다.
-# Issue26 은 두 축을 바꾼다:
+# prj3#Issue26 은 두 축을 바꾼다:
 #   ① stale 초과분은 **상태를 전이**시킨다 (기본 promote — 대상 prj Issue.md 🌱 이슈후보로 승격).
 #      할 일이 우편함이 아니라 사람이 매일 보는 곳에 도착하므로 적체 자체가 해소된다.
 #   ② 그래도 남은 잔여분 통지는 **백오프**한다 (1일 → 3일 → 7일 → 중단, 로그만).
@@ -605,7 +609,7 @@ else
   fi
 fi
 
-# ── 7.6 승격 사후 감사 (Issue26 후속) ───────────────────────────────
+# ── 7.6 승격 사후 감사 (prj3#Issue26 후속) ───────────────────────────────
 # 승격분은 타 repo 의 uncommitted 작업본이라 다른 세션이 stale 사본으로 덮어쓰면 조용히 사라진다
 # (2026-07-20 social 3건 실제 소실 — 승격은 성공했는데 10분 뒤 목적지에서 증발).
 # 여기서는 탐지·로깅만 한다. 복구(재등록)는 타 repo 쓰기라 무인 실행하지 않고 사용자에게 위임.
@@ -622,7 +626,7 @@ if [ "$RETENTION" -gt 0 ] 2>/dev/null; then
   find "$QDONE" -name '*.json' -mtime +"$RETENTION" -delete 2>/dev/null
 fi
 
-# 읽기용 digest 최종 재생성 — due 전이 등 이번 tick 의 상태 변화 반영 (Issue20)
+# 읽기용 digest 최종 재생성 — due 전이 등 이번 tick 의 상태 변화 반영 (prj3#Issue20)
 [ -x "$DIGEST_SH" ] && "$DIGEST_SH" >/dev/null 2>&1 || true
 
 # 로그 로테이션 (최근 500줄 유지)

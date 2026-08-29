@@ -80,6 +80,7 @@ payloads:
         - fpm-pm-update
         - fpm-show
       skills:
+        - fbot-icon             # 핀봇 아이콘 카탈로그+결정론 SVG 생성기 (prj3#Issue436)
         - fpm-cdf
         - fpm-issue-map
         - fpm-pm

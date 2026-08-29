@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# aoa-mq-handoff.sh — aoa-mq handoff(응답 스냅샷) 소비자 CLI (prj5 Issue25)
+# aoa-mq-handoff.sh — aoa-mq handoff(응답 스냅샷) 소비자 CLI (prj5 prj3#Issue25)
 #
-# ⚠️ 글로벌 SCAR 변경 가드 (Issue46): 본 script 는 aoa-mq(prj5) 전용 handoff 소비 도구.
-#   cwd ≠ ~/_git/___common 이면 즉시 수정 금지 → prj5 Issue.md 이슈 등록 후 처리.
-#   설계 SSOT: ~/_git/___common/_doc_arch/aoa-mq.md "응답 액션 모델 — handoff". 규약: .claude/agents/aoa-mq.md
+# ⚠️ 글로벌 SCAR 변경 가드 (prj3#Issue46): 본 script 는 aoa-mq(prj3) 전용 handoff 소비 도구.
+#   글로벌 SCAR — 실행체 소유는 prj3(~/.claude). cwd ≠ ~/.claude 면 즉시 수정 금지 →
+#   ~/.claude/Issue.md 이슈 등록 후 처리 (rules/global-scar-change-rules.md).
+#   설계 SSOT: ~/.claude/_doc_arch/aoa-mq.md "응답 액션 모델 — handoff". 규약: mcp/aoa-mq/aoa-mq.md
 #
 # 배경: tick 은 headless 라 "확인(confirm)" ACK 후 실제 작업을 실행하지 못하고
 #   handoff/<id>.json 에 응답 스냅샷만 남긴다. 소비자가 없어 14건이 무기한 적체(2026-07-05~).
@@ -17,25 +18,26 @@
 #   aoa-mq-handoff.sh hold <id> [--note "..."]   # 보류 → <id>.json.hold rename (목록에서 제외)
 #   aoa-mq-handoff.sh unhold <id>          # 보류 해제 (.hold → .json)
 #   aoa-mq-handoff.sh count                # 미소비 건수만 출력 (hook·tick 용, 숫자 1줄)
-#   aoa-mq-handoff.sh promote <id> [--note "..."] [--dry-run]   # 이슈 승격 → 대상 prj Issue.md 🌱 이슈후보 (Issue26)
-#   aoa-mq-handoff.sh promote-stale [--days N] [--dry-run]      # stale 초과분 일괄 승격 (tick 용, Issue26)
+#   aoa-mq-handoff.sh promote <id> [--note "..."] [--dry-run]   # 이슈 승격 → 대상 prj Issue.md 🌱 이슈후보 (prj3#Issue26)
+#   aoa-mq-handoff.sh promote-stale [--days N] [--dry-run]      # stale 초과분 일괄 승격 (tick 용, prj3#Issue26)
 #   aoa-mq-handoff.sh audit [--restore]    # 승격분이 대상 Issue.md 에 아직 있는지 감사 (소실분 재등록)
 #
 # 보장: 큐(queue/·queue_done/)는 건드리지 않음 — handoff/ 하위만 읽기·이동.
 #   삭제 대신 z_consumed/ 이관(감사 추적 보존). silent 실패 금지 — 오류는 stderr + exit≠0.
 #
-# 승격(promote) 규약 (Issue26 — F1 "고립 우편함" 해소):
+# 승격(promote) 규약 (prj3#Issue26 — F1 "고립 우편함" 해소):
 #   handoff/ 는 어떤 워크플로우에도 편입되지 않은 우편함이라 아무도 열지 않는다. 승격은 그 항목을
 #   사람이 매일 보는 곳(대상 prj Issue.md)으로 옮겨 유실을 막는다.
 #   · 대상 해석: source(`claude@<basename>`) → ~/_git/___pm/Projects.md 경로 basename 매칭.
-#     못 찾으면 prj5(___common) Issue.md 로 fallback (유실 금지 — 조용한 drop 없음)
+#     못 찾으면 AOA_MQ_CWD(미설정 시 ~/.claude) 의 Issue.md 로 fallback (유실 금지 — 조용한 drop 없음)
 #   · 삽입 위치: `# 🌱 이슈후보` 섹션 말미. **번호 발급·HWM 갱신 안 함** (issue-g 규칙5) —
 #     타 프로젝트 이슈 번호를 headless 로 채번하면 충돌하므로 후보 리스트까지만 올린다
 #   · 승격 후 handoff 는 z_consumed/ 이관 (promoted_to·consumed_note 기록)
 
 set -u
 
-MQ_DIR="${AOA_MQ_DIR:-$HOME/_git/___common/data/aoa/mq}"
+# 경로 계약 (prj3#Issue450) — env 가 정식 설정. 미설정 시 제품 중립 기본.
+MQ_DIR="${AOA_MQ_DIR:-$HOME/.claude/data/aoa/mq}"
 HANDOFF="$MQ_DIR/handoff"
 CONSUMED="$HANDOFF/z_consumed"
 
@@ -67,9 +69,10 @@ resolve() { # $1=id → 파일 경로 (없으면 die)
   printf '%s' "$f"
 }
 
-# ── 승격 (promote) 지원 (Issue26) ──────────────────────────────────
+# ── 승격 (promote) 지원 (prj3#Issue26) ──────────────────────────────────
 PROJECTS_MD="$HOME/_git/___pm/Projects.md"
-FALLBACK_ISSUE="$HOME/_git/___common/Issue.md"
+# 해석 실패 시 최후 착지점 — 유실 금지가 목적이므로 반드시 실재하는 곳이어야 한다.
+FALLBACK_ISSUE="${AOA_MQ_CWD:-$HOME/.claude}/Issue.md"
 
 target_issue_md() { # $1=source → 대상 Issue.md 경로 (해석 실패 시 fallback)
   local src="$1" cand path
@@ -147,7 +150,7 @@ promote_one() { # $1=파일 $2=note $3=dry(1|0) → stdout 요약 1줄
     return 0
   fi
   num=$(append_candidate "$target" "$line") || die "이슈후보 append 실패: $id → $target"
-  # 도착 검증 (Issue26 후속): append 성공 보고를 믿지 않고 대상 파일에서 marker 를 되읽는다.
+  # 도착 검증 (prj3#Issue26 후속): append 성공 보고를 믿지 않고 대상 파일에서 marker 를 되읽는다.
   # 실패 시 handoff 를 소비하지 않고 중단 — 도착 못 한 항목을 z_consumed 로 치우면 조용한 유실이 된다
   grep -Fq "handoff $id" "$target" \
     || die "승격 도착 검증 실패: $id → $target (marker 부재) — handoff 미소비 유지"
@@ -156,7 +159,7 @@ promote_one() { # $1=파일 $2=note $3=dry(1|0) → stdout 요약 1줄
   tmp="$f.tmp.$$"
   if "$JQ" --arg ts "$NOW_ISO" --arg to "$target" --arg n "$num" --arg note "$note" \
       '. + {consumed_ts:$ts, promoted_to:($to + " 🌱 이슈후보 " + $n),
-            consumed_note:(if $note=="" then "Issue26 승격" else $note end)}' \
+            consumed_note:(if $note=="" then "prj3#Issue26 승격" else $note end)}' \
       "$f" > "$tmp" 2>/dev/null; then
     mv "$tmp" "$CONSUMED/$base"; rm -f "$f"
   else
@@ -285,7 +288,7 @@ case "$CMD" in
     n=0
     while IFS= read -r f; do
       [ -n "$f" ] || continue
-      promote_one "$f" "stale ${days}일 초과 자동 승격 (Issue26)" "$dry" || true
+      promote_one "$f" "stale ${days}일 초과 자동 승격 (prj3#Issue26)" "$dry" || true
       n=$((n+1))
     done < <(find "$HANDOFF" -maxdepth 1 -type f -name '*.json' -mtime +"$days" 2>/dev/null | sort)
     if [ "$n" = 0 ]; then
@@ -296,7 +299,7 @@ case "$CMD" in
     ;;
 
   audit)
-    # 승격 사후 감사 (Issue26 후속): z_consumed 의 promoted_to 대상 파일에 marker 가 아직 있는지 재확인.
+    # 승격 사후 감사 (prj3#Issue26 후속): z_consumed 의 promoted_to 대상 파일에 marker 가 아직 있는지 재확인.
     # 승격분은 타 repo 의 uncommitted 작업본이라, 다른 세션이 stale 사본으로 덮어쓰면 조용히 사라진다
     # (2026-07-20 social 3건 실제 소실). --restore 는 사라진 줄만 다시 append 한다.
     restore=0

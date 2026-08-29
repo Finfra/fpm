@@ -26,7 +26,14 @@ CLAUDE_DIR="$HOME/.claude"
 #   훅과 헬퍼가 서로 다른 DB 를 보면 상태와 kv 가 조용히 갈라진다.
 # 경로 계약 (Issue450) — env 가 정식 설정. 미설정 시 제품 중립 기본(prj5 미클론 머신 대응).
 DB="${AOA_MEMORY_DIR:-$HOME/.claude/data/aoa}/registry.db"
-STATE_PY="$CLAUDE_DIR/hooks/fbot-state.py"
+# 형제 hook 경로 (Issue460 — Issue451 과 같은 결함이 남아 있던 자리)
+#   소비자는 SCAR 를 **플러그인**으로 받으므로 `~/.claude/hooks` 가 존재하지 않는다.
+#   훅 자체는 플러그인 경로에서 정상 발화하는데(env·매뉴얼 주입까지 성공) 그 안에서
+#   부르는 헬퍼만 `~/.claude/hooks` 를 가리켜 **조용히 실패**했다 — fg1 실측:
+#   `SID`·`FBOT_ID` 는 정상 도착하는데 `bind`·`transition` 이 안 먹어 결속·전이가 0.
+#   자기 위치가 곧 형제들의 위치다. 개발 머신(prj3)에서도 같은 값이 나온다.
+_HOOKS_SELF="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+STATE_PY="$_HOOKS_SELF/fbot-state.py"
 # 🚧 매뉴얼 경로 규약은 s5 확정 대기(fbot-arch.md 미해결 표). 그때까지 데이터 자산 규약
 #    (`~/.claude/data/fbot/`)을 따르고, 파일이 없으면 조용히 건너뛴다.
 MANUAL_DIR="${FBOT_MANUAL_DIR:-$CLAUDE_DIR/data/fbot/manuals}"
@@ -101,6 +108,15 @@ if [ -z "$registered" ]; then
 fi
 
 fbot_state transition --bot-id "$FBOT_ID" --to working
+
+# --- 현재 작업 기재 (Issue462) ----------------------------------------------
+# 전이가 current_task 를 비운 **직후**에 채운다(순서 뒤집으면 방금 넣은 값이 지워진다).
+# Issue441 은 낡은 값을 안 보여주는 데까지 갔으나 **채우는 주체를 만들지 않아** 실측에서
+#   항상 NULL 이었다(2026-08-29 미르 실작업 — 일은 끝났는데 원장에 내용이 0).
+# ⚠️ env 명시 전달만 받는다. SessionStart 시점에는 프롬프트가 아직 훅에 오지 않으므로
+#   "위임문에서 요지 추출"(Issue441 후보ⓑ)은 이 자리에서 원리적으로 불가능하다.
+#   값이 없으면 NULL 을 유지한다 — 추측으로 채우면 낡은 값보다 나쁜 거짓이 된다.
+[ -n "${FBOT_TASK:-}" ] && fbot_state set-task --bot-id "$FBOT_ID" --task "$FBOT_TASK"
 
 # --- 컨텍스트 조립 ----------------------------------------------------------
 ctx="[핀봇 출근 — $FBOT_ID${role:+ (role: $role)}]

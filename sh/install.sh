@@ -10,7 +10,7 @@
 #   6. [기본 ON] fpm-core Claude Code 플러그인(SCAR) 을 prj20 마켓 경유 설치 (Issue181)
 #      claude CLI 부재 시 경고만 하고 건너뜀(graceful skip — 셸 설치는 정상 완료, exit 0).
 #      --no-scar 로 옵트아웃 가능.
-#   7. [기본 ON] MCP 서버 배선 (Issue451 ③) — <repo>/mcp/{aoa-mq,aoa-memory} 를 claude CLI
+#   7. [기본 ON] MCP 서버 배선 (prj3#Issue451 ③) — <repo>/mcp/{aoa-mq,aoa-memory} 를 claude CLI
 #      user 스코프에 등록 + aoa 데이터 루트 부트스트랩(sh/fbot-bootstrap.sh).
 #      ⚠️ 이미 같은 이름이 등록돼 있으면 **건드리지 않는다** — 사용자 설정을 덮지 않는 것이 규약.
 #      --no-mcp 로 옵트아웃 가능.
@@ -125,7 +125,7 @@ install_scar() {
 
 # ── 0. 인자 파싱 ──────────────────────────────────────────────
 CLEAN=0
-# ── MCP 서버 배선 (Issue451 ③) — 멱등·비파괴 ───────────────
+# ── MCP 서버 배선 (prj3#Issue451 ③) — 멱등·비파괴 ───────────────
 # 왜 필요한가 (2026-08-26 fg1 실측): 저장소는 mcp/aoa-mq·mcp/aoa-memory 를 **배송하는데**
 #   어디에도 **등록하지 않았다**. `.mcp.json`·`mcpServers` 키가 설치 경로에 0건이라
 #   소비자는 서버 코드를 받고도 도구를 한 개도 못 본다. 배송 ≠ 배선이다.
@@ -181,7 +181,7 @@ install_mcp() {
 WITH_SCAR=1          # 기본 ON (Issue181 후속 — SCAR 가 fpm 주목적). --no-scar 로 끔
 SCAR_FAILED=0
 SCAR_SKIPPED=0
-WITH_MCP=1           # 기본 ON (Issue451 ③ — 배선 없으면 fbot 진입점이 전부 죽는다). --no-mcp 로 끔
+WITH_MCP=1           # 기본 ON (prj3#Issue451 ③ — 배선 없으면 fbot 진입점이 전부 죽는다). --no-mcp 로 끔
 MCP_SKIPPED=0
 LOCAL_MKT=""         # --local <경로> 지정 시 채워짐. "AUTO" = 인자 없이 --local (관례 후보 탐색)
 # 값 동반 플래그(--local) 지원 위해 while+shift 사용 (기존 for-arg 로는 다음 인자 소비 불가).
