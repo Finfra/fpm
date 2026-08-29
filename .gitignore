@@ -53,3 +53,7 @@ Issue_map.htm
 
 # 개인 수기 메모 — /projects-map 온라인 편집 대상, 커밋 비대상 (prj1#Issue398)
 _note.md
+
+# projects-map 산출물 (Projects.md 로부터 재생성 — sh/install.sh 4-3 이 부재 시 생성)
+Projects_map.htm
+Projects_map.md
