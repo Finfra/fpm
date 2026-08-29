@@ -294,10 +294,17 @@ fi
 #            표류로 잡히는 것이 당연하다
 #   판정 신호는 항목 9(Issue391)와 같다 — `~/.claude/commands/` 의 라이브 SCAR 존재 하나뿐.
 #   ⚠️ `REPO_DIR == $FPM_BASE` 는 판별력 0(소비자에서도 참) — 조건에 넣지 말 것.
+#   🔴 조건이 **둘**이다 (2026-08-29 실측으로 추가) — 머신만 보면 부족하다.
+#      저작 머신에서 **미러 repo**(`~/_git/__all/fpm`)를 대상으로 돌리면 머신 판별은 참인데
+#      대상은 sanitize 파생물이라 항목 11·12·13 이 **거짓 FAIL 3건**을 냈다(실측).
+#      "저작 머신인가" 와 "이 repo 가 정본인가" 는 별개 축이므로 둘 다 본다.
+#      정본 신호는 `_doc_arch/` — publishable exclude 라 미러·소비자에는 **구조적으로 없다**.
+#      (`REPO_DIR == $FPM_BASE` 는 여전히 금지 — 소비자에서도 참이라 판별력 0)
 fpm_is_authoring() {
+    [[ -d "$REPO_DIR/_doc_arch" ]] || return 1     # 이 repo 가 정본인가
     local _c
     for _c in "${FPM_SCAR_COMMANDS[@]}"; do
-        [[ -f "$HOME/.claude/commands/${_c}.md" ]] && return 0
+        [[ -f "$HOME/.claude/commands/${_c}.md" ]] && return 0   # 이 머신이 저작 머신인가
     done
     return 1
 }
