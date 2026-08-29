@@ -29,6 +29,16 @@ FPM_ORG_FILES=(
     "data/editor.yml:data/editor_org.yml"
 )
 
+# ── [셸] org 섹션 보정 (real:org:정본헤딩|허용별칭…, Issue407) ──
+#   실파일이 있어도 허용 헤딩이 하나도 없으면 org 에서 그 섹션만 이식한다.
+FPM_ORG_SECTIONS=(
+    "Projects.md:Projects_org.md:# Project Map|# Project Tree|# 프로젝트 트리"
+)
+
+# ── [셸] 프로젝트 맵 산출물 (repo 기준, Issue407) ──
+FPM_PROJECTS_MAP_BUILDER=".claude/skills/projects-map/build_projects_map.py"
+FPM_PROJECTS_MAP_OUT="Projects_map.htm"
+
 # ── [SCAR] fpm-core 플러그인 (공유 마켓 경유) ──
 FPM_MKT_NAME="f-claude-plugins"
 FPM_MKT_REF_DEFAULT="https://github.com/Finfra/f-claude-plugins"  # env FPM_MKT_REF 로 override

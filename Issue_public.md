@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: b817dfc7cbd2d15f1b033f2be5379ea89f21ea8a03054ca6c26a131487ce7c61
+source_sha: 8e27eeb9831a3c970933f38ca2ef43120bc56d7d1cde8d1499b4efe8dd10b112
 ---
 
 # 안내
@@ -17,6 +17,14 @@ source_sha: b817dfc7cbd2d15f1b033f2be5379ea89f21ea8a03054ca6c26a131487ce7c61
 `scripts/fpm-issue-digest.sh` 가 덮어쓴다.
 
 # 이슈 근거
+
+## Issue407: 구버전 `Projects_org.md` 로 설치된 사본은 `# Project Map` 섹션을 영영 못 받는다 — 맵이 통째로 미생성 ✅
+* 목적: `place_org()` 는 실파일이 있으면 무조건 보존하므로, 템플릿이 나중에 보강돼도 기존 설치본은 갱신되지 않는다. host 은 7/17 에 트리 섹션이 없던 org 를 복사했고 8/23 에 org 가 보강됐으나 반영되지 않아, `Projects_map.htm`·`.md` 가 둘 다 생성되지 않는다(빌더 rc=1 `# Project Map 섹션을 찾지 못함`).
+* 구현 명세:
+    - SSOT `data/scar-manifest.yml` `shell.org_files[]` 에 선택 필드 `sections` 추가(첫 항목이 삽입 정본, 나머지는 허용 별칭). `projects_map` 블록으로 빌더·산출물 경로도 SSOT 화
+    - `gen-install-manifest.sh` → `FPM_ORG_SECTIONS`·`FPM_PROJECTS_MAP_{BUILDER,OUT}` 투영
+    - `install.sh` 4단계: 파일 보존 원칙은 유지하되 **허용 헤딩이 하나도 없을 때만** org 에서 해당 섹션을 append(사전 백업). 이어서 산출물 부재 시 빌더 1회 실행
+    - `check.sh` 5단계: 섹션 결손·산출물 부재를 경고로 검출
 
 ## Issue405: 퇴근한 핀봇의 **마지막 실행 시각**이 hub payload 에 없다 — 5분 전 퇴근과 두 달 전 퇴근이 같은 칩 ✅
 * 목적: 사용자가 *"나래가 지금 도는가"* 를 hub 화면만으로 판정할 수 없다. 퇴근 봇은 `⬜ 나래(중역핀봇)` 칩 하나로만 그려지고 시각 정보는 **조직 전체 `last_ts` 1개**뿐이라 개체별 최신성이 사라진다. 방금 퇴근한 봇과 오래 전 퇴근한 봇이 화면상 구분되지 않아, prj3#Issue438 이 없애려던 "세션에 되묻는 상황" 이 그대로 재현된다

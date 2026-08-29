@@ -10,7 +10,8 @@
 #         2. rc(zshrc/bashrc) 에 fpm 마커 블록 + FPM_BASE export
 #         3. ~/.info/__pmBasePath.txt → <repo>/projects 일치
 #         4. projects/ 스캐폴드 (필수 인덱스)
-#         5. 운영 필수 파일 (FPM_ORG_FILES)
+#         5. 운영 필수 파일 (FPM_ORG_FILES) + 요구 섹션 결손 (FPM_ORG_SECTIONS, Issue407)
+#         5-2. 프로젝트 맵 산출물 (FPM_PROJECTS_MAP_OUT, Issue407)
 #         6. cdf 함수 로드 여부 (sh/fpm.sh source)
 #   [SCAR] 7. claude CLI 존재
 #          8. marketplace 등록 (FPM_MKT_NAME)
@@ -129,6 +130,37 @@ for pair in "${FPM_ORG_FILES[@]}"; do
         warn "운영 파일 없음: $real (sh/install.sh 가 ${pair##*:} 예제로 배치)"
     fi
 done
+
+# ── 5-2. org 요구 섹션 결손 (Issue407) ────────────────────────
+#   파일은 있는데 섹션만 없는 상태는 존재 검사로 안 잡힌다. 구버전 org 로 설치된 사본이
+#   여기 걸린다(실측 fg1: Projects.md 는 있으나 `# Project Map` 부재 → 맵 빌더 rc=1).
+if declare -p FPM_ORG_SECTIONS >/dev/null 2>&1; then
+    for triple in "${FPM_ORG_SECTIONS[@]}"; do
+        real="${triple%%:*}"; rest="${triple#*:}"; heads="${rest#*:}"
+        [[ -f "$REPO_DIR/$real" ]] || continue
+        found=0
+        IFS='|' read -r -a _heads <<< "$heads"
+        for h in "${_heads[@]}"; do
+            if grep -qxF -- "$h" "$REPO_DIR/$real"; then found=1; break; fi
+        done
+        if [[ "$found" -eq 1 ]]; then
+            ok "요구 섹션 존재: $real ← '${heads%%|*}'"
+        else
+            warn "요구 섹션 없음: $real 에 '${heads%%|*}' 부재 — sh/install.sh 재실행 시 ${rest%%:*} 에서 이식"
+        fi
+    done
+fi
+
+# ── 5-3. 프로젝트 맵 산출물 (Issue407) ────────────────────────
+#   gitignore 재생성물이라 부재가 곧 고장은 아니지만, 소스가 성립하는데도 없으면
+#   빌더 실패를 의심할 자리다(hub 는 실패를 조용히 삼킨다).
+if [[ -n "${FPM_PROJECTS_MAP_OUT:-}" ]]; then
+    if [[ -f "$REPO_DIR/$FPM_PROJECTS_MAP_OUT" ]]; then
+        ok "프로젝트 맵 산출물 존재: $FPM_PROJECTS_MAP_OUT"
+    else
+        warn "프로젝트 맵 산출물 없음: $FPM_PROJECTS_MAP_OUT (sh/install.sh 재실행 또는 python3 $FPM_PROJECTS_MAP_BUILDER)"
+    fi
+fi
 
 # ── 6. cdf 함수 로드 여부 (현재 셸) ───────────────────────────
 # check.sh 는 bash 서브셸 → 부모 셸 함수 미상속. fpm.sh 직접 source 후 확인.

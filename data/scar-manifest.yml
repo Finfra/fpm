@@ -34,15 +34,30 @@ shell:
   # projects/ 스캐폴드 — 필수 존재 인덱스 (check 가 검증; 0=$HOME, 1=$REPO)
   scaffold_indexes: [0, 1]
   # 운영 필수 파일 (real:org, repo 기준) — install: org 존재+real 부재 시 복사(멱등)
+  #
+  # sections (선택, Issue407): 실파일이 **이미 있어도** 여기 헤딩이 하나도 없으면 org 에서
+  #   그 섹션 블록만 이식한다. 파일 통째 덮어쓰기가 아니라 결손 섹션 append 이므로 사용자
+  #   데이터는 보존된다. 구버전 org 로 설치된 사본이 이후 템플릿 보강을 영영 못 받던 결함
+  #   (fg1 실측: `# Project Map` 부재 → Projects_map 빌더 rc=1 → 맵 통째 미생성) 대응.
+  #   목록 **첫 항목이 삽입 정본**, 나머지는 "이미 있음" 으로 인정할 구표기 별칭.
+  #   별칭 집합은 build_projects_map.py 의 TREE_HEADINGS 와 같은 값을 유지할 것.
   org_files:
     - real: Servers.md
       org: Servers_org.md
     - real: Projects.md
       org: Projects_org.md
+      sections: ["# Project Map", "# Project Tree", "# 프로젝트 트리"]
     - real: data/hub_setting.yml
       org: data/hub_setting_org.yml
     - real: data/editor.yml
       org: data/editor_org.yml
+
+  # 프로젝트 맵 산출물 (repo 기준, Issue407) — install: 부재 시 빌더 1회 실행.
+  #   빌더는 htm 과 같은 이름의 .md 를 함께 쓴다(둘은 한 실행의 두 출력).
+  #   경로는 hub server.py PROJECTS_MAP_BUILDER/PROJECTS_MAP_NAME 과 같은 값을 유지할 것.
+  projects_map:
+    builder_rel_repo: ".claude/skills/projects-map/build_projects_map.py"
+    out_rel_repo: "Projects_map.htm"
 
 # ── 배포 페이로드 (두 경로) ──────────────────────────────────────────────────
 payloads:

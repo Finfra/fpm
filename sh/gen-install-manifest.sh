@@ -43,6 +43,14 @@ def arr(name, items):
     return "\n".join(lines)
 
 org = [f'    "{o["real"]}:{o["org"]}"' for o in sh["org_files"]]
+# Issue407: 섹션 보정 대상만 추린 파생 배열. 헤딩에 콜론이 없다는 전제로 4-field 가 아닌
+#   3-field(real:org:헤딩목록) 로 투영하고, 헤딩 목록은 파이프로 잇는다(첫 항목이 정본).
+org_sections = []
+for o in sh["org_files"]:
+    if o.get("sections"):
+        heads = "|".join(o["sections"])
+        org_sections.append(f'    "{o["real"]}:{o["org"]}:{heads}"')
+pmap = sh["projects_map"]
 scaffold = " ".join(str(i) for i in sh["scaffold_indexes"])
 
 print(f'''#!/usr/bin/env bash
@@ -72,6 +80,16 @@ FPM_SCAFFOLD_INDEXES=({scaffold})
 FPM_ORG_FILES=(
 {chr(10).join(org)}
 )
+
+# ── [셸] org 섹션 보정 (real:org:정본헤딩|허용별칭…, Issue407) ──
+#   실파일이 있어도 허용 헤딩이 하나도 없으면 org 에서 그 섹션만 이식한다.
+FPM_ORG_SECTIONS=(
+{chr(10).join(org_sections)}
+)
+
+# ── [셸] 프로젝트 맵 산출물 (repo 기준, Issue407) ──
+FPM_PROJECTS_MAP_BUILDER="{pmap["builder_rel_repo"]}"
+FPM_PROJECTS_MAP_OUT="{pmap["out_rel_repo"]}"
 
 # ── [SCAR] fpm-core 플러그인 (공유 마켓 경유) ──
 FPM_MKT_NAME="{mkt["name"]}"
