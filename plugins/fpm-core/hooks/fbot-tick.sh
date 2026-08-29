@@ -137,6 +137,57 @@ daily_report_gate() {
   return 0
 }
 
+# ── 원격 머신 보고 회수 게이트 (Issue468) ──────────────────────────────────
+# 왜 필요한가 (2026-08-30 실측): fg1 상주 봇이 매일 보고를 만드는데 폴백 사다리가
+#   rung1(openclaw 미탐지) → rung2(hub OFF) → **rung3 file** 로 끝나, 3일치가 그 머신
+#   로컬에만 쌓이고 사용자에게 한 번도 닿지 않았다. 사다리의 세 단이 전부 그 머신
+#   기준이라 어느 단으로 떨어져도 산출물이 머신을 벗어나지 못한다.
+#
+# 🔑 **미는 것이 아니라 당긴다** — 원격이 jm4 로 push 하려면 그쪽에 이 머신의 경로·권한
+#   지식이 필요해 결합이 커진다. 수집자가 당기면 원격은 파일만 만들면 된다.
+# 🔑 **봇을 합치지 않고 산출물만 옮긴다** — "봇은 머신에 귀속" 판정(prj3#Issue461)과
+#   충돌하지 않는다. 파일명에 `_on-<host>` 를 박아 출처를 잃지 않는다.
+# ⚠️ 원본은 지우지 않는다 — 그 머신의 이력이다. 회수는 복제다.
+#
+# 설정: data/fbot/remote-hosts.txt (한 줄 1 호스트, `#` 주석 허용).
+#   파일이 없으면 **완전 no-op** — 원격이 없는 머신에 배포돼도 비용 0이다.
+REMOTE_HOSTS_FILE="$HOME/.claude/data/fbot/remote-hosts.txt"
+REMOTE_PULL_MARKER="$HOME/.claude/data/fbot/.last-remote-pull"
+remote_report_pull_gate() {
+  [ -f "$REMOTE_HOSTS_FILE" ] || return 0          # ← 무비용 가드
+  local day marker host n=0 dest
+  day="$(date +%Y-%m-%d)"
+  marker="$(cat "$REMOTE_PULL_MARKER" 2>/dev/null || true)"
+  if [ "$marker" = "$day" ]; then
+    log "remote-report-pull skip — 오늘 이미 회수($day)"
+    return 0
+  fi
+  dest="$HOME/.claude/data/fbot/reports"
+  mkdir -p "$dest" 2>/dev/null || true
+  while IFS= read -r host; do
+    host="${host%%#*}"; host="$(printf '%s' "$host" | tr -d '[:space:]')"
+    [ -n "$host" ] || continue
+    # 원격 보고를 로컬 이름공간으로 옮겨 담는다 — `<날짜>_on-<host>.md`.
+    #   scp 로 통째 가져와 rename 하면 이름 충돌·부분 전송이 섞이므로 파일별로 처리한다.
+    local names f base
+    names="$(ssh -o ConnectTimeout=8 -o BatchMode=yes "$host" \
+             'ls -1 ~/.claude/data/fbot/reports/*.md 2>/dev/null' 2>/dev/null || true)"
+    [ -n "$names" ] || { log "remote-report-pull — $host: 보고 없음/접속 불가(건너뜀)"; continue; }
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      base="$(basename "$f" .md)"
+      local out="$dest/${base}_on-${host%%.*}.md"
+      [ -f "$out" ] && continue                     # 이미 회수 — 중복 0
+      if scp -q -o ConnectTimeout=8 -o BatchMode=yes "$host:$f" "$out" 2>/dev/null; then
+        n=$((n+1))
+      fi
+    done <<< "$names"
+  done < "$REMOTE_HOSTS_FILE"
+  log "remote-report-pull — 신규 $n 건 회수"
+  printf '%s\n' "$day" > "$REMOTE_PULL_MARKER"
+  return 0
+}
+
 case "$unit" in
   worker)
     # 생산자 → 소비자. enqueue 실패 시에도 run 은 시도한다(이전 주기 잔여 잡 소비)
@@ -156,6 +207,9 @@ case "$unit" in
     # maint: 매뉴얼 개정 루프 (계약 §매뉴얼 체계 — 산출은 draft 까지, 정본 반영은 사람 승인 후)
     manual_review_gate
     # maint: 중역핀봇 daily report (Issue438 ② — 1일 1회)
+    # Issue468 — 원격 보고 회수는 daily report **앞**에 둔다. 그래야 오늘 보고가
+    #   회수분까지 반영한 상태로 만들어진다. 순서를 뒤집으면 하루 늦게 반영된다.
+    remote_report_pull_gate
     daily_report_gate
     ;;
   ingest)
