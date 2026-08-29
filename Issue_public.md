@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: 25c9912e0f1b295d93c4720d6224bfbf5576f2242089b7e6bf334d5235fbba5a
+source_sha: a8a6a6ced8a51e6f85cb6399426ee961aef15162091807df2c3b8e5fa94d2f02
 ---
 
 # 안내
@@ -18,7 +18,7 @@ source_sha: 25c9912e0f1b295d93c4720d6224bfbf5576f2242089b7e6bf334d5235fbba5a
 
 # 이슈 근거
 
-## Issue415: 공개 digest 에 `\1` 리터럴이 새겨진다 — awk 는 replacement 백레퍼런스를 지원하지 않는다 (등록: 2026-08-30, 해결: 2026-08-30, commit: `(본 커밋)`) ✅
+## Issue415: 공개 digest 에 `\1` 리터럴이 새겨진다 — awk 는 replacement 백레퍼런스를 지원하지 않는다 ✅
 * 목적: 공개 미러로 나가는 [`Issue_public.md`](Issue_public.md) 에 `Issue{385}(비공개)\1가드로 검사하지만` 같은 **깨진 문자열**이 (여기 `{}` 는 digest 자기치환을 피하려는 표기) 실린다. 공개 산출물이라 그대로 배포되고, 읽는 사람에게는 오타로 보인다
 * 구현 명세:
     - ① 캡처가 필요 없는 방식으로 — `index()`+`substr()` 로 토큰을 직접 스캔해 치환하는 awk 함수. 뒤 문자가 `[0-9_]` 면 다른 번호의 일부이므로 건너뛰고, 그 외(문자열 끝 포함)면 `(비공개)` 를 붙인다

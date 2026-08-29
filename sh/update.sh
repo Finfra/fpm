@@ -69,16 +69,34 @@ fi
 
 # ── 2. SCAR 갱신 (plugin) ────────────────────────────────────
 if [[ "$DO_SCAR" -eq 1 ]]; then
-    if ! command -v claude >/dev/null 2>&1; then
-        warn "[SCAR] 'claude' CLI 미발견 → 플러그인 갱신 생략 (셸-only 환경 정상)"
+    # prj3#Issue467 — `command -v` 하나로 판정하면 **비대화 셸에서 거짓 생략**이 난다.
+    #   실측(jma, 2026-08-30): SSH 비대화 PATH 에 claude 가 없어 SCAR 를 건너뛰고
+    #   `✅ 갱신 완료` 로 보고했다. 그 사이 플러그인은 0.4.0 에 3 minor 방치됐다.
+    #   로그인 셸에서는 `~/.local/bin/claude` 로 정상 동작했으므로 **설치 여부가 아니라
+    #   PATH 문제**였다. 관례 경로를 함께 탐색하고, 그래도 없으면 "생략" 을 성공으로
+    #   말하지 않는다(prj3#Issue466 과 같은 거짓 성공 패턴).
+    CLAUDE_BIN="$(command -v claude 2>/dev/null || true)"
+    if [[ -z "$CLAUDE_BIN" ]]; then
+        for _c in "$HOME/.local/bin/claude" "$HOME/.claude/local/claude" \
+                  "/opt/homebrew/bin/claude" "/usr/local/bin/claude"; do
+            [[ -x "$_c" ]] && { CLAUDE_BIN="$_c"; break; }
+        done
+        [[ -n "$CLAUDE_BIN" ]] && info "[SCAR] claude CLI 를 PATH 밖에서 발견: $CLAUDE_BIN"
+    fi
+    if [[ -z "$CLAUDE_BIN" ]]; then
+        # ⚠️ 셸-only 환경이면 정상이지만, **비대화 셸의 PATH 결손일 수도** 있다.
+        #   둘을 구분할 수단이 없으므로 단정하지 않고 확인 경로를 함께 안내한다.
+        warn "[SCAR] 'claude' CLI 미발견 → 플러그인 갱신 **생략**(완료 아님)"
+        warn "[SCAR]   셸-only 환경이면 정상. 아니면 PATH 결손 — 'bash -lc \"command -v claude\"' 로 확인"
+        SCAR_SKIPPED=1
     else
         info "[SCAR] marketplace update: $FPM_MKT_NAME"
-        claude plugin marketplace update "$FPM_MKT_NAME" 2>&1 | sed 's/^/  /' \
+        "$CLAUDE_BIN" plugin marketplace update "$FPM_MKT_NAME" 2>&1 | sed 's/^/  /' \
             || warn "[SCAR] marketplace update 실패 (계속 진행)"
         info "[SCAR] plugin update: $FPM_PLUGIN"
-        if claude plugin update "$FPM_PLUGIN" 2>&1 | sed 's/^/  /'; then
+        if "$CLAUDE_BIN" plugin update "$FPM_PLUGIN" 2>&1 | sed 's/^/  /'; then
             info "[SCAR] 갱신 완료 — Claude Code 재시작 후 적용"
-        elif claude plugin update "$FPM_PLUGIN_NAME" 2>&1 | sed 's/^/  /'; then
+        elif "$CLAUDE_BIN" plugin update "$FPM_PLUGIN_NAME" 2>&1 | sed 's/^/  /'; then
             info "[SCAR] 갱신 완료(plugin 이름 fallback) — 재시작 후 적용"
         else
             warn "[SCAR] plugin update 실패 — 'claude plugin install $FPM_PLUGIN' 수동 시도 권장"
@@ -87,4 +105,13 @@ if [[ "$DO_SCAR" -eq 1 ]]; then
     fi
 fi
 
-[[ "$FAIL" -eq 0 ]] && { info "✅ 갱신 완료"; exit 0; } || { err "일부 단계 실패 — 위 경고 확인"; exit 1; }
+# prj3#Issue467 — 건너뛴 것을 완료로 말하지 않는다. SCAR 를 생략했으면 문구로 드러낸다.
+#   종전에는 SCAR 미수행이어도 `✅ 갱신 완료` 라 소비자가 최신인 줄 알았다(jma 0.4.0 방치).
+if [[ "$FAIL" -ne 0 ]]; then
+    err "일부 단계 실패 — 위 경고 확인"; exit 1
+elif [[ "${SCAR_SKIPPED:-0}" -eq 1 ]]; then
+    warn "⚠️ 셸만 갱신됨 — SCAR(플러그인)는 **생략**되었다. 위 안내대로 확인 후 재실행할 것"
+    exit 0
+else
+    info "✅ 갱신 완료"; exit 0
+fi
