@@ -6,6 +6,10 @@
 #   2. ~/.info/__pmBasePath.txt 생성 → <repo>/projects
 #   3. projects/ 스캐폴드 (없으면 생성)
 #   4. 운영 필수 파일 배치: Servers.md / Projects.md / data/hub_setting.yml 부재 시 *_org 예제 복사
+#      4-2. [Issue407] 실파일이 이미 있어도 매니페스트가 요구하는 섹션(`# Project Map`)이
+#           없으면 org 에서 그 섹션만 이식한다(백업 후 append — 통째 덮어쓰기 아님).
+#           구버전 org 로 설치된 사본이 이후 템플릿 보강을 못 받던 결함 대응.
+#      4-3. [Issue407] Projects_map.htm 부재 시 빌더 1회 실행(.md 동반 생성).
 #   5. hub 서버 안내 출력
 #   6. [기본 ON] fpm-core Claude Code 플러그인(SCAR) 을 prj20 마켓 경유 설치 (Issue181)
 #      claude CLI 부재 시 경고만 하고 건너뜀(graceful skip — 셸 설치는 정상 완료, exit 0).
@@ -336,6 +340,72 @@ place_org() {
 for pair in "${FPM_ORG_FILES[@]}"; do
     place_org "${pair%%:*}" "${pair##*:}"
 done
+
+# ── 4-2. org 섹션 보정 (Issue407) ─────────────────────────────
+#   place_org 의 "있으면 보존" 은 사용자 데이터 보호 원칙이라 유지한다. 다만 그 원칙 탓에
+#   구버전 org 로 설치된 사본은 이후 템플릿에 추가된 섹션을 **영영** 받지 못한다.
+#   실측(fg1 2026-08-29): 7/17 설치본의 Projects.md 에 `# Project Map` 이 없어 맵 빌더가
+#   rc=1 로 죽고 Projects_map.htm·.md 가 둘 다 생성되지 않았다. 파일 전체가 아니라
+#   결손 섹션만 append 하므로 사용자가 채운 표·경로는 그대로 남는다.
+ensure_org_section() {
+    local real="$1" org="$2" heads="$3"
+    local realp="$REPO_DIR/$real" orgp="$REPO_DIR/$org"
+    [[ -f "$realp" && -f "$orgp" ]] || return 0
+
+    local canon="${heads%%|*}" h found=0
+    # 허용 헤딩(구표기 별칭 포함) 중 하나라도 있으면 보정 불필요 — 멱등 지점
+    local IFS='|'
+    for h in $heads; do
+        if grep -qxF -- "$h" "$realp"; then found=1; break; fi
+    done
+    unset IFS
+    [[ "$found" -eq 1 ]] && return 0
+
+    # org 에서 정본 헤딩 ~ 다음 `# ` 헤딩 직전까지 추출
+    local block
+    block="$(awk -v head="$canon" '
+        $0 == head { inblk = 1; print; next }
+        inblk && /^# / { exit }
+        inblk { print }
+    ' "$orgp")"
+    if [[ -z "$block" ]]; then
+        warn "$org 에 '$canon' 섹션이 없음 — $real 보정 생략 (템플릿 확인 필요)"
+        return 0
+    fi
+
+    local stamp; stamp="$(date +%Y%m%d%H%M%S)"
+    cp "$realp" "$realp.bak-$stamp"
+    printf '\n%s\n' "$block" >> "$realp"
+    info "$real 에 '$canon' 섹션 이식 (백업: $real.bak-$stamp) — 자신의 구조로 편집하세요"
+}
+# 구버전 매니페스트(배열 미정의)와 섞여도 죽지 않게 존재 확인 후 순회
+if declare -p FPM_ORG_SECTIONS >/dev/null 2>&1; then
+    for triple in "${FPM_ORG_SECTIONS[@]}"; do
+        _rest="${triple#*:}"                 # org:헤딩목록
+        ensure_org_section "${triple%%:*}" "${_rest%%:*}" "${_rest#*:}"
+    done
+    unset _rest triple
+fi
+
+# ── 4-3. 프로젝트 맵 산출물 생성 (Issue407) ───────────────────
+#   htm 과 .md 는 빌더 한 번의 두 출력이다. 기존 산출물은 건드리지 않는다(재생성은 hub 가
+#   mtime 비교로 담당). 실패는 비치명 — 설치 자체를 막지 않고 사유만 남긴다.
+ensure_projects_map() {
+    local out="$REPO_DIR/${FPM_PROJECTS_MAP_OUT:-}" builder="$REPO_DIR/${FPM_PROJECTS_MAP_BUILDER:-}"
+    [[ -n "${FPM_PROJECTS_MAP_OUT:-}" && -n "${FPM_PROJECTS_MAP_BUILDER:-}" ]] || return 0
+    if [[ -f "$out" ]]; then
+        info "$FPM_PROJECTS_MAP_OUT 이미 존재 — 보존"; return 0
+    fi
+    [[ -f "$builder" ]] || { warn "맵 빌더 부재: $FPM_PROJECTS_MAP_BUILDER — 생성 생략"; return 0; }
+    command -v python3 >/dev/null 2>&1 || { warn "python3 부재 — 맵 생성 생략"; return 0; }
+    local log
+    if log="$(cd "$REPO_DIR" && python3 "$builder" 2>&1)"; then
+        info "$FPM_PROJECTS_MAP_OUT 생성 (동명 .md 동반)"
+    else
+        warn "맵 생성 실패 — ${log##*$'\n'}"
+    fi
+}
+ensure_projects_map
 
 # ── 5. 안내 ──────────────────────────────────────────────────
 cat <<EOF

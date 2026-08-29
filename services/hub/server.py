@@ -2562,7 +2562,12 @@ def _collect_bots() -> dict:
     order = {s: i for i, s in enumerate(("working", "checkin", "waiting_input", "waiting_child"))}
     out.sort(key=lambda b: (order.get(b["state"], 9), b["title"]))
     return {"bots": out, "bots_active": len(out), "bots_total": len(rows),
-            "bots_today": today, "bots_roster": _fbot_roster(rows, last_seen)}
+            "bots_today": today, "bots_roster": _fbot_roster(rows, last_seen),
+            # prj3#Issue461 — 봇은 **머신에 귀속**된다(2026-08-29 사용자 판정: fg1·jm4 는
+            #   다른 하드웨어고 일도 다르며 봇을 공유하지 않는다). 이 섹션이 보여주는 것은
+            #   전조직이 아니라 **이 머신**뿐인데 화면에는 그 한정이 없어 전조직으로 읽혔다.
+            #   원격 봇이 일하는 중에도 여기 0 이 뜨는 것은 버그가 아니라 범위다 — 그걸 적는다.
+            "bots_scope": os.uname().nodename.split(".")[0]}
 
 
 def _fbot_roster(rows, last_seen=None) -> list:
@@ -11369,7 +11374,7 @@ section.sec-collapsed .htm-bar-right { display: none; }
 </div>
 <div class="error-bar" id="error-bar"></div>
 <section id="bots-section" style="display:none">
-  <h2 class="section-title"><button class="sec-toggle" data-sec="bots-section" title="{T:common.collapseSection}">▾</button>{T:bots.title} <span id="bots-count" class="count-badge"></span> <a class="bot-map-link" id="bots-map-all" href="/fbot-map" target="_blank" rel="noopener" title="{T:bots.mapAllTitle}">🗺</a></h2>
+  <h2 class="section-title"><button class="sec-toggle" data-sec="bots-section" title="{T:common.collapseSection}">▾</button>{T:bots.title} <span id="bots-count" class="count-badge"></span><span id="bots-scope" class="bot-scope" style="margin-left:6px;font-size:.72em;font-weight:400;opacity:.6"></span> <a class="bot-map-link" id="bots-map-all" href="/fbot-map" target="_blank" rel="noopener" title="{T:bots.mapAllTitle}">🗺</a></h2>
   <div class="grid" id="bots-grid"></div>
 </section>
 <section id="live-sessions-section" style="display:none">
@@ -11542,6 +11547,9 @@ async function reload() {
     BOTS_ERROR = data.bots_error || '';
     renderBots(data.bots || [], data.bots_total || 0, data.bots_today || {},
                data.bots_roster || []);
+    // prj3#Issue461 — 관측 범위 표기. 값이 없으면 아무것도 쓰지 않는다(거짓 한정 금지)
+    const scopeEl = document.getElementById('bots-scope');
+    if (scopeEl) scopeEl.textContent = data.bots_scope ? ('· ' + data.bots_scope) : '';
     renderLiveSessions(data.live_sessions || [], data.live_session_limit, data.live_session_copy_button);
     renderHtmDocs(data.htm_docs || []);
     FEED_BLINK_ON_NEW = data.feed_blink_on_new !== false;  // Issue279: 기본 on
