@@ -25,7 +25,7 @@ fail-soft
   실제 주입은 `UserPromptSubmit` hook 등록이 있어야 발화한다. 그 등록 지점은
   `~/.claude/settings.json`(글로벌 SCAR)이라 prj3 이슈 절차를 탄다 — Issue68 이 넘긴 TODO.
       "hooks": { "UserPromptSubmit": [ { "hooks": [ { "type": "command",
-        "command": "python3 ~/_git/___common/mcp/aoa-memory/notify.py" } ] } ] }
+        "command": "python3 ~/.claude/mcp/aoa-memory/notify.py" } ] } ] }
 """
 
 import os

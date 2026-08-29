@@ -123,7 +123,15 @@ function renderWidget(w) {
       } else {
         dotStyle = ` style="background: ${esc(color)}"`;
       }
-      return `<div class="widget badge${cls}">${title}<span class="badge-dot"${dotStyle}></span><span class="badge-label">${esc(label)}</span></div>`;
+      // prj3#Issue438 ③: w.icon 이 있으면 dot 대신 아이콘을 렌더한다.
+      //   값은 **URL 문자열**(data: URI 권장 — 새 정적 라우트 없이 인라인). http(s)/data 만 허용해
+      //   javascript: 스킴 주입을 차단한다. 미허용·부재면 종전 색 dot 로 폴백.
+      const rawIcon = w.icon != null ? String(w.icon) : '';
+      const iconOk = /^(data:image\/|https?:\/\/)/.test(rawIcon);
+      const mark = iconOk
+        ? `<img class="badge-icon" src="${esc(rawIcon)}" alt="">`
+        : `<span class="badge-dot"${dotStyle}></span>`;
+      return `<div class="widget badge${cls}">${title}${mark}<span class="badge-label">${esc(label)}</span></div>`;
     }
     case 'graph': {
       // Issue66: DAG 큐 시각화 — 위상 레벨별 열 배치, 외부 라이브러리 없이 SVG 직접 생성

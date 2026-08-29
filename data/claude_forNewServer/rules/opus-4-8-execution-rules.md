@@ -58,6 +58,7 @@ Opus 4.8은 애매 표현을 문자 그대로 해석함. 다음 금지 표현 �
 - 결제·요금 발생 가능 동작 (API 대량 호출, 유료 서비스 등록)
 - 민감 정보 노출 위험 동작 (토큰 출력, 자격증명 파일 접근)
 - **현재 프로젝트 밖 부작용** (Issue286): 타 prj Claude 세션 기동·tmux 윈도우 생성(`pm-do` 위임), 타 repo 파일 수정·커밋. 판정: [`input-interpretation-rules.md`](input-interpretation-rules.md)
+    - **예외 (Issue423)**: 신규 브랜치 생성·첫 push·브랜치 checkout(clean 트리 한정)은 타 repo 라도 승인 없이 진행. 삭제·force·`checkout -- <path>`·태그는 승인 유지. 표: [`input-interpretation-rules.md`](input-interpretation-rules.md) "예외 — git 브랜치 생성·checkout"
 
 ## 5-1. OS 권한 다이얼로그를 유발하는 명령은 직접 실행하지 않는다 (Issue328)
 

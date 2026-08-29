@@ -66,9 +66,20 @@ info "버전: 마켓 $OLD_VER → $SRC_VER"
 if [[ "$DRY" -eq 1 ]]; then
     info "[dry-run] rsync diff (소스 → 마켓):"
     rsync -ain --delete --exclude '.git' --exclude '.DS_Store' --exclude '__pycache__' --exclude '*.pyc' "$SRC/" "$DEST/" | sed 's/^/  /' || true
+    info "[dry-run] 무결성 매니페스트: rsync 직전 재생성 예정 (sh/gen-integrity-manifest.sh)"
     info "[dry-run] 버전 동기 대상: $DEST_PJSON, $MKT_JSON entry(fpm-core) → $SRC_VER"
     info "[dry-run] 쓰기·commit·push 없음. 종료."
     exit 0
+fi
+
+# ── 0. 무결성 매니페스트 재생성 (prj3#Issue457) ──────────────
+#   ⚠️ **rsync 앞**이어야 한다 — 매니페스트는 번들 안에 있으므로 여기서 갱신해야
+#      미러에 최신본이 실린다. 뒤에 두면 마켓에 **한 판 늦은 해시**가 나가고,
+#      소비자 check.sh 가 정상 설치본을 불일치로 오판한다(거짓 경고 = prj3#Issue452 재발).
+info "무결성 매니페스트 재생성…"
+if ! bash "$REPO_DIR/sh/gen-integrity-manifest.sh" | sed 's/^/  /'; then
+    err "🚨 무결성 매니페스트 생성 실패 — 발행 중단"
+    exit 1
 fi
 
 # ── 1. rsync 미러 (--delete) ────────────────────────────────

@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: 6388e563d882014fbade41341d32e938a97d9b8bf29d0275612e0ced23e40d3c
+source_sha: ac8c1e6cba1ae819abd951aa5595b43d9e3ccda153f721dd282e66fcf4599a6f
 ---
 
 # 안내
@@ -17,6 +17,60 @@ source_sha: 6388e563d882014fbade41341d32e938a97d9b8bf29d0275612e0ced23e40d3c
 `scripts/fpm-issue-digest.sh` 가 덮어쓴다.
 
 # 이슈 근거
+
+## Issue405: 퇴근한 핀봇의 **마지막 실행 시각**이 hub payload 에 없다 — 5분 전 퇴근과 두 달 전 퇴근이 같은 칩 ✅
+* 목적: 사용자가 *"나래가 지금 도는가"* 를 hub 화면만으로 판정할 수 없다. 퇴근 봇은 `⬜ 나래(중역핀봇)` 칩 하나로만 그려지고 시각 정보는 **조직 전체 `last_ts` 1개**뿐이라 개체별 최신성이 사라진다. 방금 퇴근한 봇과 오래 전 퇴근한 봇이 화면상 구분되지 않아, prj3#Issue438 이 없애려던 "세션에 되묻는 상황" 이 그대로 재현된다
+* depends: Issue404
+* 구현 명세:
+    - 서버 — 봇별 마지막 job 시각을 `SELECT owner, MAX(created_at) FROM job WHERE kind LIKE 'fbot_%' GROUP BY owner` 로 집계. `_fbot_session_counts` 와 **같은 커넥션·같은 fail-soft 규약**(실패는 빈 dict, 봇 카드를 깨지 않는다)
+    - roster 의 **비활성(퇴근) 봇에만** `last_seen` 을 싣는다 — 활성 봇은 카드가 이미 정보를 들고 있어 소비처가 없다(아이콘을 루트에만 싣는 것과 같은 판정)
+    - 클라이언트 — 마지막 실행이 **24시간 이내**면 칩에 `{t} 전 퇴근` 을 덧붙이고 강조한다. 24h 초과분은 현행 칩 유지하되 **툴팁에 절대시각**을 남겨 정보 손실을 만들지 않는다
+    - ⚠️ `server.py` 는 `services/hub/`(실행 경로)·`plugins/fpm-core/services/hub/`(배포 정본) **두 벌**이다 — 양쪽 동시 수정 + 단일 커밋
+    - 검증: 픽스처로 **24h 경계 양쪽**을 박제(경계 조건 회귀가 잦다) · 활성 봇에 `last_seen` 이 안 실리는지 · launchd hub 실측
+
+## Issue404: hub 를 띄우는 launchd agent 에 `AOA_MEMORY_DIR` 이 없다 — 핀봇 섹션이 통째로 "봇 0" ✅
+* 목적: 상시 hub 는 **launchd agent `kr.finfra.htm-server`** 가 띄운다. 그 plist 의 `EnvironmentVariables` 에는 `PATH` 뿐이라 `AOA_MEMORY_DIR` 이 없다. prj3#Issue450(커밋 `<commit>`)이 `FBOT_AOA_DIR` 기본값을 `~/_git/___common/data/aoa` → `~/.claude/data/aoa`(제품 중립)로 바꾸면서, **env 없이 뜬 hub 는 레지스트리 DB 를 못 찾는다.** Issue399·400·401·402 가 만든 핀봇 섹션이 전부 화면에서 사라진다
+* depends: Issue402
+
+## Issue402: 핀봇 조직도 — 루트 핀봇 단위 그룹 + 클릭 시 위임 관계 별창 시각화 ✅
+* 목적: Issue401 로 카드 상세는 열렸으나 **"어느 핀봇이 어느 핀봇에게 일을 시켰는가"** 는 여전히 안 보인다. 사용자는 개체 나열이 아니라 **조직 구조**를 보고 싶어 하며, 진입 단위는 *"나와 소통하는 핀봇"*(= 부모 없는 루트 봇)이다. 이슈맵(`Issue_map.htm`)이 이슈 의존을 그리듯, 봇 위임을 그린다
+* depends: Issue401, prj3#Issue456
+* 구현 명세:
+    - ⓐ **별창은 hub 라우트로** — `/fbot-map`(신설). `registry.db` 를 `mode=ro` 직독해 **매 요청 실시간 생성**한다. `Issue_map.htm`·`Projects_map.htm` 은 파일 산출물이지만 그 패턴을 **쓰지 않는다** — Issue438 ③ 계약 *"중간 사영 파일 금지 — 판정 단일 지점"* 과 정면 충돌하기 때문. 헤더 합성은 기존 맵 2종과 동형([`services/hub/server.py`](services/hub/server.py) `_handle_projects_map` 선례)
+    - ⓑ **홈 섹션 그룹핑** — `renderBots()` 를 루트 봇 기준 그룹으로 재편. 그룹 헤더에 루트 봇 호칭·소속 수·활성 수. 퇴근 봇도 조직 구성원으로 표기하되 상태로 구분(Issue400 의 "전원 퇴근을 숨기지 않는다" 를 그룹 단위로 승계)
+    - ⓒ **클릭 의미 분리 주의** — 카드 본체 클릭은 Issue401 아코디언(상세 펼침)이 **이미 점유**했다. 조직도는 **별도 어포던스**(그룹 헤더의 맵 아이콘 등)로 열고 `target="_blank"`. 카드 클릭을 빼앗으면 Issue401 회귀
+    - ⓓ **엣지 렌더** — 채용은 실선, 배분은 화살표 + 이슈·`status` 라벨(cancelled 는 흐리게). `/fbot-map?root=<bot_id>` 로 해당 루트 하위 트리만 필터
+    - ⓔ mermaid 생성 규약은 [`skills/mermaid-diagram`](.claude/skills/) 준수. 아이콘·개체색은 `bot.icon`·`bot.color`(prj3#Issue438 ③ 채용 시 생성분) 재사용 — 새 색 체계 금지
+    - 검증: 나래 그룹에 하위 3봇이 **실제로 그려지는지**(배분 원장 0건인데도) · 고아 노드 표기 · 루트 3그룹 전건 렌더 · 카드 아코디언 무회귀(Issue401 25항) · `bots_error` 경로에서 맵도 조용히 죽지 않는지
+
+## Issue403: dash 카드가 영구 running 으로 박제된다 — pid 검증 불가 경로에 강등이 없다 ✅
+* 목적: `status: running` 인데 `pid` 가 정수가 아니고 `worker_pid` 키도 없으면 [`services/hub/server.py`](services/hub/server.py) `_effective_dash_status` 가 *"검증 불가 → running 유지"* 로 빠진다. mtime 이 며칠 정체돼도 강등이 없고, `running` 은 `_is_clearable_status` 가 False 라 **hub "정리" 버튼으로도 지워지지 않는다.** Issue58·83 이 잡으려던 좀비 카드의 **미처리 잔여 경로**
+* 구현 명세:
+    - ⓐ `_effective_dash_status` 에 **mtime 기반 강등** 추가 — `status == "running"` 이고 pid 검증이 불가능하면(둘 다 비정수) `mtime_ts` 정체를 본다. 임계는 `interval` 의 배수로 산출(고정 상수 금지 — 10초 보드와 5분 보드가 같은 임계를 쓰면 한쪽이 반드시 틀린다). `interval` 부재 시에만 기존 `DASH_STATUS_NONE_GRACE_SEC` 준용
+    - ⓑ 강등 결과는 `stale` — `_is_clearable_status` 가 이미 `stale` 을 포함하므로 **"정리" 버튼이 자동으로 먹는다**. 별도 분기 추가 금지(Issue83 이 없앤 렌더·정리 비대칭을 되살리지 말 것)
+    - ⓒ ⚠️ **정상 보드 오강등 금지** — 살아 있는 순수 모니터링 보드는 runner 가 매 주기 write 하므로 mtime 이 전진한다. 임계를 `interval` 배수로 잡는 이유가 이것. 실가동 보드 1건으로 무회귀 실측 필수
+    - 검증: 정체 보드 → `stale` 강등 + 정리 버튼 동작 · 가동 보드 → `running` 유지(오강등 0) · `pid` 보유 보드 무회귀(Issue58) · 렌더·정리 판정 일치(Issue83)
+
+## Issue401: 핀봇 카드 클릭 → 세부 펼침 (prj3#Issue444 의 prj1 접점) ✅
+* 목적: hub 핀봇 카드는 title·role·prj·상태·`current_task`(2줄 clamp)만 보여준다. 레지스트리가 **이미 들고 있는** `bot_id`·`career`·`parent_bot_id`·`lease_expires` 와 잘린 작업 전문을 hub 안에서 볼 길이 없어, 결국 `/fbot <bot_id>` 로 터미널에 되돌아가야 한다 — 관측 진입점이 요약에서 끊긴다
+* depends: Issue400, prj3#Issue444
+* 구현 명세:
+    - `.bot-card.open .bot-detail { display: block }` + 펼침 시 `.bot-task` 의 `-webkit-line-clamp` 해제 → 잘린 작업 전문 복구
+    - 표시 항목: `bot_id` · `career`(수습/정식/휴직) · 부모 봇 · lease 잔여/만료 경과 · 현재 작업 전문
+    - 접근성: `role="button"` + `tabindex="0"` + Enter/Space — 피드 항목과 동일 수준
+    - ⚠️ **회귀 주의**: 주기 갱신이 `grid.innerHTML = …` 로 카드를 통째 재생성한다 → 열어둔 카드가 갱신마다 닫히는 결함이 나기 쉽다. 피드의 `openFeedItems` 와 동형으로 `bot_id` 기준 열림 상태를 보존한다
+    - 검증: 활성 봇 2개 이상 독립 토글 · 재렌더 후 펼침 유지 · 키보드 단독 조작 · 유휴 요약 줄(Issue400)은 토글 대상 아님
+
+## Issue400: 핀봇 섹션이 "전원 퇴근" 을 통째로 숨긴다 — 기능 사망과 봇 유휴가 화면상 구분 불가 ✅
+* 목적: Issue399 가 만든 hub 홈 핀봇 섹션은 `활성 0 → 섹션 미표시` 계약이라, 13봇 전원 `checkout` 인 상태에서 **홈에 아무것도 남지 않는다**. 사용자는 기능이 죽은 건지 봇이 노는 건지 화면만 봐선 구분할 수 없어 결국 세션에 되묻게 된다 — prj3#Issue438 이 없애려던 상황 그 자체
+* depends: Issue399
+* 구현 명세:
+    - `_collect_bots()` 에 `bots_today` 신설 — `registry.db` `job` 원장을 같은 `mode=ro` 커넥션으로 직독해 오늘(로컬 자정 이후) `배분`·`완료`·`취소` 건수 + 마지막 fbot job 시각. 중간 사영 파일 금지(Issue399 와 동일 원칙)
+    - `job.store` 값이 `'fbot'`·`''` 로 갈려 있어 **`kind LIKE 'fbot_%'` 로 판정**한다(store 필터는 세션 완료 10건을 통째로 놓친다 — 실측)
+    - `job` 에 완료 시각 컬럼이 없다 → 집계는 **`created_at` 기준**임을 payload·i18n 문구·툴팁에 명시. 추정치를 확정치처럼 보이게 하지 않는다
+    - `renderBots` 표시 조건 교체: `total===0` 이면 미표시(fbot 미설치 graceful — 기존 계약 유지) · `total>0 && active===0` 이면 **유휴 요약 1줄** 표시 · 그 외 기존 카드 그리드
+    - i18n `bots.idle`·`bots.today*` ko/en 추가. 카운트 배지는 `0/13` 로 유지해 총원이 보이게 한다
+    - 검증: `test_fbot_bots.py` 에 `bots_today` 집계·store 혼재·미설치 graceful 회귀 추가 + 기존 hub 테스트 무회귀
 
 ## Issue398: projects-map 메모(note 박스) 실시간 인라인 편집 — 저장 버튼 없는 초단위 자동 동기화 ✅
 * 목적: `/projects-map` 의 `_note.md` 메모 박스가 읽기 전용(클릭 시 VSCode 오픈)이라 브라우저에서 즉석 수정이 불가. 저장 버튼 없이 타이핑만으로 서버(`_note.md`)에 자동 반영되게 한다

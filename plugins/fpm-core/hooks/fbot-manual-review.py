@@ -41,11 +41,12 @@ from datetime import datetime
 
 HOME = os.path.expanduser("~")
 MANUAL_DIR = os.environ.get("FBOT_MANUAL_DIR") or os.path.join(HOME, ".claude", "data", "fbot", "manuals")
-AOA_DIR = os.environ.get("AOA_MEMORY_DIR") or os.path.join(HOME, "_git", "___common", "data", "aoa")
+# 경로 계약 (Issue450) — env 가 정식 설정. 미설정 시 제품 중립 기본(prj5 미클론 머신 대응).
+AOA_DIR = os.environ.get("AOA_MEMORY_DIR") or os.path.join(HOME, ".claude", "data", "aoa")
 REGISTRY_DB = os.path.join(AOA_DIR, "registry.db")
 LEARN_DB = os.path.join(AOA_DIR, "learn.db")
-MQ_DIR = os.environ.get("AOA_MQ_DIR") or os.path.join(HOME, "_git", "___common", "data", "aoa", "mq")
-MQ_ENQUEUE = os.path.join(HOME, "_git", "___common", ".claude", "agents", "aoa-mq-enqueue.sh")
+MQ_DIR = os.environ.get("AOA_MQ_DIR") or os.path.join(HOME, ".claude", "data", "aoa", "mq")
+MQ_ENQUEUE = os.path.join(HOME, ".claude", "mcp", "aoa-mq", "aoa-mq-enqueue.sh")
 
 DRAFT_SUFFIX = ".md.draft"
 AUTO_MARK = "<!-- fbot-manual-review:auto -->"   # 기계 생성 절 표식 (apply 시 이 절만 걷어낸다)

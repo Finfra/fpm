@@ -9,6 +9,7 @@ htm-server — ___pm 소유 단일 공유 daemon
 설계 SSOT: ~/_git/___pm/_doc_arch/hub_htm.md
 """
 
+import base64  # prj3#Issue438: 봇 아이콘 SVG 를 data URI 로 인라인
 import glob
 import hashlib
 import hmac
@@ -2289,6 +2290,563 @@ def _hub_off_stats() -> dict:
     }
 
 
+# ── 핀봇(fbot) 현황 — prj3#Issue438 ③ (hub 상시 표시) ────────────────────────
+# 왜 hub 가 registry.db 를 직접 읽는가: 봇 상태의 SSOT 는 레지스트리 단일 레코드이고,
+#   hub 렌더와 HR 게이트가 그 레코드를 **공용**한다(prj3 fbot-arch §F1 "판정 단일 지점").
+#   중간 캐시·사영 파일을 새로 만들면 그 순간 판정이 둘로 갈라진다.
+# 범용 배포: fbot 미설치 환경에서는 DB·아이콘이 통째로 없다 → 조용히 빈 결과(섹션 자체 미표시).
+#   경로는 env 우선 + $HOME 상대. 개인 경로 하드코딩 금지(fbot-arch §범용 배포 요건).
+# 기본값은 제품 중립 `~/.claude/data/aoa` (prj3#Issue450) — 위 주석의 "개인 경로 하드코딩
+#   금지" 를 정작 이 줄이 어기고 있었다. 설치 환경은 AOA_MEMORY_DIR 로 실경로를 준다.
+FBOT_AOA_DIR = os.environ.get("AOA_MEMORY_DIR") or os.path.join(
+    os.path.expanduser("~"), ".claude", "data", "aoa")
+# icon 컬럼은 `data/fbot/icons/<id>.svg` 처럼 **fbot 루트 기준 상대경로**로 저장된다.
+FBOT_ROOT = os.environ.get("FBOT_ROOT") or os.path.join(os.path.expanduser("~"), ".claude")
+# 활성 = 퇴근(checkout) 이 아닌 모든 상태. 이슈 ③ 의 표시 조건 그대로.
+FBOT_ACTIVE_STATES = ("checkin", "working", "waiting_input", "waiting_child")
+# prj3 hooks/fbot-state.py STATE_LABEL 과 동일 매핑 (표기 SSOT 는 prj3, 여기는 표시용 사본).
+FBOT_STATE_LABEL = {
+    "checkin": "출근중", "working": "작업중", "waiting_input": "수신대기",
+    "waiting_child": "완료대기", "checkout": "퇴근",
+}
+FBOT_STATE_EMOJI = {
+    "checkin": "🟡", "working": "🟢", "waiting_input": "⏳",
+    "waiting_child": "🔵", "checkout": "⬜",
+}
+_FBOT_ICON_MAX = 16 * 1024  # data URI 인라인 상한. 초과분은 아이콘 없이 색 dot 폴백.
+
+
+def _fbot_icon_data_uri(icon_rel: str) -> str:
+    """봇 아이콘 SVG 를 data URI 로 인라인. 실패는 전부 빈 문자열(색 dot 폴백).
+
+    새 정적 라우트를 만들지 않는 이유 — 아이콘은 166~340B 라 payload 인라인이 더 싸고,
+    파일 경로를 URL 로 노출하지 않아 경로 탈출 대응면이 아예 생기지 않는다.
+    """
+    if not icon_rel or not isinstance(icon_rel, str):
+        return ""
+    base = os.path.realpath(os.path.join(FBOT_ROOT, "data", "fbot", "icons"))
+    path = os.path.realpath(os.path.join(FBOT_ROOT, icon_rel))
+    # 경로 탈출 차단 — DB 값이 오염돼도 아이콘 디렉터리 밖은 읽지 않는다.
+    if not (path == base or path.startswith(base + os.sep)):
+        return ""
+    try:
+        if os.path.getsize(path) > _FBOT_ICON_MAX:
+            return ""
+        with open(path, "rb") as f:
+            raw = f.read()
+    except OSError:
+        return ""
+    return "data:image/svg+xml;base64," + base64.b64encode(raw).decode("ascii")
+
+
+def _fbot_today_counts(con) -> dict:
+    """열려 있는 registry 커넥션으로 **오늘(로컬 자정 이후)** fbot job 원장을 집계 (Issue400).
+
+    반환 {"dispatched": n, "done": m, "cancelled": k, "last_ts": epoch|None}.
+    job 테이블 부재·읽기 실패는 빈 dict — 유휴 요약 줄에서 그 항목만 생략한다
+    (여기서 예외를 올리면 봇 카드 전체가 날아가므로 fail-soft).
+
+    ⚠️ 판정 두 가지가 실측으로 정해졌다:
+      * `store` 로 거르지 않는다 — 원장의 store 가 `'fbot'` 과 `''` 로 갈려 있어
+        `store='fbot'` 필터는 세션 완료분을 통째로 놓친다. `kind LIKE 'fbot_%'` 가 정답
+      * `job` 에 완료 시각 컬럼이 없다 — 집계 기준은 **created_at** 이다. i18n 문구·
+        툴팁이 "오늘 생성분" 임을 밝힌다. 추정치를 확정치로 보이게 하지 않는다
+    """
+    midnight = int(time.mktime(time.localtime()[:3] + (0, 0, 0, 0, 0, -1)))
+    try:
+        row = con.execute(
+            "SELECT"
+            " SUM(kind='fbot_dispatch') AS dispatched,"
+            " SUM(status='done' AND kind IN ('fbot_dispatch','fbot_session')) AS done,"
+            " SUM(status='cancelled' AND kind='fbot_dispatch') AS cancelled"
+            " FROM job WHERE kind LIKE 'fbot_%' AND created_at >= ?",
+            (midnight,)).fetchone()
+        last = con.execute(
+            "SELECT MAX(created_at) FROM job WHERE kind LIKE 'fbot_%'").fetchone()
+    except sqlite3.Error as e:
+        log(f"_fbot_today_counts skipped: {e}", "WARNING")
+        return {}
+    return {
+        "dispatched": int(row[0] or 0),
+        "done": int(row[1] or 0),
+        "cancelled": int(row[2] or 0),
+        "last_ts": int(last[0]) if last and last[0] else None,
+    }
+
+
+def _fbot_root_map(parents: dict) -> dict:
+    """Issue402: bot_id → 소속 **루트 봇** id. 조직도 그룹핑의 단일 판정원이다.
+
+    루트 = 부모가 없거나, 부모가 레지스트리에 **없는** 봇. 끊긴 채용 사슬(부모가 해고·
+    삭제된 경우)을 버리면 그 봇이 조직에서 통째로 사라지므로 자기 자신을 루트로 세운다.
+    순환(데이터 오염)은 방문 집합으로 끊는다 — 여기서 무한 루프가 나면 hub 홈 payload
+    수집 스레드가 통째로 멈춘다.
+    """
+    out = {}
+    for bid in parents:
+        seen = {bid}
+        cur = bid
+        while True:
+            p = parents.get(cur)
+            if not p or p not in parents:
+                break
+            if p in seen:
+                # 순환(오염 데이터) — 이 사슬엔 진짜 루트가 없다. 자기 자신을 루트로
+                #   세워 어느 그룹에도 못 들어가 사라지는 일을 막는다.
+                cur = bid
+                break
+            seen.add(p)
+            cur = p
+        out[bid] = cur
+    return out
+
+
+def _fbot_session_counts(con) -> dict:
+    """열린 registry 커넥션으로 봇별 `fbot_session` 건수 집계 → 노드 배지용.
+
+    세션 원장은 **엣지가 아니다** — "그 봇이 몇 번 일했나" 라서 위임 관계로 그리면
+    자기 자신을 가리키는 헛 화살표가 된다(Issue402 상세). 실패는 빈 dict (fail-soft).
+    """
+    try:
+        rows = con.execute(
+            "SELECT owner, COUNT(*) FROM job WHERE kind='fbot_session'"
+            " AND owner IS NOT NULL AND owner<>'' GROUP BY owner").fetchall()
+    except sqlite3.Error as e:
+        log(f"_fbot_session_counts skipped: {e}", "WARNING")
+        return {}
+    return {r[0]: int(r[1]) for r in rows}
+
+
+def _fbot_last_seen(con) -> dict:
+    """열린 registry 커넥션으로 봇별 **마지막 job 시각**(epoch) 집계 (Issue405).
+
+    퇴근 칩의 최신성 판정원이다. `_fbot_today_counts` 의 `last_ts` 는 조직 전체 1건이라
+    "어느 봇이 방금까지 일했나" 에 답하지 못한다 — 5분 전 퇴근과 두 달 전 퇴근이 같은
+    칩으로 그려지던 원인이 이 결손이었다.
+
+    `kind LIKE 'fbot_%'` 인 이유는 `_fbot_today_counts` 와 같다 — 원장의 store 가
+    `'fbot'` 과 `''` 로 갈려 있어 store 필터는 세션 완료분을 통째로 놓친다.
+    실패는 빈 dict (fail-soft) — 여기서 예외를 올리면 봇 카드 전체가 날아간다.
+    """
+    try:
+        rows = con.execute(
+            "SELECT owner, MAX(created_at) FROM job WHERE kind LIKE 'fbot_%'"
+            " AND owner IS NOT NULL AND owner<>'' GROUP BY owner").fetchall()
+    except sqlite3.Error as e:
+        log(f"_fbot_last_seen skipped: {e}", "WARNING")
+        return {}
+    return {r[0]: int(r[1]) for r in rows if r[1]}
+
+
+def _fbot_dispatch_edges(con) -> list:
+    """배분 원장(`job.kind='fbot_dispatch'`) → (owner, worker, issue, status, ts) 엣지.
+
+    payload 는 JSON 문자열이고 `worker_bot_id` 가 대상이다. 파싱 실패·대상 부재 건은
+    **엣지를 만들지 않는다** — 출발지만 있는 반쪽 화살표는 조직도에서 거짓말이 된다.
+    """
+    try:
+        rows = con.execute(
+            "SELECT owner, payload, status, created_at FROM job"
+            " WHERE kind='fbot_dispatch' ORDER BY created_at").fetchall()
+    except sqlite3.Error as e:
+        log(f"_fbot_dispatch_edges skipped: {e}", "WARNING")
+        return []
+    out = []
+    for owner, payload, status, ts in rows:
+        if not owner:
+            continue
+        try:
+            pl = json.loads(payload or "{}")
+        except (ValueError, TypeError):
+            continue
+        worker = (pl or {}).get("worker_bot_id") or ""
+        if not worker:
+            continue
+        out.append({"src": owner, "dst": worker,
+                    "issue": (pl or {}).get("issue") or "",
+                    "status": status or "", "ts": int(ts or 0)})
+    return out
+
+
+def _fbot_missing_db(db: str) -> dict:
+    """레지스트리 파일이 없을 때의 분기 (Issue404 ⓒ).
+
+    ⚠️ **"미설치" 와 "설치됐는데 못 찾는다" 는 화면에서 갈라져야 한다.** 전자는 섹션을
+    조용히 감추는 것이 옳지만, 후자까지 같이 감추면 조용한 실패가 된다 — 실제로
+    launchd 로 뜬 hub 가 `AOA_MEMORY_DIR` 없이 기본 경로를 보다가 핀봇 섹션을 통째로
+    잃었고, `bots_error` 도 로그도 남지 않아 "봇이 한 명도 없다" 와 구분되지 않았다.
+    Issue400 이 없애려던 상황을 환경 변수 하나가 되살린 셈이다.
+
+    판정은 **설치 흔적**으로 한다 — `FBOT_ROOT/data/fbot/` 이 있으면 이 머신에 fbot 이
+    깔려 있다는 뜻이고, 그런데 DB 가 없으면 경로를 잘못 보고 있는 것이다. 개인 경로
+    폴백으로 "찾아주는" 짓은 하지 않는다(prj3#Issue450 이 없앤 것을 되살리게 된다) —
+    여기서 하는 일은 **어긋났다는 사실을 드러내는 것**뿐이다.
+    """
+    empty = {"bots": [], "bots_active": 0, "bots_total": 0}
+    if not os.path.isdir(os.path.join(FBOT_ROOT, "data", "fbot")):
+        return empty          # 진짜 미설치 — 섹션 자체를 띄우지 않는다(범용 배포 요건)
+    env_set = bool(os.environ.get("AOA_MEMORY_DIR"))
+    hint = "" if env_set else " (AOA_MEMORY_DIR 미설정 — 이 프로세스는 기본 경로만 봅니다)"
+    log(f"_collect_bots: fbot 설치 흔적은 있으나 registry.db 부재 — {db}"
+        f" (AOA_MEMORY_DIR={'set' if env_set else 'unset'})", "WARNING")
+    empty["bots_error"] = f"레지스트리를 찾지 못함: {db}{hint}"
+    return empty
+
+
+def _collect_bots() -> dict:
+    """registry.db `bot` 테이블 → 홈 봇 카드 payload.
+
+    반환: {"bots": [활성 봇 …], "bots_active": n, "bots_total": m, "bots_today": {…}}
+    활성 0 이어도 bots 만 빈 리스트일 뿐 섹션은 남는다 — 클라이언트가 `bots_total`·
+    `bots_today` 로 **유휴 요약 1줄**을 그린다(Issue400). 섹션을 통째로 숨기는 것은
+    `bots_total == 0`(fbot 미설치) 한 경우뿐이다. "전원 퇴근" 을 감추면 기능 사망과
+    봇 유휴가 화면상 구분되지 않아 사용자가 다시 세션에 되묻게 된다.
+    """
+    db = os.path.join(FBOT_AOA_DIR, "registry.db")
+    if not os.path.exists(db):
+        return _fbot_missing_db(db)
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1.0)
+        try:
+            con.row_factory = sqlite3.Row
+            rows = con.execute(
+                "SELECT bot_id, title, role, state, career, icon, color, prj,"
+                " current_task, parent_bot_id, lease_expires FROM bot").fetchall()
+            # 같은 커넥션으로 원장까지 읽는다 — 봇 상태와 오늘 실적이 서로 다른 스냅샷을
+            #   보면 "전원 퇴근인데 지금 작업중" 같은 자기모순 요약이 나온다 (Issue400)
+            today = _fbot_today_counts(con)
+            # Issue405: 봇 상태와 **같은 스냅샷**에서 읽는다 — 커넥션을 새로 열면
+            #   "퇴근인데 마지막 실행이 미래" 같은 자기모순이 원리적으로 가능해진다.
+            last_seen = _fbot_last_seen(con)
+        finally:
+            con.close()
+    except sqlite3.Error as e:
+        msg = str(e)
+        if "no such table" in msg:
+            # 스키마가 아직 없는 환경(마이그레이션 전)은 "봇이 없다" 와 같다 — 섹션 미표시.
+            return {"bots": [], "bots_active": 0, "bots_total": 0}
+        # 그 외(WAL -shm 생성 불가·락·손상)는 "봇 0" 과 구분되어야 한다. 조용한 0 은
+        #   봇이 놀고 있는 것처럼 보여 이 섹션의 목적을 정면으로 배반한다.
+        return {"bots": [], "bots_active": 0, "bots_total": 0, "bots_error": msg}
+    now = int(time.time())
+    out = []
+    for r in rows:
+        state = r["state"] or ""
+        if state not in FBOT_ACTIVE_STATES:
+            continue
+        lease = r["lease_expires"]
+        out.append({
+            "bot_id": r["bot_id"],
+            "title": r["title"] or r["bot_id"],
+            "role": r["role"] or "",
+            "state": state,
+            "state_label": FBOT_STATE_LABEL.get(state, state),
+            "state_emoji": FBOT_STATE_EMOJI.get(state, "⚪"),
+            "career": r["career"] or "",
+            "color": r["color"] or "",
+            # 개체 아이콘이 없으면 **종류(role) 아이콘**으로 폴백한다. 계약의 기본 단위가
+            #   "종류별 동형 도형" 이므로 개체 파일 부재가 무아이콘을 뜻하지는 않는다.
+            "icon_uri": (_fbot_icon_data_uri(r["icon"] or "")
+                         or _fbot_icon_data_uri(f"data/fbot/icons/{r['role']}.svg"
+                                                if r["role"] else "")),
+            "prj": r["prj"],
+            "current_task": r["current_task"] or "",
+            "parent_bot_id": r["parent_bot_id"] or "",
+            # lease 만료분은 크래시 의심 — 강제 퇴근(reap) 전까지 카드에서 경고로 보인다.
+            "lease_stale": bool(lease and now > int(lease)),
+            # Issue401: 원본 epoch 도 함께 — 펼침 상세가 잔여/경과 분을 직접 계산한다.
+            #   이미 조회한 값이라 쿼리 추가는 없다(그동안 lease_stale 계산에만 쓰고 버렸다).
+            "lease_expires": int(lease) if lease else None,
+        })
+    # 활동 상태 우선(작업중 → 출근중 → 대기), 그 다음 호칭.
+    order = {s: i for i, s in enumerate(("working", "checkin", "waiting_input", "waiting_child"))}
+    out.sort(key=lambda b: (order.get(b["state"], 9), b["title"]))
+    return {"bots": out, "bots_active": len(out), "bots_total": len(rows),
+            "bots_today": today, "bots_roster": _fbot_roster(rows, last_seen)}
+
+
+def _fbot_roster(rows, last_seen=None) -> list:
+    """Issue402 ⓑ: 홈 섹션 그룹핑용 **전원 명부**(퇴근 포함).
+
+    활성만 보내면 "어느 핀봇 밑에 누가 있나" 가 활성 봇만의 파편이 되어 조직이 안 보인다.
+    Issue400 이 "전원 퇴근을 숨기지 않는다" 를 세운 것과 같은 이유를 그룹 단위로 승계한다.
+
+    ⚠️ 아이콘은 **루트 봇만** 싣는다 — 소비처가 그룹 헤더 하나뿐이고, 활성 봇 카드는
+    `bots` 가 이미 자기 아이콘을 들고 있다. 전원분 base64 를 매 폴링마다 실으면
+    payload 만 몇 배가 되고 얻는 것이 없다.
+    """
+    root_of = _fbot_root_map({r["bot_id"]: (r["parent_bot_id"] or "") for r in rows})
+    title_of = {r["bot_id"]: (r["title"] or r["bot_id"]) for r in rows}
+    roster = []
+    for r in rows:
+        bid = r["bot_id"]
+        st = r["state"] or ""
+        is_root = root_of.get(bid) == bid
+        roster.append({
+            "bot_id": bid,
+            "title": title_of[bid],
+            "role": r["role"] or "",
+            "state": st,
+            "state_label": FBOT_STATE_LABEL.get(st, st),
+            "state_emoji": FBOT_STATE_EMOJI.get(st, "⚪"),
+            "color": r["color"] or "",
+            "root": root_of.get(bid, bid),
+            "is_root": is_root,
+            "active": st in FBOT_ACTIVE_STATES,
+            "icon_uri": ((_fbot_icon_data_uri(r["icon"] or "")
+                          or _fbot_icon_data_uri(f"data/fbot/icons/{r['role']}.svg"
+                                                 if r["role"] else ""))
+                         if is_root else ""),
+        })
+    # Issue405: **퇴근 봇에만** 마지막 실행 시각을 싣는다. 활성 봇은 카드가 이미 상태와
+    #   현재 작업을 들고 있어 소비처가 없고, 전원분을 매 폴링 실으면 payload 만 는다
+    #   (아이콘을 루트 봇에만 싣는 것과 같은 판정).
+    for m in roster:
+        if not m["active"]:
+            ts = (last_seen or {}).get(m["bot_id"])
+            if ts:
+                m["last_seen"] = int(ts)
+    # 그룹 정렬 — 활성이 있는 조직이 위로, 그 다음 루트 호칭순. 그룹 안에서는 루트가
+    #   먼저 오고(그룹 헤더가 쓴다) 나머지는 활동 상태 → 호칭순.
+    active_by_root = {}
+    for m in roster:
+        active_by_root[m["root"]] = active_by_root.get(m["root"], 0) + (1 if m["active"] else 0)
+    order = {s: i for i, s in enumerate(FBOT_ACTIVE_STATES)}
+    roster.sort(key=lambda m: (-active_by_root.get(m["root"], 0),
+                               title_of.get(m["root"], m["root"]),
+                               not m["is_root"],
+                               order.get(m["state"], 9), m["title"]))
+    return roster
+
+
+def _fbot_org_data(root_filter: str = "") -> dict:
+    """Issue402 ⓐ: `registry.db` 를 `mode=ro` 직독해 조직도 데이터를 **매 요청 실시간**
+    생성한다. `Issue_map.htm`·`Projects_map.htm` 처럼 중간 산출 파일을 만들지 않는다 —
+    prj3#Issue438 ③ 계약 "중간 사영 파일 금지 · 판정 단일 지점" 과 정면 충돌하기 때문.
+
+    🔴 **엣지는 2원천 합성이 필수**다. 배분 원장(`job.kind='fbot_dispatch'`)만으로 그리면
+    조직이 가장 많이 쓰는 경로(`fpm-do` 직접 위임)가 원장을 거치지 않아(prj3#Issue438 ④)
+    사용자가 가장 보고 싶어 하는 봇 밑이 **텅 빈다** — 실측(2026-08-27) 배분 엣지 9건이
+    전부 작업핀봇 소유였고 중역핀봇의 배분 엣지는 0건이었다. 채용(`bot.parent_bot_id`)과
+    반드시 합친다. 한쪽만 쓰는 구현은 계약 미달이다.
+
+    고아 노드: 배분 원장에만 있고 `bot` 테이블에 없는 대상(`fbot-research-issue4363`).
+    무시하면 엣지가 조용히 사라지고, 그냥 그리면 정보 없는 노드가 뜬다 → `orphan: True`
+    로 **구분해 표기**한다.
+
+    반환 `{"error": msg|"", "nodes": [...], "hires": [...], "dispatch": [...],
+           "roots": [...], "root_filter": str, "unknown_root": bool}`.
+    `error` 가 비지 않으면 나머지는 비어 있다 — 호출측이 **조용히 빈 맵을 그리지 말고**
+    오류를 세워야 한다(Issue400 이 `bots_error` 를 분리한 것과 같은 이유).
+    """
+    db = os.path.join(FBOT_AOA_DIR, "registry.db")
+    empty = {"error": "", "nodes": [], "hires": [], "dispatch": [], "roots": [],
+             "root_filter": root_filter, "unknown_root": False}
+    if not os.path.exists(db):
+        # fbot 미설치 — 오류가 아니다. 호출측이 "설치되지 않았다" 로 안내한다.
+        return empty
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1.0)
+        try:
+            con.row_factory = sqlite3.Row
+            rows = con.execute(
+                "SELECT bot_id, title, role, state, career, icon, color, prj,"
+                " current_task, parent_bot_id FROM bot").fetchall()
+            # 같은 커넥션에서 원장까지 읽는다 — 봇 상태와 위임 이력이 서로 다른 스냅샷을
+            #   보면 "없는 봇에게 방금 배분" 같은 자기모순 그림이 나온다(Issue400 동일 원칙).
+            sessions = _fbot_session_counts(con)
+            dispatch = _fbot_dispatch_edges(con)
+        finally:
+            con.close()
+    except sqlite3.Error as e:
+        msg = str(e)
+        if "no such table" in msg:
+            return empty            # 마이그레이션 전 = 봇 없음
+        empty = dict(empty)
+        empty["error"] = msg
+        return empty
+
+    parents = {r["bot_id"]: (r["parent_bot_id"] or "") for r in rows}
+    root_of = _fbot_root_map(parents)
+    nodes = {}
+    for r in rows:
+        bid = r["bot_id"]
+        st = r["state"] or ""
+        nodes[bid] = {
+            "bot_id": bid,
+            "title": r["title"] or bid,
+            "role": r["role"] or "",
+            "state": st,
+            "state_label": FBOT_STATE_LABEL.get(st, st),
+            "state_emoji": FBOT_STATE_EMOJI.get(st, "⚪"),
+            "career": r["career"] or "",
+            "color": r["color"] or "",
+            "prj": r["prj"],
+            "current_task": r["current_task"] or "",
+            "parent": parents[bid] if parents[bid] in parents else "",
+            "root": root_of.get(bid, bid),
+            "sessions": int(sessions.get(bid, 0)),
+            "orphan": False,
+            # 개체 아이콘 → 없으면 종류(role) 아이콘 폴백. _collect_bots 와 같은 규칙 —
+            #   같은 봇이 홈 카드와 조직도에서 다른 그림으로 보이면 안 된다.
+            "icon_uri": (_fbot_icon_data_uri(r["icon"] or "")
+                         or _fbot_icon_data_uri(f"data/fbot/icons/{r['role']}.svg"
+                                                if r["role"] else "")),
+        }
+    # 채용 엣지 — 부모가 레지스트리에 실재할 때만. 끊긴 부모는 노드를 루트로 승격시킨
+    #   _fbot_root_map 판정과 어긋나면 안 되므로 여기서도 같은 조건을 쓴다.
+    hires = [{"src": parents[b], "dst": b} for b in parents
+             if parents[b] and parents[b] in parents]
+
+    # 고아 — 배분 대상인데 bot 테이블에 없다. 배분한 봇의 그룹에 얹어 엣지를 살린다.
+    for e in dispatch:
+        for side in ("src", "dst"):
+            bid = e[side]
+            if bid in nodes:
+                continue
+            owner_root = root_of.get(e["src"], e["src"])
+            nodes[bid] = {
+                "bot_id": bid, "title": bid, "role": "", "state": "", "state_label": "",
+                "state_emoji": "❓", "career": "", "color": "", "prj": None,
+                "current_task": "", "parent": "", "root": owner_root,
+                "sessions": int(sessions.get(bid, 0)), "orphan": True,
+                "icon_uri": "",
+            }
+
+    roots = []
+    for bid, n in nodes.items():
+        if n["root"] == bid and not n["orphan"]:
+            roots.append(bid)
+    roots.sort(key=lambda b: nodes[b]["title"])
+
+    unknown_root = bool(root_filter) and root_filter not in roots
+    if root_filter and not unknown_root:
+        keep = {b for b, n in nodes.items() if n["root"] == root_filter}
+        nodes = {b: n for b, n in nodes.items() if b in keep}
+        hires = [e for e in hires if e["src"] in nodes and e["dst"] in nodes]
+        dispatch = [e for e in dispatch if e["src"] in nodes and e["dst"] in nodes]
+    else:
+        dispatch = [e for e in dispatch if e["src"] in nodes and e["dst"] in nodes]
+
+    order = {s: i for i, s in enumerate(FBOT_ACTIVE_STATES)}
+    node_list = sorted(nodes.values(),
+                       key=lambda n: (nodes_root_title(nodes, n), n["root"] != n["bot_id"],
+                                      n["orphan"], order.get(n["state"], 9), n["title"]))
+    return {"error": "", "nodes": node_list, "hires": hires, "dispatch": dispatch,
+            "roots": roots, "root_filter": root_filter, "unknown_root": unknown_root}
+
+
+def nodes_root_title(nodes, n) -> str:
+    """정렬 키 보조 — 그룹(루트) 호칭. 루트가 필터로 잘려나갔으면 id 로 대신한다."""
+    r = nodes.get(n["root"])
+    return (r or {}).get("title", n["root"])
+
+
+# ── Issue402: 핀봇 조직도 mermaid 렌더 ────────────────────────────────────
+# mermaid 라벨 안전화 표는 projects-map 빌더(mmd_label)와 같은 어휘를 쓴다 — hub 안에서
+#   같은 문법을 두 가지로 다루면 한쪽에서만 노드가 사라지는 종류의 버그가 난다.
+_FBOT_MMD_UNSAFE = str.maketrans({'"': "'", "`": "'", "[": "(", "]": ")",
+                                  "{": "(", "}": ")", "|": "/", "\n": " ",
+                                  "<": "(", ">": ")"})
+
+
+def _fbot_mmd_label(text: str) -> str:
+    """mermaid 라벨 안전화. 백틱은 markdown-string 으로 오인되어 노드가 통째로 사라진다."""
+    return str(text or "").translate(_FBOT_MMD_UNSAFE).strip()
+
+
+def _fbot_mmd_id(prefix: str, key: str) -> str:
+    """mermaid 노드 id — 영숫자·언더스코어만."""
+    return prefix + re.sub(r"[^A-Za-z0-9_]", "_", str(key))
+
+
+def _fbot_text_on(color: str) -> str:
+    """배경색 위 글자색 — 개체색이 어두우면 흰 글자. 새 색 체계를 만들지 않고
+    `bot.color`(prj3#Issue438 ③ 채용 시 생성분)를 그대로 쓰기 위한 대비 보정일 뿐이다."""
+    c = (color or "").lstrip("#")
+    if len(c) != 6:
+        return "#111111"
+    try:
+        r, g, b = int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
+    except ValueError:
+        return "#111111"
+    return "#111111" if (0.299 * r + 0.587 * g + 0.114 * b) >= 150 else "#ffffff"
+
+
+def _fbot_map_mermaid(data: dict) -> str:
+    """조직도 flowchart 소스. 루트별 subgraph + 채용 실선 + 배분 화살표(이슈·status 라벨).
+
+    채용과 배분은 **선 모양으로 구분**한다(Issue402 ⓓ) — 둘을 같은 화살표로 그리면
+    "누가 뽑았나" 와 "누가 시켰나" 가 한 그림에서 섞여 조직도의 의미가 사라진다.
+    """
+    nodes = {n["bot_id"]: n for n in data["nodes"]}
+    if not nodes:
+        return ""
+    # 방향은 LR 이다 — 조직은 팬아웃이 넓다(실측: 작업핀봇 한 명 밑에 7봇). TD 로 그리면
+    #   형제들이 가로로 늘어서 viewBox 가 3300px 을 넘고, mermaid 의 useMaxWidth 가 그것을
+    #   컨테이너 폭으로 **축소**해 글자가 읽히지 않는다(실측 35% 축소). LR 은 형제를 세로로
+    #   쌓아 세로로 길어지므로 폭 축소가 걸리지 않는다.
+    lines = ["flowchart LR"]
+    styles, link_kinds = [], []
+
+    def nid(b):
+        return _fbot_mmd_id("B_", b)
+
+    # 그룹(subgraph) — 루트 봇 단위. 사용자 요구 "핀봇 단위" 가 이 단위다.
+    groups = {}
+    for n in data["nodes"]:
+        groups.setdefault(n["root"], []).append(n)
+    for root_id, members in groups.items():
+        root = nodes.get(root_id)
+        rtitle = _fbot_mmd_label((root or {}).get("title") or root_id)
+        active = sum(1 for m in members if m["state"] in FBOT_ACTIVE_STATES)
+        lines.append(f'  subgraph {_fbot_mmd_id("G_", root_id)}'
+                     f'["{rtitle} · {len(members)}명(활성 {active})"]')
+        lines.append("    direction TB")   # 그룹 안에서는 구성원을 세로로 쌓는다
+        for m in members:
+            parts = [_fbot_mmd_label(m["title"])]
+            sub = " · ".join([x for x in (m["role"], m["state_label"]) if x])
+            if m["orphan"]:
+                # 정보 없는 노드를 그냥 그리면 "왜 여기 있나" 를 알 수 없다 —
+                #   원장에만 있고 명부에 없다는 사실 자체를 라벨에 적는다.
+                sub = "명부에 없음(배분 원장만)"
+            if sub:
+                parts.append(f"<small>{_fbot_mmd_label(sub)}</small>")
+            if m["sessions"]:
+                # 세션 원장은 엣지가 아니라 배지다 — "몇 번 일했나".
+                parts.append(f"<small>⚙ 세션 {m['sessions']}</small>")
+            lines.append(f'    {nid(m["bot_id"])}["' + "<br/>".join(parts) + '"]')
+            if m["orphan"]:
+                styles.append(f'  style {nid(m["bot_id"])} fill:#f5f5f5,color:#666,'
+                              f'stroke:#c62828,stroke-width:1.5px,stroke-dasharray: 5 3')
+            elif m["color"]:
+                styles.append(f'  style {nid(m["bot_id"])} fill:{m["color"]},'
+                              f'color:{_fbot_text_on(m["color"])},stroke:#33333340')
+        lines.append("  end")
+
+    # 채용 엣지 — 실선(화살표 없음). 조직의 뼈대다.
+    for e in data["hires"]:
+        lines.append(f'  {nid(e["src"])} --- {nid(e["dst"])}')
+        link_kinds.append("hire")
+    # 배분 엣지 — 화살표 + 이슈·status 라벨.
+    for e in data["dispatch"]:
+        lab = " · ".join([x for x in (e["issue"], e["status"]) if x]) or "배분"
+        lines.append(f'  {nid(e["src"])} -->|"{_fbot_mmd_label(lab)}"| {nid(e["dst"])}')
+        link_kinds.append("cancelled" if e["status"] == "cancelled" else "dispatch")
+
+    lines.extend(styles)
+    # linkStyle 은 선언 순서 전역 인덱스다 — 채용 → 배분 순으로 쌓은 위 순서에 맞춘다.
+    for kind, css in (("hire", "stroke:#8a8a8a,stroke-width:1.6px"),
+                      ("dispatch", "stroke:#2e7d32,stroke-width:2px"),
+                      # 취소분은 흐리게 — 지운 것이 아니라 "있었으나 무산" 이므로 남긴다.
+                      ("cancelled", "stroke:#bdbdbd,stroke-width:1.4px,"
+                                    "stroke-dasharray: 4 3,opacity:0.45")):
+        idx = [str(i) for i, k in enumerate(link_kinds) if k == kind]
+        if idx:
+            lines.append("  linkStyle " + ",".join(idx) + " " + css)
+    return "\n".join(lines)
+
+
 def _resolve_project_root(abs_cwd: str) -> dict:
     """Projects.md 등록 경로 중 abs_cwd 와 exact 또는 prefix(at-or-under) 매칭되는
     가장 긴 경로의 행을 반환 (없으면 빈 dict). 서브폴더 cwd(ex: videoStudio/_doc_base/contents)를
@@ -2969,6 +3527,11 @@ IMPORTANT_RESPONSE_ABANDON_SEC = 21600  # Issue100: 6h+ 미해소 wait 는 방�
 IMPORTANT_STALE_CARD_MIN = 5         # dashboard 카드 정리 권고 임계
 IMPORTANT_HTM_DOC_MIN = 200          # htm 문서 정리 권고 임계
 DASH_STATUS_NONE_GRACE_SEC = 120     # status 필드 없는(첫 write 전) dash 파일을 stale 로 강등하는 유예시간
+# Issue403: status='running' 인데 pid 검증이 **불가능한**(pid·worker_pid 둘 다 비정수)
+#   dash 를 mtime 정체로 강등하기까지 허용할 갱신 주기 수. 고정 초 상수를 쓰면 10초 보드와
+#   5분 보드 중 한쪽이 반드시 틀린다 — 살아 있는 runner 는 interval 마다 파일을 다시 쓰므로
+#   "연속 N주기 write 실종" 이 곧 죽음의 증거다. 배수는 오강등 여유를 위해 넉넉히 잡는다.
+DASH_RUNNING_STALE_INTERVALS = 10
 # R2 응답 정체 판정 대상 이벤트 — 사용자 입력을 기다리는 hook 이벤트
 IMPORTANT_WAIT_EVENTS = ("AskUserQuestion", "Notification")
 
@@ -3629,7 +4192,7 @@ def _orphan_reaper_loop(interval: float = 120.0) -> None:
             log(f"[reaper] loop error: {e}")
 
 
-AOA_MQ_TICK = os.path.expanduser("~/_git/___common/.claude/agents/aoa-mq-tick.sh")
+AOA_MQ_TICK = os.path.expanduser("~/.claude/mcp/aoa-mq/aoa-mq-tick.sh")
 AOA_MQ_GATE_SEC = 3600
 
 
@@ -4048,6 +4611,10 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/projects-map":
             self._handle_projects_map(parsed)
             return
+        # Issue402: 핀봇 조직도 — 파일 산출물 없이 registry.db 직독 실시간 생성
+        if parsed.path == "/fbot-map":
+            self._handle_fbot_map(parsed)
+            return
         # Issue294: 맵 노드 클릭 → VSCode 열기 브리지 (GET, prj 번호만 받음)
         if parsed.path == "/open-prj":
             self._handle_open_prj(parsed)
@@ -4436,6 +5003,8 @@ class Handler(BaseHTTPRequestHandler):
             "mtime": time.strftime("%Y-%m-%d %H:%M", time.localtime(st.st_mtime)),
             "mtime_ts": st.st_mtime,
             "title": None, "status": None, "progress": None, "pid": None, "worker_pid": None,
+            # Issue403: runner 갱신 주기(초). 부재면 None → 기존 grace 상수 준용.
+            "interval": None,
         }
         try:
             with open(abs_path, encoding="utf-8") as f:
@@ -4444,7 +5013,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._fill_dash_entry_from_dict(entry, json.loads(raw))
             else:
                 parsed = self._parse_dash_yaml(raw)
-                for k in ("title", "status", "pid", "worker_pid", "progress"):
+                for k in ("title", "status", "pid", "worker_pid", "progress", "interval"):
                     if parsed.get(k) is not None:
                         entry[k] = parsed[k]
         except Exception as e:
@@ -4480,7 +5049,7 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 continue
             mtime = time.strftime("%Y-%m-%d %H:%M", time.localtime(st.st_mtime))
-            entry = {"path": abs_path, "mtime": mtime, "title": None, "status": None, "progress": None, "pid": None, "worker_pid": None}
+            entry = {"path": abs_path, "mtime": mtime, "title": None, "status": None, "progress": None, "pid": None, "worker_pid": None, "interval": None}
             try:
                 with open(abs_path, encoding="utf-8") as f:
                     raw = f.read()
@@ -4490,7 +5059,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     parsed = self._parse_dash_yaml(raw)
                     # _parse_dash_yaml 은 이미 entry 와 동일 키 dict 반환
-                    for k in ("title", "status", "pid", "worker_pid", "progress"):
+                    for k in ("title", "status", "pid", "worker_pid", "progress", "interval"):
                         if parsed.get(k) is not None:
                             entry[k] = parsed[k]
             except Exception as e:
@@ -4521,7 +5090,7 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 continue
             mtime = time.strftime("%Y-%m-%d %H:%M", time.localtime(st.st_mtime))
-            entry = {"path": abs_path, "mtime": mtime, "title": None, "status": None, "progress": None, "pid": None, "worker_pid": None}
+            entry = {"path": abs_path, "mtime": mtime, "title": None, "status": None, "progress": None, "pid": None, "worker_pid": None, "interval": None}
             try:
                 with open(abs_path, encoding="utf-8") as f:
                     raw = f.read()
@@ -4529,7 +5098,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._fill_dash_entry_from_dict(entry, json.loads(raw))
                 else:
                     parsed = self._parse_dash_yaml(raw)
-                    for k in ("title", "status", "pid", "worker_pid", "progress"):
+                    for k in ("title", "status", "pid", "worker_pid", "progress", "interval"):
                         if parsed.get(k) is not None:
                             entry[k] = parsed[k]
             except Exception as e:
@@ -4877,6 +5446,10 @@ class Handler(BaseHTTPRequestHandler):
         entry["status"] = d.get("status")
         entry["pid"] = d.get("pid") if isinstance(d.get("pid"), int) else None
         entry["worker_pid"] = d.get("worker_pid") if isinstance(d.get("worker_pid"), int) else None
+        # Issue403: mtime 정체 강등 임계를 보드 고유 주기로 산출하기 위해 필요.
+        iv = self._coerce_num(d.get("interval"))
+        if iv is not None:
+            entry["interval"] = iv
         prog = self._coerce_num(d.get("progress"))
         if prog is not None:
             entry["progress"] = prog
@@ -4915,7 +5488,8 @@ class Handler(BaseHTTPRequestHandler):
         지원: top-level scalar (title/status/pid/...), widgets list 의 progress.value 추출.
         미지원: 임의 nested dict/list, multi-line scalar, anchor, flow style 등.
         """
-        out = {"title": None, "status": None, "pid": None, "worker_pid": None, "progress": None}
+        out = {"title": None, "status": None, "pid": None, "worker_pid": None,
+               "progress": None, "interval": None}
         in_widgets = False
         current_widget = None
 
@@ -4961,6 +5535,11 @@ class Handler(BaseHTTPRequestHandler):
                     pv = cls._coerce_num(val)
                     if pv is not None:
                         out["progress"] = pv
+                elif k == "interval":
+                    # Issue403: runner 갱신 주기(초). mtime 정체 강등 임계의 기준값.
+                    ivv = cls._coerce_num(val)
+                    if ivv is not None:
+                        out["interval"] = ivv
             elif in_widgets:
                 # widget list item 또는 widget 내부 key
                 if stripped.startswith("- "):
@@ -5110,6 +5689,9 @@ class Handler(BaseHTTPRequestHandler):
             #   등록 프로젝트 전체(Projects.md)를 세는 _projects_list_with_htm() 을 쓴다.
             #   시스템 전역 OFF 는 별도 플래그로 준다 — htm_reason 문자열 매칭에 기대지 않기 위함.
             **_hub_off_stats(),
+            # prj3#Issue438 ③: 핀봇 현황 상시 표시. 활성(퇴근 아님) 봇이 0 이면
+            #   bots 가 빈 리스트로 와서 클라이언트가 섹션을 통째로 숨긴다.
+            **_collect_bots(),
             "ts": int(time.time()),
         })
 
@@ -5899,9 +6481,31 @@ __WARN__
         })
 
     @staticmethod
+    def _dash_stale_limit(interval) -> float:
+        """Issue403: running dash 의 mtime 정체 허용 상한(초).
+
+        보드마다 갱신 주기가 다르므로 **고정 초 상수를 쓰지 않는다** — `interval` 의
+        배수로 산출한다. `interval` 이 없거나 비정상(0·음수·비수치)이면 판정 기준이
+        없으므로 기존 `DASH_STATUS_NONE_GRACE_SEC`(status 부재 경로와 같은 유예)을
+        준용한다.
+
+        ⚠️ 하한 클램프의 이유(오강등 방지) — interval 이 1~2초인 보드는 배수만 쓰면
+        10~20초 정체로 강등된다. 스케줄 지연·mtime 초 해상도만으로도 넘는 값이라
+        살아 있는 보드가 죽은 것으로 뒤집힌다. 여유는 **관대한 쪽으로만** 준다.
+        """
+        try:
+            iv = float(interval)
+        except (TypeError, ValueError):
+            return float(DASH_STATUS_NONE_GRACE_SEC)
+        if iv <= 0:
+            return float(DASH_STATUS_NONE_GRACE_SEC)
+        return max(iv * DASH_RUNNING_STALE_INTERVALS,
+                   float(DASH_STATUS_NONE_GRACE_SEC))
+
+    @staticmethod
     def _effective_dash_status(d) -> str:
         """dash dict 의 실효 status. Issue58: status='running' 이나 runner pid 가 죽었으면
-        'stale' 로 강등. pid 가 정수가 아니면 검증 불가 → 원본 status 유지.
+        'stale' 로 강등. pid 가 정수가 아니면 검증 불가 → Issue403 이 mtime 정체로 판정.
         Issue83: _handle_dashboards(렌더)·_handle_clear_done(정리) 가 동일 판정을 쓰도록
         단일화 — 렌더 경로만 stale 강등하고 clear 경로는 디스크 raw status('running')를
         보던 비대칭 제거. 비대칭이 곧 Issue60 불완전 수정(stale 정리 버튼 무반응)의 원인."""
@@ -5914,7 +6518,26 @@ __WARN__
             pid = d.get("pid")
             if not isinstance(pid, int):
                 pid = d.get("worker_pid")
-            if isinstance(pid, int) and not _pid_alive(pid):
+            if isinstance(pid, int):
+                if not _pid_alive(pid):
+                    return "stale"
+                return status
+            # Issue403: **pid 검증 불가** 경로. 종전엔 여기서 무조건 running 을 유지해
+            #   한 번도 가동된 적 없는 템플릿(prj3 fbot-board-init.sh 는 runner 없이
+            #   status='running' · pid=None 을 쓴다)이 며칠씩 "돌고 있다" 로 박제됐고,
+            #   running 은 _is_clearable_status 가 False 라 정리 버튼도 안 먹었다.
+            #   조합이 우연이 아니다 — prj3 board.md 계약(prj3#Issue142)이 순수 모니터링 모드에
+            #   worker_pid 생략을 요구하므로 그 계약을 지킨 보드는 전부 이 경로로 온다.
+            #   판정 근거는 mtime: 살아 있는 runner 는 interval 마다 데이터 파일을 다시
+            #   쓰므로 mtime 이 전진한다(fpm-board-runner.sh 는 나아가 자기 pid 까지
+            #   기록하므로 실가동 보드는 애초에 위 pid 분기에서 끝난다) → 여기까지 온
+            #   보드의 mtime 정체는 runner 부재의 증거다. 강등 결과 'stale' 은
+            #   _is_clearable_status 가 이미 포함하므로 "정리" 버튼이 그대로 먹는다
+            #   (Issue83 이 없앤 렌더·정리 비대칭을 되살리지 않기 위해 분기 추가 없음).
+            mtime_ts = d.get("mtime_ts")
+            if isinstance(mtime_ts, (int, float)) and mtime_ts > 0 and \
+                    (time.time() - mtime_ts) > \
+                    Handler._dash_stale_limit(d.get("interval")):
                 return "stale"
         elif status is None:
             # runner 가 첫 write 전에 죽으면(crash-loop) status 필드 자체가 없어
@@ -8126,6 +8749,223 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         body = _synthesize_hub_header(body, proj_root, os.path.basename(proj_root))
         self._send_htm_html(body, path)
 
+    def _handle_fbot_map(self, parsed):
+        """Issue402 ⓐ: 핀봇 조직도(`/fbot-map`) — `registry.db` 직독 **실시간 생성**.
+
+        게이트는 `/projects-map` 과 같은 등급(데이터를 읽어 돌려줌)이라 진입점 공통
+        `_ip_allowed()` 만 적용한다. 경로 입력면이 없고(DB 경로는 서버 고정) 쿼리는
+        `root` 하나뿐이며 그 값도 레지스트리 루트 목록과 **대조**해서만 쓰므로
+        traversal·주입 면이 생기지 않는다.
+
+        파일 산출물을 만들지 않는 이유 — prj3#Issue438 ③ "중간 사영 파일 금지 · 판정
+        단일 지점". `Issue_map.htm`·`Projects_map.htm` 패턴을 여기에 복제하면 조직 상태의
+        판정원이 DB 와 파일 둘로 갈라진다.
+        """
+        import urllib.parse as _u
+        root = (_u.parse_qs(parsed.query).get("root") or [""])[0].strip()
+        data = _fbot_org_data(root)
+        if data["error"]:
+            # 조용히 빈 맵을 그리면 "봇이 없다" 로 읽힌다 — Issue400 이 bots_error 를
+            #   분리한 것과 같은 이유로 오류는 세운다.
+            log(f"GET /fbot-map — registry error: {data['error']}", "WARNING")
+            self._send_fbot_map_notice(
+                503, "핀봇 레지스트리를 읽지 못했습니다",
+                f"<p>조직도는 <code>registry.db</code> 를 직접 읽어 그립니다. "
+                f"읽기가 실패해 <b>조직이 없는 것인지 못 읽은 것인지</b> 구분할 수 없어 "
+                f"빈 그림 대신 이 오류를 표시합니다.</p>"
+                f"<pre>{html.escape(data['error'])}</pre>")
+            return
+        if not data["nodes"]:
+            self._send_fbot_map_notice(
+                404, "핀봇이 아직 없습니다",
+                "<p>레지스트리에 등록된 핀봇이 없습니다. fbot 미설치이거나 "
+                "채용(스폰)이 아직 한 건도 없는 상태입니다.</p>"
+                "<p>설계·절차: <code>~/.claude/_doc_arch/fbot-arch.md</code></p>")
+            return
+        self._send_htm_html(self._render_fbot_map(data),
+                            os.path.join(REPO_ROOT, "fbot-map.htm"))
+
+    def _send_fbot_map_notice(self, code: int, title: str, body_html: str):
+        """조직도 비정상 경로(레지스트리 오류·봇 0)의 안내 HTML. raw JSON 을 돌려주면
+        새 탭에 문자열만 뜨므로 사람이 읽는 페이지로 내보낸다 (`/projects-map` 선례)."""
+        page = (
+            "<!doctype html><html lang=ko><head><meta charset=utf-8>"
+            "<meta name=viewport content='width=device-width,initial-scale=1'>"
+            f"<title>{html.escape(title)}</title><style>"
+            "body{font:15px/1.6 -apple-system,system-ui,sans-serif;max-width:760px;"
+            "margin:3rem auto;padding:0 1.2rem;color:#222}"
+            "h1{font-size:1.25rem}code{background:#f2f2f5;padding:.15em .4em;border-radius:4px}"
+            "pre{background:#1e1e24;color:#e8e8ee;padding:1rem;border-radius:8px;overflow-x:auto}"
+            "@media(prefers-color-scheme:dark){body{background:#16161a;color:#ddd}"
+            "code{background:#2a2a33}}"
+            "</style></head><body>"
+            f"<h1>🤖 {html.escape(title)}</h1>{body_html}"
+            "</body></html>").encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(page)))
+        self.end_headers()
+        self.wfile.write(page)
+
+    @staticmethod
+    def _render_fbot_map(data: dict) -> bytes:
+        """조직도 페이지 HTML. mermaid 는 서버 표준 런타임(`_normalize_mermaid_runtime`)이
+        `_send_htm_html` 에서 주입하므로 여기서 `<script>` 를 저작하지 않는다.
+
+        명부·원장 표를 **함께** 싣는 이유 — 다이어그램이 못 뜨는 환경(런타임 차단·구
+        브라우저)에서도 같은 사실을 읽을 수 있어야 한다. 조직 관측이 렌더 성공 여부에
+        걸리면 "묻지 않아도 안다"(prj3#Issue438) 가 그 순간 무너진다.
+        """
+        import urllib.parse as _u
+        nodes = {n["bot_id"]: n for n in data["nodes"]}
+        root = data["root_filter"]
+        esc = html.escape
+
+        # 루트 필터 칩 — ⓓ `?root=` 로 해당 루트 하위 트리만 본다.
+        chips = ['<a class="fm-chip%s" href="/fbot-map">전체</a>'
+                 % ("" if root else " on")]
+        for rid in data["roots"]:
+            t = nodes.get(rid, {}).get("title") or rid
+            chips.append('<a class="fm-chip%s" href="/fbot-map?root=%s">%s</a>'
+                         % (" on" if rid == root else "",
+                            esc(_u.quote(rid)), esc(t)))
+
+        warn = ""
+        if data["unknown_root"]:
+            warn = ('<div class="fm-warn">⚠ <code>root=%s</code> 는 루트 핀봇이 아닙니다 '
+                    '— 전체 조직도를 표시합니다.</div>' % esc(root))
+        orphans = [n for n in data["nodes"] if n["orphan"]]
+        if orphans:
+            warn += ('<div class="fm-warn">⚠ 배분 원장에만 있고 명부(<code>bot</code> 테이블)에 '
+                     '없는 대상 %d건: %s — 노드를 지우면 엣지가 조용히 사라지므로 '
+                     '점선으로 구분해 남겨둡니다.</div>'
+                     % (len(orphans), esc(", ".join(n["bot_id"] for n in orphans))))
+
+        # 아이콘·개체색은 채용 시 생성된 것(prj3#Issue438 ③)을 재사용한다 —
+        #   조직도용 새 색 체계를 만들지 않는다(Issue402 ⓔ).
+        def _icon_cell(n):
+            if n["orphan"]:
+                return '<span class="fm-dot fm-dot-orphan">?</span>'
+            uri = n.get("icon_uri") or ""
+            if uri:
+                return '<img class="fm-icon" src="%s" alt="%s">' % (esc(uri), esc(n["role"]))
+            c = n["color"] or "#999"
+            return '<span class="fm-dot" style="background:%s"></span>' % esc(c)
+
+        tbody = []
+        for n in data["nodes"]:
+            group = nodes.get(n["root"], {}).get("title") or n["root"]
+            task = n["current_task"] or ""
+            tbody.append(
+                "<tr%s><td>%s</td><td>%s%s</td><td><code>%s</code></td><td>%s</td>"
+                "<td>%s %s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>" % (
+                    ' class="fm-orphan"' if n["orphan"] else "",
+                    _icon_cell(n),
+                    esc(n["title"]),
+                    ' <span class="fm-badge">루트</span>' if n["root"] == n["bot_id"] and not n["orphan"] else "",
+                    esc(n["bot_id"]), esc(n["role"]),
+                    esc(n["state_emoji"]), esc(n["state_label"] or "—"),
+                    esc(n["career"] or "—"),
+                    ("prj%s" % esc(str(n["prj"]))) if n["prj"] is not None else "—",
+                    esc(group),
+                    esc(task) if task else '<span class="fm-mute">—</span>'))
+
+        dbody = []
+        for e in sorted(data["dispatch"], key=lambda x: -x["ts"]):
+            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(e["ts"])) if e["ts"] else "—"
+            dbody.append(
+                "<tr%s><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>" % (
+                    ' class="fm-cancel"' if e["status"] == "cancelled" else "",
+                    esc(when),
+                    esc(nodes.get(e["src"], {}).get("title") or e["src"]),
+                    esc(nodes.get(e["dst"], {}).get("title") or e["dst"]),
+                    esc(e["issue"] or "—"), esc(e["status"] or "—")))
+        if not dbody:
+            dbody.append('<tr><td colspan="5" class="fm-mute">배분 원장에 이 범위의 '
+                         '기록이 없습니다 — 채용 관계만으로 그려진 그룹입니다.</td></tr>')
+
+        mermaid = _fbot_map_mermaid(data)
+        css = (
+            "body{font:15px/1.65 -apple-system,system-ui,sans-serif;color:#222;background:#fff}"
+            ".fm-meta{color:#666;font-size:.88em;margin:.2rem 0 .8rem}"
+            ".fm-chips{display:flex;flex-wrap:wrap;gap:.4rem;margin:.6rem 0 1rem}"
+            ".fm-chip{display:inline-block;padding:.18rem .6rem;border:1px solid #ccd;"
+            "border-radius:12px;font-size:.85em;text-decoration:none;color:#334}"
+            ".fm-chip.on{background:hsl(238,45%,88%);border-color:hsl(238,45%,62%);font-weight:600}"
+            ".fm-warn{background:#fff7e6;border:1px solid #f0c36d;border-radius:8px;"
+            "padding:.6rem .9rem;margin:.5rem 0;font-size:.9em}"
+            ".fm-legend{font-size:.85em;color:#555;margin:.6rem 0 1.2rem}"
+            ".fm-legend b{color:#222}"
+            # mermaid 런타임의 useMaxWidth 는 SVG 에 인라인 max-width 를 박아 다이어그램을
+            #   컨테이너 폭으로 **축소**한다. 조직도는 팬아웃이 넓어 축소율이 0.5 밑으로
+            #   떨어지고(실측) 노드 글자가 읽히지 않는다 → 축소 대신 가로 스크롤을 준다.
+            #   인라인 스타일을 이기려면 !important 가 필요하다.
+            "pre.mermaid{overflow-x:auto;overflow-y:hidden}"
+            "pre.mermaid svg{max-width:none !important;width:auto !important;height:auto !important}"
+            "table{border-collapse:collapse;width:100%;font-size:.88em;margin-bottom:1.6rem}"
+            "th,td{border:1px solid #e2e2e8;padding:.35rem .55rem;text-align:left;vertical-align:top}"
+            "th{background:#f4f4f8}"
+            ".fm-icon{width:22px;height:22px;border-radius:50%;display:block}"
+            ".fm-dot{width:18px;height:18px;border-radius:50%;display:inline-block}"
+            ".fm-dot-orphan{background:#f5f5f5;border:1.5px dashed #c62828;color:#c62828;"
+            "text-align:center;line-height:15px;font-size:.75em;font-weight:700}"
+            ".fm-orphan{background:#fff5f5}"
+            ".fm-cancel{opacity:.5}"
+            ".fm-badge{font-size:.72em;background:hsl(238,45%,88%);border-radius:3px;padding:0 .3rem}"
+            ".fm-mute{color:#999}"
+            "code{background:#f2f2f5;padding:.1em .35em;border-radius:4px;font-size:.92em}"
+            "@media(prefers-color-scheme:dark){body{background:#16161a;color:#ddd}"
+            "th{background:#24242c}th,td{border-color:#33333c}.fm-chip{color:#ccd;border-color:#44445a}"
+            ".fm-orphan{background:#2b1a1a}.fm-warn{background:#2b2410;border-color:#7a5c1e}"
+            "code{background:#2a2a33}.fm-legend{color:#aaa}.fm-legend b{color:#eee}}"
+        )
+        total = len(data["nodes"])
+        active = sum(1 for n in data["nodes"] if n["state"] in FBOT_ACTIVE_STATES)
+        page = (
+            "<!doctype html><html lang=ko><head><meta charset=utf-8>"
+            "<meta name=viewport content='width=device-width,initial-scale=1'>"
+            "<title>핀봇 조직도</title><style>" + css + "</style></head><body>"
+            "<h1>🤖 핀봇 조직도</h1>"
+            + warn
+            + '<div class="fm-chips">' + "".join(chips) + "</div>"
+            + '<div class="fm-meta">'
+            + "그룹 %d · 봇 %d(활성 %d) · 채용 엣지 %d · 배분 엣지 %d"
+              % (len(data["roots"]), total, active,
+                 len(data["hires"]), len(data["dispatch"]))
+            + " · <code>registry.db</code> 직독(요청 시각 기준 실시간)</div>"
+            + '<div class="fm-legend">'
+            "<b>엣지 2원천</b> — <b>실선</b>은 채용(<code>bot.parent_bot_id</code>), "
+            "<b>화살표</b>는 배분(<code>job.kind=fbot_dispatch</code>)입니다. "
+            "배분 원장만으로 그리면 <code>fpm-do</code> 직접 위임이 원장을 거치지 않아 "
+            "(prj3#Issue438 ④) 중역핀봇 밑이 비어 보입니다 — 두 원천을 합성해야 조직이 보입니다. "
+            "취소된 배분은 흐리게, 명부에 없는 대상은 점선으로 남깁니다. "
+            "<code>⚙ 세션 N</code> 은 엣지가 아니라 그 봇의 활동 횟수입니다.</div>"
+            + '<pre class="mermaid">' + html.escape(mermaid) + "</pre>"
+            + "<h2>명부</h2><table><thead><tr><th></th><th>호칭</th><th>bot_id</th>"
+            "<th>role</th><th>상태</th><th>career</th><th>prj</th><th>소속</th>"
+            "<th>현재 작업</th></tr></thead><tbody>" + "".join(tbody) + "</tbody></table>"
+            + "<h2>배분 원장</h2><table><thead><tr><th>생성</th><th>배분자</th>"
+            "<th>대상</th><th>이슈</th><th>status</th></tr></thead><tbody>"
+            + "".join(dbody) + "</tbody></table>"
+            # mermaid 런타임(`_normalize_mermaid_runtime`)의 useMaxWidth 가 SVG 를 컨테이너
+            #   폭으로 **축소**한다. 조직도는 팬아웃이 넓어(실측 viewBox 2222px) 축소율이
+            #   0.52 까지 떨어져 노드 글자가 8px 로 뭉개졌다. CSS 만으로는 못 이긴다 —
+            #   svg 의 width="100%" 속성 때문에 max-width:none·width:auto 를 줘도 여전히
+            #   컨테이너를 채운다(실측). 렌더 후 viewBox 의 원래 픽셀 폭을 되돌리고, 넘치는
+            #   만큼은 <pre> 가 가로 스크롤한다. 공용 런타임은 건드리지 않는다(다른 맵 영향 0).
+            #   ⚠️ 런타임이 렌더 완료를 알려주지 않으므로 폴링한다 — projects-map 의
+            #   오버레이 스크립트와 같은 방식이다.
+            "<script>(function(){var n=0;function fit(){"
+            "var s=document.querySelector('pre.mermaid svg');if(!s)return false;"
+            "var v=(s.getAttribute('viewBox')||'').split(' ');"
+            "var w=parseFloat(v[2]),h=parseFloat(v[3]);if(!(w>0))return false;"
+            "s.style.setProperty('width',Math.ceil(w)+'px','important');"
+            "if(h>0)s.style.setProperty('height',Math.ceil(h)+'px','important');return true;}"
+            "var t=setInterval(function(){if(fit()||++n>40)clearInterval(t);},150);})();</script>"
+            "</body></html>")
+        return _synthesize_hub_header(page.encode("utf-8"), REPO_ROOT,
+                                      os.path.basename(REPO_ROOT))
+
     def _handle_projects_map(self, parsed):
         """Issue293: 프로젝트 트리 맵(`Projects_map.htm`) serve.
 
@@ -10307,9 +11147,12 @@ main { padding: 1.5rem; max-width: 1600px; margin: 0 auto; display: flex; gap: 1
 .card.virtual:not(.htm-doc) .actions a { pointer-events: none; opacity: 0.4; }
 /* Issue33: live-session 별도 섹션 + 카드 좌측 그린 바 */
 .section-title { margin: 2rem 0 0.9rem; font-size: 1.05em; color: var(--muted); display: flex; align-items: center; gap: 0.5rem; }
-/* Issue63: 첫 섹션(활성 세션)만 상단 margin 제거. 각 h2 가 section 의 first-child
-   라 :first-child 를 쓰면 모든 섹션 제목이 margin-top:0 → 섹션 간 간격 소실. */
-#live-sessions-section .section-title { margin-top: 0; }
+/* Issue63: 첫 섹션만 상단 margin 제거. 각 h2 가 section 의 first-child 라
+   :first-child 를 쓰면 모든 섹션 제목이 margin-top:0 → 섹션 간 간격 소실.
+   prj3#Issue438 후속: id 하드코딩(#live-sessions-section)이던 것을 구조 선택자로 교체.
+   그 위에 핀봇 섹션이 새로 들어오자 live 가 더는 첫 섹션이 아닌데 규칙만 남아
+   앞 섹션과 갭 0 으로 붙었다 — "첫 섹션"을 CSS 가 스스로 판정하게 한다. */
+.hub-main > section:first-of-type > .section-title { margin-top: 0; }
 .count-badge { background: var(--card); padding: 0.1rem 0.5rem; border-radius: 10px; font-size: 0.8em; border: 1px solid var(--border); }
 .card.live { border-left: 3px solid hsl(140,60%,45%); }
 /* Issue101: 활성 세션 카드 클릭 → VSCode 열기 (cdfv 효과). hover 로 클릭 가능 시각화 */
@@ -10404,6 +11247,49 @@ main { padding: 1.5rem; max-width: 1600px; margin: 0 auto; display: flex; gap: 1
 .htm-filter-sel { font-size: 0.78em; padding: 0.22rem 0.45rem; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg); cursor: pointer; }
 .htm-prj-selected { outline: 2.5px solid hsl(220,80%,50%); outline-offset: -1px; }
 /* Issue160: 섹션 접기/펼치기 토글 — 접힘 시 헤더(제목·카운트)만 남기고 본문·컨트롤 숨김 */
+/* prj3#Issue438 ③: 핀봇 현황 카드 — 활성 봇만, 아이콘(종류별 동형 SVG)+색(개체별) */
+.bot-card { background: var(--card); border: 1px solid var(--border); border-left: 4px solid var(--muted); border-radius: 8px; padding: 0.7rem 0.85rem; display: flex; gap: 0.7rem; align-items: flex-start; }
+.bot-icon { width: 30px; height: 30px; flex-shrink: 0; border-radius: 50%; }
+.bot-dot { width: 30px; height: 30px; flex-shrink: 0; border-radius: 50%; background: var(--muted); }
+.bot-body { min-width: 0; flex: 1; }
+.bot-name { font-weight: 600; font-size: 0.95em; display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.bot-role { font-size: 0.78em; color: var(--muted); border: 1px solid var(--border); border-radius: 3px; padding: 0 0.3rem; }
+.bot-state { font-size: 0.82em; color: var(--muted); }
+.bot-task { font-size: 0.85em; margin-top: 0.25rem; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.bot-task.none { color: var(--muted); font-style: italic; }
+.bot-stale { color: #c62828; font-size: 0.78em; font-weight: 600; }
+.bot-card.bot-err { border-left-color: #c62828; color: #c62828; font-size: 0.88em; display: block; }
+/* Issue400: 활성 0 일 때의 유휴 요약 1줄. 카드와 같은 틀을 쓰되 한 줄로 눕는다 —
+   섹션이 사라지면 "기능 사망" 과 "봇 유휴" 가 구분되지 않는다 */
+.bot-card.bot-idle { border-left-color: var(--muted); color: var(--muted); font-size: 0.88em; display: block; grid-column: 1 / -1; }
+.bot-card.bot-idle .bot-idle-sep { opacity: 0.5; margin: 0 0.45rem; }
+/* Issue401(prj3#Issue444): 카드 클릭 → 세부 펼침. 활동 피드의 .feed-item.open 과
+   동형 어휘를 쓴다 — hub 안에서 "클릭=펼침" 규칙이 갈리지 않게. */
+.bot-card[data-bot] { cursor: pointer; }
+.bot-card[data-bot]:focus-visible { outline: 2px solid #36c; outline-offset: 1px; }
+.bot-detail { display: none; margin-top: 0.4rem; padding-top: 0.4rem;
+  border-top: 1px dashed var(--border); font-size: 0.8em; color: var(--muted);
+  white-space: pre-wrap; word-break: break-word; }
+.bot-card.open .bot-detail { display: block; }
+/* 펼치면 잘린 작업 전문이 복구된다 — 이것이 펼침의 주된 목적이다 */
+.bot-card.open .bot-task { -webkit-line-clamp: unset; display: block; }
+/* Issue402 ⓑⓒ: 루트 봇 단위 그룹. 그룹 자체가 .grid 의 한 칸이 되어 조직이 열로 선다.
+   🗺 링크는 **그룹 헤더에만** 둔다 — 카드 본체 클릭은 Issue401 아코디언 소유다. */
+.bot-group { display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; }
+.bot-group-head { display: flex; align-items: center; gap: 0.45rem; padding: 0.1rem 0.1rem 0.35rem; border-bottom: 1px solid var(--border); }
+.bot-group-icon { width: 22px; height: 22px; }
+.bot-group-name { font-weight: 700; font-size: 0.92em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bot-group-count { font-size: 0.76em; color: var(--muted); white-space: nowrap; }
+.bot-map-link { margin-left: auto; text-decoration: none; font-size: 0.95em; opacity: 0.65; padding: 0 0.28rem; border-radius: 4px; line-height: 1.4; }
+.bot-map-link:hover, .bot-map-link:focus-visible { opacity: 1; background: rgba(127,127,127,.16); }
+#bots-map-all { margin-left: 0.15rem; }
+/* 퇴근 봇 — 조직 구성원이라 지우지 않되, 카드로 세우면 홈이 명부가 된다 */
+.bot-group-rest { display: flex; flex-wrap: wrap; gap: 0.28rem; }
+.bot-chip { font-size: 0.76em; color: var(--muted); border: 1px solid var(--border); border-radius: 10px; padding: 0.02rem 0.45rem; white-space: nowrap; }
+/* Issue405: 24h 이내 퇴근 — 테두리·본문색만 올린다. 배지를 새로 만들면 활성 카드와
+   경쟁해 "지금 도는 봇" 이 묻힌다. 최신성만 보이면 충분하다. */
+.bot-chip-recent { color: var(--fg); border-color: var(--accent, hsl(220,60%,55%)); }
+.bot-chip-age { opacity: 0.72; }
 .sec-toggle { background: none; border: 1px solid var(--border); border-radius: 4px; color: var(--muted); cursor: pointer; font-size: 0.8em; line-height: 1; padding: 0.15rem 0.4rem; flex-shrink: 0; }
 .sec-toggle:hover { background: rgba(127,127,127,.12); color: var(--fg); }
 section.sec-collapsed > .grid { display: none; }
@@ -10482,6 +11368,10 @@ section.sec-collapsed .htm-bar-right { display: none; }
   </span>
 </div>
 <div class="error-bar" id="error-bar"></div>
+<section id="bots-section" style="display:none">
+  <h2 class="section-title"><button class="sec-toggle" data-sec="bots-section" title="{T:common.collapseSection}">▾</button>{T:bots.title} <span id="bots-count" class="count-badge"></span> <a class="bot-map-link" id="bots-map-all" href="/fbot-map" target="_blank" rel="noopener" title="{T:bots.mapAllTitle}">🗺</a></h2>
+  <div class="grid" id="bots-grid"></div>
+</section>
 <section id="live-sessions-section" style="display:none">
   <h2 class="section-title"><button class="sec-toggle" data-sec="live-sessions-section" title="{T:common.collapseSection}">▾</button>{T:liveSessions.title} <span id="live-count" class="count-badge"></span><button class="btn-zombie" id="btn-zombie" title="{T:liveSessions.zombieTitle}">{T:liveSessions.zombie}</button></h2>
   <div class="grid" id="live-grid"></div>
@@ -10649,6 +11539,9 @@ async function reload() {
     }
     errorBar.style.display = 'none';
     renderProjects(data.projects || []);
+    BOTS_ERROR = data.bots_error || '';
+    renderBots(data.bots || [], data.bots_total || 0, data.bots_today || {},
+               data.bots_roster || []);
     renderLiveSessions(data.live_sessions || [], data.live_session_limit, data.live_session_copy_button);
     renderHtmDocs(data.htm_docs || []);
     FEED_BLINK_ON_NEW = data.feed_blink_on_new !== false;  // Issue279: 기본 on
@@ -11150,6 +12043,188 @@ function relTime(ts) {
 
 // Issue87: 헤더 H1 동적 부분 — 마지막 활동 피드(newest-first 첫 항목) 반영.
 //   형식: " - {프로젝트 이모지} {프로젝트명} - {활동 요약}"
+let BOTS_ERROR = '';   // 레지스트리 접근 실패 메시지 (빈 문자열이면 정상)
+// Issue401: 펼쳐둔 카드의 bot_id. 주기 갱신이 grid.innerHTML 로 카드를 통째
+//   재생성하므로, 이걸 두지 않으면 열어둔 상세가 갱신마다 닫힌다.
+const openBotCards = new Set();
+// prj3#Issue438 ③: 핀봇 현황 카드 — 활성(퇴근 아님) 봇은 카드로 렌더.
+//   Issue400: 활성 0 이어도 섹션은 남기고 **유휴 요약 1줄**을 그린다. 전원 퇴근을 숨기면
+//   "묻지 않아도 안다" 가 정작 필요한 순간(유휴가 정상인지 이상인지 판단할 때)에 무너진다.
+//   숨기는 것은 fbot 미설치(total 0) 한 경우뿐.
+function renderBotsIdle(total, today) {
+  const parts = [escapeHtml(t('bots.idle', { n: total }))];
+  // 원장을 못 읽었으면(빈 dict) 실적 절은 통째로 생략한다 — 0 으로 채우면 "오늘 아무 일도
+  //   없었다" 는 **없는 사실**을 단언하게 된다.
+  if (today && today.dispatched !== undefined) {
+    let line = t('bots.todayLine', { d: today.dispatched, c: today.done });
+    if (today.cancelled) line += ' · ' + t('bots.todayCancelled', { n: today.cancelled });
+    parts.push(`<span title="${escapeHtml(t('bots.todayTitle'))}">${escapeHtml(line)}</span>`);
+    parts.push(escapeHtml(today.last_ts
+      ? t('bots.lastActivity', { t: relTime(today.last_ts) })
+      : t('bots.lastNone')));
+  }
+  return `<div class="bot-card bot-idle">`
+    + parts.join('<span class="bot-idle-sep">|</span>') + `</div>`;
+}
+
+function renderBots(bots, total, today, roster) {
+  const sec = document.getElementById('bots-section');
+  const grid = document.getElementById('bots-grid');
+  const cnt = document.getElementById('bots-count');
+  if (!sec || !grid) return;
+  if (BOTS_ERROR) {
+    // 레지스트리를 못 읽은 것과 "봇이 전원 퇴근" 은 다르다 — 전자는 오류로 세운다.
+    sec.style.display = '';
+    cnt.textContent = '!';
+    grid.innerHTML = `<div class="bot-card bot-err">⚠ ${escapeHtml(t('bots.error'))}: ${escapeHtml(BOTS_ERROR)}</div>`;
+    return;
+  }
+  // Issue400: 섹션을 통째로 숨기는 것은 **fbot 미설치**(total 0) 한 경우뿐이다.
+  //   봇은 있는데 전원 퇴근인 상태를 숨기면, 사용자는 기능이 죽은 건지 봇이 노는
+  //   건지 화면만 봐선 알 수 없어 결국 세션에 되묻는다 — prj3#Issue438 이 없애려던 상황.
+  if (!total) { sec.style.display = 'none'; grid.innerHTML = ''; return; }
+  sec.style.display = '';
+  cnt.textContent = `${(bots || []).length}/${total}`;
+  // Issue402 ⓑ: 개체 나열이 아니라 **조직 구조**로 보여준다. 진입 단위는 루트 봇(= 나와
+  //   소통하는 핀봇)이다. roster(전원 명부)가 없으면 구버전 payload 이므로 평면 렌더로
+  //   폴백한다 — 조직도 때문에 봇 카드가 통째로 사라지는 일은 없어야 한다.
+  const idle = (!bots || !bots.length) ? renderBotsIdle(total, today || {}) : '';
+  if (roster && roster.length) {
+    grid.innerHTML = idle + renderBotGroups(bots || [], roster);
+    return;
+  }
+  if (idle) { grid.innerHTML = idle; return; }
+  grid.innerHTML = (bots || []).map(botCard).join('');
+}
+
+// Issue402 ⓑ: 루트 봇 단위 그룹. 활성 봇은 기존 카드 그대로 쓰고(Issue401 아코디언
+//   무회귀), 퇴근 봇은 한 줄 칩으로 남긴다 — 조직 구성원이므로 지우지 않되, 카드로
+//   세우면 홈이 명부가 되어 "지금 무슨 일이 도는가" 가 묻힌다.
+// Issue405: 퇴근 칩. 마지막 실행이 24h 이내면 상대시각을 덧붙여 "방금 퇴근" 과 "오래 전
+//   퇴근" 을 화면에서 가른다 — 이 구분이 없어 사용자가 "나래 지금 도는가" 를 세션에
+//   되물어야 했다. 24h 초과분은 칩을 그대로 두되 **툴팁에 절대시각**을 남긴다:
+//   정보를 버리지 않으면서 홈이 명부로 번지는 것도 막는 절충이다.
+const BOT_RECENT_SEC = 86400;
+function botChip(m) {
+  const label = `${m.state_emoji} ${m.title}`;
+  const ts = Number(m.last_seen) || 0;
+  // 기록이 아예 없는 봇(한 번도 일한 적 없음)은 없는 시각을 지어내지 않는다.
+  if (!ts) return `<span class="bot-chip">${escapeHtml(label)}</span>`;
+  const tip = t('bots.chipLastSeen', { t: new Date(ts * 1000).toLocaleString() });
+  const fresh = (Date.now() / 1000 - ts) < BOT_RECENT_SEC;
+  if (!fresh) return `<span class="bot-chip" title="${escapeHtml(tip)}">${escapeHtml(label)}</span>`;
+  return `<span class="bot-chip bot-chip-recent" title="${escapeHtml(tip)}">${escapeHtml(label)}`
+    + ` <span class="bot-chip-age">${escapeHtml(t('bots.chipCheckout', { t: relTime(ts) }))}</span></span>`;
+}
+
+function renderBotGroups(bots, roster) {
+  const active = new Map(bots.map(b => [b.bot_id, b]));
+  const order = [];
+  const byRoot = new Map();
+  roster.forEach(m => {
+    if (!byRoot.has(m.root)) { byRoot.set(m.root, { root: m.root, head: null, members: [] }); order.push(m.root); }
+    const g = byRoot.get(m.root);
+    g.members.push(m);
+    if (m.is_root) g.head = m;
+  });
+  return order.map(rid => {
+    const g = byRoot.get(rid);
+    // 루트가 명부에서 사라진(끊긴 사슬) 경우에도 그룹은 남긴다 — 소속 봇이 통째로
+    //   화면에서 증발하는 것보다 id 만 뜨는 편이 낫다.
+    const head = g.head || { title: rid, role: '', color: '', icon_uri: '', state_emoji: '⚪' };
+    // 활성 수는 **실제로 카드가 선 수**로 센다 — roster 의 active 플래그로 세면
+    //   "활성 2" 라 써놓고 카드가 1장인 상태가 원리적으로 가능해진다(같은 스냅샷이라
+    //   현실에선 안 갈리지만, 머리말이 본문과 어긋나는 종류의 거짓말은 구조로 막는다).
+    const act = g.members.filter(m => active.has(m.bot_id)).length;
+    const badge = head.icon_uri
+      ? `<img class="bot-icon bot-group-icon" src="${escapeHtml(head.icon_uri)}" alt="${escapeHtml(head.role || '')}">`
+      : `<span class="bot-dot bot-group-icon"${head.color ? ` style="background:${escapeHtml(head.color)}"` : ''}></span>`;
+    const cards = g.members.filter(m => active.has(m.bot_id))
+                           .map(m => botCard(active.get(m.bot_id))).join('');
+    const rest = g.members.filter(m => !active.has(m.bot_id));
+    const chips = rest.length
+      ? `<div class="bot-group-rest" title="${escapeHtml(t('bots.restTitle'))}">`
+        + rest.map(botChip).join('')
+        + `</div>`
+      : '';
+    // ⚠️ 조직도 링크는 **그룹 헤더**에만 둔다. 카드 본체 클릭은 Issue401 아코디언이
+    //   이미 점유했고, 그것을 빼앗으면 상세 펼침이 통째로 죽는다(Issue401 25항 회귀).
+    return `<div class="bot-group" data-group="${escapeHtml(rid)}">`
+      + `<div class="bot-group-head">${badge}`
+      + `<span class="bot-group-name">${escapeHtml(head.title)}</span>`
+      + `<span class="bot-group-count">${escapeHtml(t('bots.groupCount', { a: act, n: g.members.length }))}</span>`
+      + `<a class="bot-map-link" href="/fbot-map?root=${encodeURIComponent(rid)}" target="_blank"`
+      + ` rel="noopener" title="${escapeHtml(t('bots.mapTitle'))}">🗺</a>`
+      + `</div>${cards}${chips}</div>`;
+  }).join('');
+}
+
+function botCard(b) {
+    // 아이콘 부재(파일 없음·상한 초과)는 개체 색 dot 으로 폴백 — 카드가 깨지지 않는다.
+    const color = b.color || '';
+    const badge = b.icon_uri
+      ? `<img class="bot-icon" src="${escapeHtml(b.icon_uri)}" alt="${escapeHtml(b.role)}">`
+      : `<span class="bot-dot"${color ? ` style="background:${escapeHtml(color)}"` : ''}></span>`;
+    const stateTxt = (window.__i18n && window.__i18n['bots.state.' + b.state]) || b.state_label || b.state;
+    const task = b.current_task
+      ? `<div class="bot-task">${escapeHtml(b.current_task)}</div>`
+      : `<div class="bot-task none">${t('bots.noTask')}</div>`;
+    const stale = b.lease_stale ? ` <span class="bot-stale" title="${t('bots.staleTitle')}">${t('bots.stale')}</span>` : '';
+    const prj = (b.prj !== null && b.prj !== undefined) ? `<span class="bot-role">prj${escapeHtml(b.prj)}</span>` : '';
+    const style = color ? ` style="border-left-color:${escapeHtml(color)}"` : '';
+    const isOpen = openBotCards.has(b.bot_id);
+    return `<div class="bot-card${isOpen ? ' open' : ''}"${style} data-bot="${escapeHtml(b.bot_id)}"`
+      + ` role="button" tabindex="0" aria-expanded="${isOpen}" title="${escapeHtml(t('bots.toggleTitle'))}">`
+      + `${badge}<div class="bot-body">`
+      + `<div class="bot-name">${escapeHtml(b.title)}<span class="bot-role">${escapeHtml(b.role)}</span>${prj}</div>`
+      + `<div class="bot-state">${escapeHtml(b.state_emoji)} ${escapeHtml(stateTxt)}${stale}</div>${task}`
+      + botDetail(b)
+      + `</div></div>`;
+}
+
+// Issue401(prj3#Issue444): 펼침 상세 — payload 가 이미 들고 있는 값만 쓴다(서버 왕복 없음).
+function botDetail(b) {
+  const CAREER = { probation: 'career.probation', active: 'career.active',
+                   leave: 'career.leave', terminated: 'career.terminated' };
+  const rows = [[t('bots.d.id'), b.bot_id]];
+  if (b.career) rows.push([t('bots.d.career'), t(CAREER[b.career] ? 'bots.' + CAREER[b.career] : b.career)]);
+  if (b.parent_bot_id) rows.push([t('bots.d.parent'), b.parent_bot_id]);
+  // lease 는 "얼마나 남았나 / 얼마나 지났나" 가 알고 싶은 것이지 epoch 이 아니다.
+  if (b.lease_expires) {
+    const d = Math.round((b.lease_expires * 1000 - Date.now()) / 60000);
+    rows.push([t('bots.d.lease'), d >= 0 ? t('bots.leaseLeft', { m: d })
+                                         : t('bots.leaseGone', { m: -d })]);
+  }
+  // 헤드의 .bot-task 는 2줄 clamp 다. 펼침에서 clamp 가 풀리므로 전문을 여기 다시
+  //   싣지 않는다 — 같은 문자열을 두 번 보여주면 상세가 아니라 중복이다.
+  return `<div class="bot-detail">` + rows.map(([k, v]) =>
+    `${escapeHtml(k)}: ${escapeHtml(v)}`).join('\\n') + `</div>`;
+}
+
+// 카드 클릭·키보드 → 펼침 토글. 이벤트 위임이라 재렌더된 카드에도 그대로 붙는다.
+//   유휴 요약 줄(.bot-idle)·오류 줄(.bot-err)에는 data-bot 이 없어 자동으로 제외된다.
+(function bindBotToggle() {
+  const grid = document.getElementById('bots-grid');
+  if (!grid) return;
+  const toggle = (card) => {
+    const id = card.dataset.bot;
+    if (openBotCards.has(id)) { openBotCards.delete(id); card.classList.remove('open'); }
+    else { openBotCards.add(id); card.classList.add('open'); }
+    card.setAttribute('aria-expanded', String(openBotCards.has(id)));
+  };
+  grid.addEventListener('click', (e) => {
+    const card = e.target.closest('.bot-card[data-bot]');
+    if (card) toggle(card);
+  });
+  grid.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const card = e.target.closest('.bot-card[data-bot]');
+    if (!card) return;
+    e.preventDefault();   // Space 로 페이지가 스크롤되지 않게
+    toggle(card);
+  });
+})();
+
 function renderHeadline(feed) {
   const el = document.getElementById('hub-headline');
   if (!feed || !feed.length) { el.textContent = ''; return; }
@@ -12401,6 +13476,7 @@ main#content th { background: var(--code-bg); }
 .widget.timer .timer-mode { font-size: 0.8em; color: var(--muted); }
 .widget.badge { display: flex; align-items: center; gap: 0.6rem; }
 .widget.badge .badge-dot { width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0; background: var(--muted); }
+.widget.badge .badge-icon { width: 18px; height: 18px; border-radius: 50%; flex-shrink: 0; }  /* prj3#Issue438: icon 필드 렌더 */
 .widget.badge .badge-label { font-weight: 500; }
 .widget.badge.ok .badge-dot { background: #2a2; }
 .widget.badge.warn .badge-dot { background: #d80; }

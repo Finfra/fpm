@@ -170,6 +170,7 @@ curl -s http://127.0.0.1:9876/healthz
 
 * 설계 SSOT: `~/_git/___pm/_doc_arch/hub_htm.md`
 * 서버 본체: `${CLAUDE_PLUGIN_ROOT}/services/hub/server.py`
+* ⚠️ **fbot 봇 카드는 env 상속에 의존한다** (prj3#Issue450) — 홈의 봇 섹션은 `AOA_MEMORY_DIR` 이 가리키는 `registry.db` 를 읽는다. 기본값은 제품 중립 `~/.claude/data/aoa` 이므로, 데이터가 다른 곳에 있는 설치에서는 **그 env 를 가진 셸에서 기동**해야 한다(로그인 셸의 `~/.zshenv` 로 충분). env 없이 띄우면 봇 섹션이 **조용히 빈다** — 에러가 아니라 미표시다
 * render 커맨드: `fpm-hub.md` (a모드)
 * dashboard agent: `~/.claude/agents/fpm-board.md`
 * 폐기 별칭: `fpm-board-server.md`

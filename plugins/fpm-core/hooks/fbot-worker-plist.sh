@@ -47,10 +47,15 @@ set -euo pipefail
 
 # --- 공통 상수 (셸에서 전개 → 절대경로) --------------------------------------
 
-AOA_HOME="${HOME}/_git/___common/mcp/aoa-memory"
+die() { printf 'fbot-worker-plist: %s\n' "$*" >&2; exit 1; }
 
-# 데이터 경로 계약 (fbot-arch §소유·배포) — 현 위치 유지·데이터 무이동
-AOA_MEMORY_DIR="${HOME}/_git/___common/data/aoa"
+# 경로 계약 (Issue450) — env 가 정식 설정. 미설정 시 제품 중립 기본(prj5 미클론 머신 대응).
+#   생성 시점의 env 가 plist 에 박힌다 — 설치 환경의 실경로가 그대로 고정된다.
+AOA_HOME="${AOA_HOME:-${HOME}/.claude/mcp/aoa-memory}"
+
+# 데이터 경로 계약 (fbot-arch §소유·배포 · Issue450) — 데이터는 옮기지 않는다.
+#   env 가 있으면 그 위치를, 없으면 제품 중립 기본을 plist 에 박는다.
+AOA_MEMORY_DIR="${AOA_MEMORY_DIR:-${HOME}/.claude/data/aoa}"
 
 # 로그 — repo 밖. /tmp 는 재부팅 시 소실되어 fail-loud 근거가 사라지므로 쓰지 않는다
 LOG_DIR="${HOME}/Library/Logs/fbot"
@@ -60,11 +65,33 @@ LAUNCH_AGENTS="${HOME}/Library/LaunchAgents"
 # launchd 가 부르는 단일 진입점 — python 경로·env·로그 타임스탬프·회전을 래퍼가 소유한다
 TICK="${HOME}/.claude/hooks/fbot-tick.sh"
 
-PATH_ENV="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+# python3 해석 (Issue451 ①) — **생성 시점에 절대경로로 확정**해 plist 에 박는다.
+#   launchd 는 셸 프로파일도 PATH 관례도 주지 않는다. 래퍼(fbot-tick.sh)에 탐색 로직이
+#   있어도 plist 가 주는 PATH 에 python3 가 없으면 그 탐색이 헛돈다 — 그래서 여기서
+#   먼저 풀어 FBOT_PYTHON 으로 넘긴다(래퍼는 ①에서 즉시 끝난다).
+#   ⚠️ 해석 실패는 fail-loud. python3 없는 머신에 plist 를 깔면 30분마다 조용히 죽는다.
+resolve_python() {
+    local c
+    if [[ -n "${FBOT_PYTHON:-}" ]]; then printf '%s' "$FBOT_PYTHON"; return 0; fi
+    c="$(command -v python3 2>/dev/null || true)"
+    [[ -n "$c" ]] && { printf '%s' "$c"; return 0; }
+    for c in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+        [[ -x "$c" ]] && { printf '%s' "$c"; return 0; }
+    done
+    return 1
+}
+PY_BIN="$(resolve_python)" || die "python3 미발견 — FBOT_PYTHON 을 절대경로로 지정하고 재실행하라"
+
+# PATH — 해석된 python3 의 디렉토리를 맨 앞에 둔다(관례 경로만 나열하면 pyenv·conda 등
+#   비관례 설치를 놓친다). 뒤쪽 관례 목록은 python 외 보조 명령(date·tmux 등)용 폴백.
+PATH_BASE="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+PY_DIR="$(dirname "$PY_BIN")"
+case ":${PATH_BASE}:" in
+    *":${PY_DIR}:"*) PATH_ENV="$PATH_BASE" ;;            # 이미 관례 목록 안 — 중복 금지
+    *)               PATH_ENV="${PY_DIR}:${PATH_BASE}" ;;
+esac
 
 UNITS=(worker ingest)
-
-die() { printf 'fbot-worker-plist: %s\n' "$*" >&2; exit 1; }
 
 # --- 유닛 정의 ---------------------------------------------------------------
 # 유닛 하나를 고르면 아래 전역이 채워진다. 유닛별 차이를 여기 한 곳에만 둔다.
@@ -119,6 +146,8 @@ ${argxml}	</array>
 	<dict>
 		<key>AOA_MEMORY_DIR</key>
 		<string>${AOA_MEMORY_DIR}</string>
+		<key>FBOT_PYTHON</key>
+		<string>${PY_BIN}</string>
 		<key>PATH</key>
 		<string>${PATH_ENV}</string>
 	</dict>

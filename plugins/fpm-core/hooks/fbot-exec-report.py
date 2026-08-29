@@ -64,11 +64,12 @@ from datetime import datetime
 # ── 경로 ─────────────────────────────────────────────────────────────────────
 
 HOME = os.path.expanduser("~")
-AOA_DIR = os.environ.get("AOA_MEMORY_DIR") or os.path.join(HOME, "_git", "___common", "data", "aoa")
+# 경로 계약 (Issue450) — env 가 정식 설정. 미설정 시 제품 중립 기본(prj5 미클론 머신 대응).
+AOA_DIR = os.environ.get("AOA_MEMORY_DIR") or os.path.join(HOME, ".claude", "data", "aoa")
 REGISTRY_DB = os.path.join(AOA_DIR, "registry.db")
 POLICY_YML = os.path.join(AOA_DIR, "policy.yml")
 MQ_DIR = os.environ.get("AOA_MQ_DIR") or os.path.join(AOA_DIR, "mq")
-MQ_DIGEST_SH = os.path.join(HOME, "_git", "___common", ".claude", "agents", "aoa-mq-digest.sh")
+MQ_DIGEST_SH = os.path.join(HOME, ".claude", "mcp", "aoa-mq", "aoa-mq-digest.sh")
 FPM_SANITIZE_SH = os.path.join(HOME, "_git", "___pm", "scripts", "fpm-sanitize.sh")
 HUB_SCOPE_SH = os.path.join(HOME, ".claude", "hooks", "hub-scope.sh")
 SLEEP_STATE_SH = os.path.join(HOME, ".claude", "hooks", "sleep-state.sh")

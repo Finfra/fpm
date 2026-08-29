@@ -65,7 +65,19 @@ TRANSITION_REASON = {
     ("checkout", "checkin"): "다음 출근(세션 기동)",
 }
 
-DEFAULT_AOA_DIR = os.path.join(os.path.expanduser("~"), "_git", "___common", "data", "aoa")
+# 결속 컬럼 (Issue448) — "이 pane·이 세션의 봇은 누구인가" 의 데이터 원천.
+#   ⚠️ NULL 은 "미등록" 이 아니라 **"pane 기반 판정 불가"** 다. Agent(서브에이전트) 실행
+#   형태는 pane 이 원래 없다. 이 구분이 무너지면 소비처(fpm-do 게이트)가 fail-open 에서
+#   fail-wrong 으로 바뀐다 — Issue445 명세 ⚠️ 항 참조.
+#   last_task 는 Issue441 — 출근 시 current_task 를 비우되 "직전에 뭘 했나" 는 남긴다.
+BIND_COLUMNS = (
+    ("tmux_target", "TEXT"),   # 'session:window.pane' — tmux 실행 형태에서만 채워진다
+    ("session_id", "TEXT"),    # claude 세션 id — Agent 형태 포함 모든 실행 형태에서 취득 가능
+    ("last_task", "TEXT"),     # 퇴근 시 current_task 를 옮겨 담는다(Issue441)
+)
+
+# 경로 계약 (Issue450) — env 가 정식 설정. 미설정 시 제품 중립 기본(prj5 미클론 머신 대응).
+DEFAULT_AOA_DIR = os.path.join(os.path.expanduser("~"), ".claude", "data", "aoa")
 DEFAULT_LEASE_TTL = 300  # policy.yml 부재 시에만 쓰는 최후 폴백. 정상 경로는 policy 를 읽는다.
 
 
@@ -112,7 +124,21 @@ def connect() -> sqlite3.Connection:
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA busy_timeout=5000")
     con.execute("PRAGMA foreign_keys=ON")
+    ensure_schema(con)
     return con
+
+
+def ensure_schema(con: sqlite3.Connection) -> None:
+    """결속 컬럼 마이그레이션 (Issue448) — 멱등.
+
+    STRICT 테이블이라 임의 DDL 은 못 쓰지만 ``ALTER TABLE ... ADD COLUMN`` 은 허용된다
+    (기본값 NULL · STRICT 허용 타입). 테이블 재작성이 아니므로 **기존 행이 그대로 보존**된다.
+    prj5 소유 DDL 을 건드리지 않고 prj3 helper 가 스스로 보정하는 형태다.
+    """
+    have = {r[1] for r in con.execute("PRAGMA table_info(bot)").fetchall()}
+    for name, typ in BIND_COLUMNS:
+        if name not in have:
+            con.execute(f"ALTER TABLE bot ADD COLUMN {name} {typ}")
 
 
 def fetch_bot(con: sqlite3.Connection, bot_id: str) -> sqlite3.Row:
@@ -185,8 +211,9 @@ def cmd_register(args) -> int:
             )
         con.execute(
             "INSERT INTO bot (bot_id, title, role, state, career, icon, color, prj,"
-            " current_task, parent_bot_id, lease_expires, created_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            " current_task, parent_bot_id, lease_expires, created_at,"
+            " tmux_target, session_id)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 args.bot_id, args.title, args.role,
                 "checkin",                       # 신규 봇은 출근중으로 시작한다(계약 진입 조건)
@@ -194,6 +221,9 @@ def cmd_register(args) -> int:
                 None, args.parent,
                 now + lease_ttl_secs(),
                 now,
+                # Issue448 — 스폰 시점에 알 수 있으면 기록, 모르면 NULL(= 판정 불가).
+                #   Agent 형태는 여기서 항상 NULL 이고 그것이 정상이다.
+                args.tmux_target, args.session_id,
             ),
         )
         con.execute("COMMIT")
@@ -219,6 +249,17 @@ def cmd_transition(args) -> int:
                 "UPDATE bot SET state = ?, lease_expires = ? WHERE bot_id = ?",
                 (to, now + ttl, args.bot_id),
             )
+            # Issue441 — 낡은 작업을 "현재 작업" 으로 보여주는 것만은 금지한다.
+            #   퇴근에서 current_task 를 비우고 값은 last_task 로 옮긴다(후보 ⓒ).
+            #   출근(checkin)에서도 한 번 더 비운다 — 퇴근 경로를 안 거친 봇(reap 등) 방어.
+            if to == "checkout":
+                con.execute(
+                    "UPDATE bot SET last_task = COALESCE(current_task, last_task),"
+                    " current_task = NULL WHERE bot_id = ?", (args.bot_id,))
+            elif to == "checkin":
+                con.execute(
+                    "UPDATE bot SET last_task = COALESCE(current_task, last_task),"
+                    " current_task = NULL WHERE bot_id = ?", (args.bot_id,))
         except Exception:
             con.execute("ROLLBACK")
             raise
@@ -237,28 +278,54 @@ def cmd_transition(args) -> int:
 
 
 def cmd_heartbeat(args) -> int:
-    """lease_expires = now + TTL 갱신. TTL 은 policy.yml 이 SSOT."""
+    """lease_expires = now + TTL 갱신. TTL 은 policy.yml 이 SSOT.
+
+    대상 지정은 둘 중 하나다:
+
+    * ``--bot-id``     — tmux 위임 경로. ``FBOT_ID`` env 로 자기 봇을 아는 형태.
+    * ``--session-id`` — Agent 형태. **그 세션에 결속된 생존 봇 전부**를 갱신한다.
+
+    ⚠️ 왜 세션 단위로 "전부" 인가 (Issue449 실측) — Agent 의 ``session_id`` 는 메인 세션과
+    **같다**. 즉 session→bot 은 원리적으로 1:N 이며, 하나를 고르는 순간 그것이 곧 오귀속이다.
+    heartbeat 는 신원 귀속이 아니라 **생존 신호**이므로, 고르지 않고 결속된 집합 전체를
+    갱신하는 것이 정직하다. 신원이 필요한 자리(``whois``)는 반대로 모호하면 ``unknown``
+    을 낸다 — 같은 사실을 용도에 맞게 반대 방향으로 처리하는 것이다.
+    """
+    if not args.bot_id and not args.session_id:
+        raise FbotError("--bot-id 또는 --session-id 중 하나는 필요하다")
     ttl = lease_ttl_secs()
     now = int(time.time())
     con = connect()
     try:
         con.execute("BEGIN IMMEDIATE")
         try:
-            row = fetch_bot(con, args.bot_id)
-            if row["state"] == "checkout":
-                raise FbotError(
-                    f"퇴근한 봇에는 heartbeat 를 걸 수 없다: {args.bot_id} "
-                    "— transition --to checkin 으로 재출근이 먼저다"
+            if args.bot_id:
+                row = fetch_bot(con, args.bot_id)
+                if row["state"] == "checkout":
+                    raise FbotError(
+                        f"퇴근한 봇에는 heartbeat 를 걸 수 없다: {args.bot_id} "
+                        "— transition --to checkin 으로 재출근이 먼저다"
+                    )
+                targets = [args.bot_id]
+            else:
+                # 퇴근한 봇은 제외한다 — 세션에 결속 기록만 남은 과거 봇을 되살리지 않는다.
+                targets = [
+                    r["bot_id"] for r in con.execute(
+                        "SELECT bot_id FROM bot WHERE session_id = ? AND state != 'checkout'",
+                        (args.session_id,),
+                    ).fetchall()
+                ]
+            for bid in targets:
+                con.execute(
+                    "UPDATE bot SET lease_expires = ? WHERE bot_id = ?", (now + ttl, bid)
                 )
-            con.execute(
-                "UPDATE bot SET lease_expires = ? WHERE bot_id = ?", (now + ttl, args.bot_id)
-            )
         except Exception:
             con.execute("ROLLBACK")
             raise
         con.execute("COMMIT")
         emit({
             "ok": True, "action": "heartbeat", "bot_id": args.bot_id,
+            "session_id": args.session_id, "renewed": targets,
             "now": now, "lease_ttl_secs": ttl, "lease_expires": now + ttl,
         })
     finally:
@@ -293,7 +360,9 @@ def cmd_reap(args) -> int:
                     # 강제 퇴근은 전 상태에서 허용되는 전이다(계약 §상태 기계 퇴근 진입 조건)
                     validate_transition(e["state"], "checkout")
                     con.execute(
-                        "UPDATE bot SET state = 'checkout' WHERE bot_id = ?", (e["bot_id"],)
+                        "UPDATE bot SET state = 'checkout',"
+                        " last_task = COALESCE(current_task, last_task), current_task = NULL"
+                        " WHERE bot_id = ?", (e["bot_id"],)
                     )
                     reaped.append(e["bot_id"])
             except Exception:
@@ -363,6 +432,129 @@ def cmd_set_task(args) -> int:
     return 0
 
 
+def sid_marker_path(session_id: str) -> str:
+    """세션 id → bot_id 마커 파일 경로.
+
+    heartbeat 훅의 **무비용 게이트**다 — "이 세션에 봇이 하나라도 결속돼 있는가" 를 파일
+    존재만으로 답한다. DB 를 매 도구 호출마다 열 수는 없다(hook-rules 규칙3).
+
+    ⚠️ Issue449 — 내용(bot_id)은 **권위가 아니다**. Agent 는 메인 세션의 session_id 를
+    공유하므로 한 세션에 봇이 여럿 결속될 수 있고, 이 파일은 마지막 1건만 담는다.
+    그래서 heartbeat 훅은 이 값을 쓰지 않고 `heartbeat --session-id` 로 넘긴다 —
+    갱신 대상 판정은 DB 가 단일 지점이다. 내용은 진단용으로만 남긴다.
+    """
+    return os.path.join(
+        os.path.expanduser("~"), ".claude", ".fbot-handoff", f"sid-{session_id}.id"
+    )
+
+
+def write_sid_marker(session_id: str, bot_id: str) -> None:
+    if not session_id:
+        return
+    path = sid_marker_path(session_id)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(bot_id + "\n")
+    except OSError:
+        pass  # 마커는 캐시다 — 실패해도 DB 결속은 유효하다
+
+
+def cmd_bind(args) -> int:
+    """실행 형태(pane·세션)를 봇 레코드에 결속한다 (Issue448 ②).
+
+    ⚠️ 값이 없으면 **NULL 을 유지**하고 오류를 내지 않는다. Agent(서브에이전트) 실행
+    형태는 tmux pane 이 원래 없기 때문이다. NULL 은 "미등록" 이 아니라 "pane 기반
+    판정 불가" 다 — 소비처는 이 둘을 반드시 구분해야 한다.
+    """
+    con = connect()
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        try:
+            fetch_bot(con, args.bot_id)          # 미등록이면 fail-loud
+            sets, params = [], []
+            if args.tmux_target is not None:
+                sets.append("tmux_target = ?"); params.append(args.tmux_target or None)
+            if args.session_id is not None:
+                sets.append("session_id = ?"); params.append(args.session_id or None)
+            if sets:
+                params.append(args.bot_id)
+                con.execute(f"UPDATE bot SET {', '.join(sets)} WHERE bot_id = ?", params)
+        except Exception:
+            con.execute("ROLLBACK")
+            raise
+        con.execute("COMMIT")
+        if args.session_id:
+            write_sid_marker(args.session_id, args.bot_id)
+        emit({"ok": True, "action": "bind", "bot": row_to_dict(fetch_bot(con, args.bot_id))})
+    finally:
+        con.close()
+    return 0
+
+
+def cmd_whois(args) -> int:
+    """역조회 — "이 pane / 이 세션의 봇은 누구인가" (Issue448 ③).
+
+    Issue445 의 3값 판정이 이것을 소비한다. 반환 verdict 는 **2값이 아니라 3값**이다:
+
+    * ``bot``     — 결속된 등록 봇이 있고 퇴근 상태가 아니다
+    * ``retired`` — 결속된 봇이 있으나 이미 퇴근했다
+    * ``unknown`` — 결속 기록이 없다. **"봇이 아니다" 가 아니라 "모른다"** 이다.
+                    Agent 형태 봇은 pane 이 없어 pane 조회로는 항상 unknown 이 된다.
+    """
+    if not args.pane and not args.session_id:
+        raise FbotError("--pane 또는 --session-id 중 하나는 필요하다")
+    con = connect()
+    try:
+        row = None
+        if args.pane:
+            row = con.execute(
+                "SELECT * FROM bot WHERE tmux_target = ? ORDER BY created_at DESC LIMIT 1",
+                (args.pane,),
+            ).fetchone()
+        if row is None and args.session_id:
+            # ⚠️ Issue449 — session_id 는 **per-agent 키가 아니다**. Agent 는 메인 세션의
+            #   session_id 를 그대로 쓰므로 한 세션에 봇이 여럿 결속될 수 있다. 종전 구현은
+            #   `ORDER BY created_at DESC LIMIT 1` 로 **조용히 하나를 골랐다** — 그것이 오귀속이다.
+            #   결속이 2건 이상이면 고르지 않고 `unknown`(= 게이트 경유)을 낸다. fail-closed.
+            rows = con.execute(
+                "SELECT * FROM bot WHERE session_id = ? AND state != 'checkout'"
+                " ORDER BY created_at DESC",
+                (args.session_id,),
+            ).fetchall()
+            if len(rows) > 1:
+                emit({
+                    "ok": True, "action": "whois", "verdict": "unknown", "bot": None,
+                    "candidates": [r["bot_id"] for r in rows],
+                    "note": "세션 중복 결속 — Agent 는 메인 세션 id 를 공유한다(Issue449). "
+                            "세션만으로는 신원을 특정할 수 없어 고르지 않는다",
+                })
+                return 0
+            if rows:
+                row = rows[0]
+            else:
+                # 생존 봇이 없으면 퇴근분까지 본다 — 'retired' 를 낼 수 있어야 한다.
+                row = con.execute(
+                    "SELECT * FROM bot WHERE session_id = ? ORDER BY created_at DESC LIMIT 1",
+                    (args.session_id,),
+                ).fetchone()
+        if row is None:
+            emit({
+                "ok": True, "action": "whois", "verdict": "unknown", "bot": None,
+                "note": "결속 기록 없음 — '봇이 아님' 이 아니라 'pane/세션 기반 판정 불가'",
+            })
+            return 0
+        d = row_to_dict(row)
+        emit({
+            "ok": True, "action": "whois",
+            "verdict": "retired" if d["state"] == "checkout" else "bot",
+            "bot": d,
+        })
+    finally:
+        con.close()
+    return 0
+
+
 # ── CLI ─────────────────────────────────────────────────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
@@ -381,6 +573,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--career", default="probation", help=f"{'|'.join(CAREERS)} (기본 probation)")
     sp.add_argument("--icon", default=None)
     sp.add_argument("--color", default=None)
+    sp.add_argument("--tmux-target", default=None, help="tmux 'session:window.pane' (없으면 NULL)")
+    sp.add_argument("--session-id", default=None, help="claude 세션 id (없으면 NULL)")
     sp.set_defaults(func=cmd_register)
 
     sp = sub.add_parser("transition", help="전이 규칙 검증 후 상태 변경(+lease 갱신)")
@@ -389,7 +583,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_transition)
 
     sp = sub.add_parser("heartbeat", help="lease_expires = now + TTL 갱신")
-    sp.add_argument("--bot-id", required=True)
+    sp.add_argument("--bot-id", default=None)
+    sp.add_argument("--session-id", default=None,
+                    help="그 세션에 결속된 생존 봇 전부를 갱신 — Agent 형태(Issue449)")
     sp.set_defaults(func=cmd_heartbeat)
 
     sp = sub.add_parser("reap", help="lease 만료 봇 스캔 → 강제 퇴근(기본 dry-run)")
@@ -404,6 +600,17 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--state", default=None)
     sp.add_argument("--role", default=None)
     sp.set_defaults(func=cmd_list)
+
+    sp = sub.add_parser("bind", help="실행 형태(pane·세션) 결속 기록 — Issue448")
+    sp.add_argument("--bot-id", required=True)
+    sp.add_argument("--tmux-target", default=None, help="빈 문자열이면 NULL 로 지운다")
+    sp.add_argument("--session-id", default=None, help="빈 문자열이면 NULL 로 지운다")
+    sp.set_defaults(func=cmd_bind)
+
+    sp = sub.add_parser("whois", help="pane·세션 → 봇 역조회(3값 verdict) — Issue448")
+    sp.add_argument("--pane", default=None, help="tmux 'session:window.pane'")
+    sp.add_argument("--session-id", default=None)
+    sp.set_defaults(func=cmd_whois)
 
     sp = sub.add_parser("set-task", help="current_task 갱신")
     sp.add_argument("--bot-id", required=True)

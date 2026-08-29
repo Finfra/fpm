@@ -10,10 +10,15 @@
 #   6. [기본 ON] fpm-core Claude Code 플러그인(SCAR) 을 prj20 마켓 경유 설치 (Issue181)
 #      claude CLI 부재 시 경고만 하고 건너뜀(graceful skip — 셸 설치는 정상 완료, exit 0).
 #      --no-scar 로 옵트아웃 가능.
+#   7. [기본 ON] MCP 서버 배선 (prj3#Issue451 ③) — <repo>/mcp/{aoa-mq,aoa-memory} 를 claude CLI
+#      user 스코프에 등록 + aoa 데이터 루트 부트스트랩(sh/fbot-bootstrap.sh).
+#      ⚠️ 이미 같은 이름이 등록돼 있으면 **건드리지 않는다** — 사용자 설정을 덮지 않는 것이 규약.
+#      --no-mcp 로 옵트아웃 가능.
 #
-# 사용: bash sh/install.sh              (또는 ./sh/install.sh) — 셸 + SCAR 설치 (기본)
+# 사용: bash sh/install.sh              (또는 ./sh/install.sh) — 셸 + SCAR + MCP 설치 (기본)
 #       bash sh/install.sh --clean     클린 재설치 — sh/uninstall.sh 로 기존 흔적 백업·제거 후 설치
 #       bash sh/install.sh --no-scar   SCAR 설치 생략 (셸 부트스트랩만)
+#       bash sh/install.sh --no-mcp    MCP 배선·데이터 부트스트랩 생략
 #       bash sh/install.sh --local [경로]  폐쇄망(air-gapped): GitHub 대신 미리 받아둔
 #                                          f-claude-plugins 로컬 사본을 마켓 소스로 사용 (Issue186)
 #       bash sh/install.sh --with-scar [하위호환 no-op] SCAR 기본 ON 이므로 불필요
@@ -120,15 +125,71 @@ install_scar() {
 
 # ── 0. 인자 파싱 ──────────────────────────────────────────────
 CLEAN=0
+# ── MCP 서버 배선 (prj3#Issue451 ③) — 멱등·비파괴 ───────────────
+# 왜 필요한가 (2026-08-26 fg1 실측): 저장소는 mcp/aoa-mq·mcp/aoa-memory 를 **배송하는데**
+#   어디에도 **등록하지 않았다**. `.mcp.json`·`mcpServers` 키가 설치 경로에 0건이라
+#   소비자는 서버 코드를 받고도 도구를 한 개도 못 본다. 배송 ≠ 배선이다.
+#
+# 규약 3가지
+#   1. 등록은 `claude mcp add --scope user` 로만 한다 — ~/.claude.json 을 직접 편집하면
+#      다른 서버 설정을 통째로 날릴 위험이 있다. CLI 가 병합 책임을 진다.
+#   2. **같은 이름이 이미 있으면 손대지 않는다.** 사용자가 다른 경로·다른 인터프리터로
+#      맞춰 둔 설정을 설치 스크립트가 되돌리는 일은 없어야 한다.
+#   3. claude CLI·python3 부재는 benign skip (SCAR 와 동일 정책 — 셸 설치는 정상 완료).
+install_mcp() {
+    local mcp_dir="$REPO_DIR/mcp" py name script
+
+    if [[ ! -d "$mcp_dir" ]]; then
+        warn "mcp/ 디렉토리 없음: $mcp_dir — MCP 배선 건너뜀"
+        MCP_SKIPPED=1; return 0
+    fi
+    if ! command -v claude >/dev/null 2>&1; then
+        warn "ℹ️  'claude' CLI 미발견 → MCP 배선 건너뜀 (Claude Code 설치 후 재실행)"
+        MCP_SKIPPED=1; return 0
+    fi
+    py="${FBOT_PYTHON:-$(command -v python3 2>/dev/null || true)}"
+    if [[ -z "$py" ]]; then
+        warn "ℹ️  python3 미발견 → MCP 배선 건너뜀 (aoa 서버는 python3 로 기동한다)"
+        MCP_SKIPPED=1; return 0
+    fi
+
+    for name in aoa-mq aoa-memory; do
+        script="$mcp_dir/$name/server.py"
+        if [[ ! -f "$script" ]]; then
+            warn "$name: server.py 부재($script) — 건너뜀"
+            continue
+        fi
+        if claude mcp get "$name" >/dev/null 2>&1; then
+            info "$name: 이미 등록됨 — 보존(덮어쓰지 않음)"
+            continue
+        fi
+        if claude mcp add --scope user "$name" -- "$py" "$script" >/dev/null 2>&1; then
+            info "$name: user 스코프 등록 ($py $script)"
+        else
+            warn "$name: 등록 실패 — 수동 등록: claude mcp add --scope user $name -- $py $script"
+        fi
+    done
+
+    # 데이터 루트 부트스트랩 — 등록만으로는 fbot 진입점이 여전히 죽는다(registry.db·policy.yml).
+    if [[ -f "$REPO_DIR/sh/fbot-bootstrap.sh" ]]; then
+        if ! bash "$REPO_DIR/sh/fbot-bootstrap.sh"; then
+            warn "aoa 데이터 부트스트랩 실패 — 수동 실행: bash sh/fbot-bootstrap.sh"
+        fi
+    fi
+}
+
 WITH_SCAR=1          # 기본 ON (Issue181 후속 — SCAR 가 fpm 주목적). --no-scar 로 끔
 SCAR_FAILED=0
 SCAR_SKIPPED=0
+WITH_MCP=1           # 기본 ON (prj3#Issue451 ③ — 배선 없으면 fbot 진입점이 전부 죽는다). --no-mcp 로 끔
+MCP_SKIPPED=0
 LOCAL_MKT=""         # --local <경로> 지정 시 채워짐. "AUTO" = 인자 없이 --local (관례 후보 탐색)
 # 값 동반 플래그(--local) 지원 위해 while+shift 사용 (기존 for-arg 로는 다음 인자 소비 불가).
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --clean) CLEAN=1 ;;
         --no-scar) WITH_SCAR=0 ;;
+        --no-mcp) WITH_MCP=0 ;;
         --with-scar) : ;;   # 하위호환 no-op (SCAR 기본 ON 이므로 불필요)
         --local=*) LOCAL_MKT="${1#--local=}" ;;
         --local)
@@ -139,9 +200,10 @@ while [[ $# -gt 0 ]]; do
                 LOCAL_MKT="AUTO"
             fi ;;
         -h|--help)
-            echo "usage: sh/install.sh [--clean] [--no-scar] [--local [경로]]"
+            echo "usage: sh/install.sh [--clean] [--no-scar] [--no-mcp] [--local [경로]]"
             echo "  --clean       : sh/uninstall.sh 로 기존 fpm 흔적 백업·제거 후 설치 (클린 재설치)"
             echo "  --no-scar     : fpm-core 플러그인(SCAR) 설치 생략 — 셸 부트스트랩만"
+            echo "  --no-mcp      : MCP 서버 배선(aoa-mq·aoa-memory)·데이터 부트스트랩 생략"
             echo "  --local [경로] : 폐쇄망(air-gapped) — GitHub 대신 미리 받아둔 f-claude-plugins"
             echo "                  로컬 사본을 마켓 소스로 사용. 경로 생략 시 관례 위치 자동 탐색."
             echo "  --with-scar   : [하위호환 no-op] SCAR 는 기본 설치됨"
@@ -295,6 +357,9 @@ cat <<EOF
 fpm-core 플러그인(SCAR — hub/dashboard 등): 기본 설치됨
   (생략하려면 bash sh/install.sh --no-scar)
 
+MCP 서버(aoa-mq·aoa-memory) + aoa 데이터 루트: 기본 배선됨
+  (생략하려면 bash sh/install.sh --no-mcp / 단독 실행: bash sh/fbot-bootstrap.sh)
+
 제거:  bash sh/uninstall.sh        (셸 흔적 백업 후 제거)
 클린 재설치:  bash sh/install.sh --clean
 ────────────────────────────────────────────
@@ -312,5 +377,15 @@ if [[ "$WITH_SCAR" -eq 1 ]]; then
     elif [[ "$SCAR_SKIPPED" -eq 1 ]]; then
         # claude CLI 부재 — benign skip, exit 0 유지
         info "SCAR 는 건너뛰었으나 셸 설치는 정상 완료"
+    fi
+fi
+
+# ── 7. MCP 서버 배선 + aoa 데이터 부트스트랩 (기본 ON, --no-mcp 로 생략) ──
+if [[ "$WITH_MCP" -eq 1 ]]; then
+    echo ""
+    info "MCP 서버 배선 시작 (생략하려면 --no-mcp)"
+    install_mcp
+    if [[ "$MCP_SKIPPED" -eq 1 ]]; then
+        info "MCP 배선은 건너뛰었으나 셸 설치는 정상 완료"
     fi
 fi

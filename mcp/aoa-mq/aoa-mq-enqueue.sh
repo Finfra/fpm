@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
-# aoa-mq-enqueue.sh — aoa-mq 큐 메시지 등록 helper (prj6 Issue10 / prj3 Issue192)
+# aoa-mq-enqueue.sh — aoa-mq 큐 메시지 등록 helper (prj5 prj3#Issue10 / prj3 prj3#Issue192)
 #
-# ⚠️ 글로벌 SCAR 변경 가드 (Issue46): 본 helper 는 글로벌 wrapper(/mq-send, prj3)가 호출하는 등록 본체.
-#   cwd ≠ ~/_git/___common 이면 즉시 수정 금지 → prj6 Issue.md 이슈 등록 후 처리.
-#   설계 SSOT: ~/_git/___common/_doc_arch/aoa-mq.md. 규약: .claude/agents/aoa-mq.md
+# ⚠️ 글로벌 SCAR 변경 가드 (prj3#Issue46): 본 helper 는 모든 프로젝트가 공유(prj3 소유 — prj3#Issue436_3 이관).
+#   cwd ≠ ~/.claude 면 즉시 수정 금지 → ~/.claude/Issue.md 이슈 등록 후 처리.
+#   절차: ~/.claude/rules/global-scar-change-rules.md
+#   설계 SSOT: ~/.claude/_doc_arch/aoa-mq.md. 규약: ~/.claude/mcp/aoa-mq/aoa-mq.md
 #
 # 사용법:
 #   aoa-mq-enqueue.sh --message <msg> --due <ISO8601|+Nd>    [--source <name>]   # scheduled
 #   aoa-mq-enqueue.sh --message <msg> --watch <topic>        [--source <name>]   # watch (board_status)
-#   aoa-mq-enqueue.sh --message <msg> --watch-pane <tmux_target> [--source <name>] # watch (pane_regex, Issue14)
-#   aoa-mq-enqueue.sh --message <msg> --alert                [--source <name>]   # alert (즉시 done_unacked, Issue13)
-#   aoa-mq-enqueue.sh --reschedule <id> --due <ISO8601|+Nd|YYYY-MM-DD>           # 재스케줄 (Issue63)
-#   공통 옵션: --on-response '<json>'  — 응답 후속 행동 선언 (handoff passthrough, Issue12)
+#   aoa-mq-enqueue.sh --message <msg> --watch-pane <tmux_target> [--source <name>] # watch (pane_regex, prj3#Issue14)
+#   aoa-mq-enqueue.sh --message <msg> --alert                [--source <name>]   # alert (즉시 done_unacked, prj3#Issue13)
+#   aoa-mq-enqueue.sh --reschedule <id> --due <ISO8601|+Nd|YYYY-MM-DD>           # 재스케줄 (prj3#Issue63)
+#   공통 옵션: --on-response '<json>'  — 응답 후속 행동 선언 (handoff passthrough, prj3#Issue12)
 #   공통 옵션: --from-bot <bot_id> / --to-bot <bot_id> — 봇 귀속 (prj3#Issue436_3 s4)
 #             봇 컨텍스트 발신·수신 시만 지정. 미지정 시 필드 자체 미기록(null 기록 금지) = 비봇(세션·사람) 발신.
 #             기존 --source 는 세션 표기라 불변·공존
-#   공통 옵션: --kind pre|post  (기본 pre) — 사전(결정·컨펌 대기) / 사후(due 시 자동 처리) 구분 (Issue20)
+#   공통 옵션: --kind pre|post  (기본 pre) — 사전(결정·컨펌 대기) / 사후(due 시 자동 처리) 구분 (prj3#Issue20)
 #             post + message 가 셸 명령이면 tick 이 whitelist 게이트로 spawn, 슬래시(/…) 면 handoff 위임
 #   alert 등록 주체는 즉시성 필요 시 enqueue 직후 aoa-mq-tick.sh 를 1회 직접 kick (설계 SSOT "역할 범위")
 #
@@ -23,15 +24,15 @@
 #   temp 쓰기 → mv 원자 등장 / id 충돌 시 seq 재시도 / 등록 후 존재+jq 파싱 검증
 #   성공: "enqueued: <경로>" 1줄 echo (exit 0) / 실패: stderr 사유 + exit≠0 (silent 실패 금지)
 #
-# ── 재스케줄 (--reschedule, Issue63) ────────────────────────────────
+# ── 재스케줄 (--reschedule, prj3#Issue63) ────────────────────────────────
 #   due_ts 를 바꾸는 **1급 경로**. 종전에는 queue/<id>.json 을 손으로 고치고 digest 를 따로
 #   돌리는 2단계였고 그 사이에 tick 이 진입하면 queue·digest 가 어긋난 상태가 노출됐다.
 #
-#   원자성 (Issue63 확정 ②): temp→mv 만으로는 부족하다. mv 는 **파일 1개**의 원자성만 보장하는데
+#   원자성 (prj3#Issue63 확정 ②): temp→mv 만으로는 부족하다. mv 는 **파일 1개**의 원자성만 보장하는데
 #     이 이슈의 증상은 "JSON 갱신 ↔ digest 재생성" **구간**에 tick 이 끼어드는 것이다.
 #     따라서 tick 과 같은 `.tick.lock`(mkdir 원자 락)을 잡아 상호배제한다.
 #     tick 이 자기 lock 을 쥔 채 본 helper 를 부르는 경우(snooze 위임)만 AOA_MQ_LOCK_HELD=1 로 재진입.
-#   시각 보존 (Issue63 확정 ①): `+Nd` 는 **기존 due 의 시각을 유지**하고 날짜만 옮긴다.
+#   시각 보존 (prj3#Issue63 확정 ①): `+Nd` 는 **기존 due 의 시각을 유지**하고 날짜만 옮긴다.
 #     기준일 = max(오늘, 기존 due 날짜) — 지난 건은 "오늘부터 N일 뒤", 미래 건은 "N일 더 미룸".
 #     기존 due 가 없으면 09:00:00. `YYYY-MM-DD` 도 같은 규칙으로 기존 시각을 물려받는다.
 #     tick 의 snooze 가 본 경로를 재구현이 아니라 **위임**으로 쓰므로 시각 보존이 그쪽에도 함께 적용된다.
@@ -39,15 +40,16 @@
 
 set -u
 
-# AOA_MQ_DIR: sandbox 테스트용 오버라이드 (미설정 시 운영 경로)
-MQ_DIR="${AOA_MQ_DIR:-$HOME/_git/___common/data/aoa/mq}"
+# 경로 계약 (prj3#Issue450) — AOA_MQ_DIR 은 sandbox 전용이 아니라 **정식 설정**이다.
+#   미설정 시 제품 중립 기본으로 떨어진다 (prj5 미클론 머신 대응).
+MQ_DIR="${AOA_MQ_DIR:-$HOME/.claude/data/aoa/mq}"
 QUEUE_DIR="$MQ_DIR/queue"
 
 die() { echo "aoa-mq-enqueue ERROR: $*" >&2; exit 1; }
 
 JQ=$(command -v jq || echo /usr/bin/jq)
 [ -x "$JQ" ] || die "jq 미설치 — brew install jq 후 재시도"
-[ -d "$QUEUE_DIR" ] || die "큐 디렉토리 없음: $QUEUE_DIR — prj6(___common) aoa-mq 미구축. prj6 Issue9 참조"
+[ -d "$QUEUE_DIR" ] || die "큐 디렉토리 없음: $QUEUE_DIR — aoa-mq 미초기화. AOA_MQ_DIR 확인 또는 'mkdir -p' 로 생성"
 
 MESSAGE="" DUE="" WATCH="" WATCH_PANE="" ALERT="" SOURCE="" ONRESP="" KIND="" RESCHED=""
 FROM_BOT="" TO_BOT=""
@@ -68,7 +70,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# ── 재스케줄 모드 (--reschedule, Issue63) ──────────────────────────
+# ── 재스케줄 모드 (--reschedule, prj3#Issue63) ──────────────────────────
 # 신규 등록과 완전히 다른 경로다. 여기서 처리하고 종료한다.
 if [ -n "$RESCHED" ]; then
   # 등록 전용 인자와 섞이면 의도가 갈린다 — 조용히 무시하지 않고 즉시 거절
@@ -87,7 +89,7 @@ if [ -n "$RESCHED" ]; then
     die "대상 없음: $RESCHED (경로: $TARGET)"
   fi
 
-  # ── lock: tick 과 상호배제 (Issue63 확정 ②) ──────────────────────
+  # ── lock: tick 과 상호배제 (prj3#Issue63 확정 ②) ──────────────────────
   # temp→mv 는 파일 1개의 원자성만 준다. 막아야 하는 것은 "JSON 갱신 ↔ digest 재생성" 구간에
   # tick 이 끼어들어 옛 due_ts 로 질의를 띄우거나 digest 를 옛 상태로 덮는 것이므로,
   # tick 이 쓰는 것과 **같은 락**(mkdir 원자 락)을 잡아야 한다.
@@ -123,7 +125,7 @@ if [ -n "$RESCHED" ]; then
     trap 'rmdir "$LOCK" 2>/dev/null' EXIT
   fi
 
-  # ── 새 due 산출: 기존 **시각 보존** (Issue63 확정 ①) ─────────────
+  # ── 새 due 산출: 기존 **시각 보존** (prj3#Issue63 확정 ①) ─────────────
   OLD_DUE=$("$JQ" -r '.due_ts // ""' "$TARGET" 2>/dev/null) || die "대상 JSON 파싱 실패: $TARGET"
   OLD_TIME="09:00:00"
   case "$OLD_DUE" in
@@ -168,7 +170,7 @@ if [ -n "$RESCHED" ]; then
   exit 0
 fi
 
-# kind 정규화: 미지정=pre(사전). pre|post 만 허용 (Issue20)
+# kind 정규화: 미지정=pre(사전). pre|post 만 허용 (prj3#Issue20)
 [ -z "$KIND" ] && KIND="pre"
 case "$KIND" in
   pre|post) ;;
@@ -184,7 +186,7 @@ mode_count=0
 [ -n "$ALERT" ]      && mode_count=$((mode_count+1))
 [ "$mode_count" -eq 1 ] || die "--due | --watch <topic> | --watch-pane <tmux_target> | --alert 중 정확히 하나 필수"
 [ -z "$SOURCE" ] && SOURCE="claude@$(basename "$PWD")"
-# on_response: 자유 JSON passthrough (Issue12) — tick 은 해석·실행 안 함, handoff 로 전달만
+# on_response: 자유 JSON passthrough (prj3#Issue12) — tick 은 해석·실행 안 함, handoff 로 전달만
 if [ -n "$ONRESP" ]; then
   printf '%s' "$ONRESP" | "$JQ" -e . >/dev/null 2>&1 || die "--on-response 가 유효한 JSON 이 아님"
 fi
@@ -273,6 +275,6 @@ case "$TYPE" in
   alert)     echo "enqueued: $DEST (type=alert, kind=$KIND, status=done_unacked, source=$SOURCE$BOT_NOTE) — 즉시 통지 원하면 aoa-mq-tick.sh 1회 kick" ;;
 esac
 
-# 읽기용 digest(Aoa-mq-list.md) 재생성 — 등록 즉시 현황 반영 (Issue20). 실패해도 등록 자체는 성공 유지
+# 읽기용 digest(Aoa-mq-list.md) 재생성 — 등록 즉시 현황 반영 (prj3#Issue20). 실패해도 등록 자체는 성공 유지
 DIGEST="$(dirname "$0")/aoa-mq-digest.sh"
 [ -x "$DIGEST" ] && "$DIGEST" >/dev/null 2>&1 || true
