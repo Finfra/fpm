@@ -63,3 +63,8 @@ _note.md
 # projects-map 산출물 (Projects.md 로부터 재생성 — sh/install.sh 4-3 이 부재 시 생성)
 Projects_map.htm
 Projects_map.md
+
+# prj3#Issue470 — 개인 환경값(bind_host·advertise_host IP). publishable exclude 라
+#   원본에서 반출되지 않으므로 **미러에서 직접 관리**한다(.gitignore 자체가 exclude 대상).
+#   install.sh 가 hub_setting_org.yml 에서 생성하므로 소비자마다 값이 다르다.
+data/hub_setting.yml
