@@ -476,6 +476,119 @@ PYEOF
     [[ "${_extra_n:-0}" -gt 0 ]] && warn "매니페스트에 없는 파일 ${_extra_n}건(설치본 추가물 — 로컬 편집 가능성)"
 fi
 
+# ── 14. 실행본 출처 (prj3#Issue461) ───────────────────────────────────────────
+#   왜 필요한가 (fg1 실측 2026-08-29): fg1 은 **봇 카드를 모르는 구버전 hub** 를 오래
+#   돌리고 있었고 아무도 몰랐다. 원인은 브랜치였다 — `develop` 체크아웃인데 그 기능은
+#   `main` 에만 있었다. 그런데 *"지금 여기서 무엇이 도는가"* 를 묻는 수단이 없어
+#   브랜치 대조·payload 실측·플러그인 캐시 grep 을 **각각** 돌려야 했다.
+#   검증 환경에서 버전을 모르면 "작동한다" 는 판정도 무효다.
+#
+#   항목 13 과의 분담: 13 은 **내용 해시**(같은 번호 다른 내용)를, 14 는 **출처**(어느
+#   repo·브랜치·커밋에서 왔나)를 본다. 13 이 통과해도 브랜치가 엉뚱하면 소용없다.
+#
+#   ⚠️ 자동 갱신하지 않는다 — 검증 환경은 **의도한 버전을 고정해 두는 것**도 정당한
+#      상태다. 필요한 것은 "무엇이 도는지 안다" 이지 "항상 최신이다" 가 아니다.
+sec "── 실행본 출처 (repo·hub·플러그인) ──"
+
+# ① repo 브랜치·HEAD — 오늘 문제의 진원지
+if git -C "$REPO_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+    _br="$(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+    _head="$(git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo '?')"
+    _dirty=""
+    [[ -n "$(git -C "$REPO_DIR" status --porcelain 2>/dev/null | head -1)" ]] && _dirty=" · 작업트리 변경 있음"
+    # origin 대비 위치. fetch 는 하지 않는다(네트워크 비용·오프라인 대비) — 마지막 fetch 기준.
+    _lr="$(git -C "$REPO_DIR" rev-list --left-right --count "HEAD...origin/$_br" 2>/dev/null || true)"
+    if [[ -n "$_lr" ]]; then
+        _ahead="${_lr%%	*}"; _behind="${_lr##*	}"
+        if [[ "$_behind" != "0" ]]; then
+            warn "repo: $_br @ $_head — origin/$_br 보다 $_behind 커밋 뒤짐 (마지막 fetch 기준)$_dirty"
+        else
+            ok "repo: $_br @ $_head (ahead $_ahead)$_dirty"
+        fi
+    else
+        warn "repo: $_br @ $_head — origin/$_br 미확인(원격 추적 없음 또는 미fetch)$_dirty"
+    fi
+else
+    warn "repo: git 저장소가 아님 ($REPO_DIR) — 출처 판정 불가"
+fi
+
+# ② hub 서버 실행본 — 이 repo 것을 돌리는가
+#   hub 는 플러그인 캐시가 아니라 **repo 파일을 직접 실행**한다. 즉 같은 저장소인데
+#   훅과 반영 시점이 다르다. 그 차이가 오늘 오진의 원인이었으므로 명시적으로 본다.
+# ⚠️ pgrep 을 쓰지 않는다 — macOS 의 BSD pgrep 은 `-a` 를 지원하지 않아 **PID 만** 낸다
+#   (2026-08-29 jm4 실측: 매칭은 되는데 커맨드라인이 빈 문자열이라 경로 판정이 통째로 빗나갔다).
+#   `ps -eo pid,command` 는 macOS·Linux 양쪽에서 같은 형태로 나온다.
+_hub_line="$(ps -eo pid,command 2>/dev/null | grep 'services/hub/server\.py' | grep -v grep | head -1 || true)"
+if [[ -z "$_hub_line" ]]; then
+    ok "hub 서버: 미기동 (실행본 판정 대상 아님)"
+else
+    _hub_path="$(printf '%s' "$_hub_line" | grep -o '[^ ]*services/hub/server\.py' | head -1)"
+    # 상대경로로 떠 있으면(cwd 기준 실행) 절대경로를 알 수 없다 — 그 사실을 그대로 말한다.
+    case "$_hub_path" in
+        /*) if [[ "$_hub_path" == "$REPO_DIR"/* ]]; then
+                ok "hub 서버: 이 repo 실행본 ($_hub_path)"
+            else
+                warn "hub 서버: **다른 경로** 실행본 ($_hub_path) — 이 repo($REPO_DIR) 수정은 반영되지 않는다"
+            fi ;;
+        *)  warn "hub 서버: 상대경로로 기동돼 실행본 경로 불명 ($_hub_path) — 절대경로로 재기동 권장" ;;
+    esac
+fi
+
+# ③④ 플러그인 활성본 + 마켓 소스와의 출처 대조
+#   installed_plugins.json 에 gitCommitSha 가 있다. 마켓 clone 의 HEAD 와 비교하면
+#   "캐시가 마켓보다 낡음" 을 **번호가 같아도** 잡는다 — plugin update 가 건너뛴 경우다.
+_ip="$HOME/.claude/plugins/installed_plugins.json"
+_mkt_dir="$HOME/.claude/plugins/marketplaces/$FPM_MKT_NAME"
+if [[ ! -f "$_ip" ]]; then
+    if fpm_is_authoring; then
+        ok "플러그인: 미설치 (저작 머신 — 라이브 SCAR 를 직접 쓴다)"
+    else
+        warn "플러그인: installed_plugins.json 없음 — SCAR 미설치이거나 경로 변경"
+    fi
+else
+    _pv="$(python3 - "$_ip" "$FPM_PLUGIN_NAME" "$FPM_MKT_NAME" <<'PYEOF' 2>/dev/null || true
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+key = "%s@%s" % (sys.argv[2], sys.argv[3])
+e = (d.get("plugins", {}).get(key) or [None])[0]
+if e:
+    print("%s\t%s\t%s" % (e.get("version", "?"), e.get("installPath", "?"), (e.get("gitCommitSha") or "")[:7]))
+PYEOF
+)"
+    if [[ -z "$_pv" ]]; then
+        if fpm_is_authoring; then
+            # 저작 머신은 ~/.claude 라이브 SCAR 가 정본이다 — 플러그인 설치가 오히려 이례.
+            ok "플러그인: $FPM_PLUGIN_NAME 미등록 (저작 머신 — 라이브 SCAR 가 정본)"
+        else
+            warn "플러그인: $FPM_PLUGIN_NAME@$FPM_MKT_NAME 등록 없음 — 소비자 머신인데 SCAR 가 없다"
+        fi
+    else
+        _ver="${_pv%%	*}"; _rest="${_pv#*	}"
+        _path="${_rest%%	*}"; _sha="${_rest##*	}"
+        if [[ -d "$_path" ]]; then
+            ok "플러그인: $_ver @ ${_sha:-sha없음} ($_path)"
+        else
+            fail "플러그인: installPath 부재 — $_path (등록 $_ver, 실물 없음)"
+        fi
+        # 마켓 소스 HEAD 와 대조 — 여기가 fail-loud 지점
+        if [[ -n "$_sha" ]] && git -C "$_mkt_dir" rev-parse --git-dir >/dev/null 2>&1; then
+            _mkt_head="$(git -C "$_mkt_dir" rev-parse --short HEAD 2>/dev/null || echo '')"
+            if [[ -z "$_mkt_head" ]]; then
+                warn "마켓 소스: HEAD 확인 불가 ($_mkt_dir)"
+            elif [[ "$_mkt_head" == "$_sha"* || "$_sha" == "$_mkt_head"* ]]; then
+                ok "마켓 소스 ↔ 활성 캐시: 동일 커밋 ($_mkt_head)"
+            else
+                # ⚠️ 방향을 단정하지 않는다 — 캐시가 뒤처진 경우가 흔하지만 마켓 clone 이
+                #   뒤처진 경우도 실재한다(2026-08-29 검증 중 실측). 단정하면 반대 상황에서 오도한다.
+                warn "마켓 소스($_mkt_head) ↔ 활성 캐시($_sha) **불일치** — 캐시가 뒤처졌으면 \`claude plugin update $FPM_PLUGIN_NAME@$FPM_MKT_NAME\`, 마켓이 뒤처졌으면 \`git -C $_mkt_dir pull\`"
+            fi
+        fi
+    fi
+fi
+
 # ── 요약 ──────────────────────────────────────────────────────
 printf '\n────────────────────────────────────────────\n'
 printf '결과: \033[32mPASS %d\033[0m / \033[33mWARN %d\033[0m / \033[31mFAIL %d\033[0m\n' "$PASS_N" "$WARN_N" "$FAIL_N"

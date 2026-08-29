@@ -8,7 +8,7 @@
 set -u
 
 # 경로 계약 (Issue450) — env 가 정식 설정. 미설정 시 제품 중립 기본(prj5 미클론 머신 대응).
-#   ⚠️ 개인 절대경로였다(`/Users/nowage/…`) — fbot-arch §범용 배포 요건 위반이었고,
+#   ⚠️ 개인 절대경로였다(`$HOME/…`) — fbot-arch §범용 배포 요건 위반이었고,
 #      사용자명이 다른 머신에서는 그 자체로 죽는다.
 #   launchd 는 셸 프로파일을 읽지 않는다 → plist EnvironmentVariables 가 데이터 위치를 준다.
 #   코드는 $HOME/.claude 사본을 쓴다(모듈 구성 동일). 데이터 위치와 코드 위치는 별개 축이다.
