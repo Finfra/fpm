@@ -103,3 +103,21 @@ cases:
       now=$("$DATE" +%s)
       [ "$e" -gt 0 ] && [ "$e" -le "$now" ] && echo ok
     expect: contains:ok
+
+  - id: hub-open-portable
+    desc: hub 의 '열기' 가 플랫폼 분기를 갖는다
+    why: |
+      Issue432 — services/hub/server.py 가 subprocess.Popen(["open", …]) 를
+      7곳에서 쓰는데 **플랫폼 분기가 0건**이다. `open` 은 macOS 전용이라
+      Linux·Windows 에서 깨진다. cdf(Issue340)가 셸 함수는 고쳤으나 python
+      서버는 손대지 않았다 — fg1 이 헤드리스라 드러나지 않았을 뿐,
+      쓰는 순간 깨진다. Windows 이식의 선결 조건이다.
+      해소(2026-08-30): `_open_cmd()` 로 분기 — macOS `open` / Linux `xdg-open`
+      / Windows `cmd /c start`. 직접 호출 잔여 0건.
+    run: |
+      f="$REPO_DIR/services/hub/server.py"
+      [ -f "$f" ] || { echo "skip(hub 미보유)"; exit 0; }
+      n=$(grep -cE 'Popen\(\["open"' "$f")
+      grep -q '_open_cmd' "$f" && [ "$n" = "0" ] && echo ok \
+        || echo "open 직접 호출 ${n}곳 잔여"
+    expect: contains:ok

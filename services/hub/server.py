@@ -16,6 +16,7 @@ import hmac
 import html
 import json
 import os
+import platform
 import sys
 import time
 import uuid
@@ -940,6 +941,41 @@ start_ts = time.time()
 # /register-doc 로 등록한 파일 목록(data/hub/*.json)만 hub 에 노출한다.
 # REPO_ROOT = server.py(.../services/htm-server/) → ___pm 루트 (dirname 3회)
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+def _open_cmd(target: str, app: str | None = None) -> list:
+    """플랫폼별 '열기' 명령 조립 (Issue432).
+
+    종전엔 `["open", …]` 를 7곳에서 직접 썼고 **플랫폼 분기가 없었다.**
+    `open` 은 macOS 전용이라 Linux·Windows 에서 그대로 깨진다 — fg1(Linux)에서
+    드러나지 않은 이유는 헤드리스라 "열기" 를 쓸 일이 없었을 뿐이다.
+    cdf(Issue340)가 셸 함수 쪽은 고쳤으나 이 서버는 손대지 않은 채였다.
+
+    ⚠️ `app` 지정(에디터로 열기)은 **macOS 만 온전하다** — `open -a` 가 앱
+    *표시 이름*("Visual Studio Code")을 받기 때문이다. 다른 OS 에는 그런 개념이
+    없어 실행 파일명이 필요하고, `_editor_app_name()` 의 반환값과 계약이 다르다.
+    그래서 비-macOS 에서는 app 을 버리고 기본 연결 프로그램으로 연다 —
+    **조용히 실패하는 것보다 낫다**(호출부가 로그를 남긴다).
+    """
+    sysname = platform.system()
+    if sysname == "Darwin":
+        return ["open"] + (["-a", app] if app else []) + [target]
+    if sysname == "Windows" or sysname.startswith(("MINGW", "MSYS", "CYGWIN")):
+        # `start` 는 cmd 내장이라 셸을 거쳐야 한다. 첫 "" 는 창 제목 자리(필수).
+        return ["cmd", "/c", "start", "", target]
+    return ["xdg-open", target]          # Linux·기타 POSIX
+
+
+def _open_target(target: str, app: str | None = None, what: str = "") -> None:
+    """열기 실행 + 실패를 삼키지 않는다."""
+    try:
+        subprocess.Popen(_open_cmd(target, app),
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if app and platform.system() != "Darwin":
+            log(f"[open] 앱 지정 무시({platform.system()}) — 기본 연결로 엶: {what or target}")
+    except (OSError, subprocess.SubprocessError) as e:
+        log(f"[open] 실패({platform.system()}): {what or target} — {e}")
+
+
 DATA_HUB_DIR = os.path.join(REPO_ROOT, "data", "hub")
 # Issue255: /htm-res 로 serve 허용하는 이미지 확장자 화이트리스트
 _HTM_RES_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"}
@@ -7509,7 +7545,7 @@ __WARN__
             return
         uri = "obsidian://open?path=" + quote(target)
         try:
-            subprocess.Popen(["open", uri],
+            subprocess.Popen(_open_cmd(uri),
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
             self._send_json(500, {"error": f"spawn failed: {e}"})
@@ -7575,7 +7611,7 @@ __WARN__
                 self._send_json(200, {"status": "remote", "uri": uri, "cwd": open_cwd})
                 return
         try:
-            subprocess.Popen(["open", "-a", _editor_app_name(), open_cwd],  # Issue327
+            subprocess.Popen(_open_cmd(open_cwd, _editor_app_name()),  # Issue327
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
             self._send_json(500, {"error": f"spawn failed: {e}"})
@@ -7639,7 +7675,7 @@ __WARN__
                 self.end_headers()
                 return
         try:
-            subprocess.Popen(["open", "-a", _editor_app_name(), target],  # Issue327
+            subprocess.Popen(_open_cmd(target, _editor_app_name()),  # Issue327
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
             self._send_json(500, {"error": f"spawn failed: {e}"})
@@ -7711,7 +7747,7 @@ __WARN__
         sess_editor = _session_editor(sid)
         try:
             if sess_editor == "zed":
-                subprocess.Popen(["open", "-a", _editor_app_name("zed"), open_cwd],
+                subprocess.Popen(_open_cmd(open_cwd, _editor_app_name("zed")),
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 log(f"POST /open-session — zed workspace only (딥링크 미지원) cwd={open_cwd} sid={sid}")
                 self._send_json(200, {"status": "opened-workspace", "editor": "zed",
@@ -7839,7 +7875,7 @@ __WARN__
                      f'sleep 0.4; open {shlex.quote(uri)}'],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             else:
-                subprocess.Popen(["open", uri],
+                subprocess.Popen(_open_cmd(uri),
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
             self._send_json(500, {"error": f"spawn failed: {e}"})
@@ -7857,7 +7893,7 @@ __WARN__
             self._send_json(404, {"error": "hub_setting.yml not found"})
             return
         try:
-            subprocess.Popen(["open", "-a", _editor_app_name(), HUB_SETTING_FILE],  # Issue327
+            subprocess.Popen(_open_cmd(HUB_SETTING_FILE, _editor_app_name()),  # Issue327
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
             self._send_json(500, {"error": f"spawn failed: {e}"})
@@ -8047,7 +8083,7 @@ __WARN__
             self._send_json(404, {"error": "Projects.md not found"})
             return
         try:
-            subprocess.Popen(["open", "-a", _editor_app_name(), PROJECTS_MD],  # Issue327
+            subprocess.Popen(_open_cmd(PROJECTS_MD, _editor_app_name()),  # Issue327
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
             self._send_json(500, {"error": f"spawn failed: {e}"})

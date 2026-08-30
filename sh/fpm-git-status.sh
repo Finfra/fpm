@@ -221,7 +221,12 @@ collect_remote() {
           | timeout "$SSH_TIMEOUT" ssh -o ConnectTimeout=8 -o BatchMode=yes "$host" \
               "bash -s -- --md --no-color $*" 2>&1)
     rc=$?
-    if [ $rc -ne 0 ] || printf '%s' "$out" | grep -q '__FPM_GS_NO_SCRIPT__'; then
+    # 성공 판정은 **출력 기준**이다. 원격 스크립트 버전이 제각각이라 rc 에 기대면
+    # 표가 멀쩡히 돌아와도 실패로 오독한다(실제로 겪음 — 종료코드 회귀가 fg1 까지
+    # 전파된 동안 정상 표를 받고도 'ssh 실패' 행을 냈다). 표 헤더가 오면 성공이다.
+    local got_table=0
+    printf '%s' "$out" | grep -q '^| prj |' && got_table=1
+    if [ $got_table -eq 0 ]; then
         local why="ssh 실패(rc=$rc)"
         printf '%s' "$out" | grep -q '__FPM_GS_NO_SCRIPT__' && why="원격에 fpm-git-status.sh 없음"
         # '@host' 전체 조회는 번호 인자가 없다 — 실패 행의 prj 칸을 비워두지 않는다
@@ -353,4 +358,11 @@ done
 echo
 printf '%s\n' "총 ${tot}건 · ✅ clean ${n_ok} · ✏️ 변경 ${n_dirty} · ⚠️ 주의 ${n_warn} · — 제외 ${n_skip}"
 printf '%s\n' "변경 표기: +staged ~unstaged ?untracked !충돌 · 원격: ^ahead v behind (fetch 안 함 — 로컬 ref 기준)"
-[ "$HAS_REMOTE" = 1 ] && printf '%s\n' "@host 행의 번호는 **그 머신의 인덱스** 기준이다 (같은 번호라도 머신마다 다른 프로젝트일 수 있음)"
+if [ "$HAS_REMOTE" = 1 ]; then
+    printf '%s\n' "@host 행의 번호는 **그 머신의 인덱스** 기준이다 (같은 번호라도 머신마다 다른 프로젝트일 수 있음)"
+fi
+
+# 조회는 이상 유무와 무관하게 0 으로 끝난다(헤더 "종료코드" 계약).
+# ⚠️ 마지막 명령을 `[ ... ] && printf` 로 두면 조건이 false 일 때 그 실패가 스크립트
+#    종료코드가 되어 rc=1 로 나간다 — 원격 조회(@host)가 이를 ssh 실패로 오독했다.
+exit 0
