@@ -21,10 +21,16 @@ set -u
 # ── 0. 인자 파싱 ────────────────────────────────────────────────────
 GATE_SEC=0          # >0 이면 .last-tick 기준 그 초 이내 재실행 억제
 FORCE_RENDER=0      # 세션 활성이어도 통지 계층 강제 수행
+# --consume-only (prj1#Issue423): inbox 소비만 하고 즉시 종료한다.
+#   hub /mq 페이지가 액션을 접수한 직후 호출한다 — 종전엔 정규 tick(5분 주기 · 1회 3분
+#   소요)을 기다려야 해서 "눌렀는데 목록에서 안 사라진다" 로 보였다. 상태 전이 로직을
+#   복제하지 않고 **같은 consume_inbox() 를 태우므로** 소유는 여전히 tick 하나다.
+CONSUME_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --gate)         GATE_SEC="${2:-0}"; shift 2 ;;
     --force-render) FORCE_RENDER=1; shift ;;
+    --consume-only) CONSUME_ONLY=1; shift ;;
     *)              shift ;;
   esac
 done
@@ -128,7 +134,10 @@ log "tick 시작"
 # 폼까지 띄우면 같은 알림이 두 경로로 중복된다.
 # fail-safe: 마커가 없거나 읽지 못하면 **비활성으로 본다**(통지 수행) — 알림 누락보다 중복이 낫다.
 SESSION_ACTIVE=0
-if [ "$FORCE_RENDER" -eq 0 ]; then
+# --consume-only 는 통지를 하지 않으므로 이 판정 자체가 불필요하다 — 건너뛴다.
+# (판정은 pgrep·tmux 조회를 포함해 수 초가 든다. hub 가 사용자 액션 직후 호출하는 경로라
+#  그 시간이 곧 "눌렀는데 안 사라지는 시간" 이 된다.)
+if [ "$CONSUME_ONLY" = 0 ] && [ "$FORCE_RENDER" -eq 0 ]; then
   touch_epoch=$("$STAT" -f %m "$SESSION_TOUCH" 2>/dev/null || echo 0)
   if [ "$touch_epoch" -gt 0 ] && [ $(( NOW_EPOCH - touch_epoch )) -lt "$SESSION_WINDOW" ]; then
     SESSION_ACTIVE=1
@@ -242,6 +251,15 @@ consume_inbox() {
       rm -f "$f"; continue
     fi
     case "$action" in
+      start)
+        # prj1#Issue424: 착수 — **종결이 아니다**. 큐에 남되 status 만 in_progress 로 바꾼다.
+        #   tick 은 headless 라 작업을 스스로 실행할 수 없다(handoff 주석 참조). 그래서
+        #   "실행" 이 아니라 **세션에 넘길 표식**을 세우는 것이 이 액션의 전부다 —
+        #   session-inbox 넛지가 in_progress 를 "지금 착수할 작업" 으로 올려 세션이 집는다.
+        #   질의 대상 선별(pending_items)은 due·done_unacked 만 보므로 진행 중 항목은
+        #   자동으로 재질의에서 빠진다 — 하는 중인데 계속 묻는 일이 없다.
+        jupd "$mf" --arg ts "$NOW_ISO" '.status="in_progress" | .started_at=$ts'
+        log "착수(in_progress): $id" ;;
       confirm) finalize "$mf" confirmed ;;
       dismiss) finalize "$mf" dismissed ;;
       ack)     finalize "$mf" acked_done ;;
@@ -265,6 +283,9 @@ consume_inbox() {
   done
 }
 consume_inbox
+# --consume-only: 여기까지가 상태 전이의 전부다. 이후 단계(watch 폴링·렌더·통지)는
+# 사용자 액션과 무관하고 수 분이 걸리므로 태우지 않는다.
+if [ "$CONSUME_ONLY" = 1 ]; then log "consume-only 완료 (hub /mq 즉시 반영)"; exit 0; fi
 
 # ── 4. watch 폴링 (board_status + pane_regex — prj3#Issue14) ─────────────
 SENT_BASE=$(grep -E '^[[:space:]]*sentinel_base:' "$HOME/_git/___pm/data/board_policy.yml" 2>/dev/null \

@@ -4,6 +4,9 @@
 # 실제 운영 파일은 data/hub_setting.yml — 본 템플릿이 아니라 그쪽을 자신의 환경으로 편집할 것.
 # data/hub_setting.yml 은 개인 환경값(bind_host·advertise_host 등)을 담아 공개 미러에서 제외됨(publishable exclude).
 # 📖 각 키 상세·소비처·규칙: _doc_arch/hub_setting.md (SSOT)
+#    ⚠️ 배포본(fpm)에는 `_doc_arch/` 가 들어 있지 않다 — 개발 저장소 전용 문서다.
+#    설치본만 가진 경우 **아래 각 키의 주석이 곧 설명**이다. 주석만으로 부족한 항목은
+#    설정창(⚙️ 3탭)의 각 필드 도움말에도 같은 내용이 실려 있다.
 # 키 순서 = 설정창(⚙️ 3탭) UI 순서 (HUB_SETTING_SCHEMA 미러)
 #
 # 형식 규칙 (에러 방지):
@@ -37,7 +40,18 @@ tab_close_shortcut: alt+w    # hub 내부 탭 닫기 단축키 ([ctrl+][alt+][sh
 hub_single_window: true      # 호스트(source-IP)당 hub 쉘 창 1개 강제 — true=2번째 창 takeover 안내 / false=다중 창 허용
 hub_lease_ttl: 30            # hub 쉘 리스 heartbeat 만료(초). SSE keepalive 미수신이 이 시간 초과 시 리스 회수
 bind_host: 127.0.0.1       # hub 서버 listen 인터페이스 — 127.0.0.1=루프백 전용(외부 차단, allowlist/DNS 부담 없음) / 0.0.0.0=전 인터페이스 / 특정 IP / [a, b]=멀티 bind
-# advertise_host: 192.168.1.5  # render_target=hub|both 일 때 URL host. 생략 시 bind_host fallback. ⚠️ bind_host=0.0.0.0 이면 생략 금지. tailnet 외부기기(폰) 접근 시 LAN IP 대신 MagicDNS hostname({host}.{tailnet}.ts.net) 권장 — IP 무관 고정. 단 macOS 자기해석은 /etc/resolver/{tailnet}.ts.net→100.100.100.100 필요 (Issue267, setup 문서)
+# advertise_host: 192.168.1.5  # render_target=hub|both 일 때 URL host. 생략 시 bind_host fallback.
+#   ⚠️ bind_host=0.0.0.0 이면 생략 금지.
+#   ── 기본은 '미설정' 이다 (주석 처리 상태 유지). 미설정이면 hub 가 외부 접근 URL 을
+#      만들지 않는다 — /healthz 의 advertise_url 이 null 이 되고, 소비자(daily-digest 등)는
+#      링크 대신 로컬 안내로 폴백한다(prj1#Issue425). 루프백 전용으로 쓰는 머신에서
+#      열리지 않는 링크가 만들어지는 것을 막기 위함이다.
+#   ── 외부 기기(폰 등)에서 열려면: LAN IP 는 DHCP 로 바뀌므로 VPN 오버레이의 고정 이름을
+#      권장한다. Tailscale 을 쓴다면 MagicDNS hostname `{host}.{tailnet}.ts.net`.
+#      설정 방법: https://tailscale.com/kb/1081/magicdns
+#      ⚠️ macOS 는 자기 자신의 MagicDNS 이름을 해석하지 못할 수 있다 →
+#      /etc/resolver/{tailnet}.ts.net 에 `nameserver 100.100.100.100` 필요.
+#      (Tailscale 은 선택이다. 안 쓰면 이 키를 그냥 주석인 채로 두면 된다.)
 # allow_server_list: true  # source-IP allowlist 게이트 (비루프백 bind 시만 의미). true=Servers.md(check=O)+self 허용 / false=self 만 허용. 루프백 전용이면 생략 가능
 # allow_list: [192.168.0.5, 192.168.0.0/24]  # inline allowlist (IP/CIDR 만, yml 전용 — 설정 UI 미노출). Servers.md 와 additive 병합
 # host_gate: true  # Issue379: 수신 이름(Host 헤더) 게이트 — source-IP 게이트의 짝. true(기본)=known 집합(bind_host + advertise_host + localhost + hostname/.local + extra_hosts) 밖의 이름은 421 거부 → DNS rebinding 차단. false=모든 이름 허용(종전). ⚠️ IP 리터럴 Host 는 항상 통과 — 잘못 잠가도 http://127.0.0.1:<port> 로 복구 가능. 변경 시 restart

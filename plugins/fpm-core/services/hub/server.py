@@ -2325,7 +2325,9 @@ table{width:100%;border-collapse:collapse;font-size:.85rem}
 th,td{padding:.5rem .55rem;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
 th{font-size:.76rem;color:var(--dim);cursor:pointer;user-select:none;white-space:nowrap}
 th:hover{color:var(--accent)}
-td.msg{max-width:640px}
+td.msg{max-width:min(46vw,640px)}
+/* 처리 열은 창이 좁아도 화면 밖으로 밀리지 않게 붙여 둔다 — 밀리면 버튼을 아예 못 찾는다 */
+th:last-child,td:last-child{position:sticky;right:0;background:var(--bg);white-space:nowrap;box-shadow:-6px 0 6px -6px rgba(0,0,0,.25)}
 .id{font-family:ui-monospace,Menlo,monospace;font-size:.74rem;color:var(--dim);white-space:nowrap}
 .st{padding:.12rem .42rem;border-radius:4px;font-size:.72rem;white-space:nowrap}
 .st-due{background:#c0392b22;color:#c0392b}
@@ -2333,6 +2335,8 @@ td.msg{max-width:640px}
 .st-done_unacked{background:#27ae6022;color:#27ae60}
 .st-done,.st-confirmed,.st-dismissed{background:#7f8c8d22;color:#7f8c8d}
 .acts{display:flex;gap:.25rem;flex-wrap:wrap}
+button.a.go{border-color:var(--accent);color:var(--accent);font-weight:600}
+.st-in_progress{background:#e8912233;color:#b3701a}
 button.a{padding:.22rem .45rem;font-size:.74rem;border:1px solid var(--line);border-radius:5px;
  background:var(--bg);color:var(--fg);cursor:pointer;white-space:nowrap}
 button.a:hover{border-color:var(--accent);color:var(--accent)}
@@ -2371,8 +2375,9 @@ tr.acked{opacity:.5}
 </tr></thead><tbody id="rows"></tbody></table>
 
 <div class="note" id="note">
-  처리 버튼은 <b>즉시 종결이 아니라 접수</b>다 — 다음 tick(≤30분)이 소비해 상태가 바뀐다.
-  기존 <code>/answer?sid=aoa-mq</code> 경로를 그대로 쓰므로 폼·CLI 와 같은 배관이다.
+  <b>진행</b>=지금 착수(in_progress) — <b>종결이 아니다.</b> 세션 넛지에 작업 지시로 올라가고 큐에 남는다 ·
+  <b>완료</b>=다 했음(confirmed) · <b>확인</b>=완료 통지를 봤음(acked_done) · <b>연기</b>=마감만 미룸(큐 유지) ·
+  <b>취소/버림</b>=하지 않음(dismissed). 진행 외에는 누르면 목록에서 빠진다.
 </div>
 
 <script>
@@ -2380,6 +2385,19 @@ let DATA=[], SORT={k:"due_ts",asc:true}, ACKED={};
 const $=id=>document.getElementById(id);
 const esc=t=>String(t==null?"":t).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 
+// 액션 → 사람이 읽는 이름. 버튼 라벨과 통지 문구를 한 곳에서 맞춘다.
+const LBL={start:"진행",confirm:"완료",ack:"확인",snooze:"연기",dismiss:"취소",defer:"닫기"};
+// hub 셸의 toast() 는 이 페이지에 없다(별도 문서) — 최소 구현을 둔다.
+function toast(msg){
+  let el=document.getElementById("toast");
+  if(!el){ el=document.createElement("div"); el.id="toast";
+    el.style.cssText="position:fixed;left:50%;bottom:1.5rem;transform:translateX(-50%);"+
+      "background:#111;color:#fff;padding:.55rem 1rem;border-radius:6px;font-size:.9rem;"+
+      "opacity:0;transition:opacity .2s;z-index:99";
+    document.body.appendChild(el); }
+  el.textContent=msg; el.style.opacity="1";
+  clearTimeout(el._t); el._t=setTimeout(()=>{el.style.opacity="0";},2600);
+}
 async function load(){
   const r=await fetch("/mq-data",{cache:"no-store"});
   const d=await r.json();
@@ -2414,14 +2432,30 @@ function render(){
   $("cnt").textContent=`${rows.length} / ${DATA.length} 건`;
   $("rows").innerHTML=rows.map(x=>{
     const done=x._bucket==="done", ak=ACKED[x.id];
+    // Issue423: 상태에 따라 **의미 있는 액션만** 낸다.
+    //   종전엔 4개를 늘 보여줬는데, confirm 과 ack 은 tick 계약상 둘 다 종결이라
+    //   (confirmed / acked_done) 사용자에겐 같은 버튼이 둘로 보였다.
+    //   · done_unacked = 봇이 끝냈다는 **통지** → 사람이 할 일은 "봤다" 뿐
+    //   · due·pending  = 예약된 **작업**     → 했다·미룬다·버린다
+    const st0=(x.status||"");
+    // Issue424: 아직 **할 일**(scheduled 계열)과 이미 **끝난 통지**(done_unacked)는
+    // 사람이 취할 행동이 다르다. 전자엔 "완료" 보다 "진행" 이 먼저 오고, 후자엔
+    // "완료" 가 아니라 "확인" 이 맞다.
+    const notice = st0==="done_unacked";
+    const wip = st0==="in_progress";
     const acts=done?'<span class="chip">종결됨</span>':
-      (ak?`<span class="chip">${esc(ak)} 접수 — tick 대기</span>`:
-      `<div class="acts">
-        <button class="a" onclick="act('${x.id}','confirm',this)">완료</button>
-        <button class="a" onclick="act('${x.id}','snooze',this)">연기</button>
-        <button class="a" onclick="act('${x.id}','dismiss',this)">취소</button>
-        <button class="a" onclick="act('${x.id}','ack',this)">확인</button>
-      </div>`);
+      (ak?`<span class="chip">처리 중…</span>`:
+      (notice
+        ? `<div class="acts">
+        <button class="a" onclick="act('${x.id}','ack',this)" title="완료 통지를 확인함 → acked_done">확인</button>
+        <button class="a" onclick="act('${x.id}','dismiss',this)" title="통지를 버림 → dismissed">버림</button>
+      </div>`
+        : `<div class="acts">
+        ${wip?'':`<button class="a go" onclick="act('${x.id}','start',this)" title="지금 착수 — 세션 넛지에 작업 지시로 올린다(종결 아님)">진행</button>`}
+        <button class="a" onclick="act('${x.id}','confirm',this)" title="다 했음 → confirmed 로 종결">완료</button>
+        <button class="a" onclick="act('${x.id}','snooze',this)" title="마감을 N일 뒤로 — 큐에 남는다">연기</button>
+        <button class="a" onclick="act('${x.id}','dismiss',this)" title="하지 않기로 함 → dismissed">취소</button>
+      </div>`));
     return `<tr class="${ak?'acked':''}">
       <td class="id">${esc(x.id)}</td>
       <td><span class="st st-${esc(x.status||'')}">${esc(x.status||'-')}</span></td>
@@ -2447,6 +2481,10 @@ async function act(id,action,btn){
     const j=await r.json();
     if(!j.ok) throw new Error(j.error||"실패");
     ACKED[id]=action; render();
+    // 서버가 consume 까지 마쳤으면(consumed) 데이터를 다시 읽는다 — 종결된 항목은
+    // 미종결 목록에서 **실제로 사라진다**. 종전엔 화면 문구만 바뀌어 "안 지워진다" 로 보였다.
+    if(j.consumed){ delete ACKED[id]; await load(); toast(`${LBL[action]||action} — 처리됨`); }
+    else { toast(`${LBL[action]||action} 접수 — 다음 tick(≤5분)이 반영`); }
   }catch(e){
     alert("접수 실패: "+e.message);
     btn.closest(".acts").querySelectorAll("button").forEach(b=>b.disabled=false);
@@ -4782,6 +4820,16 @@ class Handler(BaseHTTPRequestHandler):
                 pc = len(projects)
             with pids_lock:
                 rp = sum(len(s) for s in pids.values())
+            # Issue425: `advertise_url` — 이 hub 를 **외부 기기에서 열 수 있는 주소**.
+            #   소비자(daily-digest 등)가 링크를 만들 때 호스트를 하드코딩하지 않게 한다.
+            #   hub 가 자기 공개 주소를 아는 유일한 주체다 — 설정 파일 경로는 머신마다
+            #   다르고(jm4 `___pm/data/`, fg1 `fpm/data/`), 소비자가 그걸 찾아 헤매면
+            #   머신마다 다른 코드가 생긴다.
+            #   ⚠️ `advertise_host` 미설정이면 **null 이다** — 빈 문자열이나 localhost 로
+            #   때우지 않는다. fg1 이 실제로 미설정 + `bind_host: 127.0.0.1`(루프백 전용)
+            #   이라, 여기서 그럴듯한 값을 지어내면 **열리지 않는 링크를 폰으로 보낸다**.
+            #   null 을 받은 소비자는 링크 대신 로컬 안내로 폴백해야 한다.
+            _adv = str((_load_hub_setting() or {}).get("advertise_host") or "").strip()
             self._send_json(200, {
                 "status": "ok",
                 "pid": os.getpid(),
@@ -4789,6 +4837,8 @@ class Handler(BaseHTTPRequestHandler):
                 "uptime": int(time.time() - start_ts),
                 "projects": pc,
                 "registered_pids": rp,
+                "advertise_host": _adv or None,
+                "advertise_url": ("http://%s:%d" % (_adv, PORT)) if _adv else None,
             })
             return
         if parsed.path == "/ob":
@@ -7045,7 +7095,7 @@ __WARN__
             return
         parts = q.split(":")
         if len(parts) < 3 or not parts[1] or parts[2] not in (
-                "confirm", "dismiss", "ack", "defer", "snooze"):
+                "start", "confirm", "dismiss", "ack", "defer", "snooze"):
             self._send_json(400, {"ok": False, "error": "action 이 유효하지 않음: %s" % q})
             return
         # 큐 소유 cwd = MQ_DIR 에서 `/data/aoa/mq` 를 걷어낸 것. tick 이 register 하는 cwd 와 같다.
@@ -7059,8 +7109,25 @@ __WARN__
         except OSError as e:
             self._send_json(500, {"ok": False, "error": "inbox 기록 실패: %s" % e})
             return
-        self._send_json(200, {"ok": True, "queued": q, "inbox": fp,
-                              "note": "다음 tick 이 소비해 상태가 전이된다"})
+        # Issue423: 접수 직후 consume 단계만 동기로 태운다.
+        #   종전엔 정규 tick(5분 주기 · 1회 약 3분)이 소비할 때까지 목록이 그대로여서
+        #   "눌렀는데 아무 일도 안 일어난다" 로 보였다. `--consume-only` 는 상태 전이
+        #   로직을 복제하지 않고 **같은 consume_inbox() 를 태우므로** 소유는 tick 하나다.
+        #   실측 1.6s — HTTP 요청 안에서 기다릴 수 있는 범위다. 실패해도 접수는 이미
+        #   끝났으므로 200 을 유지하고 `consumed:false` 로만 알린다(정규 tick 이 뒤에 소비).
+        #   timeout 8s 인 이유: 정규 tick(약 3분)이 돌고 있으면 mkdir 락에서 대기하는데,
+        #   그 경우 더 기다려도 어차피 못 잡는다. 빨리 포기하고 "접수됨" 으로 답하는 편이
+        #   낫다 — 실제로 정규 tick 중 클릭하니 버튼이 멈춘 채로 남았다(2026-08-30 실측).
+        consumed = False
+        try:
+            r = subprocess.run(["/bin/bash", AOA_MQ_TICK, "--consume-only"],
+                               capture_output=True, timeout=8)
+            consumed = (r.returncode == 0)
+        except (OSError, subprocess.SubprocessError):
+            consumed = False
+        self._send_json(200, {"ok": True, "queued": q, "inbox": fp, "consumed": consumed,
+                              "note": ("상태 전이 완료" if consumed
+                                       else "접수됨 — 다음 tick 이 소비한다")})
 
     def _handle_mq_page(self, parsed):
         """Issue420: aoa-mq 전용 관리 페이지. 목록만 있던 종전 mq_list_*.htm 과 달리

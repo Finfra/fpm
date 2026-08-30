@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: d17c8f99bc14a49f5b29868ce079e36eb8dc6d3937bce871fde2cb62b8019033
+source_sha: 20f9dc710a710a00d5f49b2d87190d443f2e568e3997be82d3fd12f3a1f0f29c
 ---
 
 # 안내
@@ -35,6 +35,34 @@ source_sha: d17c8f99bc14a49f5b29868ce079e36eb8dc6d3937bce871fde2cb62b8019033
     - ② ⓐ 채택 시 — [`fpm-gitflow.md`](_doc_arch/fpm-gitflow.md) R1~R4 에 *"미러는 릴리스 라인을 갖지 않는다"* 를 명문화하고, 미러의 `release/*` 를 정리
     - ③ ⓑ 채택 시 — `guard_dst_branch()` 의 허용 목록에 `release/*` 추가. ⚠️ 그러면 **어느 브랜치로 sync 됐는지**가 갈릴 수 있어 `mirror_scan()` 의 미흡수 판정 기준을 함께 손봐야 한다
     - 검증: 판정된 쪽으로 `forward` 를 1회 태워 **수동 브랜치 전환 없이** 통과할 것
+
+## Issue425: hub 링크의 호스트가 문서에 하드코딩돼 있다 — host 에서 host 주소를 보낸다 ✅
+* 목적: 사용자 지적 — *"설정파일에서 읽는 것 맞나? host 에서도 잘 작동하나?"*. **둘 다 아니었다.** social `daily-digest.md` 가 `<tailnet-host>:9876` 을 **문서에 박아** 두고 있어, host 에서 digest 를 돌리면 **host 큐를 안내해야 할 자리에 host 주소를 보낸다**. Issue420 에서 링크만 `/mq` 로 바꾸고 이 하드코딩은 그대로 답습했다
+* depends: Issue420
+* 구현 명세:
+    - ① `/healthz` 에 **`advertise_host`·`advertise_url`** 추가 — hub 가 자기 공개 주소를 아는 **유일한 주체**다
+    - ② 미설정이면 **`null`** 이다 — 빈 문자열이나 `localhost` 로 때우지 않는다. 그럴듯한 값을 지어내면 **열리지 않는 링크를 폰으로 보낸다**
+    - ③ social `daily-digest.md` — 하드코딩 제거, `curl /healthz | jq -r '.advertise_url'` 조회로 교체. 비었으면 링크 없이 `/mq-list --all` 폴백
+
+## Issue424: /mq 액션 체계를 "진행 → 완료" 로 — 할 일과 끝난 일에 같은 버튼을 달지 않는다 ✅
+* 목적: 사용자 지적 — *"scheduled 인 큐(미완료)는 완료보다 **진행** 버튼이 맞고, 이미 완료된 작업은 완료 대신 **확인**이 맞다. 진행을 누르면 작업을 진행하고, 완료를 누르면 완료 상태로 이동하면 되잖아"*. Issue423 이 상태별로 버튼을 갈랐지만 **착수라는 단계 자체가 없었다**
+* depends: Issue423, prj3#Issue473
+* 구현 명세:
+    - ① `/mq-ack` 허용 action 에 `start` 추가 (prj3#Issue473 이 tick 쪽 소비를 담당)
+    - ② 버튼 — 미종결: **[진행][완료][연기][취소]** · `in_progress`: [완료][연기][취소](진행 숨김) · `done_unacked`: **[확인][버림]**
+    - ③ 라벨 정정 — `done_unacked` 의 "읽음 확인" → **"확인"**, 미종결의 "완료" 는 종결 의미 유지
+    - ④ `in_progress` 배지 스타일 · [진행] 버튼 강조(accent)
+    - ⑤ 안내문에 **"진행은 종결이 아니다"** 를 첫 줄에 명시
+
+## Issue423: /mq 의 액션이 "눌러도 아무 일이 없다" — 이름·의미·반영 셋이 어긋났다 ✅
+* 목적: Issue420 이 만든 처리 액션을 사용자가 실제로 써 보니 **셋 다 어긋나 있었다**. ⓐ 안내문이 *"처리 버튼"* 이라 쓰는데 그런 버튼이 없다(`처리` 는 컬럼 헤더다) ⓑ `완료` 와 `확인` 이 **비슷한 의미로 둘** 있다 ⓒ **눌러도 목록에서 사라지지 않는다**
+* depends: Issue420
+* 구현 명세:
+    - ① **`aoa-mq-tick.sh --consume-only`** 신설(prj3) — `consume_inbox()` 까지만 태우고 종료. 상태 전이 로직을 **복제하지 않으므로 소유는 여전히 tick 하나**다. 세션 활성 판정(pgrep·tmux)도 건너뛴다 — 통지를 안 하므로 불필요
+    - ② `/mq-ack` 가 접수 직후 ①을 **동기 실행**. 실패해도 접수는 끝났으므로 200 을 유지하고 `consumed:false` 로만 알린다
+    - ③ **상태별 액션** — `done_unacked` → [읽음 확인][버림] · 그 외 → [완료][연기][취소]. 각 버튼에 결과 상태를 `title` 로 명시
+    - ④ 접수 후 `consumed` 면 **`load()` 재조회** — 종결 항목이 목록에서 실제로 빠진다
+    - ⑤ 안내문을 액션별 의미 설명으로 교체
 
 ## Issue422: R3 가 코드로 집행되지 않는다 — forward 의 AUTOBUMP 기본값이 1 ✅
 * 목적: Issue417 이 R3(*"값을 올리는 것은 `deploy` 하나뿐"*)를 [`fpm-gitflow.md`](_doc_arch/fpm-gitflow.md) 에 못 박았으나, [`fpm-sync.sh`](scripts/fpm-sync.sh) 의 `AUTOBUMP` **기본값은 `1` 그대로**였다. **규칙은 문서에만 있고 코드가 반대로 동작**한 것이다
