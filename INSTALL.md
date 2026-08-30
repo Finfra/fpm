@@ -6,6 +6,25 @@ date: 2026.08.26
 
 > 🌐 **English** | [한국어](INSTALL_ko.md)
 
+# Supported platforms
+
+| OS | Status | Shell | Notes |
+| :--- | :--- | :--- | :--- |
+| **macOS** | ✅ reference | zsh | Full feature set incl. iTerm2 split / Finder / clipboard |
+| **Linux** | ✅ verified | bash·zsh | `cdf`/`sshf` fall back to plain `cd`/`ssh`; hub·SCAR·MCP identical |
+| **Windows 11** | 🚧 in progress | **Git Bash** | See [below](#windows-11-git-bash). Some items are unverified |
+
+**Post-install verification is the same everywhere:**
+
+```bash
+bash tdd/run-tdd.sh      # does it actually work on this machine (core + platform + deploy)
+bash sh/check.sh         # is it installed correctly
+```
+
+⚠️ The two differ in purpose — `check.sh` asks *is it installed*, `tdd` asks *does it run on this OS*.
+The three portability traps found on 2026-08-30 (nvm PATH, BSD `date`, hardcoded home path)
+were caught by **none** of `check.sh`'s checks.
+
 # Requirements
 
 * macOS (for the iTerm2 split / Finder / clipboard features of cdf/sshf). On Linux only plain `cd`/`ssh` works
@@ -103,6 +122,25 @@ python3 server.py
 
 The memo box at the top of `/projects-map` is editable right in the browser (online editing) and auto-saves to `_note.md` in the project root (gitignored — never committed). On a fresh install the file does not exist yet: a placeholder message is shown, and the file is created on your first edit.
 
+# Windows 11 (Git Bash)
+
+> 🚧 **Partly unverified.** Design rationale: [`_doc_arch/windows-port-design.md`](_doc_arch/windows-port-design.md).
+> After installing, `bash tdd/run-tdd.sh` runs the 8 `windows` cases and tells you what works.
+
+## Why Git Bash rather than WSL2
+
+What matters is **where Claude Code lives**. `sh/install.sh` invokes the `claude` CLI to wire up
+the plugin and MCP servers, so fpm must sit on the **same filesystem as Claude Code**.
+
+* Claude Code installed **natively on Windows** → **Git Bash** (default recommendation)
+* Claude Code installed **inside WSL** → install there and follow the Linux instructions
+
+Installing fpm in WSL while Claude Code runs on Windows makes the install *appear* to succeed
+while hooks and MCP servers **never see that Claude** — it fails silently.
+
+## 1) Prerequisites
+
+```bash
 # Update
 
 Already installed and want the latest? fpm reaches your machine in **two layers**, and updating only one leaves you half-stale (`cdf` current but hub/hooks old, or the reverse). `sh/update.sh` does both in one shot:

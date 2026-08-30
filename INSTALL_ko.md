@@ -6,6 +6,24 @@ date: 2026.08.26
 
 > 🌐 [English](INSTALL.md) | **한국어**
 
+# 지원 환경
+
+| OS | 상태 | 셸 | 비고 |
+| :--- | :--- | :--- | :--- |
+| **macOS** | ✅ 정본 | zsh | 전 기능. iTerm2 분할·Finder·클립보드 포함 |
+| **Linux** | ✅ 검증됨 | bash·zsh | `cdf`/`sshf` 는 단일 `cd`/`ssh` 로 축소. hub·SCAR·MCP 는 동일 |
+| **Windows 11** | 🚧 준비 중 | **Git Bash** | [아래 절](#windows-11-git-bash) 참조. 미실측 항목이 있다 |
+
+**설치 후 확인은 OS 공통이다:**
+
+```bash
+bash tdd/run-tdd.sh      # 이 머신에서 기능이 실제로 도는지 (core + 플랫폼 + deploy)
+bash sh/check.sh         # 설치 상태
+```
+
+⚠️ 두 검사는 역할이 다르다 — `check.sh` 는 *설치됐는가*, `tdd` 는 *이 OS 에서 실제로 도는가* 를 본다.
+2026-08-30 에 나온 이식 함정 셋(nvm PATH·BSD `date`·홈 절대경로)은 **`check.sh` 로는 하나도 안 잡혔다**.
+
 # 요구 사항
 
 * macOS (cdf/sshf 의 iTerm2 분할·Finder·클립보드 기능). Linux 는 단일 `cd`/`ssh` 만 동작
@@ -103,6 +121,25 @@ python3 server.py
 
 `/projects-map` 상단의 메모 박스는 브라우저에서 바로 수정(온라인 편집)할 수 있고, 프로젝트 루트의 `_note.md` 에 자동 저장됩니다 (gitignore 대상 — 커밋되지 않음). 처음 설치 직후에는 파일이 없어 안내 문구만 표시되고, 첫 입력 시 생성됩니다.
 
+# Windows 11 (Git Bash)
+
+> 🚧 **미실측 구간이 있다.** 설계·판정 근거는 [`_doc_arch/windows-port-design.md`](_doc_arch/windows-port-design.md).
+> 설치 후 `bash tdd/run-tdd.sh` 가 `windows` 케이스 8종을 돌려 무엇이 되고 안 되는지 알려준다.
+
+## 왜 WSL2 가 아니라 Git Bash 인가
+
+**Claude Code 가 어디에 있느냐**가 기준이다. `sh/install.sh` 는 `claude` CLI 를 호출해 플러그인과
+MCP 서버를 배선하므로, fpm 은 **Claude Code 와 같은 파일시스템**에 있어야 한다.
+
+* Claude Code 를 **Windows 네이티브**로 쓴다 → **Git Bash** (기본 권장)
+* Claude Code 를 **WSL 안**에 설치했다 → WSL 에 설치하고 **Linux 절차**를 따른다
+
+WSL 에 fpm 을 깔면서 Claude Code 는 Windows 에 두면, 설치는 "성공" 하는데 hook·MCP 가
+**다른 쪽 Claude 를 못 본다** — 아무 오류 없이 그냥 연결되지 않는다.
+
+## 1) 사전 준비
+
+```bash
 # 갱신
 
 이미 설치한 뒤 최신으로 올릴 때. fpm 은 머신에 **두 계층**으로 도착하며, 한쪽만 갱신하면 반쪽 상태가 됨(`cdf` 는 최신인데 hub·hook 은 구버전, 혹은 그 반대). `sh/update.sh` 가 둘을 한 번에 처리함:
