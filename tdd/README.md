@@ -21,7 +21,8 @@ date: 2026.08.30
 | [`machines.yml`](machines.yml) | 머신 명부 — 이름·플랫폼·역할 |
 | [`cases/core.yml`](cases/core.yml) | **전 플랫폼 공통** — 어디서든 통과해야 하는 것 |
 | [`cases/macos.yml`](cases/macos.yml) · [`linux.yml`](cases/linux.yml) · [`windows.yml`](cases/windows.yml) | 플랫폼 전용 |
-| [`run-tdd.sh`](run-tdd.sh) | 러너 — 현재 플랫폼을 판정해 `core` + 해당 플랫폼 케이스를 돈다 |
+| [`cases/deploy.yml`](cases/deploy.yml) | **배포 체인 무결성** — 번들 동기·무결성 매니페스트·gitignore 앵커·i18n parity·tagcheck·버전 정합. 전부 실제로 사고가 났던 지점이다 |
+| [`run-tdd.sh`](run-tdd.sh) | 러너 — `core` + 해당 플랫폼 + `deploy` 를 돈다 |
 
 # 사용
 

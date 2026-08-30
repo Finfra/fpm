@@ -85,8 +85,12 @@ print(d['cases'][$i].get('expect','exit0'))")
 }
 
 case "$ONLY" in
+  # 기본: core(공통) → 플랫폼 → deploy(배포 체인).
+  #   deploy 는 저작 머신에서만 의미 있는 항목을 포함하지만, 소비자에서도
+  #   무결성·버전 정합은 유효하다. 역할이 아닌 항목은 케이스가 skip 을 낸다.
   "")     run_file "$TDD_DIR/cases/core.yml" "core"
-          run_file "$TDD_DIR/cases/$CASE_PLATFORM.yml" "$CASE_PLATFORM" ;;
+          run_file "$TDD_DIR/cases/$CASE_PLATFORM.yml" "$CASE_PLATFORM"
+          run_file "$TDD_DIR/cases/deploy.yml" "deploy" ;;
   *)      run_file "$TDD_DIR/cases/$ONLY.yml" "$ONLY" ;;
 esac
 

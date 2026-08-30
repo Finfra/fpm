@@ -6,17 +6,27 @@
 #
 # 읽기 전용 보장:
 #   - 실행하는 git 하위명령은 rev-parse / status --porcelain / rev-list / stash list 뿐 (조회 전용)
-#   - 네트워크 접근 없음 (fetch 하지 않음) → ahead/behind 는 **로컬 ref 기준**. 원격 실태와
+#   - git fetch 하지 않음 → ahead/behind 는 **로컬 ref 기준**. 원격 실태와
 #     다를 수 있으므로 정확한 비교가 필요하면 사용자가 직접 fetch 후 재실행한다
+#   - @host 조회 시에만 ssh 로 나간다. 그때도 원격에서 실행하는 것은 본 스크립트의
+#     조회 전용 경로뿐이며, 원격 repo 를 변경하지 않는다 (git fetch 도 하지 않음)
 #   - -c core.fsmonitor=false : FUSE·네트워크 마운트 repo 의 인덱스 손상 회피
 #     (git-index-integrity-rules — fsmonitor 데몬이 붙지 못하는 마운트에서 인덱스가 깨진 실사례)
 #
 # 사용:
 #   bash sh/fpm-git-status.sh              전체 등록 프로젝트
 #   bash sh/fpm-git-status.sh 1 3 11-16    번호·범위 지정
+#   bash sh/fpm-git-status.sh 1@fg1 @ma    원격 머신 조회 (번호@host / @host=그 머신 전체)
 #   bash sh/fpm-git-status.sh --dirty      변경/이상 있는 프로젝트만
 #   bash sh/fpm-git-status.sh --md         markdown 표로 출력 (문서·hub 렌더용)
 #   bash sh/fpm-git-status.sh --no-color   ANSI 색 제거
+#
+# 원격 조회(@host):
+#   - 번호→경로 해석은 **그 머신의 인덱스**가 한다. 머신마다 같은 번호가 다른 프로젝트를
+#     가리키므로(jm4 prj1=___pm / fg1 prj1=fpm) 로컬 인덱스로 해석하면 엉뚱한 곳을 본다
+#   - 원격 스크립트를 찾아 --md 로 실행하고 그 표를 파싱해 한 표로 합친다.
+#     원격 스크립트가 구버전이어도 --md 는 원래 지원하므로 하위호환된다
+#   - 원격 인자가 하나라도 있으면 출력에 '머신' 열이 붙는다 (없으면 기존과 동일)
 #
 # 종료코드: 0=조회 성공(이상 유무와 무관) / 1=인덱스 베이스 경로 확정 실패
 set -uo pipefail
@@ -24,19 +34,21 @@ set -uo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 
 # ── 옵션 파싱 ────────────────────────────────────────────────
-ONLY_DIRTY=0; AS_MD=0; USE_COLOR=1; ARGS=()
+ONLY_DIRTY=0; AS_MD=0; USE_COLOR=1; ARGS=(); RARGS=()
 for a in "$@"; do
     case "$a" in
         --dirty)    ONLY_DIRTY=1 ;;
         --md)       AS_MD=1; USE_COLOR=0 ;;
         --no-color) USE_COLOR=0 ;;
         -h|--help)
-            sed -n '2,26p' "${BASH_SOURCE[0]:-$0}" | sed 's/^# \{0,1\}//'
+            sed -n '2,36p' "${BASH_SOURCE[0]:-$0}" | sed 's/^# \{0,1\}//'
             exit 0 ;;
         all)        ;;                       # 기본값과 동일 — 무시
+        *@*)        RARGS+=("$a") ;;         # 번호@host / @host — 원격 조회
         *)          ARGS+=("$a") ;;
     esac
 done
+HAS_REMOTE=0; [ ${#RARGS[@]} -gt 0 ] && HAS_REMOTE=1
 [ -t 1 ] || USE_COLOR=0                      # 파이프·리다이렉트면 색 끔
 
 if [ "$USE_COLOR" = 1 ]; then
@@ -83,20 +95,21 @@ prj_name() {
 }
 
 # ── 프로젝트 1건 조사 → TAB 구분 레코드 출력 ─────────────────
-#   prj ⟂ 이름 ⟂ 경로 ⟂ 브랜치 ⟂ 원격차이 ⟂ 변경 ⟂ 비고 ⟂ 등급(ok|dirty|warn|skip)
+#   host ⟂ prj ⟂ 이름 ⟂ 경로 ⟂ 브랜치 ⟂ 원격차이 ⟂ 변경 ⟂ 비고 ⟂ 등급(ok|dirty|warn|skip)
+#   host 는 로컬이면 빈 문자열. 등급은 항상 **마지막 필드**라 ${rec##*US} 로 뽑는다
 #   구분자는 US(0x1f) — TAB 은 IFS 공백류라 빈 필드(비고 없음)가 뭉개져 컬럼이 한 칸씩 밀린다
 inspect() {
     local n="$1" idx="$BASE/$n" path name branch track chg note grade
     name=$(prj_name "$n")
 
-    [ -f "$idx" ] || { printf '%s\x1f%s\x1f-\x1f-\x1f-\x1f-\x1f%s\x1fskip\n' "$n" "$name" "인덱스 파일 없음"; return; }
+    [ -f "$idx" ] || { printf '\x1f%s\x1f%s\x1f-\x1f-\x1f-\x1f-\x1f%s\x1fskip\n' "$n" "$name" "인덱스 파일 없음"; return; }
     path=$(sed 's#^~#'"$HOME"'#' "$idx" | head -1)
-    [ -d "$path" ] || { printf '%s\x1f%s\x1f%s\x1f-\x1f-\x1f-\x1f%s\x1fskip\n' "$n" "$name" "${path/#$HOME/~}" "경로 부재"; return; }
+    [ -d "$path" ] || { printf '\x1f%s\x1f%s\x1f%s\x1f-\x1f-\x1f-\x1f%s\x1fskip\n' "$n" "$name" "${path/#$HOME/~}" "경로 부재"; return; }
 
     local G=(git -c core.fsmonitor=false -C "$path")
     local top
     top=$("${G[@]}" rev-parse --show-toplevel 2>/dev/null) || {
-        printf '%s\x1f%s\x1f%s\x1f-\x1f-\x1f-\x1f%s\x1fskip\n' "$n" "$name" "${path/#$HOME/~}" "git repo 아님"; return; }
+        printf '\x1f%s\x1f%s\x1f%s\x1f-\x1f-\x1f-\x1f%s\x1fskip\n' "$n" "$name" "${path/#$HOME/~}" "git repo 아님"; return; }
 
     note=""; grade="ok"
 
@@ -161,12 +174,93 @@ inspect() {
     stash=$("${G[@]}" stash list 2>/dev/null | wc -l | tr -d ' ')
     [ "${stash:-0}" -gt 0 ] && note="${note:+$note · }stash $stash"
 
-    printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' \
+    printf '\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' \
         "$n" "$name" "${path/#$HOME/~}" "$branch" "$track" "$chg" "$note" "$grade"
+}
+
+# ── 원격 조회 (@host) ────────────────────────────────────────
+#   번호→경로 해석은 **원격 인덱스**가 한다. 로컬 인덱스로 풀면 머신마다 같은 번호가
+#   다른 프로젝트를 가리켜 엉뚱한 repo 를 본다(jm4 prj1=___pm / fg1 prj1=fpm).
+#   원격에서 본 스크립트를 찾아 --md 로 돌리고, 그 표를 파싱해 레코드로 되돌린다.
+#   --md 는 구버전에도 있으므로 원격 스크립트가 낡아도 동작한다(하위호환).
+SSH_TIMEOUT="${FPM_GS_SSH_TIMEOUT:-25}"
+
+remote_launcher() {
+    # 원격에서 실행할 부트스트랩. 스크립트 위치를 4단계로 탐색한다.
+    cat <<'RL'
+for c in "${FPM_BASE:-/nonexistent}/sh/fpm-git-status.sh" \
+         "$HOME/_git/___pm/sh/fpm-git-status.sh" \
+         "$HOME/_git/fpm/sh/fpm-git-status.sh"; do
+    [ -f "$c" ] && exec bash "$c" "$@"
+done
+if [ -f "$HOME/.info/__pmBasePath.txt" ]; then
+    __b=$(eval echo "$(cat "$HOME/.info/__pmBasePath.txt")")
+    __r="$(dirname "$__b")/sh/fpm-git-status.sh"
+    [ -f "$__r" ] && exec bash "$__r" "$@"
+fi
+echo "__FPM_GS_NO_SCRIPT__" >&2
+exit 9
+RL
+}
+
+# md 표 1행 → 등급 재판정 (원격 출력에는 등급 칸이 없다)
+regrade() {
+    local branch="$1" chg="$2" note="$3"
+    case "$note" in *"git repo 아님"*|*"경로 부재"*|*"인덱스 파일 없음"*) echo skip; return ;; esac
+    case "$chg"    in *'!'*) echo warn; return ;; esac
+    case "$branch" in detached@*) echo warn; return ;; esac
+    case "$note"   in *중단*|*"상위 repo"*) echo warn; return ;; esac
+    [ "$chg" = "clean" ] && { echo ok; return; }
+    echo dirty
+}
+
+collect_remote() {
+    local host="$1"; shift
+    local out rc line
+    out=$(printf '%s' "$(remote_launcher)" \
+          | timeout "$SSH_TIMEOUT" ssh -o ConnectTimeout=8 -o BatchMode=yes "$host" \
+              "bash -s -- --md --no-color $*" 2>&1)
+    rc=$?
+    if [ $rc -ne 0 ] || printf '%s' "$out" | grep -q '__FPM_GS_NO_SCRIPT__'; then
+        local why="ssh 실패(rc=$rc)"
+        printf '%s' "$out" | grep -q '__FPM_GS_NO_SCRIPT__' && why="원격에 fpm-git-status.sh 없음"
+        # '@host' 전체 조회는 번호 인자가 없다 — 실패 행의 prj 칸을 비워두지 않는다
+        if [ $# -eq 0 ] || [ -z "${1:-}" ]; then
+            printf '%s\x1f%s\x1f-\x1f-\x1f-\x1f-\x1f-\x1f%s\x1fskip\n' "$host" "(전체)" "$why"
+        else
+            for n in "$@"; do
+                [ -n "$n" ] || continue
+                printf '%s\x1f%s\x1f-\x1f-\x1f-\x1f-\x1f-\x1f%s\x1fskip\n' "$host" "$n" "$why"
+            done
+        fi
+        return
+    fi
+    # | prj | 이름 | `브랜치` | 원격 | 변경 | 비고 |  → 레코드
+    while IFS= read -r line; do
+        case "$line" in
+            '| prj |'*|'| :--'*|'') continue ;;
+            '|'*) ;;
+            *) continue ;;
+        esac
+        local n name branch track chg note grade
+        n=$(     printf '%s' "$line" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2}')
+        name=$(  printf '%s' "$line" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$3); print $3}')
+        branch=$(printf '%s' "$line" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$4); gsub(/`/,"",$4); print $4}')
+        track=$( printf '%s' "$line" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$5); print $5}')
+        chg=$(   printf '%s' "$line" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$6); print $6}')
+        note=$(  printf '%s' "$line" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$7); print $7}')
+        [ -n "$n" ] || continue
+        grade=$(regrade "$branch" "$chg" "$note")
+        printf '%s\x1f%s\x1f%s\x1f-\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' \
+            "$host" "$n" "$name" "$branch" "$track" "$chg" "$note" "$grade"
+    done <<<"$out"
 }
 
 # ── 수집 ─────────────────────────────────────────────────────
 ROWS=()
+# 로컬 인자가 없고 원격 인자만 있으면 로컬 전체 조회를 하지 않는다
+# (그냥 두면 '@fg1' 한 개 물었는데 로컬 43건이 딸려 나온다)
+if [ ${#ARGS[@]} -eq 0 ] && [ "$HAS_REMOTE" = 1 ]; then NUMS=(); fi
 for n in "${NUMS[@]}"; do
     rec=$(inspect "$n")
     grade="${rec##*$'\x1f'}"
@@ -175,28 +269,76 @@ for n in "${NUMS[@]}"; do
     ROWS+=("$rec")
 done
 
+# 원격: host 별로 번호를 모아 ssh 1회씩만 실행한다 (repo 마다 접속하지 않는다)
+if [ "$HAS_REMOTE" = 1 ]; then
+    RHOSTS=()
+    for spec in "${RARGS[@]}"; do
+        h="${spec##*@}"; [ -n "$h" ] || continue
+        printf '%s\n' "${RHOSTS[@]:-}" | grep -qx "$h" || RHOSTS+=("$h")
+    done
+    for h in "${RHOSTS[@]}"; do
+        rnums=()
+        for spec in "${RARGS[@]}"; do
+            [ "${spec##*@}" = "$h" ] || continue
+            p="${spec%@*}"
+            [ -n "$p" ] || continue                       # '@host' = 그 머신 전체
+            if [[ "$p" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+                for ((i=${BASH_REMATCH[1]}; i<=${BASH_REMATCH[2]}; i++)); do rnums+=("$i"); done
+            else
+                rnums+=("$p")
+            fi
+        done
+        while IFS= read -r rec; do
+            [ -n "$rec" ] || continue
+            grade="${rec##*$'\x1f'}"
+            [ "$ONLY_DIRTY" = 1 ] && [ "$grade" = "ok" ] && continue
+            [ "$ONLY_DIRTY" = 1 ] && [ "$grade" = "skip" ] && continue
+            ROWS+=("$rec")
+        done < <(collect_remote "$h" "${rnums[@]:-}")
+    done
+fi
+
 # ── 출력 ─────────────────────────────────────────────────────
+MCOL=""; [ "$HAS_REMOTE" = 1 ] && MCOL="yes"   # 원격 인자 있을 때만 머신 열
 if [ "$AS_MD" = 1 ]; then
-    echo "| prj | 이름 | 브랜치 | 원격 | 변경 | 비고 |"
-    echo "| :-- | :--- | :----- | :--- | :--- | :--- |"
+    if [ -n "$MCOL" ]; then
+        echo "| 머신 | prj | 이름 | 브랜치 | 원격 | 변경 | 비고 |"
+        echo "| :--- | :-- | :--- | :----- | :--- | :--- | :--- |"
+    else
+        echo "| prj | 이름 | 브랜치 | 원격 | 변경 | 비고 |"
+        echo "| :-- | :--- | :----- | :--- | :--- | :--- |"
+    fi
     for r in "${ROWS[@]}"; do
-        IFS=$'\x1f' read -r n name path branch track chg note grade <<<"$r"
-        echo "| $n | $name | \`$branch\` | $track | $chg | ${note:-} |"
+        IFS=$'\x1f' read -r host n name path branch track chg note grade <<<"$r"
+        if [ -n "$MCOL" ]; then
+            echo "| ${host:-local} | $n | $name | \`$branch\` | $track | $chg | ${note:-} |"
+        else
+            echo "| $n | $name | \`$branch\` | $track | $chg | ${note:-} |"
+        fi
     done
 else
     # bash printf 의 %-Ns 는 **바이트** 기준 패딩이다. 한글 1자 = 3바이트/표시폭 2 이므로
     # 표시폭 W 를 맞추려면 폭 인자를 W + (한글 글자수) 로 준다 (이름 18+2 · 브랜치 26+3 · …)
-    printf '%s%-4s %-20s %-29s %-14s %-11s %s%s\n' "$C_DIM" "prj" "이름" "브랜치" "원격" "변경" "비고" "$C_RST"
+    if [ -n "$MCOL" ]; then
+        printf '%s%-8s %-4s %-20s %-29s %-14s %-11s %s%s\n' "$C_DIM" "머신" "prj" "이름" "브랜치" "원격" "변경" "비고" "$C_RST"
+    else
+        printf '%s%-4s %-20s %-29s %-14s %-11s %s%s\n' "$C_DIM" "prj" "이름" "브랜치" "원격" "변경" "비고" "$C_RST"
+    fi
     for r in "${ROWS[@]}"; do
-        IFS=$'\x1f' read -r n name path branch track chg note grade <<<"$r"
+        IFS=$'\x1f' read -r host n name path branch track chg note grade <<<"$r"
         case "$grade" in
             ok)    col="$C_GRN" ;;
             dirty) col="$C_YEL" ;;
             warn)  col="$C_RED" ;;
             *)     col="$C_DIM" ;;
         esac
-        printf '%s%-4s %-18s %s%-26s%s %-12s %-9s %s%s\n' \
-            "$col" "$n" "$name" "$C_CYA" "$branch" "$col" "$track" "$chg" "${note:-}" "$C_RST"
+        if [ -n "$MCOL" ]; then
+            printf '%s%-8s %-4s %-18s %s%-26s%s %-12s %-9s %s%s\n' \
+                "$col" "${host:-local}" "$n" "$name" "$C_CYA" "$branch" "$col" "$track" "$chg" "${note:-}" "$C_RST"
+        else
+            printf '%s%-4s %-18s %s%-26s%s %-12s %-9s %s%s\n' \
+                "$col" "$n" "$name" "$C_CYA" "$branch" "$col" "$track" "$chg" "${note:-}" "$C_RST"
+        fi
     done
 fi
 
@@ -211,3 +353,4 @@ done
 echo
 printf '%s\n' "총 ${tot}건 · ✅ clean ${n_ok} · ✏️ 변경 ${n_dirty} · ⚠️ 주의 ${n_warn} · — 제외 ${n_skip}"
 printf '%s\n' "변경 표기: +staged ~unstaged ?untracked !충돌 · 원격: ^ahead v behind (fetch 안 함 — 로컬 ref 기준)"
+[ "$HAS_REMOTE" = 1 ] && printf '%s\n' "@host 행의 번호는 **그 머신의 인덱스** 기준이다 (같은 번호라도 머신마다 다른 프로젝트일 수 있음)"

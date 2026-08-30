@@ -1,0 +1,73 @@
+# 배포 체인 무결성 (Issue431)
+#   여기 있는 것은 전부 **실제로 사고가 났던 지점**이다. 저작 머신에서만 의미 있는
+#   항목은 소비자 머신에서 graceful skip 한다(도구 부재 = 그 역할이 아님).
+
+cases:
+  - id: bundle-in-sync
+    desc: 플러그인 번들이 라이브 소스와 동기다
+    why: |
+      번들(plugins/fpm-core/)은 라이브(services·hooks 등)의 사본이다. 표류하면
+      forward 가 중단되고, 놓치면 **소비자만 옛 코드를 쓴다**. 2026-08-30 에
+      여러 번 이 게이트에 걸렸다 — 걸린 것이 정상 동작이다.
+    run: |
+      s="$REPO_DIR/scripts/fpm-bundle-sync.sh"
+      [ -x "$s" ] || { echo "skip(저작 머신 전용)"; exit 0; }
+      "$s" --check 2>&1 | grep -q "표류 없음" && echo ok || echo "DRIFT"
+    expect: nonempty
+
+  - id: integrity-manifest
+    desc: 설치본 무결성 매니페스트가 존재한다
+    why: |
+      Issue422 부작용 — AUTOBUMP 를 끈 뒤 **번호는 같은데 내용이 다른** 상태가
+      생겼다. claude plugin update 는 번호만 보므로 갱신하지 않는다.
+      매니페스트가 그 '②형' 을 잡는다.
+    run: |
+      f="$REPO_DIR/plugins/fpm-core/.fpm-integrity.json"
+      [ -f "$f" ] && echo ok || echo "skip(번들 미보유)"
+    expect: nonempty
+
+  - id: gitignore-readme-anchor
+    desc: 새 하위 README 가 추적 가능하다 (앵커 확인)
+    why: |
+      Issue430 — .gitignore 와 publishable-policy 양쪽에 **앵커 없는
+      README.md** 가 있어 모든 하위를 덮었다. 이미 tracked 인 것은 멀쩡해서
+      **새 폴더를 만들 때만 조용히 누락**됐다. tdd/README.md 가 그 첫 희생자였고
+      git add 가 거부할 때까지 아무도 몰랐다.
+    run: |
+      git -C "$REPO_DIR" check-ignore -q tdd/README.md 2>/dev/null && echo "IGNORED" || echo ok
+    expect: contains:ok
+
+  - id: i18n-parity
+    desc: ko·en 번역 카탈로그가 같은 키를 갖는다
+    why: |
+      Issue426 — 설정창 설명은 **번역 키가 스키마 comment 보다 우선**한다.
+      한쪽만 고치면 다른 언어에서 옛 문구가 그대로 보인다.
+    run: |
+      t="$REPO_DIR/services/hub/test_i18n_parity.py"
+      [ -f "$t" ] || { echo "skip(테스트 미보유)"; exit 0; }
+      python3 "$t" 2>&1 | grep -qE "0 failed" && echo ok || echo FAIL
+    expect: nonempty
+
+  - id: tagcheck-hook
+    desc: Issue 태그 정합 hook 이 살아 있다
+    why: |
+      코드 주석의 (IssueN) 은 **공개 digest 반출 스위치**다 — 오타 1건이
+      사설 이슈를 공개한다. 오늘 이 hook 이 두 번 커밋을 막았고 둘 다 옳았다
+      (미등록 번호 · prj 접두 누락).
+    run: |
+      ls "$REPO_DIR"/.git/hooks/pre-commit >/dev/null 2>&1 && echo ok \
+        || { ls "$REPO_DIR"/hooks/*tagcheck* >/dev/null 2>&1 && echo ok || echo "skip(hook 미배선)"; }
+    expect: nonempty
+
+  - id: version-consistency
+    desc: VERSION 과 플러그인 버전이 일치한다
+    why: |
+      R1(fpm-gitflow.md) — 브랜치명이 곧 릴리스 라인 선언이다. VERSION·
+      plugin.json·marketplace.json 이 갈리면 소비자가 무엇을 받는지 알 수 없다.
+    run: |
+      v=$(cat "$REPO_DIR/VERSION" 2>/dev/null | tr -d ' \n')
+      pj="$REPO_DIR/plugins/fpm-core/.claude-plugin/plugin.json"
+      [ -f "$pj" ] || { echo "skip(번들 미보유)"; exit 0; }
+      pv=$(grep -m1 -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "$pj" | sed 's/.*"\([0-9][^"]*\)"/\1/')
+      [ "$v" = "$pv" ] && echo ok || echo "MISMATCH: VERSION=$v plugin=$pv"
+    expect: contains:ok
