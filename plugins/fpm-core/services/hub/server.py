@@ -2251,6 +2251,215 @@ def _htm_state_file(path: str) -> tuple:
     return state_dir, os.path.join(state_dir, f"{h}__{_htm_label(path)}")
 
 
+# ── Issue420: aoa-mq 큐 수집 ──────────────────────────────────────────────
+# 경로 knob 은 tick(mcp/aoa-mq/aoa-mq-tick.sh:33)과 **같은 것**을 쓴다. 하드코딩하면
+#   prj5 레거시 큐(~/_git/___common/data/aoa/mq)를 보게 되어 화면과 실제가 갈린다.
+MQ_DIR = os.environ.get("AOA_MQ_DIR") or os.path.join(
+    os.path.expanduser("~"), ".claude", "data", "aoa", "mq")
+MQ_DONE_LIMIT = 40          # 종결분은 최근 N 건만 — 전량이면 화면이 과거로 덮인다
+
+def _mq_read_dir(d, limit=None):
+    """큐 디렉토리의 *.json 을 dict 목록으로. 깨진 파일은 건너뛰되 개수는 센다."""
+    out, broken = [], 0
+    try:
+        names = sorted(os.listdir(d), reverse=True)
+    except OSError:
+        return out, broken
+    for nm in names:
+        if not nm.endswith(".json"):
+            continue
+        if limit is not None and len(out) >= limit:
+            break
+        try:
+            with open(os.path.join(d, nm), encoding="utf-8") as fh:
+                item = json.load(fh)
+        except Exception:
+            broken += 1
+            continue
+        if isinstance(item, dict):
+            item.setdefault("id", nm[:-5])
+            out.append(item)
+    return out, broken
+
+def _mq_collect():
+    """미종결 + 최근 종결분. 수집 실패는 숨기지 않고 error 로 올린다(조용한 0 금지)."""
+    q, qb = _mq_read_dir(os.path.join(MQ_DIR, "queue"))
+    d, db = _mq_read_dir(os.path.join(MQ_DIR, "queue_done"), MQ_DONE_LIMIT)
+    for it in q:
+        it["_bucket"] = "queue"
+    for it in d:
+        it["_bucket"] = "done"
+    err = None
+    if not os.path.isdir(MQ_DIR):
+        err = "큐 디렉토리 없음: %s (AOA_MQ_DIR 확인)" % MQ_DIR
+    elif qb or db:
+        err = "JSON 파싱 실패 %d건 (queue %d · done %d)" % (qb + db, qb, db)
+    return {
+        "ok": err is None, "error": err, "mq_dir": MQ_DIR,
+        "items": q + d, "open_count": len(q), "done_count": len(d),
+        "ts": int(time.time()),
+    }
+
+
+# Issue420: /mq 페이지 template. hub 와 같은 "서버 내장" 방식 — 별도 정적 파일을 두면
+#   배포 경로가 하나 늘고 hub 셸의 CSS·다크모드와 갈린다.
+_MQ_PAGE_HTML = r"""<!DOCTYPE html>
+<html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>aoa-mq — 예약 큐 관리</title>
+<style>
+:root{--bg:#fff;--fg:#1a1a1a;--dim:#666;--line:#e3e3e3;--card:#fafafa;--accent:#3b6fd4}
+@media(prefers-color-scheme:dark){:root{--bg:#1b1b1d;--fg:#e8e8e8;--dim:#9a9a9a;--line:#333;--card:#232326;--accent:#7aa2f7}}
+*{box-sizing:border-box}
+body{margin:0;padding:1rem 1.2rem;background:var(--bg);color:var(--fg);
+ font:14px/1.55 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",sans-serif}
+h1{font-size:1.15rem;margin:0 0 .2rem}
+.sub{color:var(--dim);font-size:.82rem;margin-bottom:.9rem}
+.bar{display:flex;flex-wrap:wrap;gap:.45rem;align-items:center;margin-bottom:.8rem;
+ padding:.6rem;background:var(--card);border:1px solid var(--line);border-radius:8px}
+.bar input,.bar select{padding:.32rem .5rem;border:1px solid var(--line);border-radius:5px;
+ background:var(--bg);color:var(--fg);font-size:.85rem}
+.bar input[type=search]{min-width:210px;flex:1}
+.chip{padding:.2rem .5rem;border-radius:99px;font-size:.74rem;border:1px solid var(--line);color:var(--dim)}
+table{width:100%;border-collapse:collapse;font-size:.85rem}
+th,td{padding:.5rem .55rem;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{font-size:.76rem;color:var(--dim);cursor:pointer;user-select:none;white-space:nowrap}
+th:hover{color:var(--accent)}
+td.msg{max-width:640px}
+.id{font-family:ui-monospace,Menlo,monospace;font-size:.74rem;color:var(--dim);white-space:nowrap}
+.st{padding:.12rem .42rem;border-radius:4px;font-size:.72rem;white-space:nowrap}
+.st-due{background:#c0392b22;color:#c0392b}
+.st-pending{background:#8e44ad22;color:#8e44ad}
+.st-done_unacked{background:#27ae6022;color:#27ae60}
+.st-done,.st-confirmed,.st-dismissed{background:#7f8c8d22;color:#7f8c8d}
+.acts{display:flex;gap:.25rem;flex-wrap:wrap}
+button.a{padding:.22rem .45rem;font-size:.74rem;border:1px solid var(--line);border-radius:5px;
+ background:var(--bg);color:var(--fg);cursor:pointer;white-space:nowrap}
+button.a:hover{border-color:var(--accent);color:var(--accent)}
+button.a[disabled]{opacity:.45;cursor:default}
+.note{margin-top:.9rem;padding:.6rem .7rem;background:var(--card);border-left:3px solid var(--accent);
+ border-radius:0 6px 6px 0;font-size:.8rem;color:var(--dim)}
+.err{background:#c0392b18;border-left-color:#c0392b;color:#c0392b}
+tr.acked{opacity:.5}
+.cnt{color:var(--dim);font-size:.8rem;margin-left:auto}
+</style></head><body>
+<h1>📮 aoa-mq — 예약 큐</h1>
+<div class="sub" id="sub">불러오는 중…</div>
+
+<div class="bar">
+  <input type="search" id="kw" placeholder="키워드 (본문·id·출처 전문 검색)">
+  <select id="f-status"><option value="">상태 전체</option></select>
+  <select id="f-type"><option value="">유형 전체</option></select>
+  <select id="f-source"><option value="">출처 전체</option></select>
+  <select id="f-bucket">
+    <option value="queue">미종결만</option>
+    <option value="">전체(종결 포함)</option>
+    <option value="done">종결만</option>
+  </select>
+  <span class="cnt" id="cnt"></span>
+</div>
+
+<table><thead><tr>
+  <th data-k="id">ID</th>
+  <th data-k="status">상태</th>
+  <th data-k="type">유형</th>
+  <th data-k="due_ts">마감</th>
+  <th data-k="ask_count">질의</th>
+  <th data-k="source">출처</th>
+  <th>내용</th>
+  <th>처리</th>
+</tr></thead><tbody id="rows"></tbody></table>
+
+<div class="note" id="note">
+  처리 버튼은 <b>즉시 종결이 아니라 접수</b>다 — 다음 tick(≤30분)이 소비해 상태가 바뀐다.
+  기존 <code>/answer?sid=aoa-mq</code> 경로를 그대로 쓰므로 폼·CLI 와 같은 배관이다.
+</div>
+
+<script>
+let DATA=[], SORT={k:"due_ts",asc:true}, ACKED={};
+const $=id=>document.getElementById(id);
+const esc=t=>String(t==null?"":t).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+async function load(){
+  const r=await fetch("/mq-data",{cache:"no-store"});
+  const d=await r.json();
+  DATA=d.items||[];
+  $("sub").textContent=`미종결 ${d.open_count} · 종결(최근) ${d.done_count} · ${d.mq_dir}`;
+  if(!d.ok){ const n=$("note"); n.className="note err"; n.textContent="⚠️ "+(d.error||"수집 실패"); }
+  fillOpts("f-status","status"); fillOpts("f-type","type"); fillOpts("f-source","source");
+  render();
+}
+function fillOpts(el,key){
+  const sel=$(el), cur=sel.value;
+  const vals=[...new Set(DATA.map(x=>x[key]).filter(Boolean))].sort();
+  sel.innerHTML=sel.options[0].outerHTML+vals.map(v=>`<option>${esc(v)}</option>`).join("");
+  sel.value=cur;
+}
+function pass(x){
+  const kw=$("kw").value.trim().toLowerCase();
+  if(kw){ const hay=[x.id,x.message,x.source,x.status,x.type].join(" ").toLowerCase();
+          if(!hay.includes(kw)) return false; }
+  for(const [el,key] of [["f-status","status"],["f-type","type"],["f-source","source"]]){
+    const v=$(el).value; if(v && x[key]!==v) return false;
+  }
+  const b=$("f-bucket").value; if(b && x._bucket!==b) return false;
+  return true;
+}
+function render(){
+  const rows=DATA.filter(pass).sort((a,b)=>{
+    let A=a[SORT.k], B=b[SORT.k];
+    if(SORT.k==="ask_count"){A=+A||0;B=+B||0;} else {A=String(A||"");B=String(B||"");}
+    return (A<B?-1:A>B?1:0)*(SORT.asc?1:-1);
+  });
+  $("cnt").textContent=`${rows.length} / ${DATA.length} 건`;
+  $("rows").innerHTML=rows.map(x=>{
+    const done=x._bucket==="done", ak=ACKED[x.id];
+    const acts=done?'<span class="chip">종결됨</span>':
+      (ak?`<span class="chip">${esc(ak)} 접수 — tick 대기</span>`:
+      `<div class="acts">
+        <button class="a" onclick="act('${x.id}','confirm',this)">완료</button>
+        <button class="a" onclick="act('${x.id}','snooze',this)">연기</button>
+        <button class="a" onclick="act('${x.id}','dismiss',this)">취소</button>
+        <button class="a" onclick="act('${x.id}','ack',this)">확인</button>
+      </div>`);
+    return `<tr class="${ak?'acked':''}">
+      <td class="id">${esc(x.id)}</td>
+      <td><span class="st st-${esc(x.status||'')}">${esc(x.status||'-')}</span></td>
+      <td>${esc(x.type||'-')}</td>
+      <td class="id">${esc((x.due_ts||'-').replace('T',' '))}</td>
+      <td>${x.ask_count||0}</td>
+      <td>${esc(x.source||'-')}</td>
+      <td class="msg">${esc(x.message||'')}</td>
+      <td>${acts}</td></tr>`;
+  }).join("")||'<tr><td colspan="8" style="color:var(--dim);padding:1rem">조건에 맞는 항목이 없습니다.</td></tr>';
+}
+async function act(id,action,btn){
+  let arg="";
+  if(action==="snooze"){
+    const d=prompt("며칠 연기할까요?","1"); if(!d) return; arg=":"+d;
+  }
+  if(action==="dismiss" && !confirm("취소(드롭)하면 큐에서 제거됩니다. 진행할까요?")) return;
+  btn.closest(".acts").querySelectorAll("button").forEach(b=>b.disabled=true);
+  const q="aoa-mq-ack:"+id+":"+action+arg;
+  try{
+    const r=await fetch("/mq-ack",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({question:q})});
+    const j=await r.json();
+    if(!j.ok) throw new Error(j.error||"실패");
+    ACKED[id]=action; render();
+  }catch(e){
+    alert("접수 실패: "+e.message);
+    btn.closest(".acts").querySelectorAll("button").forEach(b=>b.disabled=false);
+  }
+}
+["kw","f-status","f-type","f-source","f-bucket"].forEach(i=>$(i).addEventListener("input",render));
+document.querySelectorAll("th[data-k]").forEach(th=>th.onclick=()=>{
+  const k=th.dataset.k; SORT.asc = SORT.k===k ? !SORT.asc : true; SORT.k=k; render();
+});
+load(); setInterval(load,60000);
+</script></body></html>"""
+
+
 def _projects_list_with_htm() -> list:
     """_load_projects_list() 결과에 htm off 상태 주입. htm 상태는 Projects.md mtime 과
     무관하게 변하므로 캐시 밖에서 매 요청 계산 (state 파일은 소수 → IO 경량).
@@ -4652,6 +4861,13 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/projects-list":
             self._send_json(200, {"projects": _projects_list_with_htm()})
             return
+        # Issue420: aoa-mq 전용 관리 페이지 + 데이터
+        if parsed.path == "/mq":
+            self._handle_mq_page(parsed)
+            return
+        if parsed.path == "/mq-data":
+            self._send_json(200, _mq_collect())
+            return
         # Issue66: GET /issue?prj=N&id=M — Issue.md 섹션 html 반환
         if parsed.path == "/issue":
             self._handle_issue(parsed)
@@ -4686,6 +4902,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/answer":
             self._handle_answer(parsed)
+            return
+        # Issue420: aoa-mq 처리 접수 (inbox 계약 재사용 — tick 이 소비)
+        if parsed.path == "/mq-ack":
+            self._handle_mq_ack(parsed)
             return
         if parsed.path == "/notify":
             self._handle_notify(parsed)
@@ -6801,6 +7021,65 @@ __WARN__
             sse_broadcast(HUB_SHELL_HASH, "evicted", {}, sid=old_cid)
         log(f"hub-shell claim — ip={ip} new_cid={cid} old_cid={old_cid}")
         self._send_json(200, {"status": "claimed"})
+
+    def _handle_mq_ack(self, parsed):
+        """Issue420: /mq 페이지의 처리 액션을 **tick 이 읽는 inbox 계약 그대로** 접수한다.
+
+        경로·형식이 기존 폼(`hub_htm_*_b_aoa-mq-ask.htm` → POST /answer?sid=aoa-mq)과 같다:
+          `{INBOX_ROOT}/{cwd_hash(큐 소유 cwd)}/aoa-mq/{ts}.json`
+          `[{"question":"aoa-mq-ack:<id>:<action>[:<arg>]","answers":[<action>]}]`
+        tick 의 consume_inbox() 가 이 시그니처만 소비하므로 별도 종결 경로가 생기지 않는다.
+
+        ⚠️ **여기서 큐 파일을 직접 고치지 않는다.** 상태 전이는 tick 의 finalize() 단일
+        지점이 소유한다 — 두 곳이 쓰면 ack_count·status 가 조용히 갈라진다.
+        """
+        try:
+            ln = int(self.headers.get("Content-Length") or 0)
+            payload = json.loads(self.rfile.read(ln).decode("utf-8")) if ln else {}
+        except Exception as e:
+            self._send_json(400, {"ok": False, "error": "본문 파싱 실패: %s" % e})
+            return
+        q = (payload or {}).get("question", "")
+        if not isinstance(q, str) or not q.startswith("aoa-mq-ack:"):
+            self._send_json(400, {"ok": False, "error": "시그니처 불일치(aoa-mq-ack: 필요)"})
+            return
+        parts = q.split(":")
+        if len(parts) < 3 or not parts[1] or parts[2] not in (
+                "confirm", "dismiss", "ack", "defer", "snooze"):
+            self._send_json(400, {"ok": False, "error": "action 이 유효하지 않음: %s" % q})
+            return
+        # 큐 소유 cwd = MQ_DIR 에서 `/data/aoa/mq` 를 걷어낸 것. tick 이 register 하는 cwd 와 같다.
+        owner = os.path.abspath(os.path.join(MQ_DIR, "..", "..", ".."))
+        inbox = os.path.join(INBOX_ROOT, cwd_hash(owner), "aoa-mq")
+        try:
+            os.makedirs(inbox, exist_ok=True)
+            fp = os.path.join(inbox, "%d-%s.json" % (int(time.time() * 1000), parts[1]))
+            with open(fp, "w", encoding="utf-8") as fh:
+                json.dump([{"question": q, "answers": [parts[2]]}], fh, ensure_ascii=False)
+        except OSError as e:
+            self._send_json(500, {"ok": False, "error": "inbox 기록 실패: %s" % e})
+            return
+        self._send_json(200, {"ok": True, "queued": q, "inbox": fp,
+                              "note": "다음 tick 이 소비해 상태가 전이된다"})
+
+    def _handle_mq_page(self, parsed):
+        """Issue420: aoa-mq 전용 관리 페이지. 목록만 있던 종전 mq_list_*.htm 과 달리
+        필터(속성·키워드)·정렬·처리 액션을 갖춘다.
+
+        🔑 ack 는 **기존 `/answer?sid=aoa-mq` 를 재사용**한다. tick 의 consume_inbox() 가
+        `aoa-mq-ack:<id>:<action>[:<arg>]` 시그니처를 소비하므로, 여기서 별도 종결 API 를
+        만들면 배관이 둘로 갈라져 어느 쪽이 정본인지 알 수 없게 된다.
+        ⚠️ 액션은 **즉시 종결이 아니다** — inbox 에 접수되고 다음 tick 이 소비한다.
+        화면이 "접수됨"과 "종결됨"을 구분해 보여야 사용자가 눌렀는데 안 변한다고 오해하지 않는다.
+        """
+        body = _MQ_PAGE_HTML
+        enc = body.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(enc)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(enc)
 
     def _handle_hub_shell(self, parsed):
         """Issue194: hub 내부 탭 쉘 페이지. 탭 바 + iframe viewport. /hub-events SSE 로
@@ -11355,6 +11634,10 @@ section.sec-collapsed .htm-bar-right { display: none; }
     <div class="sub" id="hub-important">{T:common.loading}</div>
   </div>
   <div class="header-actions">
+    <!-- Issue420: aoa-mq 전용 페이지. Projects **왼쪽** 배치(사용자 지정). 링크로 두는 이유는
+         새 탭 개방이 hub 셸의 탭 정책과 얽히지 않게 하기 위함 — 목록/처리는 독립 화면이 낫다. -->
+    <a class="btn-project-list" id="btn-mq" href="/mq" target="_blank" rel="noopener"
+       title="aoa-mq 예약 큐 — 필터·정렬·처리">📮 Aoa-mq</a>
     <button class="btn-project-list" id="btn-project-list" title="{T:projectList.openTitle}">📋 Projects</button>
     <a class="btn-project-list" id="btn-projects-map" href="/projects-map" target="_blank"
        data-title="Project Map" onclick="return fpmOpenInShell(event,this)"

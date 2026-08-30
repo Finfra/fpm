@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: 925f60cc37f3c19aa9c8c62a71e73285ad95627ccc2331528005d231ce828b59
+source_sha: 9540cda2469ffe843d277f86651f3bd1b9d45d311cf5fb2d300597aa141c7561
 ---
 
 # 안내
@@ -27,6 +27,29 @@ source_sha: 925f60cc37f3c19aa9c8c62a71e73285ad95627ccc2331528005d231ce828b59
 직접 편집하지 말 것 — `scripts/fpm-issue-digest.sh` 가 덮어쓴다.
 
 # 이슈 근거
+
+## Issue420: aoa-mq 전용 관리 페이지 — 목록만 있고 검색·정렬·처리를 할 수 없다 ✅
+* 목적: 현재 mq 를 다루는 수단이 셋인데 **어느 것도 "쌓인 것을 훑어보고 처리하는" 용도가 못 된다.** ⓐ 세션 넛지 배너는 건수만 알리고 클릭할 것이 없다 ⓑ tick 이 만드는 `hub_htm_*_b_aoa-mq-ask.htm` 폼은 **그 회차 due 항목만** 담고 세션이 활성이면 아예 안 뜬다 ⓒ `mq_list_*.htm` 은 **리스트 뿐**이라 검색·정렬·처리가 없다. 그 결과 미종결이 8건까지 쌓이고 `ask_count` 가 47회에 이른 항목이 생겼다
+* 구현 명세:
+    - ① **hub 헤더에 `📮 Aoa-mq` 버튼** — [`services/hub/server.py`](services/hub/server.py) 의 `📋 Projects`([L11358](services/hub/server.py#L11358)) **왼쪽**에 배치
+    - ② **`GET /mq`** — 전용 페이지. 서버 내장 template(hub 와 같은 방식)
+    - ③ **`GET /mq-data`** — 큐 JSON. `queue/`(미종결) + `queue_done/`(종결, 최근 N)를 함께 반환해 "처리한 것"도 볼 수 있게 한다
+    - ④ **필터** — 속성별(status·type·source·bot) + **유저 키워드**(message 전문 검색). 복수 조건 AND
+    - ⑤ **정렬** — due·created·ask_count·status 오름/내림
+    - ⑥ **처리 액션** — 완료(`confirm`)·연기(`snooze:<days>`)·취소(`dismiss`)·확인(`ack`)·닫기(`defer`)
+    - 🔑 **ack 는 기존 `/answer` 를 재사용한다** — `POST /answer?cwd=<큐 소유 cwd>&sid=aoa-mq` · body `[{question:"aoa-mq-ack:<id>:<action>[:<arg>]", answers:[action]}]`. tick 의 `consume_inbox()` 가 그 시그니처를 소비하므로 **새 종결 API 를 만들면 배관이 둘로 갈라진다**
+    - ⚠️ 큐 경로는 tick 과 **같은 knob** 을 쓴다 — `AOA_MQ_DIR`(기본 `~/.claude/data/aoa/mq`). 하드코딩하면 prj5 레거시 큐를 보게 될 수 있다
+    - ⚠️ 처리 결과는 **즉시 반영되지 않는다**(다음 tick 이 소비) — UI 가 "접수됨"과 "종결됨"을 구분해 표시해야 사용자가 눌렀는데 안 변한다고 오해하지 않는다
+    - 검증: 버튼이 `Projects` 왼쪽에 렌더 · `/mq` 가 미종결 8건 표시 · 키워드로 좁혀질 것 · 정렬 동작 · 액션 1건 실행 후 inbox 에 파일 생성 → 다음 tick 에서 종결 확인
+
+## Issue417: 버전이 커밋마다 소비된다 — 릴리스 단위를 표현하지 못한다 ✅
+* 목적: 2일간 버전이 **15회** 변경됐다(`v0.6.0` → `0.7.4`, auto-bump 9 + deploy 6). 그중 실제 배포는 6회다. 버전 번호가 *"무엇이 릴리스됐는가"* 를 더 이상 말하지 못하고 **커밋 카운터**에 가까워졌다
+* 구현 명세:
+    - ① **판정 먼저** — 버전이 표현해야 하는 것이 ⓐ 배포 단위인가 ⓑ 정본 스냅샷인가. ⓐ면 auto-bump 를 걷어내고 `deploy` 만 올린다. ⓑ면 현행이 맞고 대신 **배포 일련번호를 따로** 둔다
+    - ② ⓐ 채택 시 — `forward` 의 `AUTOBUMP` 기본값을 0 으로 뒤집는다. ⚠️ 그러면 미러가 정본보다 뒤처진 버전을 달게 되므로, **미러 VERSION 의 의미**(정본 스냅샷 vs 배포본)를 함께 정해야 한다
+    - ③ 어느 쪽이든 [`fpm-gitflow.md`](_doc_arch/fpm-gitflow.md) "VERSION 충돌 차단 규칙" 에 **버전이 언제 오르는가**를 명문화 — 지금은 *누가* 올리는지만 있고 *언제* 가 없다
+    - ⚠️ 태그(`v*`)와의 관계도 정리 — 현재 tag 는 `deploy` 만 만든다. bump 15회 중 6회만 태그가 있어 **버전과 태그가 1:1이 아니다**
+    - 검증: 정책 확정 후 배포 1회를 태워 버전 증가 횟수가 **의도와 일치**할 것 · 6곳(정본·미러·마켓·소비자 2·prj3/5) 버전이 배포 직후 **동시에** 같아질 것
 
 ## Issue415: 공개 digest 에 `\1` 리터럴이 새겨진다 — awk 는 replacement 백레퍼런스를 지원하지 않는다 ✅
 * 목적: 공개 미러로 나가는 [`Issue_public.md`](Issue_public.md) 에 `Issue{385}(비공개)\1가드로 검사하지만` 같은 **깨진 문자열**이 (여기 `{}` 는 digest 자기치환을 피하려는 표기) 실린다. 공개 산출물이라 그대로 배포되고, 읽는 사람에게는 오타로 보인다
