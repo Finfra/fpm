@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: 20f9dc710a710a00d5f49b2d87190d443f2e568e3997be82d3fd12f3a1f0f29c
+source_sha: 65c06fab5dc110bc90caba39de4e4c73563e0b7ea9932e1eaaf77e92edb0ee19
 ---
 
 # 안내
@@ -35,6 +35,22 @@ source_sha: 20f9dc710a710a00d5f49b2d87190d443f2e568e3997be82d3fd12f3a1f0f29c
     - ② ⓐ 채택 시 — [`fpm-gitflow.md`](_doc_arch/fpm-gitflow.md) R1~R4 에 *"미러는 릴리스 라인을 갖지 않는다"* 를 명문화하고, 미러의 `release/*` 를 정리
     - ③ ⓑ 채택 시 — `guard_dst_branch()` 의 허용 목록에 `release/*` 추가. ⚠️ 그러면 **어느 브랜치로 sync 됐는지**가 갈릴 수 있어 `mirror_scan()` 의 미흡수 판정 기준을 함께 손봐야 한다
     - 검증: 판정된 쪽으로 `forward` 를 1회 태워 **수동 브랜치 전환 없이** 통과할 것
+
+## Issue427: Discord 알림에서 hub 로 넘어갈 링크가 없다 — 체인이 네 군데 끊겨 있었다 ✅
+* 목적: 사용자 지적 — *"tailscale 을 쓰는 이유가 openclaw 에서 링크해서 넘어가기 위함(외부망일 때)인데, openclaw 설정부터 해서 discord 로 전송되게 해야 한다"*. 목적을 듣고 보니 **체인 전체가 끊겨 있었다** — Issue425 가 고친 것은 그중 한 조각일 뿐이었다
+* depends: Issue425, Issue426
+* 구현 명세:
+    - ① `hub_links()` 신설 — `/healthz` 의 `advertise_url` 을 조회해 `{base}/mq`·`{base}/hub` 2줄. **값이 없으면 링크를 만들지 않는다**(Issue425 원칙 그대로)
+    - ② **링크는 sanitize 뒤에 붙인다** (사용자 판정: 링크만 예외). 본문의 다른 개인 경로·계정·사설 프로젝트명은 그대로 마스킹된다 — 예외는 링크 줄에 한정. 경계 assert(`assert_clean`)는 절대경로·토큰·이메일만 보므로 정상 통과
+    - ③④ 사용자 입력 대기 — 채널 id·설치
+
+## Issue426: 설정창에서 tailscale 설정을 찾을 수 없다 ✅
+* 목적: 사용자 지적 — *"tailscale 설정 어디 있는지 나는 못 찾겠음"*. 실제로 **설정창 어디에도 "tailscale" 이라는 단어가 없었다**. 항목은 `advertise_host`(한글 라벨 **"어드버타이즈 호스트"**)이고 설명은 *"Claude Code 가 채팅에 표시하는 hub|both URL 의 host"* 뿐이라, **"tailscale" 로도 "advertise" 로도 검색되지 않았다**
+* depends: Issue425
+* 구현 명세:
+    - ① `bind_host` — 값별 의미(루프백/LAN/전체)와 *"다른 기기에서 접속이 안 되면 대개 여기가 127.0.0.1 이다 — 열어도 안 되면 짝인 advertise_host 확인"*
+    - ② `advertise_host` — *"외부 기기에서 이 hub 를 열 주소. 비워 두면 링크를 만들지 않는다(= 외부 공유 안 함)"* + **【Tailscale 을 쓴다면】** MagicDNS 권장·공식 문서 링크·macOS resolver 주의 + **【Tailscale 설치】** macOS·Linux 설치 명령(사용자 요청: *"설정창의 ? 버튼에 설치 방법 표시"*)
+    - ③ ko·en 양쪽 갱신 (parity 테스트 통과 필수)
 
 ## Issue425: hub 링크의 호스트가 문서에 하드코딩돼 있다 — host 에서 host 주소를 보낸다 ✅
 * 목적: 사용자 지적 — *"설정파일에서 읽는 것 맞나? host 에서도 잘 작동하나?"*. **둘 다 아니었다.** social `daily-digest.md` 가 `<tailnet-host>:9876` 을 **문서에 박아** 두고 있어, host 에서 digest 를 돌리면 **host 큐를 안내해야 할 자리에 host 주소를 보낸다**. Issue420 에서 링크만 `/mq` 로 바꾸고 이 하드코딩은 그대로 답습했다

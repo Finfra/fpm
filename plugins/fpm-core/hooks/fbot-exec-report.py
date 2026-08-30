@@ -51,6 +51,7 @@ sanitize 가드 (새 외부 출구 — Discord)
 import argparse
 import glob
 import json
+import urllib.request
 import os
 import re
 import shutil
@@ -345,6 +346,29 @@ def _bot_row(b: dict) -> str:
     return f"| {title} | {role} | {badge} {STATE_KO.get(b['state'], b['state'])} | {task} |"
 
 
+def hub_links() -> list:
+    """prj1#Issue427: 보고 말미에 붙일 hub 링크 — **hub 에 물어서** 만든다.
+
+    이 링크가 이 체인의 존재 이유다. Discord 알림을 외부망(셀룰러)에서 받았을 때
+    눌러서 넘어갈 대상이 없으면, 알림은 "무슨 일이 있었다" 만 알리고 끝난다.
+
+    ⚠️ 주소를 하드코딩하지 않는다(Issue425) — `/healthz` 의 `advertise_url` 을 쓴다.
+       그 값이 없으면(= 사용자가 외부 공유를 켜지 않았거나 루프백 전용 머신)
+       **링크를 만들지 않는다.** localhost 로 때우면 폰에서 열리지 않는 링크가 가고,
+       받는 쪽은 그것이 죽은 링크인지 hub 가 꺼진 것인지 구분할 수 없다.
+    """
+    port = os.environ.get("HTM_SERVER_PORT", "9876")
+    try:
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/healthz", timeout=3) as r:
+            base = (json.loads(r.read().decode("utf-8")) or {}).get("advertise_url")
+    except Exception:
+        return []
+    if not base:
+        return []
+    return ["", "---", "", f"* 예약 큐 열기 → {base}/mq", f"* hub 열기 → {base}/hub"]
+
+
 def build_daily(reg: dict, mq: dict, warnings: list) -> str:
     now = datetime.now()
     lines = [f"# 중역핀봇 일일 보고 — {now:%Y-%m-%d} ({now:%H:%M})", ""]
@@ -598,6 +622,14 @@ def _run(mode: str, args) -> int:
         mq = collect_mq(warnings)
         raw = build_daily(reg, mq, warnings) if mode == "daily" else build_now(reg, mq, warnings)
         body = sanitize_text(raw, warnings)
+        # prj1#Issue427: hub 링크는 **sanitize 뒤에** 붙인다 (사용자 판정: 링크만 예외).
+        #   sanitize 는 개인 호스트명을 host.tailnet.ts.net 으로 마스킹하는데, 그러면
+        #   **눌러도 열리지 않는 주소**가 되어 링크의 존재 이유가 사라진다. 이 보고는
+        #   본인 DM·Agent 채널로만 가고, tailnet 주소는 tailscale 로그인 없이는 접근
+        #   자체가 불가하므로 실주소를 낸다. 본문의 다른 개인 경로·계정·사설 프로젝트명은
+        #   그대로 마스킹된다 — 예외는 이 링크 줄에 한정된다.
+        #   경계 assert(assert_clean)는 절대경로·토큰·이메일만 보므로 정상 통과한다.
+        body = body.rstrip("\n") + "\n" + "\n".join(hub_links()) + "\n"
 
         inject = os.environ.get("FBOT_REPORT_TEST_INJECT")
         if inject:                     # 필터 우회 시나리오 — 경계 assert 가 잡아야 한다

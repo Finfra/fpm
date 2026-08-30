@@ -3548,10 +3548,14 @@ HUB_SETTING_SCHEMA = [
     {"key": "hub_lease_ttl", "tab": "advanced", "widget": "number", "min": 5,
      "apply": "auto", "comment": "hub 서버가 hub 쉘 리스를 회수하기까지의 heartbeat 만료(초). 브라우저의 SSE keepalive 가 이 시간 이상 끊기면 회수"},
     # 네트워크
+    # Issue426: 이 둘은 **짝**이다 — 외부 기기에서 hub 를 열려면 양쪽 다 필요하다.
+    #   종전 설명은 서로를 가리키지 않아, 접속이 안 될 때 어느 쪽 문제인지 알 수 없었다
+    #   (실발생: fg1 이 bind_host=127.0.0.1 이라 안 열렸는데 설정창만 봐선 원인 불명).
+    #   "tailscale" 이라는 단어도 어디에도 없어 검색으로도 못 찾았다.
     {"key": "bind_host", "tab": "advanced", "widget": "text",
-     "apply": "restart", "comment": "hub 서버가 listen 할 네트워크 인터페이스 (127.0.0.1/0.0.0.0/IP). 변경 시 서버 restart 필요"},
+     "apply": "restart", "comment": "hub 서버가 listen 할 네트워크 인터페이스. 127.0.0.1=루프백 전용(이 PC 에서만 열림) / LAN IP=같은 공유기 안 기기 허용 / 0.0.0.0=전 인터페이스 / [a, b]=멀티. ⚠️ 다른 기기(폰·노트북)에서 접속이 안 되면 대개 여기가 127.0.0.1 이다 — 열어도 안 되면 짝인 advertise_host 를 함께 확인. 변경 시 서버 restart 필요"},
     {"key": "advertise_host", "tab": "advanced", "widget": "text", "optional": True,
-     "apply": "hook", "comment": "Claude Code(렌더 hook)가 채팅에 표시하는 hub|both URL 의 host (생략 시 bind_host fallback). bind_host=0.0.0.0 이면 생략 금지"},
+     "apply": "hook", "comment": "외부 기기에서 이 hub 를 열 주소(호스트명·IP). 채팅 링크와 /healthz 의 advertise_url 에 쓰인다. 비워 두면 링크를 만들지 않는다(=외부 공유 안 함). ⚠️ bind_host=0.0.0.0 이면 생략 금지. 【Tailscale 을 쓴다면】 LAN IP 는 DHCP 로 바뀌므로 MagicDNS 이름 {host}.{tailnet}.ts.net 을 권장 — 설정 https://tailscale.com/kb/1081/magicdns (macOS 는 자기 이름 해석에 /etc/resolver/{tailnet}.ts.net → nameserver 100.100.100.100 필요). Tailscale 은 선택이며 안 쓰면 LAN IP 나 호스트명을 넣으면 된다"},
     {"key": "allow_server_list", "tab": "advanced", "widget": "toggle",
      "apply": "restart", "comment": "hub 서버 접속 허용 게이트 (source-IP 기준) — true=Servers.md 화이트리스트+자기 자신 허용 / false=자기 자신(bind_host)만 허용, 외부 전부 차단. 변경 시 서버 restart 필요"},
     # Issue379: 수신 이름(Host 헤더) 게이트 — 위 source-IP 게이트의 짝
