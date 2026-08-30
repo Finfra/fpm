@@ -5,7 +5,7 @@
 #   fallback 헬퍼(_session_runner_pids)를 검증하고, Issue66 신규 기능
 #   (graph validator, /control remove)을 TDD 검증한다.
 #
-# 실행: python3 services/htm-server/test_control_gate.py
+# 실행: python3 services/hub/test_control_gate.py
 """server.py /control 등록 게이트 fallback (Issue64) + Issue66 신규 단위 테스트.
 
 Issue64: 활성 세션 카드 ✕ 버튼이 403 으로 실패하던 회귀 차단.

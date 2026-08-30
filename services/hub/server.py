@@ -939,7 +939,7 @@ start_ts = time.time()
 # Issue41: hub registry — 등록 기반 hub 목록 (스캔 제거).
 # 다른 프로젝트 디렉토리를 주기적으로 스캔하지 않고, 생산자(htm 스킬·dashboard runner)가
 # /register-doc 로 등록한 파일 목록(data/hub/*.json)만 hub 에 노출한다.
-# REPO_ROOT = server.py(.../services/htm-server/) → ___pm 루트 (dirname 3회)
+# REPO_ROOT = server.py(.../services/hub/) → ___pm 루트 (dirname 3회)
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 def _open_cmd(target: str, app: str | None = None) -> list:

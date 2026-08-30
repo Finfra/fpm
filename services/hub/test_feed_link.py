@@ -4,7 +4,7 @@
 # ⚠️ 글로벌 SCAR 아님 (___pm 프로젝트 소유). server.py 의 피드↔htm 문서
 #   ↗ 링크 매칭 헬퍼(_link_feed_htm_docs 등)를 검증한다.
 #
-# 실행: python3 services/htm-server/test_feed_link.py
+# 실행: python3 services/hub/test_feed_link.py
 """server.py 피드↔htm 문서 링크 3단계 매칭 단위 테스트."""
 import os
 import sys
