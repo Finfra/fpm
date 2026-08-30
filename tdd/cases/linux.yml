@@ -1,0 +1,32 @@
+# Linux 전용 (Issue430)
+cases:
+  - id: gnu-date-native
+    desc: GNU date 문법이 네이티브로 동작한다
+    run: date -d '2026-01-02T03:04:05' +%s
+    expect: nonzero-epoch
+
+  - id: nvm-tools-discoverable
+    desc: nvm 아래 설치된 도구를 which 실패 시에도 찾는다
+    why: |
+      prj3#Issue475 — nvm 은 셸 초기화가 PATH 를 채우므로 hook·cron 에서는
+      which 가 실패한다. 설치돼 있는데 "미설치" 로 판정돼 Discord 발신이
+      한 번도 되지 않았다. 관례 경로까지 훑어야 한다.
+    run: |
+      command -v openclaw >/dev/null && echo ok && exit 0
+      ls "$HOME"/.nvm/versions/node/*/bin/openclaw >/dev/null 2>&1 && echo ok && exit 0
+      echo "skip(openclaw 미설치 — 이 머신에선 해당 없음)"
+    expect: nonempty
+
+  - id: no-bsd-only-date
+    desc: BSD 전용 date 호출이 fallback 없이 남아 있지 않다
+    why: |
+      규칙이 있어도 누락된다 — aoa-mq-enqueue.sh 는 지켰는데
+      aoa-mq-tick.sh 만 빠져 있었다(prj3#Issue476).
+    run: |
+      bad=0
+      for f in $(grep -rlE 'date -j|date -v' --include="*.sh" \
+                 "$REPO_DIR/scripts" "$REPO_DIR/sh" "$REPO_DIR/mcp" 2>/dev/null); do
+        grep -qE 'date -d|DATE" -d' "$f" || { echo "MISSING: $f"; bad=1; }
+      done
+      [ "$bad" -eq 0 ] && echo ok
+    expect: contains:ok

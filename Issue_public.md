@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: 715e8b4d773cb1da1cc18429312f0089421b4c8c07fd809ebfc50dccb6af7401
+source_sha: e25da79432f6f3c83f201090ba56149f26e148b612737c57ab67521b1c10b6aa
 ---
 
 # 안내
@@ -35,6 +35,15 @@ source_sha: 715e8b4d773cb1da1cc18429312f0089421b4c8c07fd809ebfc50dccb6af7401
     - ② ⓐ 채택 시 — [`fpm-gitflow.md`](_doc_arch/fpm-gitflow.md) R1~R4 에 *"미러는 릴리스 라인을 갖지 않는다"* 를 명문화하고, 미러의 `release/*` 를 정리
     - ③ ⓑ 채택 시 — `guard_dst_branch()` 의 허용 목록에 `release/*` 추가. ⚠️ 그러면 **어느 브랜치로 sync 됐는지**가 갈릴 수 있어 `mirror_scan()` 의 미흡수 판정 기준을 함께 손봐야 한다
     - 검증: 판정된 쪽으로 `forward` 를 1회 태워 **수동 브랜치 전환 없이** 통과할 것
+
+## Issue430: Windows 11 대비 3축 설계 + 머신별 기능 테스트 `tdd/` 신설 ✅
+* 목적: 사용자 지시 — *"최종적으로 windows11 에서도 동작해야 한다. 이런 문제를 해결하기 위한 설계 업데이트가 필요하고, 동작하는 각 머신에서 기능 테스트를 위한 목록 파일도 같이 동기화되어야 한다. github 에 공유되어야 하니 `_doc_*` 폴더가 아닌 `tdd` 폴더를 따로 만들어 관리하면 좋겠다"*
+* depends: Issue429
+* 구현 명세:
+    - ① `_fpm_platform()` 신설 — `macos|linux|wsl|windows|unknown` 정규화 1단어. **wsl 을 linux 와 나눈다**(파일시스템·시계·GUI·`wslpath` 가 달라 "리눅스인데 리눅스가 아닌" 실패가 난다)
+    - ② **`tdd/` 신설** — `machines.yml`(명부) · `cases/{core,macos,linux,windows}.yml` · `run-tdd.sh`(러너). 케이스마다 `why:` 에 **실패 이력(이슈 번호)** 을 남긴다 — 왜 있는지 모르면 다음 사람이 지운다
+    - ③ `publishable-policy.yml` — `mirror_dir_allow` 에 `tdd` 등재(**소비자가 받아야 한다**), `exclude` 에 `tdd/results/`(개인 경로·호스트명 섞임)
+    - ④ [`fpm-sync-deploy.md`](fpm-sync-deploy.md) — 3축 표 · Windows 실패 축 5종 · `tdd/` 절 (489 → 616줄)
 
 ## Issue429: 크로스플랫폼 함정을 검사로 잡는다 + 배포 경로 교통정리 ✅
 * 목적: 사용자 지적 — *"배포 절차가 복잡하고 역방향과 정방향도 있고 복잡하다. 정방향 쪽도 Linux 와 mac 의 차이라 OS 따라 다르게 진행되는 스크립트가 필요하니 교통정리가 필요하다. 배포설계문서 보강하고 함정 해결해달라"*

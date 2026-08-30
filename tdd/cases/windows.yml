@@ -1,0 +1,51 @@
+# Windows 전용 (Issue430)
+#   ⚠️ 아직 실측하지 않았다 — Windows 머신 도입 시 이 파일부터 돌려
+#      추정을 사실로 바꾼다. 지금은 **무엇을 확인해야 하는지의 목록**이다.
+#   셸 전제: Git Bash / MSYS2 (POSIX 레이어). 네이티브 PowerShell 은 대상 아님.
+cases:
+  - id: shell-flavor
+    desc: 어떤 POSIX 레이어에서 도는지 식별한다
+    why: |
+      MINGW64_NT / MSYS_NT / CYGWIN_NT 에 따라 경로 변환·심볼릭 링크·권한
+      동작이 다르다. 무엇 위에서 도는지 모르면 나머지 판정이 의미가 없다.
+    run: uname -s
+    expect: nonempty
+
+  - id: gnu-date-available
+    desc: date 가 GNU 문법을 받는다
+    why: |
+      Git Bash 는 coreutils 를 동봉해 `date -d` 가 되지만 BSD `-j` 는 안 된다.
+      core.yml 의 date-parse-iso 가 fallback 으로 통과하는지 함께 본다.
+    run: date -d '2026-01-02T03:04:05' +%s
+    expect: nonzero-epoch
+
+  - id: path-separator
+    desc: POSIX 경로가 그대로 통한다
+    why: |
+      Windows 는 C:\ 형식과 /c/ 형식이 공존한다. 스크립트가 만든 경로를
+      python·git 이 그대로 받는지 확인해야 한다 — 여기서 갈리면 조용히
+      "파일 없음" 이 되고 그것이 기능 미동작으로 나타난다.
+    run: |
+      python3 -c "import os,sys; print('ok' if os.path.isdir(sys.argv[1]) else 'FAIL')" "$REPO_DIR" 2>/dev/null \
+        || python -c "import os,sys; print('ok' if os.path.isdir(sys.argv[1]) else 'FAIL')" "$REPO_DIR"
+    expect: contains:ok
+
+  - id: symlink-support
+    desc: 심볼릭 링크를 만들 수 있다
+    why: |
+      설치 절차가 링크를 쓴다. Windows 는 개발자 모드 또는 관리자 권한이
+      없으면 실패하고, 그 실패가 "설치됐는데 안 도는" 상태를 만든다.
+    run: |
+      t=$(mktemp -d); ln -s "$t" "$t/lnk" 2>/dev/null && echo ok; rm -rf "$t"
+    expect: contains:ok
+
+  - id: line-ending
+    desc: 스크립트가 LF 로 유지된다
+    why: |
+      autocrlf 로 CRLF 가 섞이면 `#!/usr/bin/env bash` 가 깨져
+      "bad interpreter" 로 죽는다. 배포된 셸 스크립트 전부의 문제가 된다.
+    run: |
+      f="$REPO_DIR/sh/check.sh"
+      if command -v file >/dev/null; then file "$f" | grep -q CRLF && echo FAIL || echo ok
+      else python3 -c "d=open('$f','rb').read(); print('FAIL' if b'\r\n' in d else 'ok')"; fi
+    expect: contains:ok

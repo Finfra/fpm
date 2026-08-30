@@ -46,6 +46,30 @@ _fpm_rematch() {
 _fpm_os() { uname -s 2>/dev/null || echo unknown; }
 _fpm_is_macos() { [ "$(_fpm_os)" = "Darwin" ]; }
 
+# _fpm_platform : 정규화된 플랫폼 1단어 — macos | linux | wsl | windows | unknown
+#   Issue430. `uname -s` 원문은 분기에 쓰기 나쁘다 — Windows 는 셸에 따라
+#   MINGW64_NT-… / MSYS_NT-… / CYGWIN_NT-… 로 제각각이고, WSL 은 그냥 Linux 라
+#   구분이 안 된다. 분기는 **정규화된 이름 하나**로 한다.
+#   ⚠️ wsl 을 linux 와 나누는 이유 — 파일시스템·시계·GUI·경로 변환(wslpath)이 달라
+#      "리눅스인데 리눅스가 아닌" 실패가 난다. 같이 묶으면 그 차이가 안 보인다.
+_fpm_platform() {
+    case "$(_fpm_os)" in
+        Darwin)  echo macos ;;
+        Linux)
+            # WSL 판정: /proc/version 또는 WSL_DISTRO_NAME
+            if [ -n "${WSL_DISTRO_NAME:-}" ] \
+               || grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null; then
+                echo wsl
+            else
+                echo linux
+            fi ;;
+        MINGW*|MSYS*|CYGWIN*) echo windows ;;
+        *) echo unknown ;;
+    esac
+}
+_fpm_is_windows() { case "$(_fpm_platform)" in windows) return 0 ;; *) return 1 ;; esac; }
+_fpm_is_posixish() { case "$(_fpm_platform)" in macos|linux|wsl) return 0 ;; *) return 1 ;; esac; }
+
 # _fpm_need_macos <기능명> [대안안내] : macOS 면 0, 아니면 메시지 출력 후 1
 _fpm_need_macos() {
     _fpm_is_macos && return 0

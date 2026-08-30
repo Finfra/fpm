@@ -1,0 +1,32 @@
+# macOS 전용 (Issue430)
+cases:
+  - id: bsd-date-at-bin
+    desc: /bin/date 가 BSD 문법을 받는다
+    why: |
+      ⚠️ **OS 로 분기하면 틀린다.** 이 케이스는 처음에 `date`(PATH)로 짰다가
+      macOS 인 저작 머신에서 곧바로 FAIL 했다 — PATH 에 homebrew coreutils
+      (GNU date 9.7)가 앞서 있었기 때문이다(2026-08-30 실측).
+      "macOS = BSD date" 는 **그 머신에서조차 거짓**일 수 있다.
+      OS 가 보장하는 것은 `/bin/date` 뿐이므로 그것으로 확인한다.
+    run: /bin/date -j -f '%Y-%m-%dT%H:%M:%S' '2026-01-02T03:04:05' +%s
+    expect: nonzero-epoch
+
+  - id: path-date-flavor
+    desc: PATH 의 date 가 BSD 인지 GNU 인지 식별한다
+    why: |
+      분기 기준은 OS 가 아니라 **실제로 실행되는 도구의 능력**이다.
+      스크립트가 `date` 를 쓰느냐 `/bin/date` 를 쓰느냐로 동작이 갈린다 —
+      aoa-mq-tick.sh 는 DATE=/bin/date(BSD 우선), enqueue.sh 는 PATH date
+      (여기선 GNU 가 잡혀 fallback 경로로 통과)를 쓴다.
+    run: |
+      if date --version >/dev/null 2>&1; then echo gnu; else echo bsd; fi
+    expect: nonempty
+
+  - id: homebrew-path
+    desc: homebrew bin 이 PATH 에 있다
+    why: |
+      openclaw·tmux 등을 homebrew 로 깐다. 저작 머신에서 PATH 에 있어
+      prj3#Issue475(nvm PATH)가 드러나지 않았다 — 이 항목은 그 대비다.
+    run: |
+      command -v brew >/dev/null && echo ok
+    expect: contains:ok

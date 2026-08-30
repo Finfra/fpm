@@ -1,0 +1,32 @@
+# 머신 명부 — fpm 이 실제로 도는 곳 (Issue430)
+#   platform 값은 sh/fpm_function.sh 의 `_fpm_platform` 과 같은 어휘를 쓴다:
+#   macos | linux | wsl | windows
+#   ⚠️ 호스트명·경로는 적지 않는다 — 공개 미러로 나가는 파일이다.
+
+machines:
+  - id: authoring
+    platform: macos
+    role: 저작 정본 (prj1·prj3 개발, 마켓 발행)
+    status: active
+
+  - id: gpu-server
+    platform: linux
+    role: 소비자 · 원격 검증 (플러그인 설치본 + repo pull)
+    status: active
+    notes: |
+      nvm 으로 node 도구를 깐다 — hook·cron 에서 PATH 에 안 잡힌다(prj3#Issue475).
+      ~/.claude 가 플러그인 설치본이라 repo 구조가 없다(Issue428).
+
+  - id: laptop
+    platform: macos
+    role: 소비자
+    status: active
+
+  - id: win11
+    platform: windows
+    role: 소비자 (예정)
+    status: planned
+    notes: |
+      아직 실측하지 않았다. 셸이 Git Bash / MSYS2 / WSL 중 무엇이냐에 따라
+      `uname -s` 가 MINGW64_NT / MSYS_NT / Linux 로 갈린다 — 도입 시 먼저 판정하고
+      cases/windows.yml 의 미검증 항목을 실측으로 채운다.

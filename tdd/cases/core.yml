@@ -1,0 +1,65 @@
+# 전 플랫폼 공통 — 어디서든 통과해야 하는 것 (Issue430)
+#   여기 있는 것은 대부분 **실제로 깨진 적이 있다**. why 에 이슈 번호를 남긴다.
+
+cases:
+  - id: platform-detect
+    desc: 플랫폼을 정규화된 1단어로 판정한다
+    why: |
+      uname -s 원문은 분기에 쓰기 나쁘다 — Windows 는 셸에 따라 MINGW64_NT /
+      MSYS_NT / CYGWIN_NT 로 갈리고 WSL 은 그냥 Linux 다.
+    run: |
+      . "$REPO_DIR/sh/fpm_function.sh" 2>/dev/null
+      _fpm_platform
+    expect: nonempty
+
+  - id: date-parse-iso
+    desc: ISO 시각을 epoch 로 파싱한다
+    why: |
+      prj3#Issue476 — date -j 는 BSD 전용이라 GNU date 에서 실패하고,
+      `|| echo 0` 이 0 을 내놓아 "1970년" 이 된다. due <= now 판정이
+      영원히 성립하지 않는데 로그에는 아무 흔적도 없었다.
+    run: |
+      DATE=/bin/date
+      "$DATE" -j -f '%Y-%m-%dT%H:%M:%S' '2026-01-02T03:04:05' +%s 2>/dev/null \
+        || "$DATE" -d '2026-01-02T03:04:05' +%s 2>/dev/null
+    expect: nonzero-epoch
+
+  - id: date-offset-days
+    desc: N일 뒤 날짜를 계산한다
+    why: |
+      date -v 도 BSD 전용이다. aoa-mq 의 `--due +Nd` 와 snooze 가 이걸 쓴다.
+    run: |
+      date -v '+3d' '+%Y-%m-%d' 2>/dev/null || date -d '+3 days' '+%Y-%m-%d' 2>/dev/null
+    expect: nonempty
+
+  - id: repo-relative-resolve
+    desc: 실행체가 자기 위치 기준으로 짝을 찾는다
+    why: |
+      Issue428 — hub 가 ~/.claude/mcp/… 홈 절대경로만 봐서 소비자 머신에서
+      tick 타이머가 통째로 미기동했다. 저작 머신은 ~/.claude 가 곧 repo 라
+      드러나지 않았다.
+    run: |
+      test -f "$REPO_DIR/mcp/aoa-mq/aoa-mq-tick.sh" && echo found
+    expect: contains:found
+
+  - id: python3-available
+    desc: python3 가 있고 표준 모듈을 읽는다
+    why: hook·빌더 다수가 python3 를 전제한다. Windows 는 python 만 있는 경우가 있다.
+    run: |
+      python3 -c 'import json,sqlite3,urllib.request; print("ok")' 2>/dev/null \
+        || python -c 'import json,sqlite3,urllib.request; print("ok")' 2>/dev/null
+    expect: contains:ok
+
+  - id: git-available
+    desc: git 이 있고 이 디렉토리가 워크트리다
+    why: 배포 체인 전체가 git 위에 선다.
+    run: |
+      git -C "$REPO_DIR" rev-parse --is-inside-work-tree 2>/dev/null
+    expect: contains:true
+
+  - id: jq-available
+    desc: jq 가 있다
+    why: aoa-mq 큐 조작이 jq 로 원자 갱신한다. 없으면 조용히 갱신 실패한다.
+    run: |
+      command -v jq >/dev/null && echo ok
+    expect: contains:ok
