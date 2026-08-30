@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: 6c0b2f6eb6bb629ce19400b8e552e86a3325617c94ca78f436b7ef5e0ad6a0e2
+source_sha: c1ebd0736def31662d38ff89afb40248cf5cd42d41f5828013beba865e0d14af
 ---
 
 # 안내
@@ -28,7 +28,7 @@ source_sha: 6c0b2f6eb6bb629ce19400b8e552e86a3325617c94ca78f436b7ef5e0ad6a0e2
 
 # 이슈 근거
 
-## Issue421: 미러에 릴리스 브랜치를 두면 F5-0 가드와 충돌한다 (등록: 2026-08-30, 해결: 2026-08-30, commit: `(본 커밋)`) ✅
+## Issue421: 미러에 릴리스 브랜치를 두면 F5-0 가드와 충돌한다 ✅
 * 목적: prj7 미러를 `release/0.8.0` 으로 체크아웃한 상태에서 `forward` 를 돌리면 **F5-0 가드가 차단**한다(*"미러 상주 브랜치는 main 하나다"*). 릴리스 라인을 6곳에 맞추라는 운영 요구와, 미러를 단일 브랜치로 묶는 가드가 **서로를 배제**한다. 이번(Issue420)에는 두 브랜치가 같은 커밋이라 `main` 전환 → forward → `release/*` 를 main 으로 이동해 넘겼지만, **수동 3단계를 매번 반복**해야 하고 잊으면 미러 브랜치가 갈라진다
 * 구현 명세:
     - ① **판정 먼저** — ⓐ 미러는 `main` 만 두고 릴리스 라인은 **정본·prj3 에만** 두는가, ⓑ 미러도 `release/*` 를 갖되 F5-0 이 `main` + `release/*` 를 함께 허용하는가
