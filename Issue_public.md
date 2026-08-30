@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: 5f4a166bcc237177394f3d4ad9bd2ed06788d4e916c4f727b98ef8ea9e7b0fbf
+source_sha: fef0439bec18a3cac0618f7d3925b5fef60259a3c88698a6ed0563ea4a020c4a
 ---
 
 # 안내
@@ -35,6 +35,10 @@ source_sha: 5f4a166bcc237177394f3d4ad9bd2ed06788d4e916c4f727b98ef8ea9e7b0fbf
     - ② ⓐ 채택 시 — [`fpm-gitflow.md`](_doc_arch/fpm-gitflow.md) R1~R4 에 *"미러는 릴리스 라인을 갖지 않는다"* 를 명문화하고, 미러의 `release/*` 를 정리
     - ③ ⓑ 채택 시 — `guard_dst_branch()` 의 허용 목록에 `release/*` 추가. ⚠️ 그러면 **어느 브랜치로 sync 됐는지**가 갈릴 수 있어 `mirror_scan()` 의 미흡수 판정 기준을 함께 손봐야 한다
     - 검증: 판정된 쪽으로 `forward` 를 1회 태워 **수동 브랜치 전환 없이** 통과할 것
+
+## Issue433: jpc1 적용 전 점검 3종 — 설계·전제조건·Windows 시뮬레이션 ✅
+* 목적: 사용자 지시 — *"이제 jpc1 에 적용할 것인데 그 전에 ① 설계 문서 검토 ② 설치 문서에서 pre-requisite 검토(claude code 설치 여부, 노드 최소 버전 등) ③ 윈도우 버전에 대한 tdd 시뮬레이션"*
+* depends: Issue432
 
 ## Issue432: OS별 설치 문서 + Windows 판정을 Git Bash 로 전환 ✅
 * 목적: 사용자 질문 — *"설치 문서 따로 있나? README.md 에 있는 것이 다인가? 맥·리눅스·윈도우 버전별 설치 문서가 필요해졌는데, 윈도우는 gitbash 방식이 더 유리하지 않은지 검토도 같이 해달라"*

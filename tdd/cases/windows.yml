@@ -75,14 +75,28 @@ cases:
       "$f" 2>/dev/null; rm -rf "$t"
     expect: contains:ok
 
-  - id: case-sensitivity
-    desc: 파일명 대소문자가 구분된다
+  - id: case-fs-flavor
+    desc: 파일시스템의 대소문자 성격을 기록한다 (정보성)
     why: |
-      W8 — NTFS 는 기본 case-insensitive 다. Issue.md 와 issue.md 가 같은
-      파일로 취급되면 git 이 rename 으로 오인하고, 대소문자만 다른 두 파일이
-      공존하는 repo 를 체크아웃하면 하나가 사라진다.
+      W8 — NTFS 는 기본 case-insensitive 다. 이는 **바꿀 수 없는 사실**이라
+      FAIL 대상이 아니라 기록 대상이다. 실제 위험은 아래 case-collision 이 본다.
+      ⚠️ 초판은 `expect: nonempty` 로 짜서 **어느 쪽이든 통과**했다 — macOS
+      (insensitive)에서도 PASS 가 떠 판정이 없다는 걸 시뮬레이션이 잡아냈다.
     run: |
       t=$(mktemp -d); echo a > "$t/Aa"; echo b > "$t/aA" 2>/dev/null
       n=$(ls "$t" | wc -l | tr -d ' '); rm -rf "$t"
-      [ "$n" = "2" ] && echo ok || echo "insensitive(파일 $n 개)"
+      [ "$n" = "2" ] && echo "case-sensitive" || echo "case-insensitive"
     expect: nonempty
+
+  - id: case-collision
+    desc: repo 에 대소문자만 다른 파일이 없다
+    why: |
+      W8 의 **진짜 위험**. case-insensitive 파일시스템에서 `Issue.md` 와
+      `issue.md` 가 공존하는 repo 를 체크아웃하면 **하나가 조용히 사라지고**
+      git 이 그것을 삭제·rename 으로 오인한다. 이 검사는 어느 OS 에서든
+      유효하므로 **Windows 로 가기 전에 저작 머신에서 미리** 잡을 수 있다.
+    run: |
+      n=$(git -C "$REPO_DIR" ls-files | tr 'A-Z' 'a-z' | sort | uniq -d | wc -l | tr -d ' ')
+      [ "$n" = "0" ] && echo ok || { echo "충돌 ${n}건:"; \
+        git -C "$REPO_DIR" ls-files | tr 'A-Z' 'a-z' | sort | uniq -d | head -5; }
+    expect: contains:ok

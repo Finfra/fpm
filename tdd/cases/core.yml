@@ -121,3 +121,18 @@ cases:
       grep -q '_open_cmd' "$f" && [ "$n" = "0" ] && echo ok \
         || echo "open 직접 호출 ${n}곳 잔여"
     expect: contains:ok
+
+  - id: claude-cli-available
+    desc: claude CLI 가 있다 (플러그인·MCP 배선의 전제)
+    why: |
+      Issue433 — sh/install.sh 6·7단계가 `claude plugin`·`claude mcp` 를
+      호출해 SCAR 와 MCP 서버를 배선한다. 즉 **Claude Code 는 선택이 아니라
+      필수 전제**인데 INSTALL 요구사항 목록에 없었다(본문에 7번 언급되면서도).
+      없으면 설치가 "성공" 하고 SCAR 만 통째로 빠진다.
+      ⚠️ nvm 설치라면 hook·cron 에서 which 가 실패한다(prj3#Issue475) —
+      관례 경로까지 훑는다.
+    run: |
+      command -v claude >/dev/null && echo ok && exit 0
+      ls "$HOME"/.nvm/versions/node/*/bin/claude >/dev/null 2>&1 && echo ok && exit 0
+      ls /usr/bin/claude /usr/local/bin/claude >/dev/null 2>&1 && echo ok || echo "MISSING"
+    expect: contains:ok
