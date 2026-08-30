@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: d23a4a30e47d7b25eabd6b3e92a89567eb42a0ebc272fe003a9aeb264a15097c
+source_sha: d17c8f99bc14a49f5b29868ce079e36eb8dc6d3937bce871fde2cb62b8019033
 ---
 
 # 안내
@@ -27,6 +27,23 @@ source_sha: d23a4a30e47d7b25eabd6b3e92a89567eb42a0ebc272fe003a9aeb264a15097c
 직접 편집하지 말 것 — `scripts/fpm-issue-digest.sh` 가 덮어쓴다.
 
 # 이슈 근거
+
+## Issue421: 미러에 릴리스 브랜치를 두면 F5-0 가드와 충돌한다
+* 목적: prj7 미러를 `release/0.8.0` 으로 체크아웃한 상태에서 `forward` 를 돌리면 **F5-0 가드가 차단**한다(*"미러 상주 브랜치는 main 하나다"*). 릴리스 라인을 6곳에 맞추라는 운영 요구와, 미러를 단일 브랜치로 묶는 가드가 **서로를 배제**한다. 이번(Issue420)에는 두 브랜치가 같은 커밋이라 `main` 전환 → forward → `release/*` 를 main 으로 이동해 넘겼지만, **수동 3단계를 매번 반복**해야 하고 잊으면 미러 브랜치가 갈라진다
+* 구현 명세:
+    - ① **판정 먼저** — ⓐ 미러는 `main` 만 두고 릴리스 라인은 **정본·prj3 에만** 두는가, ⓑ 미러도 `release/*` 를 갖되 F5-0 이 `main` + `release/*` 를 함께 허용하는가
+    - ② ⓐ 채택 시 — [`fpm-gitflow.md`](_doc_arch/fpm-gitflow.md) R1~R4 에 *"미러는 릴리스 라인을 갖지 않는다"* 를 명문화하고, 미러의 `release/*` 를 정리
+    - ③ ⓑ 채택 시 — `guard_dst_branch()` 의 허용 목록에 `release/*` 추가. ⚠️ 그러면 **어느 브랜치로 sync 됐는지**가 갈릴 수 있어 `mirror_scan()` 의 미흡수 판정 기준을 함께 손봐야 한다
+    - 검증: 판정된 쪽으로 `forward` 를 1회 태워 **수동 브랜치 전환 없이** 통과할 것
+
+## Issue422: R3 가 코드로 집행되지 않는다 — forward 의 AUTOBUMP 기본값이 1 ✅
+* 목적: Issue417 이 R3(*"값을 올리는 것은 `deploy` 하나뿐"*)를 [`fpm-gitflow.md`](_doc_arch/fpm-gitflow.md) 에 못 박았으나, [`fpm-sync.sh`](scripts/fpm-sync.sh) 의 `AUTOBUMP` **기본값은 `1` 그대로**였다. **규칙은 문서에만 있고 코드가 반대로 동작**한 것이다
+* depends: Issue417
+* 구현 명세:
+    - ① `"${AUTOBUMP:-1}"` → **`"${AUTOBUMP:-0}"`** — Issue417 ⓐ(배포 단위) 채택이다. R3 를 코드가 집행한다
+    - ② `deploy` 는 영향 없음 — 자체 `write_version_files` 로 bump 하고 forward 에는 이미 `AUTOBUMP=0` 을 export 한다(`do_deploy` 449행). 즉 **올리는 경로는 deploy 하나로 좁혀진다**
+    - ③ 문서 동반(hook-rules 규칙2) — R4 아래에 *"R3 는 코드로 집행된다"* 를 명시. R4 의 `AUTOBUMP=0` 은 이제 기본 동작이라 따로 걸 필요가 없다
+    - ④ VERSION 6곳을 `0.8.0` 으로 재고정(R1·R2)
 
 ## Issue420: aoa-mq 전용 관리 페이지 — 목록만 있고 검색·정렬·처리를 할 수 없다 ✅
 * 목적: 현재 mq 를 다루는 수단이 셋인데 **어느 것도 "쌓인 것을 훑어보고 처리하는" 용도가 못 된다.** ⓐ 세션 넛지 배너는 건수만 알리고 클릭할 것이 없다 ⓑ tick 이 만드는 `hub_htm_*_b_aoa-mq-ask.htm` 폼은 **그 회차 due 항목만** 담고 세션이 활성이면 아예 안 뜬다 ⓒ `mq_list_*.htm` 은 **리스트 뿐**이라 검색·정렬·처리가 없다. 그 결과 미종결이 8건까지 쌓이고 `ask_count` 가 47회에 이른 항목이 생겼다
