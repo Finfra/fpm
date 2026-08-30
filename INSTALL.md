@@ -27,8 +27,25 @@ were caught by **none** of `check.sh`'s checks.
 
 # Requirements
 
-* macOS (for the iTerm2 split / Finder / clipboard features of cdf/sshf). On Linux only plain `cd`/`ssh` works
-* zsh
+## Required — missing these makes the install silently incomplete
+
+| Item | Minimum | Why required |
+| :--- | :--- | :--- |
+| **Claude Code** | installed & signed in | `install.sh` steps 6–7 call `claude plugin` / `claude mcp` to wire SCAR and MCP servers. **Without it the install "succeeds" while all SCAR is missing** |
+| **bash** | 4.x+ | Execution shell for every script (Git Bash on Windows) |
+| **git** | 2.x+ | The whole delivery chain sits on git |
+| **python3** | 3.9+ | hub server, hooks, builders |
+| **jq** | 1.6+ | Atomic updates of the aoa-mq queue — without it reminders fail to update silently |
+
+⚠️ **If Claude Code was installed via nvm**, `which claude` may fail inside hooks/cron
+(nvm fills PATH from shell init). `bash tdd/run-tdd.sh` checks this as `claude-cli-available`.
+
+## Optional — only the matching feature is affected
+
+* zsh — bash works too (`install.sh` picks the rc from `$SHELL`)
+* iTerm2 — multi-pane split for `cdf`/`sshf` (macOS only); otherwise plain `cd`/`ssh`
+* VS Code + `code` CLI — `cdfv`
+* Node.js 18+ / `npx` — `/fpm-issue-map` diagram rendering. Affects **that command only**
 * (optional) iTerm2 — multi-pane split
 * (optional) VS Code + `code` CLI — `cdfv`
 * (optional) Python 3 — hub server

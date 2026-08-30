@@ -26,8 +26,25 @@ bash sh/check.sh         # 설치 상태
 
 # 요구 사항
 
-* macOS (cdf/sshf 의 iTerm2 분할·Finder·클립보드 기능). Linux 는 단일 `cd`/`ssh` 만 동작
-* zsh
+## 필수 — 없으면 설치가 조용히 반쪽이 된다
+
+| 항목 | 최소 | 왜 필수인가 |
+| :--- | :--- | :--- |
+| **Claude Code** | 설치·로그인 완료 | `install.sh` 6·7단계가 `claude plugin`·`claude mcp` 를 호출해 SCAR·MCP 를 배선한다. **없으면 설치가 "성공" 하고 SCAR 만 통째로 빠진다** |
+| **bash** | 4.x+ | 전 스크립트의 실행 셸 (Windows 는 Git Bash 동봉본) |
+| **git** | 2.x+ | 배포 체인 전체가 git 위에 선다 |
+| **python3** | 3.9+ | hub 서버·hook·빌더 다수 |
+| **jq** | 1.6+ | aoa-mq 큐의 **원자 갱신** — 없으면 예약이 조용히 갱신 실패한다 |
+
+⚠️ **Claude Code 를 nvm 으로 깔았다면** hook·cron 에서 `which claude` 가 실패할 수 있다
+(셸 초기화가 PATH 를 채우는 구조). `bash tdd/run-tdd.sh` 의 `claude-cli-available` 이 이를 판정한다.
+
+## 선택 — 없으면 해당 기능만 미동작
+
+* zsh — bash 로도 동작(`install.sh` 가 `$SHELL` 을 보고 rc 를 고른다)
+* iTerm2 — `cdf`/`sshf` 다중 패널 분할 (macOS 전용). 없으면 단일 `cd`/`ssh`
+* VS Code + `code` CLI — `cdfv`
+* Node.js 18+ / `npx` — `/fpm-issue-map` 다이어그램 렌더. **이 커맨드만** 영향
 * (선택) iTerm2 — 다중 패널 분할
 * (선택) VS Code + `code` CLI — `cdfv`
 * (선택) Python 3 — hub 서버
