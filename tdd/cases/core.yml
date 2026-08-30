@@ -63,3 +63,43 @@ cases:
     run: |
       command -v jq >/dev/null && echo ok
     expect: contains:ok
+
+  - id: mcp-server-present
+    desc: MCP 서버(aoa-mq·aoa-memory)가 repo 안에 있다
+    why: |
+      Issue431 — MCP 서버는 **플러그인 번들에 실리지 않는다.** 마켓 발행본에
+      mcp/ 디렉토리가 아예 없고, 소비자의 ~/.claude.json 은 repo 경로를
+      직접 가리킨다(fg1 실측: ~/_git/fpm/mcp/aoa-mq/server.py).
+      "prj20 에서 배포되니 repo mcp/ 는 지워도 된다" 는 **사실이 아니다** —
+      지우면 소비자의 예약 큐·메모리가 즉시 죽는다. 이행이 끝날 때까지
+      이 케이스가 그 사실을 붙잡아 둔다.
+    run: |
+      test -f "$REPO_DIR/mcp/aoa-mq/server.py" \
+        && test -f "$REPO_DIR/mcp/aoa-memory/server.py" && echo ok
+    expect: contains:ok
+
+  - id: hub-tick-resolvable
+    desc: hub 가 tick 스크립트를 자기 위치 기준으로 찾는다
+    why: |
+      Issue428 — ~/.claude/mcp/… 홈 절대경로만 보다가 소비자 머신에서
+      타이머가 통째로 미기동했다. 저작 머신은 ~/.claude 가 곧 repo 라
+      드러나지 않았다.
+    run: |
+      grep -q '_resolve_aoa_mq_tick' "$REPO_DIR/services/hub/server.py" && echo ok
+    expect: contains:ok
+
+  - id: aoa-mq-due-transition
+    desc: 예약 항목이 due 로 전이된다 (배관 실동작)
+    why: |
+      prj3#Issue476 — iso2epoch 가 BSD 전용이라 Linux 에서 0 을 반환했고,
+      due 판정이 **영원히 성립하지 않았다.** 파싱만 보면 통과처럼 보이므로
+      실제 전이까지 확인한다. 큐를 건드리지 않고 판정 로직만 태운다.
+    run: |
+      DATE=/bin/date
+      past=$("$DATE" -v-1d '+%Y-%m-%dT%H:%M:%S' 2>/dev/null \
+             || "$DATE" -d '-1 day' '+%Y-%m-%dT%H:%M:%S' 2>/dev/null)
+      e=$("$DATE" -j -f '%Y-%m-%dT%H:%M:%S' "$past" +%s 2>/dev/null \
+          || "$DATE" -d "$past" +%s 2>/dev/null || echo 0)
+      now=$("$DATE" +%s)
+      [ "$e" -gt 0 ] && [ "$e" -le "$now" ] && echo ok
+    expect: contains:ok

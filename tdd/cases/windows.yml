@@ -49,3 +49,40 @@ cases:
       if command -v file >/dev/null; then file "$f" | grep -q CRLF && echo FAIL || echo ok
       else python3 -c "d=open('$f','rb').read(); print('FAIL' if b'\r\n' in d else 'ok')"; fi
     expect: contains:ok
+
+  - id: process-mgmt
+    desc: pkill/pgrep/setsid 가 동작한다
+    why: |
+      W6 — hub 재기동이 이 셋에 의존한다. Windows 의 프로세스 모델이 달라
+      매칭이 빗나가면 재기동이 안 되거나 좀비가 남는다.
+      ⚠️ 자기 명령줄을 매치하지 않도록 [s] 트릭을 쓴다 — 2026-08-30 에
+      pkill 이 자기 ssh 셸을 먼저 죽여 뒤 명령이 통째로 누락된 적이 있다.
+    run: |
+      command -v pkill >/dev/null && command -v pgrep >/dev/null || { echo FAIL; exit 0; }
+      sleep 30 & p=$!
+      pgrep -f "[s]leep 30" >/dev/null && echo ok || echo FAIL
+      kill $p 2>/dev/null
+    expect: contains:ok
+
+  - id: exec-permission
+    desc: chmod +x 가 실제 실행 가능으로 이어진다
+    why: |
+      W7 — NTFS 는 POSIX 권한 비트가 없다. chmod 가 조용히 무시되면
+      배포된 스크립트가 실행 불가이거나, 반대로 항상 실행 가능해진다.
+    run: |
+      t=$(mktemp -d); f="$t/x.sh"
+      printf '#!/usr/bin/env bash\necho ok\n' > "$f"; chmod +x "$f"
+      "$f" 2>/dev/null; rm -rf "$t"
+    expect: contains:ok
+
+  - id: case-sensitivity
+    desc: 파일명 대소문자가 구분된다
+    why: |
+      W8 — NTFS 는 기본 case-insensitive 다. Issue.md 와 issue.md 가 같은
+      파일로 취급되면 git 이 rename 으로 오인하고, 대소문자만 다른 두 파일이
+      공존하는 repo 를 체크아웃하면 하나가 사라진다.
+    run: |
+      t=$(mktemp -d); echo a > "$t/Aa"; echo b > "$t/aA" 2>/dev/null
+      n=$(ls "$t" | wc -l | tr -d ' '); rm -rf "$t"
+      [ "$n" = "2" ] && echo ok || echo "insensitive(파일 $n 개)"
+    expect: nonempty

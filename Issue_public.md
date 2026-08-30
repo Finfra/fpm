@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: 2cd10b4fadcd9ee1f3607882890b87e043faa78f402012dc02aab1952924bb0b
+source_sha: 51abec396200ffcb1c616cef39f2c69da65e47d9e1426bb6d352af71bacb0947
 ---
 
 # 안내
@@ -35,6 +35,15 @@ source_sha: 2cd10b4fadcd9ee1f3607882890b87e043faa78f402012dc02aab1952924bb0b
     - ② ⓐ 채택 시 — [`fpm-gitflow.md`](_doc_arch/fpm-gitflow.md) R1~R4 에 *"미러는 릴리스 라인을 갖지 않는다"* 를 명문화하고, 미러의 `release/*` 를 정리
     - ③ ⓑ 채택 시 — `guard_dst_branch()` 의 허용 목록에 `release/*` 추가. ⚠️ 그러면 **어느 브랜치로 sync 됐는지**가 갈릴 수 있어 `mirror_scan()` 의 미흡수 판정 기준을 함께 손봐야 한다
     - 검증: 판정된 쪽으로 `forward` 를 1회 태워 **수동 브랜치 전환 없이** 통과할 것
+
+## Issue431: `mcp/` 제거 판정 + tdd 확충 + Windows 이식 설계 ✅
+* 목적: 사용자 지시 — *"mcp 폴더는 이제 제거되어야 하지 않을까? prj20 에서 진행하잖아. tdd 작업 진행(host·host)하고, 이번 tdd 성공하면 windows 버전 테스트 진행 예정이니 설계문서와 tdd 항목과 windows 구현을 위한 설계를 진행해달라"*
+* depends: Issue430
+* 구현 명세:
+    - ① tdd core 케이스 **+3** — `mcp-server-present`(위 사실을 **케이스로 붙잡아 둔다** — 이행 전까지 누가 지우면 즉시 FAIL) · `hub-tick-resolvable` · `aoa-mq-due-transition`(파싱만이 아니라 **전이까지** 확인)
+    - ② [`windows-port-design.md`](windows-port-design.md) 신설 — **실패 축 W1~W8**(줄바꿈·심볼릭링크·경로형식·python 이름·date·프로세스관리·파일권한·대소문자) · 셸 후보 4종 비교 · 이행 순서
+    - ③ windows 케이스 **8종** 완비 — 설계 문서의 W# 와 케이스 id 를 상호 연결
+    - ④ `_doc_arch/README.md` 색인 등재
 
 ## Issue430: Windows 11 대비 3축 설계 + 머신별 기능 테스트 `tdd/` 신설 ✅
 * 목적: 사용자 지시 — *"최종적으로 windows11 에서도 동작해야 한다. 이런 문제를 해결하기 위한 설계 업데이트가 필요하고, 동작하는 각 머신에서 기능 테스트를 위한 목록 파일도 같이 동기화되어야 한다. github 에 공유되어야 하니 `_doc_*` 폴더가 아닌 `tdd` 폴더를 따로 만들어 관리하면 좋겠다"*
