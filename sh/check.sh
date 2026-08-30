@@ -696,6 +696,54 @@ PYEOF
     fi
 fi
 
+# ── 항목 15: 크로스플랫폼 이식성 (Issue429) ──────────────────────
+#   왜 검사가 필요한가 — 2026-08-30 하루에 "jm4 에서만 되는" 함정이 셋 나왔다:
+#     prj3#Issue475 nvm PATH · prj3#Issue476 BSD date · Issue428 홈 절대경로.
+#   셋 다 **조용히 실패**했다(각각 "미설치"·"시간이 안 됐나"·"큐가 좀 늦네" 로 보임).
+#   더 나쁜 것은 **규칙이 이미 있었는데 한 곳만 누락**된 경우다 — aoa-mq-enqueue.sh 는
+#   "BSD 우선, GNU fallback" 을 주석까지 달고 지켰는데 aoa-mq-tick.sh 만 빠져 있었다.
+#   사람의 주의력이 아니라 **검사**가 그것을 잡아야 한다.
+printf '\n\033[1m[15] 크로스플랫폼 이식성\033[0m\n'
+
+# 15-1. BSD 전용 date 에 GNU fallback 이 있는가
+_xp_bad=0
+while IFS= read -r _f; do
+    [[ -f "$_f" ]] || continue
+    _bsd=$(grep -cE 'date -j|date -v|DATE" -j|DATE" -v' "$_f" 2>/dev/null || echo 0)
+    [[ "$_bsd" -eq 0 ]] && continue
+    _gnu=$(grep -cE 'date -d|DATE" -d' "$_f" 2>/dev/null || echo 0)
+    if [[ "$_gnu" -eq 0 ]]; then
+        fail "BSD 전용 date 에 GNU fallback 없음: ${_f#$FPM_BASE/} — Linux 에서 실패하고 그 실패가 0/빈값으로 둔갑한다"
+        _xp_bad=$((_xp_bad+1))
+    fi
+done < <(grep -rlE 'date -j|date -v|DATE" -j|DATE" -v' --include="*.sh" "$FPM_BASE/scripts" "$FPM_BASE/sh" "$FPM_BASE/mcp" 2>/dev/null)
+[[ "$_xp_bad" -eq 0 ]] && ok "BSD date 사용처 전부 GNU fallback 보유"
+
+# 15-2. 배포되는 코드가 홈 절대경로로 짝을 찾는가
+#   소비자 머신의 ~/.claude 는 **플러그인 설치본**이라 repo 구조가 없다.
+#   자기 위치(REPO_ROOT/__file__) 기준으로 찾아야 한다 — prj3#Issue460·Issue428 처방.
+_xp_home=$(grep -rnE 'expanduser\("~/\.claude/(mcp|scripts|sh)/|"\$HOME/\.claude/(mcp|scripts|sh)/' \
+    --include="*.py" --include="*.sh" "$FPM_BASE/services" "$FPM_BASE/scripts" "$FPM_BASE/sh" 2>/dev/null \
+    | grep -viE 'REPO_ROOT|fallback|후보|candidate|_resolve_' | wc -l | tr -d ' ')
+if [[ "${_xp_home:-0}" -gt 0 ]]; then
+    warn "홈 절대경로로 실행체를 찾는 지점 ${_xp_home}건 — 소비자 머신엔 그 경로가 없다(자기 위치 기준으로 바꿀 것)"
+else
+    ok "실행체 경로 해석: 홈 하드코딩 없음"
+fi
+
+# 15-3. 이 머신에서 실제로 도는가 (판정이 아니라 실행)
+if [[ -f "$FPM_BASE/mcp/aoa-mq/aoa-mq-tick.sh" ]]; then
+    _xp_epoch=$(bash -c '
+        DATE=/bin/date
+        "$DATE" -j -f "%Y-%m-%dT%H:%M:%S" "2026-01-02T03:04:05" +%s 2>/dev/null \
+          || "$DATE" -d "2026-01-02T03:04:05" +%s 2>/dev/null || echo 0')
+    if [[ "${_xp_epoch:-0}" -gt 0 ]]; then
+        ok "date 파싱 실측 통과 ($(uname -s), epoch=$_xp_epoch)"
+    else
+        fail "date 파싱이 이 OS 에서 실패 — 예약 큐의 due 판정이 서지 않는다"
+    fi
+fi
+
 # ── 요약 ──────────────────────────────────────────────────────
 printf '\n────────────────────────────────────────────\n'
 printf '결과: \033[32mPASS %d\033[0m / \033[33mWARN %d\033[0m / \033[31mFAIL %d\033[0m\n' "$PASS_N" "$WARN_N" "$FAIL_N"

@@ -4465,10 +4465,10 @@ def _resolve_aoa_mq_tick() -> str:
     if env:
         return env
     for c in (os.path.join(REPO_ROOT, "mcp", "aoa-mq", "aoa-mq-tick.sh"),
-              os.path.expanduser("~/.claude/mcp/aoa-mq/aoa-mq-tick.sh")):
+              os.path.expanduser("~/.claude/mcp/aoa-mq/aoa-mq-tick.sh")):  # candidate
         if os.path.isfile(c):
             return c
-    return os.path.expanduser("~/.claude/mcp/aoa-mq/aoa-mq-tick.sh")
+    return os.path.expanduser("~/.claude/mcp/aoa-mq/aoa-mq-tick.sh")  # candidate(최종 폴백)
 
 
 AOA_MQ_TICK = _resolve_aoa_mq_tick()

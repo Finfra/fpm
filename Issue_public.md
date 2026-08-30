@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: f015e74a05eb126ac67e353c2482a47d064ce392ac72eb4e4f4292629d6658b6
+source_sha: 1ca1e7ab6f8fe8fd8a380741796197a96f83c95f3355df72b83b9adff8692485
 ---
 
 # 안내
@@ -35,6 +35,14 @@ source_sha: f015e74a05eb126ac67e353c2482a47d064ce392ac72eb4e4f4292629d6658b6
     - ② ⓐ 채택 시 — [`fpm-gitflow.md`](_doc_arch/fpm-gitflow.md) R1~R4 에 *"미러는 릴리스 라인을 갖지 않는다"* 를 명문화하고, 미러의 `release/*` 를 정리
     - ③ ⓑ 채택 시 — `guard_dst_branch()` 의 허용 목록에 `release/*` 추가. ⚠️ 그러면 **어느 브랜치로 sync 됐는지**가 갈릴 수 있어 `mirror_scan()` 의 미흡수 판정 기준을 함께 손봐야 한다
     - 검증: 판정된 쪽으로 `forward` 를 1회 태워 **수동 브랜치 전환 없이** 통과할 것
+
+## Issue429: 크로스플랫폼 함정을 검사로 잡는다 + 배포 경로 교통정리 ✅
+* 목적: 사용자 지적 — *"배포 절차가 복잡하고 역방향과 정방향도 있고 복잡하다. 정방향 쪽도 Linux 와 mac 의 차이라 OS 따라 다르게 진행되는 스크립트가 필요하니 교통정리가 필요하다. 배포설계문서 보강하고 함정 해결해달라"*
+* depends: Issue428, prj3#Issue475, prj3#Issue476
+* 구현 명세:
+    - ① [`check.sh`](../sh/check.sh) **항목 15 신설** — 15-1 BSD date 에 GNU fallback(**FAIL**) · 15-2 홈 절대경로 실행체 탐색(WARN) · 15-3 **이 OS 에서 date 파싱 실측**(FAIL)
+    - ② 15-3 이 핵심 — 코드를 읽어 `date -j` 가 Linux 에서 안 되는 것은 알아도 **그 실패가 `0` 으로 둔갑해 무증상이 된다**는 것은 정적 검사로 안 보인다. **실행해 본다**
+    - ③ [`fpm-sync-deploy.md`](fpm-sync-deploy.md) 에 *"크로스플랫폼 — 배포되는 코드는 남의 OS 에서 돈다"* 절 신설 — 함정 3종 표 · *"왜 조용히 실패하는가"* · **3원칙** · 집행 표 · **배포 경로 3종 표** · 버전 같으면 갱신 안 되는 문제(Issue422 부작용)
 
 ## Issue428: hub 가 tick 스크립트를 홈 절대경로로만 찾는다 — 소비자 머신에서 타이머 미기동 ✅
 * 목적: 0.8.1 발행 검증 중 발견. [`server.py`](services/hub/server.py) 가 `AOA_MQ_TICK` 을 **`~/.claude/mcp/aoa-mq/aoa-mq-tick.sh` 하나로 하드코딩**한다. host 는 `~/.claude` 가 곧 prj3 repo 라 파일이 있지만, **소비자 머신의 `~/.claude` 는 플러그인 설치본**이라 그 경로가 없다 → host 에서 hub 의 **tick 타이머가 통째로 미기동**했다
