@@ -147,8 +147,15 @@ fi
 
 # due_ts 는 초(:SS) 유무 양쪽 허용 — enqueue helper 는 분 단위(YYYY-MM-DDTHH:MM)도 기록
 iso2epoch() {
+  # prj3#Issue476: BSD(-j -f) 와 GNU(-d) 를 **둘 다** 시도한다.
+  #   종전은 BSD 전용이라 Linux 에서 **항상 0** 을 반환했다 → due 판정이 절대 성립하지
+  #   않아 예약이 영원히 pending 에 머문다. fg1 실측(2026-08-30): 5분 뒤 due 항목이
+  #   tick 을 지나도 pending 그대로였고 로그에 "due 도달" 이 한 줄도 없었다.
+  #   ⚠️ 조용한 실패였다 — `2>/dev/null || echo 0` 이 오류를 삼키고 0 을 내놓는데,
+  #      0 은 "1970년" 이라 `<= NOW` 를 만족하지 않아 **아무 일도 안 일어난 것처럼** 보인다.
   "$DATE" -j -f '%Y-%m-%dT%H:%M:%S' "$1" +%s 2>/dev/null \
     || "$DATE" -j -f '%Y-%m-%dT%H:%M' "$1" +%s 2>/dev/null \
+    || "$DATE" -d "$1" +%s 2>/dev/null \
     || echo 0
 }
 
