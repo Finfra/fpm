@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: 65c06fab5dc110bc90caba39de4e4c73563e0b7ea9932e1eaaf77e92edb0ee19
+source_sha: f015e74a05eb126ac67e353c2482a47d064ce392ac72eb4e4f4292629d6658b6
 ---
 
 # 안내
@@ -35,6 +35,13 @@ source_sha: 65c06fab5dc110bc90caba39de4e4c73563e0b7ea9932e1eaaf77e92edb0ee19
     - ② ⓐ 채택 시 — [`fpm-gitflow.md`](_doc_arch/fpm-gitflow.md) R1~R4 에 *"미러는 릴리스 라인을 갖지 않는다"* 를 명문화하고, 미러의 `release/*` 를 정리
     - ③ ⓑ 채택 시 — `guard_dst_branch()` 의 허용 목록에 `release/*` 추가. ⚠️ 그러면 **어느 브랜치로 sync 됐는지**가 갈릴 수 있어 `mirror_scan()` 의 미흡수 판정 기준을 함께 손봐야 한다
     - 검증: 판정된 쪽으로 `forward` 를 1회 태워 **수동 브랜치 전환 없이** 통과할 것
+
+## Issue428: hub 가 tick 스크립트를 홈 절대경로로만 찾는다 — 소비자 머신에서 타이머 미기동 ✅
+* 목적: 0.8.1 발행 검증 중 발견. [`server.py`](services/hub/server.py) 가 `AOA_MQ_TICK` 을 **`~/.claude/mcp/aoa-mq/aoa-mq-tick.sh` 하나로 하드코딩**한다. host 는 `~/.claude` 가 곧 prj3 repo 라 파일이 있지만, **소비자 머신의 `~/.claude` 는 플러그인 설치본**이라 그 경로가 없다 → host 에서 hub 의 **tick 타이머가 통째로 미기동**했다
+* depends: Issue425
+* 구현 명세:
+    - `_resolve_aoa_mq_tick()` 신설 — env(`AOA_MQ_TICK`) → **repo 동거본**(`REPO_ROOT/mcp/aoa-mq/`) → 홈(`~/.claude/mcp/`) → 폴백. `REPO_ROOT` 는 942행에 이미 `__file__` 기준으로 정의돼 있다
+    - 우선순위가 **repo 동거본 먼저**인 이유 — hub 를 띄운 그 repo 의 tick 과 짝이 맞아야 버전 불일치가 없다
 
 ## Issue427: Discord 알림에서 hub 로 넘어갈 링크가 없다 — 체인이 네 군데 끊겨 있었다 ✅
 * 목적: 사용자 지적 — *"tailscale 을 쓰는 이유가 openclaw 에서 링크해서 넘어가기 위함(외부망일 때)인데, openclaw 설정부터 해서 discord 로 전송되게 해야 한다"*. 목적을 듣고 보니 **체인 전체가 끊겨 있었다** — Issue425 가 고친 것은 그중 한 조각일 뿐이었다

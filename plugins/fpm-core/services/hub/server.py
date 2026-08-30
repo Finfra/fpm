@@ -4448,7 +4448,30 @@ def _orphan_reaper_loop(interval: float = 120.0) -> None:
             log(f"[reaper] loop error: {e}")
 
 
-AOA_MQ_TICK = os.path.expanduser("~/.claude/mcp/aoa-mq/aoa-mq-tick.sh")
+def _resolve_aoa_mq_tick() -> str:
+    """aoa-mq tick 스크립트 경로 — **자기 위치 기준을 먼저** 본다 (Issue428).
+
+    종전엔 `~/.claude/mcp/...` 하나만 봤다. jm4 는 `~/.claude` 가 곧 prj3 repo 라
+    파일이 있어 드러나지 않았지만, **소비자 머신의 `~/.claude` 는 플러그인 설치본**이라
+    그 경로가 없다 — fg1 실측(2026-08-30)에서 hub 의 tick 타이머가 통째로 미기동했고,
+    예약 큐가 자동으로 돈 적이 한 번도 없었다. tick 을 수동 실행할 때만 동작해서
+    *"큐가 좀 늦네"* 로 보였다.
+      (prj3#Issue460 이 훅 헬퍼에 쓴 처방과 같다 — 배포된 코드는 **자기가 놓인 자리**를
+       기준으로 짝을 찾아야 한다. 홈 절대경로는 개발 머신에서만 맞는 가정이다.)
+
+    우선순위: env(AOA_MQ_TICK) → repo 동거본 → 홈(~/.claude) → 빈 문자열(미기동).
+    """
+    env = os.environ.get("AOA_MQ_TICK")
+    if env:
+        return env
+    for c in (os.path.join(REPO_ROOT, "mcp", "aoa-mq", "aoa-mq-tick.sh"),
+              os.path.expanduser("~/.claude/mcp/aoa-mq/aoa-mq-tick.sh")):
+        if os.path.isfile(c):
+            return c
+    return os.path.expanduser("~/.claude/mcp/aoa-mq/aoa-mq-tick.sh")
+
+
+AOA_MQ_TICK = _resolve_aoa_mq_tick()
 AOA_MQ_GATE_SEC = 3600
 
 
