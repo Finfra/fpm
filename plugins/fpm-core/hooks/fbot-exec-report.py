@@ -452,10 +452,31 @@ def sleep_is_active(cwd: str) -> bool:
 
 
 def openclaw_bin() -> str:
+    """openclaw 실행 파일 탐지.
+
+    prj3#Issue475: `shutil.which` 만으로는 부족하다 — **설치돼 있어도 못 찾는다.**
+      fg1 실측: openclaw 가 nvm 아래(`~/.nvm/versions/node/<ver>/bin/openclaw`)에
+      설치돼 gateway 까지 돌고 있는데, nvm 은 셸 초기화 스크립트가 PATH 에 넣어 주는
+      구조라 **로그인 셸에서조차 안 잡혔다**. hook·cron 은 그 초기화를 거치지 않으므로
+      which 는 영원히 None 이고, rung1(Discord)은 한 번도 쓰이지 못한 채 파일로만
+      떨어진다 — "미설치" 와 구분되지 않는 조용한 실패였다.
+      (jm4 는 homebrew 설치라 PATH 에 있어 이 함정이 드러나지 않았다.)
+    """
     forced = os.environ.get("FBOT_REPORT_OPENCLAW")
     if forced is not None:            # 빈 문자열 = 의도적 부재(폴백 시험)
         return forced if forced and os.path.exists(forced) else ""
-    return shutil.which("openclaw") or ""
+    found = shutil.which("openclaw")
+    if found:
+        return found
+    # 셸 초기화에 의존하는 설치 경로들. 최신 node 버전 우선(역순 정렬).
+    cands = sorted(glob.glob(os.path.expanduser(
+        "~/.nvm/versions/node/*/bin/openclaw")), reverse=True)
+    cands += ["/opt/homebrew/bin/openclaw", "/usr/local/bin/openclaw",
+              os.path.expanduser("~/.local/bin/openclaw")]
+    for c in cands:
+        if os.path.isfile(c) and os.access(c, os.X_OK):
+            return c
+    return ""
 
 
 def log_transition(entry: dict) -> None:
