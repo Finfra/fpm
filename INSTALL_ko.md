@@ -12,7 +12,7 @@ date: 2026.08.26
 | :--- | :--- | :--- | :--- |
 | **macOS** | ✅ 정본 | zsh | 전 기능. iTerm2 분할·Finder·클립보드 포함 |
 | **Linux** | ✅ 검증됨 | bash·zsh | `cdf`/`sshf` 는 단일 `cd`/`ssh` 로 축소. hub·SCAR·MCP 는 동일 |
-| **Windows 11** | 🚧 준비 중 | **Git Bash** | [아래 절](#windows-11-git-bash) 참조. 미실측 항목이 있다 |
+| **Windows 10/11** | ⚠️ 조건부 | **Git Bash** | [아래 절](#windows-11-git-bash) 참조. **Windows 10 22H2 실측 25/27** — symlink·프로세스 관리 미지원, MCP 배선에 알려진 결함(Issue436) |
 
 **설치 후 확인은 OS 공통이다:**
 

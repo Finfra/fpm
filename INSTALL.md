@@ -12,7 +12,7 @@ date: 2026.08.26
 | :--- | :--- | :--- | :--- |
 | **macOS** | ✅ reference | zsh | Full feature set incl. iTerm2 split / Finder / clipboard |
 | **Linux** | ✅ verified | bash·zsh | `cdf`/`sshf` fall back to plain `cd`/`ssh`; hub·SCAR·MCP identical |
-| **Windows 11** | 🚧 in progress | **Git Bash** | See [below](#windows-11-git-bash). Some items are unverified |
+| **Windows 10/11** | ⚠️ conditional | **Git Bash** | See [below](#windows-11-git-bash). **25/27 verified on Windows 10 22H2** - no symlinks, no process management, known MCP wiring defect (Issue436) |
 
 **Post-install verification is the same everywhere:**
 
@@ -35,6 +35,7 @@ were caught by **none** of `check.sh`'s checks.
 | **bash** | 4.x+ | Execution shell for every script (Git Bash on Windows) |
 | **git** | 2.x+ | The whole delivery chain sits on git |
 | **python3** | 3.9+ | hub server, hooks, builders |
+| **PyYAML** | any | `bash tdd/run-tdd.sh` reads the case files with it. Without PyYAML the runner cannot parse a single case; it stops with `rc=2` instead of reporting a false pass (jma, 2026-08-31 — Issue435). `pip3 install pyyaml`, or point `FBOT_PYTHON` at an interpreter that has it |
 | **jq** | 1.6+ | Atomic updates of the aoa-mq queue — without it reminders fail to update silently |
 
 ⚠️ **If Claude Code was installed via nvm**, `which claude` may fail inside hooks/cron
