@@ -34,6 +34,7 @@ bash sh/check.sh         # 설치 상태
 | **bash** | 4.x+ | 전 스크립트의 실행 셸 (Windows 는 Git Bash 동봉본) |
 | **git** | 2.x+ | 배포 체인 전체가 git 위에 선다 |
 | **python3** | 3.9+ | hub 서버·hook·빌더 다수 |
+| **PyYAML** | any | `bash tdd/run-tdd.sh` 가 케이스 파일을 읽는 데 필요함. 없으면 케이스를 한 건도 파싱하지 못하며, 거짓 통과 대신 `rc=2` 로 중단됨 (jma 실측 2026-08-31 — Issue435). `pip3 install pyyaml` 또는 `FBOT_PYTHON` 으로 PyYAML 있는 인터프리터 지정 |
 | **jq** | 1.6+ | aoa-mq 큐의 **원자 갱신** — 없으면 예약이 조용히 갱신 실패한다 |
 
 ⚠️ **Claude Code 를 nvm 으로 깔았다면** hook·cron 에서 `which claude` 가 실패할 수 있다
