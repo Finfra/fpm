@@ -57,13 +57,30 @@ INDEX_PROJECT_ID = "fbot-manual"
 INDEX_SCOPE = "fbot/manual"
 INDEX_ORIGIN = "fbot-manual-index"
 
-# ── 판정 임계 (근거 없는 개정 금지 — 표본 미달이면 아예 판정하지 않는다) ────────
-MIN_EVENTS = 3          # role 당 최소 표본. 미만이면 "판정 보류"
-BLOCK_RATE_MIN = 0.30   # blocked/failed 비율
-RETRY_RATE_MIN = 0.30   # attempts >= 2 비율
-IDLE_RATE_MIN = 0.50    # 출근했는데 current_task 가 빈 세션 비율
-MISMATCH_MIN = 1        # 엄격형(strict) role 인데 hash 증적 없이 done 처리된 건수
-OBS_FAIL_MIN = 3        # 실패 키워드를 동반한 observation 언급 건수
+# ── 판정 임계 (prj3#Issue503 — policy 이전) ────────────────────────────────
+# 수치 SSOT 는 aoa policy.yml `fbot_review_*` 키. 아래 값은 **키 부재 시 폴백**(제품
+# 중립 기본 — 미설치 머신 계약)이며, 있으면 policy 가 이긴다. 소수 키가 섞여 있어
+# 정수 전용 파서를 쓰지 않고 float 허용 정규식으로 읽는다(판정 단일 지점 유지).
+import re as _re
+
+def _review_policy():
+    path = os.path.join(AOA_DIR, "policy.yml")
+    out = {}
+    if os.path.exists(path):
+        for line in open(path, encoding="utf-8"):
+            m = _re.match(r"^(fbot_review_[a-z_]+):\s*([0-9.]+)", line)
+            if m:
+                v = m.group(2)
+                out[m.group(1)] = float(v) if "." in v else int(v)
+    return out
+
+_RP = _review_policy()
+MIN_EVENTS = _RP.get("fbot_review_min_events", 3)          # role 당 최소 표본. 미만이면 "판정 보류"
+BLOCK_RATE_MIN = _RP.get("fbot_review_block_rate_min", 0.30)   # blocked/failed 비율
+RETRY_RATE_MIN = _RP.get("fbot_review_retry_rate_min", 0.30)   # attempts >= 2 비율
+IDLE_RATE_MIN = _RP.get("fbot_review_idle_rate_min", 0.50)     # 출근했는데 current_task 가 빈 세션 비율
+MISMATCH_MIN = _RP.get("fbot_review_mismatch_min", 1)      # strict role 인데 hash 증적 없이 done 건수
+OBS_FAIL_MIN = _RP.get("fbot_review_obs_fail_min", 3)      # 실패 키워드 동반 observation 건수
 
 HASH_RE = re.compile(r"\b[0-9a-f]{7,40}\b")
 OBS_FAIL_RE = re.compile(r"실패|오류|에러|반송|재시도|blocked|failed", re.I)

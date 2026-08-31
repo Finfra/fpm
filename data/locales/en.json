@@ -195,7 +195,12 @@
   "bots.toggleTitle": "Click to expand details (Enter/Space also works)",
   "bots.d.id": "bot id",
   "bots.d.career": "career",
-  "bots.d.parent": "parent bot",
+  "bots.d.parent": "directed by (parent bot)",
+  "bots.d.session": "session",
+  "bots.d.pane": "pane",
+  "bots.parentBy": "by {p}",
+  "bots.parentTitle": "Directed by (parent bot) — {p}",
+  "bots.sessionTitle": "Claude session bound to this bot — {s}",
   "bots.d.lease": "lease",
   "bots.leaseLeft": "{m} min left",
   "bots.leaseGone": "expired — {m} min ago (crash suspected)",
@@ -207,6 +212,7 @@
   "bots.mapTitle": "Open this bot org's delegation map (new tab)",
   "bots.mapAllTitle": "Open the full bot org chart (new tab)",
   "bots.restTitle": "Checked out — still org members, just not working now",
+  "bots.restMore": "+{n} more (checked out) — see org map",
   "bots.chipCheckout": "checked out {t} ago",
   "bots.chipLastSeen": "last run {t}"
 }

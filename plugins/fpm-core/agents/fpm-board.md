@@ -94,7 +94,8 @@ if [ "$IN_VAULT" -eq 0 ]; then
   fi
 fi
 if [ -z "$OUT_DIR" ]; then
-  OUT_DIR="/tmp/___pm"
+  # prj3#Issue499: Windows 셸↔python 경로 분열 방지 — /tmp 리터럴 대신 계산(규칙: prj1 _tmp_root)
+  OUT_DIR=$(python3 -c 'import os,tempfile;print(os.path.join(os.environ.get("FPM_TMP_ROOT") or ("/tmp" if os.name=="posix" else tempfile.gettempdir()),"___pm"))')
   mkdir -p "$OUT_DIR"
 fi
 TOPIC="<topic>"
@@ -105,10 +106,10 @@ LOG_FILE="$OUT_DIR/${TOPIC}.runner.log"
 
 ## 2. monitor_scripts 사전 생성
 
-모니터링 명령을 독립 스크립트 파일로 사전 생성. widget dynamic_eval 은 스크립트 경로만 호출 (inline shell 금지). monitor 스크립트는 OUT_DIR 과 무관하게 항상 `/tmp/___pm/<topic>.monitor/` 하위.
+모니터링 명령을 독립 스크립트 파일로 사전 생성. widget dynamic_eval 은 스크립트 경로만 호출 (inline shell 금지). monitor 스크립트는 OUT_DIR 과 무관하게 항상 tmp 네임스페이스(`{TMPNS}/<topic>.monitor/` — prj3#Issue499 계산 규칙) 하위.
 
 ```bash
-MON_DIR="/tmp/___pm/${TOPIC}.monitor"
+MON_DIR="$(python3 -c 'import os,tempfile;print(os.path.join(os.environ.get("FPM_TMP_ROOT") or ("/tmp" if os.name=="posix" else tempfile.gettempdir()),"___pm"))')/${TOPIC}.monitor"   # prj3#Issue499 — /tmp 리터럴 금지
 mkdir -p "$MON_DIR"
 
 cat > "$MON_DIR/count.sh" <<'EOF'

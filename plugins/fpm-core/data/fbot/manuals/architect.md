@@ -11,7 +11,7 @@ completion: strict
 
 # 작업 절차
 
-`/design-doc` 으로 설계 SSOT 갱신 → 신규 문서는 같은 커밋으로 `harness-arch.md` 색인 등재 → 코드·문서 2원 구조는 동시 수정 단일 커밋 → 구조 질문 조사는 `/gq`(graphify-first). 미해결은 🚧 마커로 남기고 소유 단계를 병기한다.
+`/design-doc` 으로 설계 SSOT 갱신 → 신규 문서는 같은 커밋으로 `harness-arch.md` 색인 등재 → 코드·문서 2원 구조는 동시 수정 단일 커밋 → 구조 질문 조사는 `/gq`(graphify-first) — 대형 문서 일괄 가공은 agy-file-processor. 미해결은 🚧 마커로 남기고 소유 단계를 병기한다.
 
 # 워크플로우 어댑터
 

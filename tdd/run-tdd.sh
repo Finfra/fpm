@@ -69,30 +69,40 @@ run_file() {
   printf '\n\033[1m[%s]\033[0m %s\n' "$label" "$yf"
   # YAML 파싱은 python 에 맡긴다 — 셸 파서를 손으로 짜면 그 자체가 버그원이다
   # ⚠️ 실패를 0 으로 뭉개지 않는다 (Issue435 ⓐ) — 그 삼킴이 "0건 돌고 전부 통과" 의 발원지였다.
-  local n
-  if ! n=$($PY -c "
-import yaml,io,sys
-d=yaml.safe_load(io.open('$yf',encoding='utf-8')) or {}
-print(len(d.get('cases') or []))"); then
+  # ⚠️ 경로는 **argv 로 넘긴다** (Issue435 ⓔ · jpc1 실측 2026-08-31 · 설계 W3).
+  #    `-c` 스크립트 **문자열 안에 경로를 박으면** MSYS 의 POSIX→Windows 경로 변환이
+  #    적용되지 않아 Windows python 이 `/c/Users/…` 를 열지 못하고 FileNotFoundError 로 죽는다.
+  #    argv 로 넘어가는 인자는 MSYS 가 변환해 준다 — 그래서 같은 파일이 A 는 실패, B 는 성공한다.
+  #    macOS·Linux 에서는 둘 다 통하므로 이 결함은 Windows 에서만 드러난다.
+  # 파싱은 파일당 1회. 종전엔 케이스마다 4번씩 인터프리터를 띄워 Windows 에서 특히 느렸다.
+  local parsed
+  if ! parsed=$($PY -c '
+import sys, io, yaml, base64
+# ⚠️ Windows python 의 stdout 은 텍스트 모드라 \n 을 \r\n 으로 바꾼다 (Issue435 ⓕ · jpc1 실측).
+#    그러면 셸의 `read` 가 \n 에서 자른 뒤 **마지막 필드 끝에 \r 이 남아** base64 디코드가 깨진다.
+#    같은 계열로 stdout 인코딩도 로케일 기본값(한국어 Windows = cp949)이라, 한글·em-dash 를
+#    쓰는 출력이 UnicodeEncodeError 로 죽는다. 둘 다 여기서 못박는다.
+try:
+    sys.stdout.reconfigure(newline="\n", encoding="utf-8")
+except Exception:
+    pass
+d = yaml.safe_load(io.open(sys.argv[1], encoding="utf-8")) or {}
+for c in (d.get("cases") or []):
+    row = [base64.b64encode(str(c.get(k, dv)).encode("utf-8")).decode("ascii")
+           for k, dv in (("id", ""), ("desc", ""), ("expect", "exit0"), ("run", ""))]
+    print("\t".join(row))
+' "$yf"); then
     printf '\n\033[31m🚨 케이스 파일을 읽지 못했다: %s (파서=%s)\033[0m\n' "$yf" "$PY" >&2
     exit 2
   fi
-  local i=0
-  while [ "$i" -lt "$n" ]; do
-    local id desc run expect out rc
-    id=$($PY -c "
-import yaml,io; d=yaml.safe_load(io.open('$yf',encoding='utf-8'))
-print(d['cases'][$i].get('id',''))")
-    desc=$($PY -c "
-import yaml,io; d=yaml.safe_load(io.open('$yf',encoding='utf-8'))
-print(d['cases'][$i].get('desc',''))")
-    run=$($PY -c "
-import yaml,io; d=yaml.safe_load(io.open('$yf',encoding='utf-8'))
-print(d['cases'][$i].get('run',''))")
-    expect=$($PY -c "
-import yaml,io; d=yaml.safe_load(io.open('$yf',encoding='utf-8'))
-print(d['cases'][$i].get('expect','exit0'))")
-    i=$((i+1))
+
+  local id desc run expect out rc
+  while IFS=$'\t' read -r id desc expect run; do
+    [ -n "$id$desc$expect$run" ] || continue
+    id=$(printf '%s' "$id"     | base64 -d)
+    desc=$(printf '%s' "$desc" | base64 -d)
+    expect=$(printf '%s' "$expect" | base64 -d)
+    run=$(printf '%s' "$run"   | base64 -d)
     if [ "$LIST_ONLY" = 1 ]; then printf '  · %-24s %s\n' "$id" "$desc"; continue; fi
 
     out=$(bash -c "$run" 2>/dev/null); rc=$?
@@ -111,7 +121,7 @@ print(d['cases'][$i].get('expect','exit0'))")
       printf '     expect=%s rc=%s out=%s\n' "$expect" "$rc" "${out:-<빈값>}"
       FAIL=$((FAIL+1))
     fi
-  done
+  done <<< "$parsed"
 }
 
 case "$ONLY" in

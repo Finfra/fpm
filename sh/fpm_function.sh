@@ -114,6 +114,127 @@ _fpm_has_display() {
     [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]
 }
 
+# --- 프로세스 조회·종료 헬퍼 (Issue437) ------------------------------------
+# 배경: Git Bash(MSYS2)는 procps 를 동봉하지 않아 `pgrep`·`pkill`·`setsid` 가 **부재**하다.
+#   "동작이 다르다" 가 아니라 "없다" — 종전 hub 재기동 경로는 `command not found` 를
+#   삼키고 그대로 진행해 **"재기동 완료" 라는 거짓 보고**를 냈다(jpc1 실측 2026-08-31).
+#   원칙 3-1 대로 OS 가 아니라 **도구 가용성**으로 분기한다.
+#
+# ⚠️ Windows 실측으로 확정한 것 (2026-08-31 jpc1 · MSYS_NT-10.0-19045 · Git Bash)
+#   · `ps` 기본·`ps -W` 의 COMMAND 는 **인자를 내지 않는다**(실행 파일 경로뿐) → 명령줄 매칭 불가
+#   · `ps -ef` 는 인자를 내지만 **MSYS 세션 자손만** 보인다 — `cmd /c start` 로 뜬 것은 누락된다
+#   · `wmic process get ProcessId,CommandLine` 이 **전 프로세스 + 인자 + 네이티브 PID** 를 낸다
+#   · PID 체계가 둘이다 — MSYS PID(`kill` 이 받음) ↔ WINPID(`taskkill` 이 받음).
+#     같은 hub 가 MSYS 2031 / WINPID 10196 으로 동시에 보였다. **섞으면 엉뚱한 것을 죽인다**
+#   · `taskkill /PID` 의 `/PID` 를 MSYS 가 **경로로 변환**한다(`C:/Program Files/Git/PID` 오류)
+#     → `//PID` 이중 슬래시로 회피(MSYS·Cygwin 공통. `MSYS_NO_PATHCONV=1` 는 MSYS2 전용이라 안 쓴다)
+#
+# 계약: `_fpm_pgrep` 이 내는 PID 와 `_fpm_pkill_pid` 가 받는 PID 는 **같은 체계**다
+#   (POSIX=PID · Windows=네이티브 WINPID). 셸의 `$!` 는 Windows 에서 **MSYS PID** 라
+#   이 헬퍼에 넘기면 안 된다 — 그건 종전대로 `kill` 로 다룬다.
+
+# _fpm_proc_backend : 프로세스 조회·종료 백엔드 1단어 — procps | wmic | powershell | none
+#   OS 가 아니라 능력으로 판정한다. Windows 에 procps 를 깔았다면 그쪽이 선택된다.
+_fpm_proc_backend() {
+    if command -v pgrep >/dev/null 2>&1 && command -v pkill >/dev/null 2>&1; then
+        echo procps; return 0
+    fi
+    command -v wmic       >/dev/null 2>&1 && { echo wmic;       return 0; }
+    command -v powershell >/dev/null 2>&1 && { echo powershell; return 0; }
+    echo none
+}
+
+# _fpm_proc_unavailable <호출자> <패턴> : 백엔드 부재 고지. **조용히 넘어가지 않는다**
+_fpm_proc_unavailable() {
+    echo "⛔ ${1:-_fpm_proc}: 프로세스 조회·종료 수단이 없다 (pgrep+pkill·wmic·powershell 전부 부재)" >&2
+    echo "   대상 패턴: ${2:-?}  ·  플랫폼: $(_fpm_platform)" >&2
+    echo "   → 이 머신에서는 프로세스를 이름으로 찾아 죽일 수 없다. 수동 확인이 필요하다" >&2
+    return 2
+}
+
+# _fpm_self_winpid : 현재 셸의 Windows 네이티브 PID (MSYS `ps` 의 WINPID 컬럼). 그 외 빈 값
+_fpm_self_winpid() {
+    _fpm_is_windows || return 0
+    ps 2>/dev/null | awk -v p="$$" '$1==p{print $4; exit}'
+}
+
+# _fpm_pgrep <확장정규식> : 명령줄이 매칭되는 PID 를 개행 구분 출력
+#   rc=0 1건 이상 · rc=1 매칭 0건(pgrep 계약) · rc=2 수단 부재·인자 오류
+_fpm_pgrep() {
+    local pat="${1:-}"
+    [ -n "$pat" ] || { echo "⛔ _fpm_pgrep: 패턴 인자가 없다" >&2; return 2; }
+    local out="" snap=""
+    # ⚠️ 스냅샷 채취와 매칭을 **반드시 분리한다**(jpc1 실측 2026-08-31).
+    #   `wmic … | grep -E -- "$pat"` 로 한 파이프라인에 붙이면, Windows 에서 grep 은
+    #   별도 프로세스(`grep.exe`)이고 그 **명령줄에 패턴이 그대로 실린다**. wmic 이
+    #   그 순간의 전 프로세스를 훑으므로 **조회에 쓴 grep 자신이 결과에 잡힌다** —
+    #   대상을 죽인 뒤에도 매칭이 남아 "종료했는데 살아 있다" 로 보였다.
+    #   `pgrep` 은 자기 자신을 제외하지만 파이프라인의 grep 은 남이라 그 보호를 못 받는다.
+    #   스냅샷을 먼저 변수에 담으면 grep 은 **채취 시점에 아직 존재하지 않는다**.
+    case "$(_fpm_proc_backend)" in
+        procps)
+            out=$(pgrep -f "$pat" 2>/dev/null || true) ;;
+        wmic)
+            # CommandLine 이 앞, ProcessId 가 **마지막 필드**. CRLF 제거 필수(설계 W9 —
+            # Windows 출력의 `\r` 이 남으면 뒤의 숫자 판정이 통째로 어긋난다).
+            snap=$(wmic process get ProcessId,CommandLine 2>/dev/null | tr -d '\r' || true)
+            out=$(printf '%s\n' "$snap" | grep -E -- "$pat" | awk '{print $NF}' || true) ;;
+        powershell)
+            # wmic 은 Windows 11 24H2 에서 제거 예정 — 그때는 이 경로가 받는다.
+            snap=$(powershell -NoProfile -Command \
+                     'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" }' \
+                   2>/dev/null | tr -d '\r' || true)
+            out=$(printf '%s\n' "$snap" | grep -E -- "$pat" | awk '{print $1}' || true) ;;
+        *)
+            _fpm_proc_unavailable _fpm_pgrep "$pat"; return 2 ;;
+    esac
+    # 자기 자신을 제외한다 — pkill 이 자기 셸을 먼저 죽여 뒤 명령이 통째로 누락된
+    # 사고가 있었다(2026-08-30). Windows 는 PID 체계가 달라 WINPID 도 함께 뺀다.
+    local selfwin
+    selfwin=$(_fpm_self_winpid)
+    out=$(printf '%s\n' "$out" | grep -E '^[0-9]+$' | grep -vx "$$" || true)
+    if [ -n "$selfwin" ]; then
+        out=$(printf '%s\n' "$out" | grep -vx "$selfwin" || true)
+    fi
+    [ -n "$out" ] || return 1
+    printf '%s\n' "$out"
+}
+
+# _fpm_pkill_pid <pid>… : **네이티브 PID** 로 종료. rc=0 1건 이상 성공 · rc=1 전부 실패
+#   ⚠️ Windows 의 `taskkill //F` 는 강제 종료다(POSIX 의 `kill` = SIGTERM 과 비대칭).
+#      `/F` 없는 taskkill 은 콘솔 앱에 무시되므로 "죽였다" 는 거짓 보고가 되어 쓰지 않는다.
+_fpm_pkill_pid() {
+    [ $# -gt 0 ] || return 1
+    local p n=0
+    if _fpm_is_windows && ! command -v pkill >/dev/null 2>&1; then
+        for p in "$@"; do
+            taskkill //PID "$p" //F >/dev/null 2>&1 && n=$((n+1))
+        done
+    else
+        for p in "$@"; do kill "$p" 2>/dev/null && n=$((n+1)); done
+    fi
+    [ "$n" -gt 0 ]
+}
+
+# _fpm_pkill <확장정규식> : 명령줄 매칭 프로세스 종료 (= _fpm_pgrep + _fpm_pkill_pid)
+#   rc=0 1건 이상 종료 · rc=1 매칭 0건 · rc=2 수단 부재
+_fpm_pkill() {
+    local pat="${1:-}"
+    [ -n "$pat" ] || { echo "⛔ _fpm_pkill: 패턴 인자가 없다" >&2; return 2; }
+    local pids rc n=0 p
+    pids=$(_fpm_pgrep "$pat"); rc=$?
+    [ "$rc" -eq 0 ] || return "$rc"
+    # 개행 구분 목록을 heredoc 으로 돈다 — zsh 는 `$pids` 를 단어 분리하지 않아
+    # bash 전용 관용구(`$pids` 무인용)를 쓰면 zsh 에서 PID 가 통째로 1개 인자가 된다.
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        _fpm_pkill_pid "$p" && n=$((n+1))
+    done <<EOF
+$pids
+EOF
+    [ "$n" -gt 0 ]
+}
+
 # _fpm_tmux_focus <tmux경로> <window명> : 만든/찾은 window 로 실제 이동
 #   tmux 안  → select-window (현재 client 를 그 window 로 전환)
 #   tmux 밖  → attach-session (블로킹 — 사용자가 그 화면으로 들어감)

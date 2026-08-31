@@ -101,6 +101,8 @@ sync_skill fpm-issue-map "$GLOBAL/skills/issue-map"
 #   `fbot-` 자체가 이미 독립 네임스페이스라 fpm- 접두가 중복이고, SKILL.md 본문이
 #   `~/.claude/skills/fbot-icon/scripts/fbot-icon-gen.py` 를 문자열로 참조해 이름을 바꾸면 문서가 거짓이 된다.
 sync_skill fbot-icon "$GLOBAL/skills/fbot-icon"
+#   fbot-recruit 도 같은 예외 계열 — 번들명 = 라이브명 (prj3#Issue480, 위 fbot-icon 근거 동일)
+sync_skill fbot-recruit "$GLOBAL/skills/fbot-recruit"
 
 # --- 4. 런타임 데이터 (i18n catalog + 설치 템플릿) ---
 #   locales 부재 시 hub UI 가 번역 키 그대로 노출되고 test_i18n_parity 가 깨진다.

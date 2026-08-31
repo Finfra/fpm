@@ -26,6 +26,50 @@ cases:
       [ -f "$f" ] && echo ok || echo "skip(번들 미보유)"
     expect: nonempty
 
+  - id: aoa-policy-template-tracked
+    desc: aoa 정책 템플릿이 git 에 **추적**된다
+    why: |
+      Issue447 — .gitignore 의 `data/aoa/` 가 런타임 산출물과 함께 정본 템플릿까지
+      삼켜 `git log -- data/aoa/` 가 0건이었다. 저작 머신에는 파일이 로컬로 있어
+      **존재 검사로는 통과**하고 소비자 clone 에서만 깨진다 — 그래서 추적을 본다.
+      Issue449 에서 템플릿을 런타임 디렉토리 밖(data/template/)으로 옮겨 뿌리를 없앴다 —
+      gitignore·publishable 규칙이 디렉토리 단위로 도는 곳에 배포 자산을 두지 않는다.
+    run: |
+      git -C "$REPO_DIR" ls-files --error-unmatch data/template/aoa-policy.default.yml \
+        >/dev/null 2>&1 && echo ok || echo "UNTRACKED"
+    expect: contains:ok
+
+  - id: aoa-policy-template-complete
+    desc: 템플릿이 fail-loud 소비처가 요구하는 정책 키를 전부 갖는다
+    why: |
+      Issue447 — hooks/fbot-hr-gate.py·fbot-taskmgr.py 는 키가 없으면 **죽는다**
+      (fail-soft 인 aoa-memory 계열과 다르다). 실제로 미러본 템플릿에 수명주기
+      4키(prj3#Issue481 로 나중에 추가)가 빠져 있었다 — 파일은 있는데 게이트가
+      죽는, 존재 검사로는 안 잡히는 결손이다.
+    run: |
+      py=python3; command -v python3 >/dev/null 2>&1 || py=python
+      REPO_DIR="$REPO_DIR" "$py" - <<'PYEOF'
+      import io, os, re
+      root = os.environ["REPO_DIR"]
+      keys = set()
+      for f in ("plugins/fpm-core/hooks/fbot-hr-gate.py",
+                "plugins/fpm-core/hooks/fbot-taskmgr.py"):
+          p = os.path.join(root, f)
+          if not os.path.exists(p):
+              continue
+          s = io.open(p, encoding="utf-8").read()
+          for m in re.finditer(r'^(?:POLICY_KEYS|LIFECYCLE_KEYS)\s*=\s*\(([^)]*)\)',
+                               s, re.M | re.S):
+              keys |= set(re.findall(r'"([a-z_]+)"', m.group(1)))
+      if not keys:
+          print("ok(소비처 미보유 — 검사 생략)"); raise SystemExit(0)
+      tpl = io.open(os.path.join(root, "data/template/aoa-policy.default.yml"),
+                    encoding="utf-8").read()
+      missing = [k for k in sorted(keys) if not re.search(r'^%s\s*:' % k, tpl, re.M)]
+      print("MISSING:" + ",".join(missing) if missing else "ok")
+      PYEOF
+    expect: contains:ok
+
   - id: gitignore-readme-anchor
     desc: 새 하위 README 가 추적 가능하다 (앵커 확인)
     why: |
@@ -35,6 +79,34 @@ cases:
       git add 가 거부할 때까지 아무도 몰랐다.
     run: |
       git -C "$REPO_DIR" check-ignore -q tdd/README.md 2>/dev/null && echo "IGNORED" || echo ok
+    expect: contains:ok
+
+  - id: mirror-doc-no-orphan-edit
+    desc: 미러에서 직접 고친 문서가 정본으로 회수됐다
+    why: |
+      Issue441 — 코드·브랜치 가드(C1~C3·F5-0)는 **문서 파일의 직접 커밋 역류를 못 잡는다.**
+      실측: 미러 INSTALL.md 가 Required/Optional 2단 표로 개선됐는데(커밋 1d6e1ea·e6c87b5,
+      `Sync:` 가 아닌 직접 커밋) 정본은 평면 목록 그대로였다 — 다음 forward 가 미러의
+      개선을 덮어 **없애 버릴** 수 있는 상태였다.
+      판정은 두 조건이 **함께** 성립할 때만 FAIL 이다: ① 미러 쪽 최신 커밋이 `Sync:` 가
+      아니다(= 미러 단독 수정) ② 내용이 정본과 다르다. 정본만 앞선 상태(배포 대기)는
+      개발 중 정상이라 통과시킨다 — 그러지 않으면 상시 FAIL 이 되어 아무도 안 본다.
+      대상에 aoa 정책 템플릿도 넣는다(Issue449) — 미러본에 수명주기 4키가 빠져 있어
+      소비자의 fbot 승격·아카이브 판정이 fail-loud 로 죽던 것이 이 검사의 첫 수확이다.
+    run: |
+      dst="${FPM_DST:-$HOME/_git/__all/fpm}"
+      [ -d "$dst/.git" ] || { echo "ok(미러 미보유 — 소비자 머신)"; exit 0; }
+      bad=""
+      for f in INSTALL.md INSTALL_ko.md data/template/aoa-policy.default.yml; do
+        [ -f "$dst/$f" ] && [ -f "$REPO_DIR/$f" ] || continue
+        cmp -s "$dst/$f" "$REPO_DIR/$f" && continue
+        msg="$(git -C "$dst" log -1 --format=%s -- "$f" 2>/dev/null)"
+        case "$msg" in
+          Sync:*|"") ;;
+          *) bad="$bad $f" ;;
+        esac
+      done
+      [ -z "$bad" ] && echo ok || echo "MIRROR-ONLY-EDIT:$bad"
     expect: contains:ok
 
   - id: i18n-parity

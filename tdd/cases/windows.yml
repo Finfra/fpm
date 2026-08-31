@@ -50,18 +50,31 @@ cases:
       else python3 -c "d=open('$f','rb').read(); print('FAIL' if b'\r\n' in d else 'ok')"; fi
     expect: contains:ok
 
-  - id: process-mgmt
-    desc: pkill/pgrep/setsid 가 동작한다
+  - id: process-mgmt-winpid
+    desc: 헬퍼가 낸 PID 를 taskkill 이 실제로 받는다 (PID 체계 정합)
     why: |
-      W6 — hub 재기동이 이 셋에 의존한다. Windows 의 프로세스 모델이 달라
-      매칭이 빗나가면 재기동이 안 되거나 좀비가 남는다.
-      ⚠️ 자기 명령줄을 매치하지 않도록 [s] 트릭을 쓴다 — 2026-08-30 에
-      pkill 이 자기 ssh 셸을 먼저 죽여 뒤 명령이 통째로 누락된 적이 있다.
+      W6 의 Windows 고유분. 계약 자체는 `core:process-mgmt` 가 검사하고, 여기서는
+      **이 OS 에서만 틀릴 수 있는 두 가지**를 겨냥한다(둘 다 2026-08-31 jpc1 실측).
+      ⓐ PID 체계가 둘이다 — MSYS PID(`kill` 이 받음) ↔ WINPID(`taskkill` 이 받음).
+         같은 hub 가 MSYS 2031 / WINPID 10196 으로 동시에 보였다. 헬퍼가 어느 쪽을
+         내는지 어긋나면 **엉뚱한 프로세스를 죽인다**.
+      ⓑ `taskkill /PID` 의 `/PID` 를 MSYS 가 경로로 변환한다(`C:/Program Files/Git/PID`).
+         `//PID` 이중 슬래시가 회피책인데, 누가 이를 "정리" 하면 조용히 되돌아간다.
+      종전 실패의 교훈 — *"케이스가 검사하는 것과 실제 코드가 하는 것이 달랐다"* 를
+      반복하지 않으려면 회피책 자체를 케이스가 직접 실행해야 한다.
     run: |
-      command -v pkill >/dev/null && command -v pgrep >/dev/null || { echo FAIL; exit 0; }
-      sleep 30 & p=$!
-      pgrep -f "[s]leep 30" >/dev/null && echo ok || echo FAIL
-      kill $p 2>/dev/null
+      . "$REPO_DIR/sh/fpm_function.sh"
+      b=$(_fpm_proc_backend)
+      [ "$b" = procps ] && { echo "ok(procps — WINPID 경로 미사용)"; exit 0; }
+      [ "$b" = none ]   && { echo "FAIL backend=none"; exit 0; }
+      m="fpmwin$$"; d=$(mktemp -d); s="$d/$m.sh"
+      printf '#!/usr/bin/env bash\nsleep 30\n' > "$s"
+      bash "$s" & sleep 2
+      pid=$(_fpm_pgrep "$m" | head -1)
+      [ -n "$pid" ] || { echo "FAIL 조회 0건 backend=$b"; rm -rf "$d"; exit 0; }
+      taskkill //PID "$pid" //F >/dev/null 2>&1 \
+        && echo "ok backend=$b winpid=$pid" || echo "FAIL taskkill 거부 pid=$pid"
+      rm -rf "$d"
     expect: contains:ok
 
   - id: exec-permission

@@ -75,7 +75,10 @@ bound=""
 while IFS= read -r cand; do
   [ -n "$cand" ] || continue
   if python3 "$STATE_PY" get --bot-id "$cand" >/dev/null 2>&1; then
-    if python3 "$STATE_PY" bind --bot-id "$cand" --session-id "$sid" >/dev/null 2>&1; then
+    # Issue495 — `--form agent` 로 실행 형태를 여기서 **확정**한다. 이 훅이 발화했다는
+    #   사실 자체가 그 봇이 Agent 형태라는 증거이며, 다른 어디서도 알 수 없는 정보다.
+    #   소비처는 형태별로 다른 **수명주기 훅**을 기대한다(퇴근은 fbot-agent-done.sh).
+    if python3 "$STATE_PY" bind --bot-id "$cand" --session-id "$sid" --form agent >/dev/null 2>&1; then
       bound="$cand"
       printf '%s bind ok bot=%s sid=%s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$cand" "$sid" >> "$LOG"
         # ── ④ 출근 전이 (2026-08-26, hub 모니터링 실측) ─────────────────────────

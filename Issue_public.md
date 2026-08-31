@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: c20e853bc605e9c8f261275d7ad5bfe462c729aee321a1d114d8abb4c67153d6
+source_sha: 3309d4e3aea3cf8cfbad929ee60d3ad8bb47aac599ad3625bd9a95427856ab77
 ---
 
 # 안내
@@ -28,16 +28,64 @@ source_sha: c20e853bc605e9c8f261275d7ad5bfe462c729aee321a1d114d8abb4c67153d6
 
 # 이슈 근거
 
-## Issue435: `run-tdd.sh` 가 케이스 0건을 돌고 "전부 통과" 를 낸다 — 검증 체계 자신이 실패를 삼킨다
-* 목적: jpc1 실측에서 `bash tdd/run-tdd.sh` 가 **PASS 0 / FAIL 0 / exit 0 / "✅ 이 머신에서 전부 통과"** 를 출력했다. 한 건도 돌지 않았는데 통과로 보고한 것이다. tdd 는 "조용한 실패" 를 잡으려고 만든 폴더인데 **러너 자신이 그 패턴의 사례**가 됐다
-* depends: Issue436
+## Issue441: `INSTALL.md` 가 prj1 ↔ 미러로 갈라졌다 — 미러 쪽이 더 최신이다
+* 목적: host 설치 테스트 중 `INSTALL.md` 의 요구사항 절을 보강하려다 발견했다. **미러(prj7)에는 있고 prj1 에는 없는 내용**이 있다 — SSOT 가 하위 사본보다 낡았다
 * 구현 명세:
-    - ⓐ 케이스 수 파싱을 **fail-loud** 로: 파서가 실패하면 `0` 이 아니라 **즉시 비정상 종료**(rc≠0)한다. "돌 게 없다" 와 "돌 수 없다" 를 구분한다
-    - ⓑ **실행 0건이면 통과가 아니다** — `PASS+FAIL == 0` 이면 성공 문구를 내지 말고 rc=1 로 끝낸다. 파싱을 고쳐도 이 가드는 남긴다(다른 이유로 0건이 되는 경우가 또 생긴다)
-    - ⓒ 인터프리터 해석을 `python3 → python → py -3` 순 폴백으로. `core.yml:python3-available` 이 이미 쓰는 계약과 일치시킨다
-    - ⓓ 검증: 인터프리터를 일부러 못 찾게 한 상태에서 러너를 돌려 **rc≠0** 인지 확인한다
+    - ⓐ 두 판본을 **대조**해 미러에만 있는 개선을 prj1 으로 역류시킨다 (i18n 짝 `INSTALL_ko.md` 동반)
+    - ⓑ 역류 후 sync 로 재배포해 **양쪽이 같은 내용**임을 확인한다
+    - ⓒ 재발 방지 — 미러 직접 커밋이 문서에까지 일어났다는 것은 C1 규약이 문서에는 덜 지켜진다는 뜻이다. `deploy.yml` 에 **prj1↔미러 문서 drift 케이스**를 둘지 검토한다
+    - ⓓ 검증: `diff` 로 두 판본의 요구사항 절이 일치
 
-## Issue436: `python3` 가 MS Store 스텁인데 설치기가 그것을 실물로 잡아 MCP 커맨드에 박는다
+## Issue455: `..ask` 모달에서 답한 질문이 계속 펼쳐져 있어 다음 질문이 화면 밖으로 밀린다 — 질문 접기 ✅
+* 목적: 사용자 지적(스크린샷 실측) — 질문 2건에 각 옵션 4개·설명문이면 모달 한 화면에 **한 질문도 다 안 들어간다**. 이미 답한 질문이 같은 높이를 계속 차지해, 다음 질문을 보려면 매번 스크롤해야 하고 지금 무엇에 답하는 중인지도 흐려진다
+* depends: Issue452
+* 구현 명세:
+    - ⓐ `legend` 를 토글로 — 클릭하면 그 카드 본문만 접힌다. caret 로 상태 표시
+    - ⓑ **답하면 자동으로 접는다** — radio 선택 시 그 카드를 접고 legend 에 **선택한 라벨을 요약**으로 남긴다(무엇을 골랐는지 접힌 채로 보여야 한다). 접은 뒤 다음 미답 카드로 스크롤
+    - ⓒ 자동 접기를 **하면 안 되는 경우**를 지킨다: ① checkbox(multiSelect — 여러 개 고르는 중) ② '기타 (직접 입력)' 선택(입력이 남았다) ③ 카드가 1개뿐(접을 이유가 없다)
+    - ⓓ CSP — shim JS 는 nonce 를 타므로 인라인 핸들러 금지, `addEventListener` 만 (Issue452 와 동일 제약)
+    - ⓔ 폼 구조에 과하게 기대지 않는다 — 폼 HTML 은 Claude 생성이라 class 가 어긋날 수 있다. `legend` 가 있는 `fieldset` 이면 붙인다
+
+## Issue449: aoa 정책 템플릿이 정본·미러 두 벌로 갈라진다 — 동기 수단도 검사도 없다 ✅
+* 목적: Issue447 처리 중 실측으로 드러났다. `data/aoa/policy.default.yml` 이 **정본(prj1)과 미러(prj7) 양쪽에 각각 존재**하는데, `publishable-policy.yml` 의 `exclude[]` 에 `data/aoa/` 가 있어 forward 가 이 파일을 전송하지 않는다. 즉 **한쪽을 고쳐도 다른 쪽은 영원히 모른다**
+* depends: Issue447
+* 구현 명세:
+    - ⓐ 세 안 중 택일 — ① 템플릿을 `data/aoa/` **밖**으로 옮긴다(`data/template/` 등. 런타임 디렉토리와 배포 자산을 분리 — 뿌리 제거) ② `exclude[]` 를 `data/aoa/` → 런타임 산출물 개별 항목으로 좁힌다(신규 산출물 자동 노출 갭 발생) ③ 정책 스키마에 `!` 재포함을 도입해 rsync `--include` 로 변환(엔진 변경 — `_commit_is_exclude_only` 등 다른 소비처 영향 검토 필요)
+    - ⓑ **미러 결손 4키를 먼저 해소**한다 — ⓐ 결정 전이라도 소비자 실해가 진행 중이다. 미러 직접 수정은 타 repo 이므로 승인 대상
+    - ⓒ 이행 후 검증 — 정본과 미러의 템플릿이 **내용 동일**한지 tdd·`check.sh` 중 한 곳에서 본다. 지금은 갈라져도 아무도 모른다
+    - ⓓ 같은 형태의 자산이 더 있는지 전수 — "미러 단독 자산 8종"(Issue411 검증 목록)이 각각 왜 단독인지, 갈라짐 검사가 있는지
+
+## Issue452: hub `..ask` 가 맥락 문서를 55vh iframe 에 가둔다 — 주종을 뒤집어 a 문서 위 모달로 ✅
+* 목적: `..ask` 는 b(폼)를 주 페이지로 열고 짝 a(`..show` 렌더)를 `<details>`+`iframe height:55vh` 로 종속 임베드했다(prj3#Issue143). 정작 읽어야 할 본문이 반쪽 창에 갇혀 이중 스크롤이 되고, iframe src 가 `/md-doc` 셸이라 hub 헤더가 두 번 렌더되며, 탭·URL 이 2개로 갈렸다. **맥락이 주(主), 질문이 종(從)** 이 되도록 뒤집는다. 본 이슈 범위는 **hub 서버**뿐 — 생성 지점(hook `show-pair` 스니펫)은 짝 이슈 prj3#Issue492
+
+## Issue454: 조직도에 완료·취소 배분과 원장 고아가 상시 그려진다 — 기록을 옵션 버튼으로 ✅
+* 목적: 사용자 지적 — 원장에만 남은 고아(fbot-research-issue4363, done)가 점선으로 **영원히** 남는다. 조직도의 목적은 "지금 어떤 핀봇이 어떤 핀봇에게 일을 시키는가" 이지 done·cancelled 잔재 열람이 아니다. 옵션 버튼 요구
+
+## Issue446: hub 의 `/tmp` 상태 경로가 셸과 python 에서 **다른 폴더**다 — Windows 에서 상태 파일이 갈라진다 ✅
+* 목적: Issue437 검증 중 발견. hub 가 죽어 pid 파일을 지우려 했는데 **셸에서 지운 파일과 python 이 보는 파일이 서로 달랐다.** 지웠는데도 같은 오류가 반복돼 원인을 한 번 헛짚었다 — 사람을 오진으로 끌고 가는 종류다
+* depends: Issue437
+* 구현 명세:
+    - ⓐ 상태 루트를 **1지점**에서 결정한다. python 은 `/tmp` 하드코딩 대신 `tempfile.gettempdir()`(Windows = `%TEMP%`)를 쓰고, 셸은 **그 값을 물어보는** 형태로 맞춘다 — 양쪽이 각자 계산하면 다시 갈라진다
+    - ⓑ `/tmp/___pm/…` 하드코딩을 전수 제거(셸·python 양쪽). 남은 1건이 곧 갈라짐이다
+    - ⓒ 이행 — 기존 경로에 파일이 있으면 새 경로로 이관하거나 self-heal 한다. 그냥 옮기면 구동 중인 hub 가 자기 pid 파일을 잃는다
+    - ⓓ 검증: jpc1 에서 ① 셸과 python 이 **같은 파일**을 가리키는지 ② `/hub stop` 이 실제 그 파일을 지우는지 ③ macOS 회귀 없음(`/tmp` 그대로)
+
+## Issue451: 조직도 all=1 에 퇴역(휴직·해고)까지 같은 비중으로 그려진다 — 그래프 제외·명부 전수 보존 ✅
+* 목적: 사용자 지적 — `?all=1` 전체 뷰에 퇴근이 너무 많다. 실측: taskmgr 그룹 11봇 중 **5봇이 휴직(leave)** 인데 전부 그려짐. `all` 은 하루 축(출근/퇴근) 복원이지 경력 축 퇴역까지 그리라는 뜻이 아니다
+
+## Issue447: `policy.default.yml` 이 gitignore 에 걸려 배포되지 않는다 — 소비자의 aoa 부트스트랩이 통째로 막힌다 ✅
+* 목적: [`sh/fbot-bootstrap.sh`](sh/fbot-bootstrap.sh) 가 정책 템플릿 정본으로 읽는 `data/aoa/policy.default.yml` 이 **git 이력에 한 번도 올라간 적이 없다.** 소비자는 clone 직후 `🚨 정책 템플릿 부재 (저장소 손상?)` 를 받는다 — 저장소는 멀쩡한데 손상됐다고 보고하는, 사람을 오진으로 끌고 가는 종류다
+* 구현 명세:
+    - ⓐ [`.gitignore`](.gitignore) 에 `!data/aoa/policy.default.yml` 예외를 둔다 — 런타임 산출물(`registry.db`·`learn.db`·`policy.yml`)은 계속 무시하고 **템플릿만** 추적. 미러 반출 대상인지도 함께 확인한다(`publishable-policy.yml` 이 이미 이 파일을 "미러 단독 자산" 으로 열거하고 있다 — 정본이 없는데 검증 목록에는 있다)
+    - ⓑ 템플릿을 **실제로 작성**해 커밋한다. 현재 파일 자체가 없으므로 [`mcp/aoa-memory/policy.py`](mcp/aoa-memory/policy.py) `DEFAULTS` 18키를 근거로 만들되, `consolidation_budget_monthly_tokens: 0`(미지정 시 fail-loud) 같은 항목은 **주석으로 의미를 남긴다**
+    - ⓒ tdd 케이스 — 템플릿이 **git 에 추적되는지**(`git ls-files`)를 본다. 파일 존재만 검사하면 저작 머신에서 통과하고 소비자에서 깨진다(Issue435 계열의 함정 그대로다)
+    - ⓓ 가드 순서 재검토 — 정책 템플릿 부재가 스토어 생성까지 막을 이유가 있는지. 없다면 policy 단계 직전으로 내린다
+    - ⓔ 검증: 깨끗한 clone 에서 `bash sh/fbot-bootstrap.sh` 가 rc=0 이고 `registry.db`·`policy.yml` 이 모두 생기는지
+
+## Issue448: (!) hub 헤더에 핀봇 조직도 버튼 신설 + fbot-map 이모지를 👥 로 분리 ✅
+* 목적: 사용자 지적 2건 — ① `/fbot-map` 진입이 핀봇 섹션 안 작은 링크뿐이라 헤더 버튼이 필요 ② 그 링크가 프로젝트 Map 버튼과 같은 🗺 이모지를 써서 **두 지도가 구분되지 않는다**. 조직도는 👥(구성원 은유)로 분리한다(사용자 선택)
+
+## Issue436: `python3` 가 MS Store 스텁인데 설치기가 그것을 실물로 잡아 MCP 커맨드에 박는다 ✅
 * 목적: jpc1 에서 MCP 서버 2종(`aoa-mq`·`aoa-memory`)이 **연결 실패**(`CONNECTION_CLOSED`)한다. 원인은 등록된 커맨드가 `…/WindowsApps/python3` — 실행하면 rc=49 로 죽는 **Microsoft Store 리디렉터 스텁**이다. Windows 는 `python3` 라는 이름이 *"있지만 실행되지 않는"* 상태가 기본값이라, `command -v` 만으로는 판정이 안 된다
 * 구현 명세:
     - ⓐ 인터프리터 판정을 **존재 → 실행**으로 바꾼다: `"$c" -c 'import sys' >/dev/null 2>&1` 이 통과한 후보만 채택. 후보 순서는 `$FBOT_PYTHON` → `python3` → `python` → `py -3`
@@ -46,13 +94,50 @@ source_sha: c20e853bc605e9c8f261275d7ad5bfe462c729aee321a1d114d8abb4c67153d6
     - ⓓ `fbot-bootstrap.sh` 의 실패 메시지에서 FTS5 단정을 걷어낸다 — FTS5 여부를 **실제로 검사한 뒤에만** 그 원인을 말한다
     - ⓔ 검증: jpc1 에서 `claude mcp list` 가 2종 모두 ✔ Connected 인지 확인
 
-## Issue437: Git Bash 에 `pkill`·`pgrep`·`setsid` 가 없다 — hub 재기동이 Windows 에서 성립하지 않는다
+## Issue437: Git Bash 에 `pkill`·`pgrep`·`setsid` 가 없다 — hub 재기동이 Windows 에서 성립하지 않는다 ✅
 * 목적: 설계문서 W6 축의 실측 결과. tdd `process-mgmt` 가 **FAIL** 이다. Git Bash(MSYS2)는 procps 를 동봉하지 않아 세 명령이 **모두 부재**한다 — "동작 차이" 가 아니라 "없음" 이다
 * 구현 명세:
     - ⓐ 프로세스 조회·종료를 **헬퍼 1지점**으로 모은다(`_fpm_pgrep`·`_fpm_pkill`). OS 로 분기하지 말고 **도구 가용성으로 분기**한다 — 원칙 3-1
     - ⓑ Windows 폴백: `tasklist`/`taskkill` 또는 MSYS `ps` 파싱. 어느 쪽이 PID 정합을 유지하는지 jpc1 에서 먼저 측정한다
     - ⓒ 폴백조차 없으면 **조용히 넘어가지 말고** 경고를 낸다 — "재기동했다" 는 거짓 보고가 지금의 실패 양상이다
     - ⓓ 검증: jpc1 에서 `process-mgmt` 케이스 PASS + hub stop/start 실제 확인
+
+## Issue445: 핀봇 조직도·홈에서 "누가 누구에게 일을 시켰는지" 와 "봇↔세션 연결" 이 안 보인다 ✅
+* 목적: prj3 세션 위임. 조직 관측의 목적이 *"묻지 않아도 안다"* 인데, 정작 **지시 관계**와 **봇↔Claude 세션 연결**이 화면 어디에도 없어 사용자가 세션 UUID 를 들고 와 "이게 중역핀봇이냐" 고 되물어야 했다(2026-08-31 실발생 — `<commit>-…` 는 `fbot-igmaker-issue335` 였고 나래는 별도 세션 `<commit>-…`).
+* 구현 명세:
+    - A. 표시 — `_collect_bots()` 에 `parent_title`·`session_id`·`tmux_target` 편입, `botCard()` 표면에 지시자 이름 + 세션 단축칩, `botDetail()` parent 를 **이름(ID)** 로 resolve, `/fbot-map` 명부 표에 **지시자·세션·pane** 3열 추가
+    - B. 기록 — `fbot-state.py` 에 `dispatch-record` 서브커맨드 신설(배분 원장 `kind='fbot_dispatch'` 1행 기록, **상한 미차감·미검증** — 이미 일어난 사건의 기록이지 신규 배분 승인이 아니다), `~/.bin/fpm-do` 가 봇 스폰 위임(`FBOT_ID` 있음)에서 호출
+    - 판정 단일 지점 유지 — 부모-자식은 `_fbot_root_map()` 재사용, 배분자 해소는 레지스트리 `parent_bot_id`/`whois` 재사용. 재귀·역조회 로직 재작성 금지
+    - **중간 사영 파일 금지** — `registry.db` 직독 유지(`server.py` 2913-2914 anti-pattern)
+    - payload 비대화 주의 — 신규 필드는 **활성 봇 카드(`bots`)에만**. `bots_roster`(전원)에는 싣지 않는다(아이콘을 루트 봇에만 싣는 기존 판정 승계)
+    - 구 스키마 호환 — `session_id`·`tmux_target` 은 prj3#Issue448 ALTER 로 들어온 컬럼이다. `PRAGMA table_info` 로 실재를 확인하고 SELECT 를 구성한다. 없는 DB 에서 `no such column` 으로 핀봇 섹션이 통째로 죽으면 안 된다
+    - 2원 배포 동시 수정 — `services/hub/server.py` ↔ `plugins/fpm-core/services/hub/server.py`
+    - ⚠️ **repo 경계**: `~/.claude/hooks/fbot-state.py`(prj3 라이브 SSOT)·`~/.bin/fpm-do` 는 **다른 repo** 다. 본 세션은 위임 안전 지시에 따라 **편집만 하고 커밋하지 않는다** — 해당 커밋은 각 repo 소유 세션 몫
+
+## Issue444: hub htm 문서가 목록에서 빠지면 `/hub-rescan` 이 되살리지 못한다 — 활성 세션 프로젝트만 스캔한다 ✅
+* 목적: 6일 전 만든 hub 문서를 다시 열자 403 `not a registered htm doc`. **파일은 멀쩡히 있고 tombstone 도 아닌데**, 설계가 약속한 복구 경로(`/hub-rescan`)가 그 파일을 되살리지 못했다. 게다가 이 증상은 *"Tailscale 로만 안 보인다"* 로 오인되기 쉽다 — 원격에서 열려다 실패하지만 실제로는 `127.0.0.1` 도 똑같이 403 이다(실측)
+* 구현 명세:
+    - [`services/hub/server.py`](services/hub/server.py)(+번들 사본 `plugins/fpm-core/services/hub/server.py`)에 `_registered_project_dirs()` 신설 — `REPO_ROOT/projects/{번호}` 전수를 읽어 존재하는 디렉토리 경로 목록을 반환
+    - `_handle_hub_rescan()` 의 스캔 대상을 `for h, p in snap`(런타임 `projects` 만) 에서 **활성 세션 cwd ∪ `_registered_project_dirs()`** 집합으로 확장 — 세션 유무와 무관하게 등록 프로젝트 전체가 스캔 대상이 되어 `_prune_htm_registry` 와 대칭이 맞음
+    - 판정 보류: "링크 수명을 registry 수명과 분리해 경로 화이트리스트로 열지" 여부는 별도 설계 결정 사항으로 남긴다 — 이번 수정은 rescan 이 등록 프로젝트를 빠짐없이 스캔하는 것만으로 재현 증상을 해소함
+
+## Issue435: `run-tdd.sh` 가 케이스 0건을 돌고 "전부 통과" 를 낸다 — 검증 체계 자신이 실패를 삼킨다 ✅
+* 목적: jpc1 실측에서 `bash tdd/run-tdd.sh` 가 **PASS 0 / FAIL 0 / exit 0 / "✅ 이 머신에서 전부 통과"** 를 출력했다. 한 건도 돌지 않았는데 통과로 보고한 것이다. tdd 는 "조용한 실패" 를 잡으려고 만든 폴더인데 **러너 자신이 그 패턴의 사례**가 됐다
+* depends: Issue436
+* 구현 명세:
+    - ⓐ 케이스 수 파싱을 **fail-loud** 로: 파서가 실패하면 `0` 이 아니라 **즉시 비정상 종료**(rc≠0)한다. "돌 게 없다" 와 "돌 수 없다" 를 구분한다
+    - ⓑ **실행 0건이면 통과가 아니다** — `PASS+FAIL == 0` 이면 성공 문구를 내지 말고 rc=1 로 끝낸다. 파싱을 고쳐도 이 가드는 남긴다(다른 이유로 0건이 되는 경우가 또 생긴다)
+    - ⓒ 인터프리터 해석을 `python3 → python → py -3` 순 폴백으로. `core.yml:python3-available` 이 이미 쓰는 계약과 일치시킨다
+    - ⓓ 검증: 인터프리터를 일부러 못 찾게 한 상태에서 러너를 돌려 **rc≠0** 인지 확인한다
+
+## Issue443: 죽은 `/sync-ma` 자산 폐기 — 호스트 `ma` 부재 (prj5#Issue80 요청) ✅
+* 목적: `/sync-ma` 는 **영구 실패 상태**로 방치돼 있었다. 대상 호스트 `ma` 는 2026-04-02 `host` 로 개명됐고 지금 `~/.ssh/config` 에도 DNS 에도 **없다** — 호출하면 `Could not resolve hostname ma` 로 반드시 실패한다. 죽은 커맨드가 목록에 남아 있으면 다음 세션이 그것을 유효한 선택지로 읽는다. 요청 출처는 **prj5(`___common`) Issue80**(2026-08-31 사용자 승인 "전체 진행"), 위임 요청서는 prj5 `_doc_work/plan/sync-ma-retire_task.md`
+* depends: prj5#Issue79 (완료 — `/sync-host` 진입점 PATH shim, prj5 `<commit>`·`<commit>`)
+* 구현 명세:
+    - **삭제 2건**: [`.claude/commands/sync-ma.md`](.claude/commands/sync-ma.md)(wrapper 커맨드) · `.claude/skills/sync-ma/`(폴더째, 내부 `index.md`)
+    - **갱신 5건**: [`Harness.md`](Harness.md) "동기화 (sync)" 절 · [`_doc_arch/Harness/Harness.md`](_doc_arch/Harness/Harness.md) sync 도메인 블록·실행 환경 분류 표·글로벌 의존성 표 · [`_doc_arch/prj1-prj5-scope-split.md`](_doc_arch/prj1-prj5-scope-split.md) 43행(🚧 해소) · [`.claude-plugin/README.md`](.claude-plugin/README.md) 공개/비공개 자산 표 · ⚠️ **요청서에 없던 2건 추가** — [`_doc_arch/prj1-prj5-scope-split.md`](_doc_arch/prj1-prj5-scope-split.md) **31행**(A 표 "잔류 확정" 항목이 `sync-ma` 를 열거하고 있어 43행 각주와 어긋남) · — [`data/publishable-policy.yml`](data/publishable-policy.yml) `exclude[]` 의 `sync-ma` 2행. 파일이 사라지면 죽은 참조가 되므로 `rename-reference-rules`("사후 0건") 취지에 따라 함께 제거
+    - **보존** — 당시에 사실이었던 기록은 손대지 않는다: `_doc_work/Issue_OLD.md` · `_doc_work/z_done/` · `_doc_work/report/_dailyBriefing/` · [`_doc_arch/publishable-policy.md`](_doc_arch/publishable-policy.md)(redaction 예시) · [`_doc_arch/issue-private-mode-design.md`](_doc_arch/issue-private-mode-design.md)(이력 재작성 당시 커밋 사실) · [`_doc_arch/fpm-competitive-benchmark.md`](_doc_arch/fpm-competitive-benchmark.md)(chezmoi 비교 문맥)
+    - 절차: `rename-reference-rules` 준수 — 사전 grep → 제거 → 참조 갱신 → 사후 확인 → **단일 커밋**
 
 ## Issue440: `tdd/results/` 가 소비자 repo 에서 추적 후보로 뜬다 — 미러 `.gitignore` 는 sync 대상이 아니다 ✅
 * 목적: [`tdd/README.md`](tdd/README.md) 는 *"결과는 `tdd/results/` 에 남고 **gitignore** 다 — 개인 경로·호스트명이 섞이므로 공유하지 않는다"* 고 규정한다. 그러나 소비자 머신에서 `git status` 는 `?? tdd/results/` 를 낸다 — 규약과 실제가 어긋나 **개인 정보가 커밋될 수 있는 상태**다

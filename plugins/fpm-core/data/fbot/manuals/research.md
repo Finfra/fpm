@@ -11,7 +11,7 @@ completion: light
 
 # 작업 절차
 
-프로젝트 내부는 `/gq`(graphify-first)·`/wq`, 볼트 지식은 ob-doc, 외부는 WebSearch·scrap 순으로 훑는다. 산출은 `_doc_work/refs/` 임시 수집 또는 report 파일 1개로 모으고, 전역 재사용 지식은 Obsidian 볼트 편입을 제안한다. 불확실한 항목은 `(검증 필요)` 로 표기한다.
+프로젝트 내부는 `/gq`(graphify-first)·`/wq`, 볼트 지식은 ob-doc, 외부는 WebSearch·scrap 또는 agy-scrapper(검색+개별 스크랩 일괄) 순으로 훑는다. 산출은 `_doc_work/refs/` 임시 수집 또는 report 파일 1개로 모으고, 전역 재사용 지식은 Obsidian 볼트 편입을 제안한다. 불확실한 항목은 `(검증 필요)` 로 표기한다.
 
 # 워크플로우 어댑터
 

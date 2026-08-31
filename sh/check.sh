@@ -504,7 +504,10 @@ for r, dirs, files in os.walk(root):
         full = os.path.join(r, f)
         if os.path.islink(full) or not os.path.isfile(full):
             continue
-        actual[os.path.relpath(full, root)] = sha256(full)
+        # ⚠️ Windows 는 os.sep 이 '\\' 라 relpath 가 `agents\\x.md` 를 낸다. 매니페스트 키는
+        #    항상 '/' 이므로 정규화하지 않으면 **전건이 missing + 전건이 extra** 로 잡힌다
+        #    (jpc1 실측 2026-08-31: 누락 10 + 매니페스트에 없는 파일 108). 설계 W3 의 또 다른 발현.
+        actual[os.path.relpath(full, root).replace(os.sep, '/')] = sha256(full)
 
 exp = man.get('files', {})
 changed = sorted(k for k in set(exp) & set(actual) if exp[k] != actual[k])

@@ -37,8 +37,8 @@ hub/dashboard 구동 스택 + pm/cdf 핵심만 선별. 개인 환경 의존(ma �
 
 | 분류     | 포함                                                              | 제외                                |
 | :------- | :--------------------------------------------------------------- | :---------------------------------- |
-| Commands | `hub`, `dashboard`, `dashboard-server`, `pm-*`, `cdf`            | `cdf-fapp*`, `fapp-*`, `*-ma`, `sync-ma` |
-| Skills   | `pm`, `cdf`                                                      | `fapp`, `sync-ma`, `cdf-fapp*`      |
+| Commands | `hub`, `dashboard`, `dashboard-server`, `pm-*`, `cdf`            | `cdf-fapp*`, `fapp-*`, `*-ma`       |
+| Skills   | `pm`, `cdf`                                                      | `fapp`, `cdf-fapp*`                 |
 | Agents   | `dashboard` (+ runner 5종)                                       | `fapp-*`, `fpm-sync`                |
 | Hooks    | `hub-trigger`, `ask-intercept`, `board-notify`, `hub-session-*` 등 9종 | caveman·save-prompt 등 무관분  |
 

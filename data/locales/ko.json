@@ -222,7 +222,12 @@
   "bots.toggleTitle": "클릭하면 세부 정보가 펼쳐집니다 (Enter·Space 도 동작)",
   "bots.d.id": "봇 ID",
   "bots.d.career": "경력",
-  "bots.d.parent": "부모 봇",
+  "bots.d.parent": "지시자(부모 봇)",
+  "bots.d.session": "세션",
+  "bots.d.pane": "pane",
+  "bots.parentBy": "{p} 지시",
+  "bots.parentTitle": "직속 지시자(부모 봇) — {p}",
+  "bots.sessionTitle": "이 봇이 결속된 Claude 세션 — {s}",
   "bots.d.lease": "lease",
   "bots.leaseLeft": "{m}분 남음",
   "bots.leaseGone": "만료 — {m}분 경과 (크래시 의심)",
@@ -234,6 +239,7 @@
   "bots.mapTitle": "이 핀봇 조직의 위임 관계도 열기 (새 창)",
   "bots.mapAllTitle": "핀봇 조직도 전체 열기 (새 창)",
   "bots.restTitle": "퇴근 — 조직 구성원이지만 지금은 활동하지 않는다",
+  "bots.restMore": "외 {n}개 (퇴근) — 전체는 조직도에서",
   "bots.chipCheckout": "{t} 전 퇴근",
   "bots.chipLastSeen": "마지막 실행 {t}"
 }

@@ -7,3 +7,7 @@ architect: shape=triangle base=#7A4FA0 label=설계핀봇 tags=설계|점검
 planner: shape=grid base=#A0623A label=기획자핀봇 tags=plan|task
 qa: shape=check base=#3A8A8A label=QA핀봇 tags=검증|판정
 research: shape=magnifier base=#6E6E3A label=리서치핀봇 tags=조사|선례
+recruit: shape=magnet base=#8A3A5F label=리크루팅핀봇 tags=직능|발굴
+igmaker: shape=frame base=#5F8A3A label=인포그래픽핀봇 tags=변환|개선
+consultant: shape=speech base=#3A6E8A label=컨설턴트핀봇 tags=선례|큐레이션
+crosscheck: shape=venn base=#A03A3A label=교차검증핀봇 tags=2차의견|외부LLM

@@ -247,7 +247,8 @@ QUESTIONS_JSON="$MARKER_DATA" \
 import json, os, urllib.parse, shlex
 
 marker_data = os.environ.get('QUESTIONS_JSON', '{}')
-out_dir = os.environ.get('OUT_DIR', '/tmp/___pm')
+_tmp_ns = os.path.join(os.environ.get('FPM_TMP_ROOT') or ('/tmp' if os.name == 'posix' else __import__('tempfile').gettempdir()), '___pm')  # prj3#Issue499 — /tmp 리터럴은 Windows 에서 셸과 갈라진다(W3)
+out_dir = os.environ.get('OUT_DIR', _tmp_ns)
 sid = os.environ.get('SID', '')
 project_name = os.environ.get('PROJECT_NAME', 'unknown')
 project_color = os.environ.get('PROJECT_COLOR', 'hsl(220,30%,90%)')
@@ -262,7 +263,7 @@ cwd_q = urllib.parse.quote(cwd) if cwd else ''
 project_root = cwd.split('/_doc_work/')[0] if cwd and '/_doc_work/' in cwd else cwd
 
 ask_path = f"{out_dir}/hub_htm_<YYYYMMDD_HHMMSS>_c_<주제>.htm"  # 날짜시간=`date +%Y%m%d_%H%M%S`, 주제=핵심 10자 내외 kebab, mode c=auto 폼(Mode D, doc-register 제외)
-path_note = "프로젝트 로컬 (_doc_work/z_htm/)" if not out_dir.startswith('/tmp') else f"/tmp/___pm fallback → 프로젝트: {project_name} · 생성: cd {cwd} && mkdir -p _doc_work/htm"  # Issue276
+path_note = "프로젝트 로컬 (_doc_work/z_htm/)" if not out_dir.startswith(_tmp_ns) else f"{_tmp_ns} fallback → 프로젝트: {project_name} · 생성: cd {cwd} && mkdir -p _doc_work/htm"  # Issue276
 # Issue208: same-origin 상대경로 — 외부 기기(tailnet)에서 폼 열어도 POST 가 페이지 host 로 회귀.
 # file:// 직접 열람만 폼 JS 의 AB(={LOOPBACK_BASE}) fallback 사용.
 answer_url = f"/answer?cwd={cwd_q}&token={server_token}&sid={sid}"

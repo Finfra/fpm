@@ -80,7 +80,11 @@ ORIG_PPID=$PPID   # Issue120: 부모(tmux pane) PID — orphan guard 기준
 #   SID(=md5(QUEUE_FILE)[:12])로 수행. SID는 HTTP session ID가 아니라 파일 격리키.
 #   worker가 sentinel 파일을 기록하면 supervisor가 폴링함.
 SID="${SID:-$(python3 -c 'import hashlib,sys; print(hashlib.md5(sys.argv[1].encode()).hexdigest()[:12])' "$QUEUE_FILE")}"
-SENTINEL_DIR="${SENTINEL_DIR:-$(_bp sentinel_base /tmp/___pm)/${SID}.sentinel}"
+# prj3#Issue499: /tmp 리터럴은 Windows 에서 셸(MSYS)↔python 이 다른 폴더를 본다(W3).
+#   prj1 server.py _tmp_root() 와 같은 규칙을 python 인라인으로 계산한다 —
+#   POSIX 는 /tmp 고정(gettempdir 금지 — macOS TMPDIR 은 세션마다 달라 재갈라짐).
+TMPNS_DEFAULT=$(python3 -c 'import os,tempfile;print(os.path.join(os.environ.get("FPM_TMP_ROOT") or ("/tmp" if os.name=="posix" else tempfile.gettempdir()),"___pm"))')
+SENTINEL_DIR="${SENTINEL_DIR:-$(_bp sentinel_base "$TMPNS_DEFAULT")/${SID}.sentinel}"
 
 mkdir -p "$OUT_DIR" "$APPROVAL_DIR" "$ANSWERS_DIR" "$SENTINEL_DIR"
 : > "$WORKERS_FILE"

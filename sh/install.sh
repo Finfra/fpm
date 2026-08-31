@@ -17,6 +17,8 @@
 #   7. [기본 ON] MCP 서버 배선 (prj3#Issue451 ③) — <repo>/mcp/{aoa-mq,aoa-memory} 를 claude CLI
 #      user 스코프에 등록 + aoa 데이터 루트 부트스트랩(sh/fbot-bootstrap.sh).
 #      ⚠️ 이미 같은 이름이 등록돼 있으면 **건드리지 않는다** — 사용자 설정을 덮지 않는 것이 규약.
+#         단, 그 등록이 **실제로 도는 경우에 한한다**(Issue436 ⓒ). 인터프리터가 실행되지
+#         않거나 스크립트가 사라진 등록은 보존이 아니라 결함이므로 교체한다.
 #      --no-mcp 로 옵트아웃 가능.
 #
 # 사용: bash sh/install.sh              (또는 ./sh/install.sh) — 셸 + SCAR + MCP 설치 (기본)
@@ -37,6 +39,11 @@ info()  { printf '\033[36m[fpm]\033[0m %s\n' "$1"; }
 warn()  { printf '\033[33m[fpm]\033[0m %s\n' "$1"; }
 err()   { printf '\033[31m[fpm]\033[0m %s\n' "$1" >&2; }
 
+# python 인터프리터 해석 SSOT (Issue436) — `command -v python3` 는 Windows 에서
+# MS Store 스텁을 실물로 통과시킨다. 후보·판정 계약은 sh/fbot-python.sh 한 곳에만 둔다.
+# shellcheck source=sh/fbot-python.sh
+source "$REPO_DIR/sh/fbot-python.sh"
+
 # ── 아티팩트 SSOT 로드 (install/check 공통) ───────────────────
 MANIFEST="$REPO_DIR/data/install_manifest.sh"
 if [[ ! -f "$MANIFEST" ]]; then
@@ -52,8 +59,8 @@ source "$MANIFEST"
 manifest_drift_guard() {
     local gen="$REPO_DIR/sh/gen-install-manifest.sh"
     [[ -f "$gen" ]] || return 0
-    command -v python3 >/dev/null 2>&1 || return 0
-    python3 -c 'import yaml' 2>/dev/null || return 0
+    # 생성기는 pyyaml 을 요구한다 — 없으면 graceful skip(커밋된 .sh 로 정상 진행).
+    fbot_resolve_python yaml || return 0
     if ! bash "$gen" --check >/dev/null 2>&1; then
         warn "install_manifest.sh 가 SSOT(data/scar-manifest.yml)와 어긋남(stale) — 설치는 현 파일로 계속"
         warn "  → 'bash sh/gen-install-manifest.sh' 재생성 후 커밋 권장"
@@ -137,11 +144,45 @@ CLEAN=0
 # 규약 3가지
 #   1. 등록은 `claude mcp add --scope user` 로만 한다 — ~/.claude.json 을 직접 편집하면
 #      다른 서버 설정을 통째로 날릴 위험이 있다. CLI 가 병합 책임을 진다.
-#   2. **같은 이름이 이미 있으면 손대지 않는다.** 사용자가 다른 경로·다른 인터프리터로
-#      맞춰 둔 설정을 설치 스크립트가 되돌리는 일은 없어야 한다.
-#   3. claude CLI·python3 부재는 benign skip (SCAR 와 동일 정책 — 셸 설치는 정상 완료).
+#   2. **같은 이름이 이미 있으면 손대지 않는다** — 단, 그 등록이 실제로 도는 경우에 한한다.
+#      사용자가 맞춰 둔 설정을 되돌리지 않는 것이 규약이지만, **깨진 등록을 보존하는 것은
+#      규약이 아니라 결함**이다(Issue436 ⓒ). 실측 2종이 같은 결함의 두 발현이다:
+#        · jpc1(Windows) — 커맨드의 python3 가 MS Store 스텁이라 실행되지 않는다
+#        · jm4(macOS)    — repo 이전으로 server.py 경로가 사라졌는데 등록만 남았다
+#      둘 다 재설치로 낫지 않았다. "이미 등록됨 — 보존" 이 깨진 상태를 영구화했기 때문이다.
+#      그래서 교체는 **실행 실패가 확인된 경우로만** 한정한다(정상 커스터마이즈는 그대로 둔다).
+#   3. claude CLI·python 부재는 benign skip (SCAR 와 동일 정책 — 셸 설치는 정상 완료).
+
+# 등록된 MCP 서버의 커맨드를 **읽는다**(Issue436 ⓒ 판정 근거).
+#   규약 1 은 ~/.claude.json 을 **편집**하지 말라는 것이다 — 읽기는 그 대상이 아니고,
+#   CLI 출력 텍스트를 파싱하는 것보다 안정적이다(라벨 문구는 CLI 버전마다 바뀐다).
+#   $1 서버 이름  $2 command|arg0
+#   못 읽으면 빈 문자열 — 호출부는 그때 "판정 근거 없음 → 보존" 으로 간다.
+mcp_registered_field() {
+    local name="$1" field="$2"
+    [[ -f "$HOME/.claude.json" ]] || return 0
+    MCP_Q_NAME="$name" MCP_Q_FIELD="$field" "${FBOT_PY_ARGV[@]}" - "$HOME/.claude.json" <<'PYEOF' 2>/dev/null || true
+import json, os, sys
+# Windows python 은 stdout 이 CRLF·cp949 다 — 셸이 읽을 때 \r 이 섞이고 한글이 죽는다(설계 W9).
+try:
+    sys.stdout.reconfigure(newline="\n", encoding="utf-8")
+except Exception:
+    pass
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        srv = json.load(f).get("mcpServers", {}).get(os.environ["MCP_Q_NAME"], {})
+except Exception:
+    sys.exit(0)
+if os.environ["MCP_Q_FIELD"] == "command":
+    print(srv.get("command", ""))
+else:
+    args = srv.get("args") or []
+    print(args[0] if args else "")
+PYEOF
+}
+
 install_mcp() {
-    local mcp_dir="$REPO_DIR/mcp" py name script
+    local mcp_dir="$REPO_DIR/mcp" name script
 
     if [[ ! -d "$mcp_dir" ]]; then
         warn "mcp/ 디렉토리 없음: $mcp_dir — MCP 배선 건너뜀"
@@ -151,10 +192,15 @@ install_mcp() {
         warn "ℹ️  'claude' CLI 미발견 → MCP 배선 건너뜀 (Claude Code 설치 후 재실행)"
         MCP_SKIPPED=1; return 0
     fi
-    py="${FBOT_PYTHON:-$(command -v python3 2>/dev/null || true)}"
-    if [[ -z "$py" ]]; then
-        warn "ℹ️  python3 미발견 → MCP 배선 건너뜀 (aoa 서버는 python3 로 기동한다)"
+    # Issue436 ⓐ: 존재가 아니라 **실행**으로 고른다. aoa-memory 의 store.py 가 sqlite3 를 쓴다.
+    if ! fbot_resolve_python sqlite3; then
+        warn "ℹ️  쓸 수 있는 python 없음 → MCP 배선 건너뜀 (후보 전멸: ${FBOT_PY_REJECT:-없음})"
+        warn "   조치: python 을 PATH 에 두거나 FBOT_PYTHON 으로 절대경로를 지정 후 재실행"
         MCP_SKIPPED=1; return 0
+    fi
+    # Issue436 ⓑ: 어느 후보가 왜 떨어졌는지 남긴다 — 스텁을 잡은 사실이 안 보이면 진단이 불가능하다.
+    if [[ -n "$FBOT_PY_REJECT" ]]; then
+        info "python 후보 탈락: $FBOT_PY_REJECT → 채택: $FBOT_PY_DISPLAY"
     fi
 
     for name in aoa-mq aoa-memory; do
@@ -164,13 +210,31 @@ install_mcp() {
             continue
         fi
         if claude mcp get "$name" >/dev/null 2>&1; then
-            info "$name: 이미 등록됨 — 보존(덮어쓰지 않음)"
-            continue
+            # 등록돼 있다 — 그런데 그것이 지금도 도는가? (Issue436 ⓒ)
+            local reg_py reg_script
+            reg_py="$(mcp_registered_field "$name" command)"
+            reg_script="$(mcp_registered_field "$name" arg0)"
+
+            if [[ -z "$reg_py" ]]; then
+                # 등록 내용을 읽지 못했다 = 판정 근거 없음 → 손대지 않는다(안전측).
+                info "$name: 이미 등록됨 — 보존(등록 내용을 읽지 못해 검증 생략)"
+                continue
+            fi
+            if fbot_registration_valid "$reg_py" "$reg_script"; then
+                info "$name: 이미 등록됨 — 보존(덮어쓰지 않음)"
+                continue
+            fi
+            warn "$name: 등록이 깨져 있음 — $FBOT_PY_INVALID_REASON"
+            if ! claude mcp remove "$name" -s user >/dev/null 2>&1; then
+                warn "$name: 깨진 등록 제거 실패 — 수동 조치: claude mcp remove $name -s user"
+                continue
+            fi
+            info "$name: 깨진 등록 제거 → 재등록으로 복구한다"
         fi
-        if claude mcp add --scope user "$name" -- "$py" "$script" >/dev/null 2>&1; then
-            info "$name: user 스코프 등록 ($py $script)"
+        if claude mcp add --scope user "$name" -- "${FBOT_PY_ARGV[@]}" "$script" >/dev/null 2>&1; then
+            info "$name: user 스코프 등록 ($FBOT_PY_DISPLAY $script)"
         else
-            warn "$name: 등록 실패 — 수동 등록: claude mcp add --scope user $name -- $py $script"
+            warn "$name: 등록 실패 — 수동 등록: claude mcp add --scope user $name -- $FBOT_PY_DISPLAY $script"
         fi
     done
 
@@ -414,9 +478,12 @@ ensure_projects_map() {
         info "$FPM_PROJECTS_MAP_OUT 이미 존재 — 보존"; return 0
     fi
     [[ -f "$builder" ]] || { warn "맵 빌더 부재: $FPM_PROJECTS_MAP_BUILDER — 생성 생략"; return 0; }
-    command -v python3 >/dev/null 2>&1 || { warn "python3 부재 — 맵 생성 생략"; return 0; }
+    # Issue436: `command -v python3` 를 통과한 뒤 실행에서 죽어 "맵 생성 실패" 만 남던 지점.
+    if ! fbot_resolve_python; then
+        warn "쓸 수 있는 python 없음 — 맵 생성 생략 (후보 전멸: ${FBOT_PY_REJECT:-없음})"; return 0
+    fi
     local log
-    if log="$(cd "$REPO_DIR" && python3 "$builder" 2>&1)"; then
+    if log="$(cd "$REPO_DIR" && "${FBOT_PY_ARGV[@]}" "$builder" 2>&1)"; then
         info "$FPM_PROJECTS_MAP_OUT 생성 (동명 .md 동반)"
     else
         warn "맵 생성 실패 — ${log##*$'\n'}"
@@ -438,7 +505,10 @@ cat <<EOF
      sshf         → 서버 목록 확인
 
 [선택] hub 서버 (HTML 렌더 + 대시보드, Python 3):
-  cd "$REPO_DIR/services/hub" && python3 server.py
+  cd "$REPO_DIR" && python3 services/hub/server.py
+  ⚠️ 반드시 **repo 루트에서 상대경로로** 띄운다 (Issue437). services/hub 안에서
+     `python3 server.py` 로 띄우면 프로세스 명령줄에 경로가 남지 않아, 재기동·정리가
+     그 인스턴스를 **찾지 못한다**(Windows 에서 실제로 그렇게 떠 있었다).
   → http://127.0.0.1:9876/hub
 
 fpm-core 플러그인(SCAR — hub/dashboard 등): 기본 설치됨

@@ -50,6 +50,49 @@ cases:
         || python -c 'import json,sqlite3,urllib.request; print("ok")' 2>/dev/null
     expect: contains:ok
 
+  - id: python-resolver-picks
+    desc: 인터프리터 해석 SSOT 가 쓸 수 있는 후보를 고른다
+    why: |
+      Issue436 — 설치기가 제각각 `command -v python3` 를 쓰다 스텁을 실물로 잡았다.
+      해석은 sh/fbot-python.sh 한 곳이 담당한다. 그 헬퍼 자체가 도는지부터 본다.
+    run: |
+      . "$REPO_DIR/sh/fbot-python.sh"
+      fbot_resolve_python sqlite3 && "${FBOT_PY_ARGV[@]}" -c 'print("ok")'
+    expect: contains:ok
+
+  - id: python-resolver-rejects-stub
+    desc: 실행되지 않는 `python3`(MS Store 스텁)를 걸러내고 다음 후보로 넘어간다
+    why: |
+      Issue436 실체 — Windows 의 `python3` 는 존재하는데 rc=49 로 죽는 리디렉터 스텁이다.
+      `command -v` 만 보면 통과시킨 뒤 실행에서 죽는다. 여기서는 그 스텁을 **재현**해
+      PATH 앞에 두고, 해석기가 사유와 함께 탈락시키는지 본다.
+      ⚠️ 이 케이스가 없으면 W4 회귀는 Windows 실기에서만 드러난다.
+    run: |
+      . "$REPO_DIR/sh/fbot-python.sh"
+      _d="$(mktemp -d)"; trap 'rm -rf "$_d"' EXIT
+      printf '#!/bin/sh\nexit 49\n' > "$_d/python3"; chmod +x "$_d/python3"
+      _real="$(command -v python3 || command -v python)"
+      printf '#!/bin/sh\nexec %s "$@"\n' "$_real" > "$_d/python"; chmod +x "$_d/python"
+      PATH="$_d:$PATH" bash -c '. "$0/sh/fbot-python.sh"
+        fbot_resolve_python || exit 1
+        case "$FBOT_PY_REJECT" in *"python3(실행 불가)"*) echo rejected ;; *) echo "MISS:$FBOT_PY_REJECT" ;; esac
+        "${FBOT_PY_ARGV[@]}" -c "print(\"ok\")"' "$REPO_DIR"
+    expect: contains:rejected
+
+  - id: mcp-registration-validated
+    desc: 깨진 MCP 등록(스크립트 부재)을 무효로 판정한다
+    why: |
+      Issue436 ⓒ — 설치기가 "이미 등록됨 — 보존" 만 해서 한 번 깨진 등록이 재설치로도
+      낫지 않았다. jm4 실측: repo 이전으로 server.py 가 사라졌는데 등록만 남아
+      aoa-memory 가 CONNECTION_CLOSED 였다. 유효한 등록은 그대로 둬야 한다.
+    run: |
+      . "$REPO_DIR/sh/fbot-python.sh"
+      fbot_resolve_python >/dev/null || exit 1
+      _py="${FBOT_PY_ARGV[0]}"
+      fbot_registration_valid "$_py" "$REPO_DIR/mcp/aoa-mq/server.py" && printf 'valid '
+      fbot_registration_valid "$_py" "$REPO_DIR/mcp/nosuch/server.py" || printf 'invalid'
+    expect: contains:valid invalid
+
   - id: git-available
     desc: git 이 있고 이 디렉토리가 워크트리다
     why: 배포 체인 전체가 git 위에 선다.
@@ -135,4 +178,33 @@ cases:
       command -v claude >/dev/null && echo ok && exit 0
       ls "$HOME"/.nvm/versions/node/*/bin/claude >/dev/null 2>&1 && echo ok && exit 0
       ls /usr/bin/claude /usr/local/bin/claude >/dev/null 2>&1 && echo ok || echo "MISSING"
+    expect: contains:ok
+
+  - id: process-mgmt
+    desc: 프로세스 조회·종료 헬퍼가 실제로 동작한다
+    why: |
+      hub 재기동·좀비 정리가 여기 의존한다(설계 W6). 종전 케이스는 `windows.yml` 에서
+      `pkill`·`pgrep`·`setsid` 의 **존재**만 물었고, Git Bash 에서 셋 다 부재라 FAIL 이었다
+      (procps 미동봉). 그런데 정작 물어야 할 것은 *"이 저장소가 프로세스를 찾아 죽일 수
+      있는가"* 다 — 게다가 `setsid` 는 이 저장소가 **한 곳도 쓰지 않는다**(백그라운드
+      기동은 `nohup`). 쓰지도 않는 도구의 부재로 FAIL 을 내고 있었다.
+      Issue437 이후 판정 대상은 `_fpm_pgrep`·`_fpm_pkill` 의 **계약**이다 — 조회→종료→
+      소멸이 백엔드(procps·wmic·powershell)와 무관하게 같아야 한다. 그래서 이 케이스는
+      Windows 전용이 아니라 core 다: macOS·Linux 에서 헬퍼가 깨지는 회귀도 같이 잡는다.
+      ⚠️ 자기 명령줄을 매치하지 않도록 마커를 **런타임 확장값**(`$$` 포함)으로 만든다.
+      케이스 원문에는 확장 전 문자열만 남아 러너 자신은 매칭되지 않는다 — 2026-08-30 에
+      pkill 이 자기 ssh 셸을 먼저 죽여 뒤 명령이 통째로 누락된 적이 있다.
+      (마커 스크립트의 자식 `sleep` 은 마커를 갖지 않아 판정과 무관하며 30초 뒤 자연 종료된다)
+    run: |
+      . "$REPO_DIR/sh/fpm_function.sh"
+      b=$(_fpm_proc_backend)
+      [ "$b" = none ] && { echo "FAIL backend=none"; exit 0; }
+      m="fpmproc$$"; d=$(mktemp -d); s="$d/$m.sh"
+      printf '#!/usr/bin/env bash\nsleep 30\n' > "$s"
+      bash "$s" & sleep 2
+      _fpm_pgrep "$m" >/dev/null || { echo "FAIL pgrep-0건 backend=$b"; rm -rf "$d"; exit 0; }
+      _fpm_pkill "$m"           || { echo "FAIL pkill backend=$b"; rm -rf "$d"; exit 0; }
+      sleep 1
+      _fpm_pgrep "$m" >/dev/null && echo "FAIL 종료후생존 backend=$b" || echo "ok backend=$b"
+      rm -rf "$d"
     expect: contains:ok

@@ -20,6 +20,11 @@
 #   무관하게 동일 form 자동 회수 경로를 재사용함 (플래그 기반 단일 진입 — 별도 분기 불필요).
 #   Issue133 (2026-06-03): a모드 render 트리거 `..hub`→`..show` rename (토글 `..hub stop` 등은 보존).
 #
+# Issue492 (2026-09-01): 짝 a(`..show` 렌더)가 있으면 b(폼) 문서를 **만들지 않는다**.
+#   폼 조각을 `POST /ask-register` 로 등록하고 `a?ask=<id>` 를 열면 서버가 모달로 얹는다
+#   (짝 이슈 prj1#Issue452 — 주종 역전). 종전 Issue143 의 55vh iframe 임베드는 폐기.
+#   b 경로는 살아 있다 — 짝 a 없는 턴 · 등록 실패 폴백 · `render_target: vscode` 표면.
+#
 # 이전 이력:
 #   - Issue37: ___pm 서버 의존 분리, Mode A paste-back 도입
 #   - Issue38: 서버 healthz 기반 Mode B 자동 회수 추가 (옵셔널)
@@ -169,7 +174,8 @@ QUESTIONS_JSON="$questions_json" \
 import json, os, urllib.parse, shlex
 
 questions_json = os.environ.get('QUESTIONS_JSON', '[]')
-out_dir = os.environ.get('OUT_DIR', '/tmp/___pm')
+_tmp_ns = os.path.join(os.environ.get('FPM_TMP_ROOT') or ('/tmp' if os.name == 'posix' else __import__('tempfile').gettempdir()), '___pm')  # prj3#Issue499 — /tmp 리터럴은 Windows 에서 셸과 갈라진다(W3)
+out_dir = os.environ.get('OUT_DIR', _tmp_ns)
 sid = os.environ.get('SID', '')
 project_name = os.environ.get('PROJECT_NAME', 'unknown')
 project_color = os.environ.get('PROJECT_COLOR', 'hsl(220,30%,90%)')
@@ -184,7 +190,7 @@ cwd_q = urllib.parse.quote(cwd) if cwd else ''
 project_root = cwd.split('/_doc_work/')[0] if cwd and '/_doc_work/' in cwd else cwd
 
 ask_path = f"{out_dir}/hub_htm_<YYYYMMDD_HHMMSS>_b_<주제>.htm"  # 날짜시간=`date +%Y%m%d_%H%M%S`, 주제=질문 핵심 10자 내외 kebab, mode b=ask 폼
-path_note = (f"프로젝트 로컬 (_doc_work/{out_dir.split('_doc_work/')[-1]}/)" if '_doc_work/' in out_dir else f"프로젝트 로컬 ({out_dir})") if not out_dir.startswith('/tmp') else f"/tmp/___pm fallback → 프로젝트: {project_name} · 생성: cd {cwd} && mkdir -p _doc_work/htm"  # Issue276
+path_note = (f"프로젝트 로컬 (_doc_work/{out_dir.split('_doc_work/')[-1]}/)" if '_doc_work/' in out_dir else f"프로젝트 로컬 ({out_dir})") if not out_dir.startswith(_tmp_ns) else f"{_tmp_ns} fallback → 프로젝트: {project_name} · 생성: cd {cwd} && mkdir -p _doc_work/htm"  # Issue276
 # Issue172: 폼 open URL = hub 서버 /htm-doc?path=<절대경로> (:9876 register-doc 경유). file:// 폐기.
 render_host = os.environ.get('RENDER_HOST', '127.0.0.1')
 hub_doc_url = f"http://{render_host}:{server_port}/htm-doc?path=<절대경로>"
@@ -251,7 +257,7 @@ form_js = (open(os.path.expanduser('~/.claude/hooks/fpm-ask-form-template.js'), 
 
 # Issue143: 짝 a모드(..show 렌더) 페이지 탐색 → b 폼에 iframe+링크 임베드.
 # a(Claude Write, cwd htm 폴더)와 b(hook, OUT_DIR fallback /tmp)가 서로 다른 폴더일 수 있어
-# 후보 폴더(OUT_DIR + cwd 활성 htm/ + /tmp/___pm) 합집합에서 mtime 최신 1개를 페어로 본다.
+# 후보 폴더(OUT_DIR + cwd 활성 htm/ + tmp 네임스페이스) 합집합에서 mtime 최신 1개를 페어로 본다.
 # Issue289 는 아카이브(z_done/htm·legacy z_htm)까지 후보에 넣었으나 2026-08-09 되돌린다 —
 #   "직전 ..show" 라는 의미상 아카이브는 페어가 아니고, 일괄 이동으로 mtime 이 동률이라
 #   max() 결과가 비결정적이었다. 실발생: ___common 폼이 6/26 화석(z_done, 게다가 clear
@@ -263,9 +269,9 @@ form_js = (open(os.path.expanduser('~/.claude/hooks/fpm-ask-form-template.js'), 
 #   2) 나이 가드 — mtime 이 PAIR_MAX_AGE(기본 3600s) 이내인 것만 "직전"으로 인정.
 #   3) 접근성 검증 — 고른 파일이 htm-registry 미등록이거나 htm-cleared tombstone 이면 뺀다.
 #      서버는 화이트리스트 모델이라 링크해봐야 403 이다. registry 파일을 못 읽으면 검증 skip(fail-soft).
-import glob as _glob, re as _re, html as _htmlmod, json as _json, time as _time
+import glob as _glob, re as _re, json as _json, time as _time
 _cand_dirs = []
-for _d in [out_dir] + ([os.path.join(cwd, '_doc_work', 'htm')] if cwd else []) + ['/tmp/___pm']:
+for _d in [out_dir] + ([os.path.join(cwd, '_doc_work', 'htm')] if cwd else []) + [_tmp_ns]:
     if _d and os.path.isdir(_d) and _d not in _cand_dirs:
         _cand_dirs.append(_d)
 try:
@@ -320,26 +326,96 @@ if a_pair:
                     a_title = a_title[len(_pre):]
     except Exception:
         pass
-    _t = _htmlmod.escape(a_title)
     _shell = 'md-doc' if _is_md else 'htm-doc'
-    _p = _htmlmod.escape(f'http://{render_host}:{server_port}/{_shell}?path=' + a_pair)  # Issue: http origin 폼에서 file:// iframe 차단 회귀 → hub 서버 경유
-    _snippet = (
-        '<details class="show-pair" open style="margin:1rem 1.5rem;border:1px solid #c9b8e0;border-radius:10px;overflow:hidden;">\n'
-        '  <summary style="cursor:pointer;padding:0.6rem 1rem;background:hsl(273,30%,92%);color:#4a2d6b;font-weight:600;">'
-        f'🔗 관련 ..show 페이지: {_t} '
-        f'<a href="{_p}" target="_blank" style="margin-left:0.5rem;font-weight:400;">새 탭 ↗</a></summary>\n'
-        f'  <iframe src="{_p}" style="width:100%;height:55vh;border:0;border-top:1px solid #c9b8e0;"></iframe>\n'
-        '</details>'
+    _origin = f'http://{render_host}:{server_port}'
+    # 서버가 `/ask-register` 응답 URL 을 만들 때와 같은 규약으로 quote — 공백·한글 경로 대응
+    _p = _origin + f'/{_shell}?path=' + urllib.parse.quote(a_pair)
+    # Issue492 (2026-09-01): 짝 a 가 있으면 **b(폼) 문서를 만들지 않는다** — 폼 조각을 서버에
+    #   등록(`POST /ask-register`)해 a 문서를 열면 서버가 모달로 얹는다(짝 이슈 prj1#Issue452).
+    #   종전 Issue143 은 b 를 주 페이지로 띄우고 a 를 55vh iframe 에 가뒀다 — 주종을 뒤집는다.
+    #   b 경로는 폐지하지 않는다: 짝 a 없는 ask 턴(아래 else)과 등록 실패 폴백이 그대로 쓴다.
+    # ⚠️ render_target: vscode 는 모달을 실을 수 없다 — `POST /open-simple-browser` 는 `path`
+    #   만 받아 doc URL 을 서버가 재조립하므로 `?ask=` 가 버려지고, 확장자 게이트도 .htm/.html
+    #   만 통과시켜 md 짝은 403 이다(prj1 server.py `_handle_open_simple_browser` 실측).
+    #   외부 `open` 으로 우회하면 Issue180 이 없앤 이중 표면이 되살아난다 → 그 표면에서는
+    #   b 문서 경로를 유지하고 사유를 남긴다(조용한 실패 금지). 엔드포인트 확장은 prj1 소관.
+    try:
+        _qt = _json.loads(questions_json)
+        ask_title = (_qt[0].get('question') or '').strip().split('\n')[0][:80] if _qt else ''
+    except Exception:
+        ask_title = ''
+    ask_title = ask_title or '질문에 답하기'
+
+# 지시문 분기 3갈래 (위 블록이 _origin·_p·_is_md·ask_title 을 채워 둔다)
+if a_pair:
+    _frag = os.path.join(_tmp_ns, f"ask-frag-{sid or 'nosid'}.html")
+    def _jl(v):   # 지시문에 그대로 실리는 python 리터럴 — 한글이 \uXXXX 로 뭉개지지 않게
+        return _json.dumps(v, ensure_ascii=False)
+    _dp, _sidj, _cwdj = _jl(a_pair), _jl(sid), _jl(cwd)
+    _ttlj, _regj, _orgj = _jl(ask_title), _jl(_origin + '/ask-register'), _jl(_origin)
+    _reg_py = (
+        "mkdir -p " + _tmp_ns + "\n"
+        "ASK_FRAG=" + _frag + " python3 - <<'PY'\n"
+        "import json, os, sys, urllib.request\n"
+        "frag = open(os.environ['ASK_FRAG'], encoding='utf-8').read()\n"
+        "body = json.dumps({'doc_path': " + _dp + ", 'form_html': frag,\n"
+        "                   'sid': " + _sidj + ", 'cwd': " + _cwdj + ",\n"
+        "                   'title': " + _ttlj + "}).encode('utf-8')\n"
+        "req = urllib.request.Request(" + _regj + ", data=body, method='POST',\n"
+        "                             headers={'Content-Type': 'application/json'})\n"
+        "try:\n"
+        "    with urllib.request.urlopen(req, timeout=5) as r:\n"
+        "        j = json.load(r)\n"
+        "except Exception as e:\n"
+        "    print('ASK_REGISTER_FAIL ' + repr(e)); sys.exit(1)\n"
+        "print('ASK_URL ' + " + _orgj + " + j['url'])\n"
+        "print('ASK_ID ' + j['id'])\n"
+        "PY"
+    )
+    _log_cmd = (
+        "mkdir -p ~/.claude/_doc_work/z_log && printf '%s ask-register 실패 → b 문서 폴백 doc=%s\\n' "
+        "\"$(date '+%Y-%m-%d %H:%M:%S')\" " + shlex.quote(a_pair)
+        + " >> ~/.claude/_doc_work/z_log/ask-intercept.log"
     )
     show_embed_section = (
-        "\n### 🔗 관련 ..show(a모드) 페이지 임베드 (Issue143)\n"
-        f"직전 ..show 렌더(`{os.path.basename(a_pair)}`)를 폼에서 바로 확인하도록, 본문 `<main>` 최상단(질문 카드 앞)에 아래 스니펫을 그대로 삽입:\n"
-        "```html\n" + _snippet + "\n```\n"
+        "\n### 🔗 짝 a(..show) 문서 위 모달 — b 폼 문서를 만들지 않는다 (Issue492)\n"
+        f"직전 ..show 렌더 **{a_title}** (`{os.path.basename(a_pair)}`) 가 짝으로 잡혔다. "
+        "맥락이 주(主), 질문이 종(從)이다 — 폼 본문을 hub 서버에 등록하고 **a 문서를** 열면 "
+        "서버가 그 위에 모달로 얹는다(prj1#Issue452).\n"
+        "**아래 §2(저장·open)를 건너뛰고 M1~M3 을 대신 수행**한다. §1(카드 마크업)·§3(채팅 안내)·"
+        "§4(polling)·§5(흐름 재개)는 그대로다. CANONICAL 헤더 블록은 **폴백 경로 전용**.\n\n"
+        "**M1. 폼 *조각* 생성** — §1 의 카드·버튼·`<div id=\"status\">`·`<script>`(폼 JS)를 쓰되 **조각**으로:\n"
+        "   - `<html>`/`<head>`/`<body>` 셸과 CANONICAL `<header>` 블록 **생략** — 모달 제목·닫기는 서버가 그린다\n"
+        "   - ⚠️ 인라인 이벤트 핸들러(`onclick=`) **금지** — md 셸 CSP 는 nonce 전용이라 즉시 죽는다. "
+        "`<button onclick=\"window.close()\">닫기 ✕</button>` 는 넣지 않는다\n"
+        "   - `submit-close-btn`·`submit-session-btn` **넣지 않는다** — `window.close()` 가 **맥락 문서 탭**을 "
+        "닫으려 든다. 주 액션 `submit-btn` 하나만 둔다(폼 JS 는 두 버튼에 null-safe)\n"
+        "   - `<script>` 는 **속성 없는** 태그로 (serve 시 nonce 부여 대상)\n"
+        f"   - `Write` 로 `{_frag}` 에 저장 — `_doc_work/htm/` 밖이라 registry 에 등록되지 않는 전송용 임시 조각\n\n"
+        "**M2. 등록** (`POST /ask-register`. doc_path·sid·cwd·title 은 이미 채워져 있으니 그대로 실행):\n"
+        "```bash\n" + _reg_py + "\n```\n"
+        "   - 성공 → `ASK_URL <열 주소>` 1줄 출력 / 실패 → `ASK_REGISTER_FAIL …` + exit 1\n\n"
+        "**M3. a 문서 open** — §2 와 **같은 표면**, URL 만 바뀐다(Issue180 이중 표면 금지 / Issue153 새 탭):\n"
+        # prj3#Issue500: vscode 표면은 /open-simple-browser 가 ask 필드를 받는다(prj1 개정) —
+        #   외부 open 우회(이중 표면) 없이 같은 패널에 모달이 얹힌다.
+        + ("```bash\n"
+           f"curl -s -X POST http://{render_host}:{server_port}/open-simple-browser "
+           "-H 'Content-Type: application/json' "
+           "-d '{\"path\":\"" + a_pair + "\",\"ask\":\"<M2 가 출력한 ASK_ID 값>\"}'\n```\n"
+           if render_target == 'vscode' else
+           "```bash\n" + f'{open_cmd} "<M2 가 출력한 ASK_URL 값>"' + "\n```\n")
+        "   - §3 채팅 안내의 4번 `저장 경로` 는 b 파일이 없으므로 **이 URL** 로 대체한다\n\n"
+        "**M-fallback. 서버 미기동·`/ask-register` 실패 시** (조용한 실패 금지 — 셋 다 수행):\n"
+        "   1. 아래 §1·§2 의 **b 폼 문서 경로를 그대로 수행**(종전 동작). 맥락 문서는 링크로 병기: "
+        f"`{_p}`\n"
+        "   2. 채팅에 1줄 고지: '`/ask-register` 실패 → 폼 문서 경로로 폴백'\n"
+        "   3. 로그 1줄 남김:\n"
+        "   ```bash\n   " + _log_cmd + "\n   ```\n"
     )
 else:
     show_embed_section = (
-        "\n### 🔗 관련 ..show(a모드) 페이지 임베드 (Issue143)\n"
-        "직전 ..show(a모드) 페이지 없음 — 임베드 스니펫 생략(무해).\n"
+        "\n### 🔗 짝 a(..show) 페이지 없음 — b 폼 문서 경로 (Issue492)\n"
+        "직전 ..show(a모드) 페이지 없음 → 모달로 얹을 맥락 문서가 없다. 아래 §1~§5 를 그대로 수행(종전 동작).\n"
     )
 
 # Issue132/157: CANONICAL 헤더 블록 — a(..show)/b(ask)/c(board) 통일. verbatim 복붙.

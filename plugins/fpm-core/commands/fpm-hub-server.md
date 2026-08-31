@@ -38,7 +38,8 @@ date: 2026-06-24
 | `/hub-shell`    | GET    | -              | hub-internal 탭 쉘 (Issue194)                          |
 | `/clear-done`   | POST   | 127.0.0.1      | done/stopped dash 파일 정리 (clear 서브커맨드)         |
 
-서버 파일시스템 경로(`/tmp/___pm/claude-htm-server/`, Issue64)는 ___pm 측 호환성을 위해 유지.
+서버 파일시스템 경로(`$HUB_STATE_DIR`, Issue64)는 ___pm 측 호환성을 위해 유지.
+⚠️ 경로를 손으로 적지 않는다 (Issue446) — Windows 에서 셸과 python 의 `/tmp` 해석이 갈린다. `sh/fpm-hub-paths.sh` 를 source 해 얻는다.
 
 # 서브커맨드
 
@@ -47,14 +48,16 @@ date: 2026-06-24
 이미 실행 중이면 PID 안내 후 종료. 새로 띄울 경우:
 
 ```bash
-PID=$(cat /tmp/___pm/claude-htm-server/pid 2>/dev/null)
+# Issue446: 상태 경로는 셸이 계산하지 않는다 — hub 의 python 에게 물어본다
+. "${FPM_BASE:?FPM_BASE 미설정 — sh/fpm.sh 부트스트랩 필요}/sh/fpm-hub-paths.sh" || exit 1
+PID=$(cat "$HUB_STATE_DIR"/pid 2>/dev/null)
 if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
   echo "hub already running (pid=$PID)"
   curl -s http://127.0.0.1:9876/healthz
 else
-  mkdir -p /tmp/___pm/claude-htm-server
+  mkdir -p "$HUB_STATE_DIR"
   nohup python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/_git/___pm}/services/hub/server.py" \
-    >/tmp/___pm/claude-htm-server/stdout.log 2>&1 &
+    >"$HUB_STATE_DIR"/stdout.log 2>&1 &
   sleep 1
   echo "hub started"
   curl -s http://127.0.0.1:9876/healthz
@@ -66,14 +69,16 @@ port override: `HTM_SERVER_PORT=NNNN /fpm-hub-server start`
 ## stop
 
 ```bash
-PID=$(cat /tmp/___pm/claude-htm-server/pid 2>/dev/null)
+# Issue446: 상태 경로는 셸이 계산하지 않는다 — hub 의 python 에게 물어본다
+. "${FPM_BASE:?FPM_BASE 미설정 — sh/fpm.sh 부트스트랩 필요}/sh/fpm-hub-paths.sh" || exit 1
+PID=$(cat "$HUB_STATE_DIR"/pid 2>/dev/null)
 if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
   kill "$PID"
   sleep 1
   if kill -0 "$PID" 2>/dev/null; then
     kill -9 "$PID"
   fi
-  rm -f /tmp/___pm/claude-htm-server/pid
+  rm -f "$HUB_STATE_DIR"/pid
   echo "hub stopped (pid=$PID)"
 else
   echo "hub not running"
@@ -85,13 +90,15 @@ fi
 `stop` + 1초 sleep + `start`.
 
 ```bash
-PID=$(cat /tmp/___pm/claude-htm-server/pid 2>/dev/null)
+# Issue446: 상태 경로는 셸이 계산하지 않는다 — hub 의 python 에게 물어본다
+. "${FPM_BASE:?FPM_BASE 미설정 — sh/fpm.sh 부트스트랩 필요}/sh/fpm-hub-paths.sh" || exit 1
+PID=$(cat "$HUB_STATE_DIR"/pid 2>/dev/null)
 [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null && kill "$PID" && sleep 1
 [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null && kill -9 "$PID"
-rm -f /tmp/___pm/claude-htm-server/pid
-mkdir -p /tmp/___pm/claude-htm-server
+rm -f "$HUB_STATE_DIR"/pid
+mkdir -p "$HUB_STATE_DIR"
 nohup python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/_git/___pm}/services/hub/server.py" \
-  >/tmp/___pm/claude-htm-server/stdout.log 2>&1 &
+  >"$HUB_STATE_DIR"/stdout.log 2>&1 &
 sleep 1
 curl -s http://127.0.0.1:9876/healthz
 ```
@@ -99,15 +106,17 @@ curl -s http://127.0.0.1:9876/healthz
 ## status
 
 ```bash
+# Issue446: 상태 경로는 셸이 계산하지 않는다 — hub 의 python 에게 물어본다
+. "${FPM_BASE:?FPM_BASE 미설정 — sh/fpm.sh 부트스트랩 필요}/sh/fpm-hub-paths.sh" || exit 1
 echo "--- pid:"
-cat /tmp/___pm/claude-htm-server/pid 2>/dev/null || echo "(no pid file)"
+cat "$HUB_STATE_DIR"/pid 2>/dev/null || echo "(no pid file)"
 echo "--- healthz:"
 curl -s http://127.0.0.1:9876/healthz 2>&1
 echo
 echo "--- registered projects:"
-cat /tmp/___pm/claude-htm-server/tokens.json 2>/dev/null | python3 -m json.tool 2>/dev/null || echo "(none)"
+cat "$HUB_STATE_DIR"/tokens.json 2>/dev/null | python3 -m json.tool 2>/dev/null || echo "(none)"
 echo "--- recent log:"
-tail -20 /tmp/___pm/claude-htm-server/server.log 2>/dev/null
+tail -20 "$HUB_STATE_DIR"/server.log 2>/dev/null
 ```
 
 ## clear
@@ -120,7 +129,9 @@ tail -20 /tmp/___pm/claude-htm-server/server.log 2>/dev/null
 서버 엔드포인트 `POST /clear-done` (127.0.0.1 trust, 토큰 불요). hub UI `🧹 Clear done/stopped` 버튼과 동일.
 
 ```bash
-PID=$(cat /tmp/___pm/claude-htm-server/pid 2>/dev/null)
+# Issue446: 상태 경로는 셸이 계산하지 않는다 — hub 의 python 에게 물어본다
+. "${FPM_BASE:?FPM_BASE 미설정 — sh/fpm.sh 부트스트랩 필요}/sh/fpm-hub-paths.sh" || exit 1
+PID=$(cat "$HUB_STATE_DIR"/pid 2>/dev/null)
 if [ -z "$PID" ] || ! kill -0 "$PID" 2>/dev/null; then
   echo "hub not running — start with /fpm-hub-server start first"
   exit 1
@@ -142,19 +153,21 @@ curl -sS -X POST http://127.0.0.1:9876/clear-done | python3 -m json.tool
 clear + restart 의 상위 집합. tokens/sessions 메모리 상태까지 완전 초기화.
 
 ```bash
-PID=$(cat /tmp/___pm/claude-htm-server/pid 2>/dev/null)
+# Issue446: 상태 경로는 셸이 계산하지 않는다 — hub 의 python 에게 물어본다
+. "${FPM_BASE:?FPM_BASE 미설정 — sh/fpm.sh 부트스트랩 필요}/sh/fpm-hub-paths.sh" || exit 1
+PID=$(cat "$HUB_STATE_DIR"/pid 2>/dev/null)
 if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
   curl -sS -X POST http://127.0.0.1:9876/clear-done | python3 -m json.tool
 fi
 [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null && kill "$PID" && sleep 1
 [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null && kill -9 "$PID"
-rm -f /tmp/___pm/claude-htm-server/pid
-rm -f /tmp/___pm/claude-htm-server/tokens.json
-rm -f /tmp/___pm/claude-htm-server/sessions.json
-rm -f /tmp/___pm/claude-htm-server/opened-*
-mkdir -p /tmp/___pm/claude-htm-server
+rm -f "$HUB_STATE_DIR"/pid
+rm -f "$HUB_STATE_DIR"/tokens.json
+rm -f "$HUB_STATE_DIR"/sessions.json
+rm -f "$HUB_STATE_DIR"/opened-*
+mkdir -p "$HUB_STATE_DIR"
 nohup python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/_git/___pm}/services/hub/server.py" \
-  >/tmp/___pm/claude-htm-server/stdout.log 2>&1 &
+  >"$HUB_STATE_DIR"/stdout.log 2>&1 &
 sleep 1
 curl -s http://127.0.0.1:9876/healthz
 ```

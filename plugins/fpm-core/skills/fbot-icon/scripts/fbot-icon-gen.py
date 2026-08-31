@@ -32,6 +32,31 @@ SHAPES = {
     "grid": '<g fill="#fff"><rect x="34" y="34" width="26" height="26" rx="4"/><rect x="68" y="34" width="26" height="26" rx="4"/><rect x="34" y="68" width="26" height="26" rx="4"/><rect x="68" y="68" width="26" height="26" rx="4"/></g>',
     "check": '<g stroke="#fff" stroke-width="10" fill="none" stroke-linecap="round"><circle cx="64" cy="64" r="34"/><polyline points="48,64 60,78 84,50"/></g>',
     "magnifier": '<g stroke="#fff" stroke-width="10" fill="none" stroke-linecap="round"><circle cx="56" cy="56" r="26"/><line x1="76" y1="76" x2="100" y2="100"/></g>',
+    # magnet — 리크루팅핀봇 (prj3#Issue480). 어휘 7종이 전부 사용 중이라 상비 4번째 봇에
+    #   배정할 도형이 없었다(fbot-arch §미해결). U자 말굽자석 — "인재를 끌어온다".
+    "magnet": '<g fill="none" stroke="#fff" stroke-width="14" stroke-linecap="butt">'
+              '<path d="M44 30 V64 A20 20 0 0 0 84 64 V30"/></g>'
+              '<g fill="#fff"><rect x="37" y="26" width="14" height="18"/>'
+              '<rect x="77" y="26" width="14" height="18"/></g>',
+    # frame — 인포그래픽핀봇 (prj3#Issue482 E2E 첫 실증 role). 그림틀(사각 프레임) 안에
+    #   산·해 픽토그램 — "이미지를 도형으로" 의 시각적 은유.
+    "frame": '<g fill="none" stroke="#fff" stroke-width="8"><rect x="30" y="34" width="68" '
+             'height="60" rx="6"/></g><g fill="#fff"><circle cx="50" cy="52" r="7"/>'
+             '<path d="M36 86 L58 62 L70 76 L80 66 L92 86 Z"/></g>',
+    # speech — 컨설턴트핀봇 (2026-09-01, consultant-m agent 승격). 어휘 9종이 전부
+    #   사용 중이라 신규 배정 도형이 없었다(magnet·frame 과 동일 경로). 꼬리 달린
+    #   말풍선 — "조언·2차 의견". 내부 점 3개는 배경색으로 뚫어 상담 은유를 살린다.
+    "speech": '<path fill="#fff" fill-rule="evenodd" d="M32 30 H96 A10 10 0 0 1 106 40 '
+              'V78 A10 10 0 0 1 96 88 H60 L42 104 V88 H32 A10 10 0 0 1 22 78 V40 '
+              'A10 10 0 0 1 32 30 Z M45 59 a5 5 0 1 0 10 0 a5 5 0 1 0 -10 0 '
+              'M59 59 a5 5 0 1 0 10 0 a5 5 0 1 0 -10 0 '
+              'M73 59 a5 5 0 1 0 10 0 a5 5 0 1 0 -10 0"/>',
+    # venn — 교차검증핀봇 (2026-09-01, agy-* skill 승격 C안). 두 원의 윤곽 + 교차
+    #   렌즈를 채운다 — "같은 것을 다른 눈으로 겹쳐 본다". 교차점은 중심 (50,64)·
+    #   (78,64) r=28 에서 x=64, y=64±√(28²-14²)≈±24.2 로 산출.
+    "venn": '<g fill="none" stroke="#fff" stroke-width="7"><circle cx="50" cy="64" r="28"/>'
+            '<circle cx="78" cy="64" r="28"/></g>'
+            '<path fill="#fff" d="M64 40 A28 28 0 0 1 64 88 A28 28 0 0 1 64 40 Z"/>',
 }
 
 

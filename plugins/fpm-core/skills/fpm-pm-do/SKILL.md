@@ -34,6 +34,13 @@ date: 2026-05-16
 | `fpm-do --no-wait <번호> "<명령>"` | 위임만 하고 즉시 리턴 (블로킹 생략). ⚠️ **호출은 즉시 끝나지만 완료 감시는 계속된다** — 축A 워처가 뒤에서 폴링하다 다음 프롬프트에 결과를 알린다(Issue371). "즉시 리턴" 을 *"이후 아무 일도 없다"* 로 읽지 말 것 |
 | `fpm-do --status <번호>`         | 대상 prj 윈도우 capture만 출력                                                  |
 
+## 프롬프트 길이 계약 (prj3#Issue489 ②, 2026-09-01)
+
+* 실측: **1,105바이트**가 `send-keys` 에서 조용히 잘려 자식 0개·무신호 실패, 540바이트는 정상
+* `800바이트+` 경고(`PM_DO_PROMPT_WARN`) · **`1,000바이트+` 기동 중단**(`PM_DO_PROMPT_HARD`) — 조용한 절단을 명시적 중단으로 바꿨다
+* 우회 밸브: `FPM_DO_FORCE_LONG=1` (절단 위험을 알고 진행). 정석은 상세를 대상 prj `_doc_work/delegation_*.md` 파일로 두고 **경로만** 위임
+* 이슈번호 없는 위임(문서 정정·조사)은 정상이다 — `감시 번호: …Issue없음` 으로 기동되고 완료 폴링만 생략된다(①)
+
 # Projects.md lookup
 
 ```bash
@@ -49,11 +56,14 @@ PRJ_PATH=$(echo "$PRJ_PATH_RAW" | /usr/bin/sed "s|^~|$HOME|")
 
 ```bash
 PROJECTS_MD="$HOME/_git/___pm/Projects.md"
-DOMAIN=$(/usr/bin/grep -E "^\| +${PRJ_NUM} +\|" "$PROJECTS_MD" | /usr/bin/awk -F'|' '{print $4}' | /usr/bin/tr -d ' ')
+DOMAIN_IDX=$(/usr/bin/head -n 2 "$PROJECTS_MD" 2>/dev/null | /usr/bin/grep "Dmn" | /usr/bin/awk -F'|' '{for(i=1;i<=NF;i++) if($i~/Dmn/) print i; exit}')
+[ -z "$DOMAIN_IDX" ] && DOMAIN_IDX=5
+DOMAIN=$(/usr/bin/grep -E "^\| +${PRJ_NUM} +\|" "$PROJECTS_MD" 2>/dev/null | /usr/bin/awk -F'|' -v idx="$DOMAIN_IDX" '{print $idx}' | /usr/bin/tr -d ' ')
 case "$DOMAIN" in
   m)      SUFFIX="-m" ;;
   w)      SUFFIX="-w" ;;
-  *)      SUFFIX="-g" ;;
+  g\(*\)|g) SUFFIX="-g" ;;
+  *)      echo "ERROR: 알 수 없는 도메인 '$DOMAIN' (prj${PRJ_NUM}) — fallback 없이 실패 처리함" >&2; exit 1 ;;
 esac
 ```
 

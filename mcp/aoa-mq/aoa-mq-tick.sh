@@ -403,9 +403,16 @@ fi
 if [ -n "$pending_items" ] && [ -n "$TOKEN" ]; then
   TS=$("$DATE" '+%Y%m%d_%H%M%S')
   FORM="$HTM_DIR/hub_htm_${TS}_b_aoa-mq-ask.htm"
-  # same-origin 상대경로 — 페이지를 연 host(.local/tailnet IP/MagicDNS 무관)로 POST 회귀.
-  # file:// 직접 열람 시에만 127.0.0.1 fallback (prj3#Issue17 — 구 127.0.0.1 하드코딩은 폰에서 "서버 미응답")
-  ANSWER_PATH="/answer?cwd=$cwd_enc&token=$TOKEN&sid=aoa-mq"
+  # ⚠️ 처리 UI 를 여기 두지 않는다 (prj3#Issue493) — hub `/mq` 하나가 소유한다.
+  #   종전엔 이 heredoc 이 ACK 버튼까지 자체 렌더했다. prj1#Issue420 이 `/mq` 를 만들면서도
+  #   이쪽을 폐기하지 않아 **렌더러가 둘**이 됐고, 뒤이은 prj1#Issue423(즉시 소비)·prj1#Issue424(진행→
+  #   완료 2단계)가 `/mq` 만 고쳐 알림으로 열린 화면이 몇 세대 전 동작을 하게 됐다.
+  #   2026-09-01 실측: 같은 큐인데 `/mq` 는 진행/완료/연기(N일)/취소, 이 폼은 확인/내일다시/
+  #   닫기/드롭 — 사용자에겐 "왜 예전 버전이 뜨나" 로 보인다.
+  # 이 문서의 역할은 **그 회차 스냅샷 + 처리 화면 진입점** 둘뿐이다. 액션을 다시 여기 넣으면
+  # 같은 표류가 반복된다.
+  # 링크는 same-origin 상대경로 — 페이지를 연 host(.local/tailnet MagicDNS 무관)를 그대로 따라간다.
+  # file:// 직접 열람 시에만 127.0.0.1 보정 (prj3#Issue17 — 구 하드코딩은 폰에서 "서버 미응답")
   {
     cat <<HTMLHEAD
 <!DOCTYPE html>
@@ -417,35 +424,23 @@ if [ -n "$pending_items" ] && [ -n "$TOKEN" ]; then
 <style>
  body{font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",sans-serif;max-width:820px;margin:0 auto;padding:1rem 1.2rem 3rem;line-height:1.7;color:#222;background:#fff;}
  h1{font-size:1.2rem;background:hsl(186,72%,80%);color:#1a1a1a;padding:0.8rem 1.2rem;border-radius:8px;}
- .card{border:1px solid #ccc;border-radius:10px;padding:0.9rem 1.2rem;margin:1rem 0;}
+ .lead{color:#555;font-size:0.9rem;margin:0.2rem 0 0;}
+ .cta{display:block;text-align:center;margin:1rem 0 1.4rem;padding:0.85rem 1.2rem;border-radius:10px;
+  background:hsl(186,72%,85%);border:1px solid hsl(186,50%,50%);color:#0b3a4a;font-size:1.02rem;font-weight:700;text-decoration:none;}
+ .cta:hover{background:hsl(186,72%,76%);}
+ .card{border:1px solid #ccc;border-radius:10px;padding:0.7rem 1.1rem;margin:0.7rem 0;}
  .card.done{border-color:#7cb87c;background:#f5faf5;}
  .meta{font-size:0.82rem;color:#777;}
  .meta .src{font-weight:700;color:#0b5a7a;background:#e8f4fa;padding:0.05rem 0.45rem;border-radius:4px;}
- button{cursor:pointer;border:1px solid #888;border-radius:6px;padding:0.35rem 0.9rem;margin-right:0.5rem;font-size:0.95rem;background:#f2f4f6;}
- button.primary{background:hsl(186,72%,85%);border-color:hsl(186,50%,50%);}
- button.drop{background:#fbeaea;border-color:#c66;color:#a33;}
- .sent{color:#080;font-weight:600;}
- @media (prefers-color-scheme:dark){body{background:#16181a;color:#ddd;}.card{border-color:#444;}.card.done{background:#1c2b1c;}button{background:#2a2e33;color:#ddd;}button.drop{background:#3a2020;border-color:#a55;color:#e88;}.meta .src{color:#8fd7ff;background:#173a4a;}}
+ @media (prefers-color-scheme:dark){body{background:#16181a;color:#ddd;}.card{border-color:#444;}.card.done{background:#1c2b1c;}
+  .lead{color:#aaa;}.meta .src{color:#8fd7ff;background:#173a4a;}
+  .cta{background:#1d4f60;border-color:#3d8ba5;color:#d8f2fb;}.cta:hover{background:#246074;}}
 </style>
 </head>
 <body>
 <h1>📬 aoa-mq 확인 요청 (${NOW_ISO})</h1>
-<p>아래 항목은 확인(ACK) 전까지 매 tick(약 1시간 간격)마다 다시 표시됩니다.</p>
-<script>
-async function sendAck(btn,id,action){
-  const q='aoa-mq-ack:'+id+':'+action;
-  const AB=location.protocol==='file:'?'http://127.0.0.1:${PORT}':'';
-  try{
-    const r=await fetch(AB+'${ANSWER_PATH}',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify([{question:q,answers:[action]}])});
-    const okmsg=action==='defer'?'✅ 닫음 — 다음 tick 에 다시 표시'
-      :action==='dismiss'?'🗑️ 드롭 — 큐에서 제거됨'
-      :'✅ 전송됨 — 다음 tick 에 반영';
-    btn.closest('.card').querySelector('.st').innerHTML=r.ok
-      ?'<span class="sent">'+okmsg+'</span>':'❌ 전송 실패 '+r.status;
-  }catch(e){btn.closest('.card').querySelector('.st').textContent='❌ 서버 미응답';}
-}
-</script>
+<p class="lead">아래는 <b>이 시각의 스냅샷</b>입니다. 확인·연기·취소 등 <b>처리는 관리 페이지에서</b> 하십시오 — 목록이 실시간이고 진행→완료 2단계·연기 일수 지정이 됩니다.</p>
+<a class="cta" href="/mq">▶ aoa-mq 관리 페이지에서 처리하기</a>
 HTMLHEAD
     echo "$pending_items" | while read -r mf; do
       id=$("$JQ" -r '.id' "$mf"); st=$("$JQ" -r '.status' "$mf")
@@ -455,33 +450,28 @@ HTMLHEAD
       if [ "$st" = "due" ]; then
         cat <<CARD
 <div class="card"><b>📅 $msg</b>
-<div class="meta">id: $id · type: $typ · 발신: <span class="src">$src</span> · 예정: $due · 질의 $asks 회째</div>
-<p>오늘 이 작업을 진행하시겠습니까?</p>
-<button class="primary" onclick="sendAck(this,'$id','confirm')" title="확인만 기록됩니다 — 실제 착수는 별도 세션의 /mq-handoff 소비가 필요">확인</button>
-<button onclick="sendAck(this,'$id','snooze:1')">내일 다시</button>
-<button onclick="sendAck(this,'$id','defer')" title="이번 턴만 닫음 — 다음 tick 에 다시 표시">닫기[다음 턴]</button>
-<button class="drop" onclick="sendAck(this,'$id','dismiss')" title="큐에서 영구 삭제 — 다시 표시 안 됨">드롭</button>
-<div class="st"></div></div>
+<div class="meta">id: $id · type: $typ · 발신: <span class="src">$src</span> · 예정: $due · 질의 $asks 회째</div></div>
 CARD
       elif [ "$typ" = "alert" ]; then
         cat <<CARD
 <div class="card done"><b>🔔 알림: $msg</b>
-<div class="meta">id: $id · type: $typ · 발신: <span class="src">$src</span> · 질의 $asks 회째</div>
-<p>상위 AOA 가 전달한 이벤트 알림입니다.</p>
-<button class="primary" onclick="sendAck(this,'$id','ack')">확인함</button>
-<div class="st"></div></div>
+<div class="meta">id: $id · type: $typ · 발신: <span class="src">$src</span> · 질의 $asks 회째 · 상위 AOA 이벤트</div></div>
 CARD
       else
         cat <<CARD
 <div class="card done"><b>✅ 완료됨: $msg</b>
-<div class="meta">id: $id · type: $typ · 발신: <span class="src">$src</span> · 질의 $asks 회째</div>
-<p>장기 작업이 종료되었습니다 (결과 유무 무관 통지).</p>
-<button class="primary" onclick="sendAck(this,'$id','ack')">확인함</button>
-<div class="st"></div></div>
+<div class="meta">id: $id · type: $typ · 발신: <span class="src">$src</span> · 질의 $asks 회째 · 장기 작업 종료 통지</div></div>
 CARD
       fi
     done
-    echo "</body></html>"
+    cat <<HTMLTAIL
+<a class="cta" href="/mq">▶ aoa-mq 관리 페이지에서 처리하기</a>
+<script>
+ // file:// 로 직접 열었을 때만 절대 URL 보정. http 로 열렸으면 열린 host 를 그대로 쓴다.
+ if(location.protocol==='file:')document.querySelectorAll('.cta').forEach(function(a){a.href='http://127.0.0.1:${PORT}/mq';});
+</script>
+</body></html>
+HTMLTAIL
   } > "$FORM"
 
   # 채널 에스컬레이션 (prj3#Issue267 후속): 배치 내 최대 ask_count 기준 시간당 1단계씩 승급
@@ -518,10 +508,13 @@ CARD
       SUMMARY=$(echo "$pending_items" | while read -r mf; do
         "$JQ" -r '"• [\(.status)] \(.message)"' "$mf" 2>/dev/null; done | head -10)
       FORM_URL="http://$ADVERTISE_HOST:$PORT/htm-doc?path=$FORM"
+      # 처리 링크를 먼저 준다 (prj3#Issue493) — 폼은 스냅샷일 뿐이고 버튼은 /mq 에만 있다.
+      MQ_URL="http://$ADVERTISE_HOST:$PORT/mq"
       openclaw message send --channel discord --account "$DC_ACCOUNT" --target "$DC_TARGET" \
         --message "📬 aoa-mq 확인 요청 ($NOW_ISO)
 $SUMMARY
-응답 폼: $FORM_URL" >/dev/null 2>&1 \
+처리: $MQ_URL
+이 회차 스냅샷: $FORM_URL" >/dev/null 2>&1 \
         && log "Discord 질의 통지 발송: $DC_TARGET" \
         || log "Discord 질의 통지 실패 (openclaw send 에러) — 폼 렌더는 정상"
     else

@@ -34,7 +34,8 @@ ___pm 소유 단일 daemon (`~/_git/___pm/services/hub/server.py`). port 9876. �
     - **정지(이번 부팅 한정)**: `launchctl bootout gui/$(id -u)/kr.finfra.htm-server` → job unload (respawn 차단). 단 SIGTERM 무시한 listener 가 남을 수 있어 **포트 listener 강제 kill 을 병행**한다.
     - **정지(영구·재부팅 후에도)**: `bootout` + `launchctl disable gui/$(id -u)/kr.finfra.htm-server` (`/hub disable`).
     - **기동**: `launchctl enable …` + `launchctl bootstrap gui/$(id -u) <plist>`.
-* `/tmp/___pm/claude-htm-server/pid` pidfile 은 launchd 관리 인스턴스에선 신뢰할 수 없다 (보조 지표). 항상 **포트 9876 의 실제 listener + launchd job 상태**를 1차 기준으로 삼는다.
+* `$HUB_STATE_DIR/pid` pidfile 은 launchd 관리 인스턴스에선 신뢰할 수 없다 (보조 지표). 항상 **포트 9876 의 실제 listener + launchd job 상태**를 1차 기준으로 삼는다.
+* ⚠️ **경로를 손으로 적지 않는다 (Issue446)** — `/tmp/___pm/…` 리터럴은 Windows 에서 셸(MSYS: `%TEMP%`)과 python(`C:\tmp`)이 **다른 폴더**로 읽는다. 모든 셸 블록은 [`sh/fpm-hub-paths.sh`](sh/fpm-hub-paths.sh) 를 source 해 `$HUB_STATE_DIR` 을 얻는다 — 판정 단일 지점은 hub 의 python 이다.
 * plist 부재(다른 머신·수동 기동) 시에는 nohup fallback 으로 동작한다.
 
 # 서브커맨드
@@ -44,6 +45,8 @@ ___pm 소유 단일 daemon (`~/_git/___pm/services/hub/server.py`). port 9876. �
 이미 listen 중이면 안내 후 종료. 아니면 launchd job 이 있으면 bootstrap, 없으면 nohup fallback.
 
 ```bash
+# Issue446: 상태 경로는 셸이 계산하지 않는다 — hub 의 python 에게 물어본다
+. "${FPM_BASE:?FPM_BASE 미설정 — sh/fpm.sh 부트스트랩 필요}/sh/fpm-hub-paths.sh" || exit 1
 PORT=${HTM_SERVER_PORT:-9876}
 UID_=$(id -u); JOB="gui/$UID_/kr.finfra.htm-server"
 PLIST="$HOME/Library/LaunchAgents/kr.finfra.htm-server.plist"
@@ -57,9 +60,9 @@ elif [ -f "$PLIST" ]; then
   echo "hub bootstrapped (launchd)"
   curl -s http://127.0.0.1:"$PORT"/healthz
 else
-  mkdir -p /tmp/___pm/claude-htm-server
+  mkdir -p "$HUB_STATE_DIR"
   nohup python3 ~/_git/___pm/services/hub/server.py \
-    >/tmp/___pm/claude-htm-server/stdout.log 2>&1 &
+    >"$HUB_STATE_DIR"/stdout.log 2>&1 &
   sleep 1
   echo "hub started (nohup fallback)"
   curl -s http://127.0.0.1:"$PORT"/healthz
@@ -71,15 +74,17 @@ port override(`HTM_SERVER_PORT=NNNN /hub start`)는 **nohup fallback 에만** �
 ## status
 
 ```bash
+# Issue446: 상태 경로는 셸이 계산하지 않는다 — hub 의 python 에게 물어본다
+. "${FPM_BASE:?FPM_BASE 미설정 — sh/fpm.sh 부트스트랩 필요}/sh/fpm-hub-paths.sh" || exit 1
 echo "--- pid:"
-cat /tmp/___pm/claude-htm-server/pid 2>/dev/null || echo "(no pid file)"
+cat "$HUB_STATE_DIR"/pid 2>/dev/null || echo "(no pid file)"
 echo "--- healthz:"
 curl -s http://127.0.0.1:9876/healthz 2>&1
 echo
 echo "--- registered projects:"
-cat /tmp/___pm/claude-htm-server/tokens.json 2>/dev/null | python3 -m json.tool 2>/dev/null || echo "(none)"
+cat "$HUB_STATE_DIR"/tokens.json 2>/dev/null | python3 -m json.tool 2>/dev/null || echo "(none)"
 echo "--- recent log:"
-tail -20 /tmp/___pm/claude-htm-server/server.log 2>/dev/null
+tail -20 "$HUB_STATE_DIR"/server.log 2>/dev/null
 ```
 
 ## stop
@@ -89,9 +94,11 @@ tail -20 /tmp/___pm/claude-htm-server/server.log 2>/dev/null
 > ⚠️ launchd KeepAlive 때문에 **단순 `kill` 은 즉시 respawn → no-op**. 반드시 `launchctl bootout` 으로 job 을 내린 뒤 포트 listener 를 정리해야 실제로 멈춘다 (2026-06-28 검증).
 
 ```bash
+# Issue446: 상태 경로는 셸이 계산하지 않는다 — hub 의 python 에게 물어본다
+. "${FPM_BASE:?FPM_BASE 미설정 — sh/fpm.sh 부트스트랩 필요}/sh/fpm-hub-paths.sh" || exit 1
 PORT=${HTM_SERVER_PORT:-9876}
 UID_=$(id -u); JOB="gui/$UID_/kr.finfra.htm-server"
-PIDFILE=/tmp/___pm/claude-htm-server/pid
+PIDFILE="$HUB_STATE_DIR"/pid
 
 # 1. launchd 관리 job 이면 bootout (KeepAlive respawn 차단)
 if launchctl print "$JOB" >/dev/null 2>&1; then
@@ -124,11 +131,13 @@ launchd job 을 `bootout` 으로 내리고 포트를 완전히 비운 뒤 다시
 > ⚠️ launchd 관리 인스턴스에서 **nohup 단독 restart 는 금물**. KeepAlive 가 구 프로세스를 respawn 하여 9876 을 계속 점유 → 새 인스턴스가 bind 실패로 즉사 → 코드 변경 미반영. 반드시 `bootout` 으로 job 을 먼저 내려야 한다. pidfile 은 launchd 관리 시 신뢰 불가 → **포트 9876 실제 listener + launchctl job 상태**를 1차 기준으로 삼는다 (2026-06-28).
 
 ```bash
+# Issue446: 상태 경로는 셸이 계산하지 않는다 — hub 의 python 에게 물어본다
+. "${FPM_BASE:?FPM_BASE 미설정 — sh/fpm.sh 부트스트랩 필요}/sh/fpm-hub-paths.sh" || exit 1
 PORT=${HTM_SERVER_PORT:-9876}
 UID_=$(id -u); JOB="gui/$UID_/kr.finfra.htm-server"
 PLIST="$HOME/Library/LaunchAgents/kr.finfra.htm-server.plist"
-PIDFILE=/tmp/___pm/claude-htm-server/pid
-mkdir -p /tmp/___pm/claude-htm-server
+PIDFILE="$HUB_STATE_DIR"/pid
+mkdir -p "$HUB_STATE_DIR"
 
 # 1. launchd job unload (KeepAlive respawn 차단)
 launchctl bootout "$JOB" 2>/dev/null
@@ -148,7 +157,7 @@ if [ -f "$PLIST" ]; then
   launchctl bootstrap "gui/$UID_" "$PLIST" 2>/dev/null
 else
   nohup python3 ~/_git/___pm/services/hub/server.py \
-    >/tmp/___pm/claude-htm-server/stdout.log 2>&1 &
+    >"$HUB_STATE_DIR"/stdout.log 2>&1 &
 fi
 sleep 2
 echo "--- healthz (uptime 이 한 자릿수면 재시작 성공) ---"
@@ -160,13 +169,15 @@ curl -s http://127.0.0.1:"$PORT"/healthz
 서버를 **영구 정지**한다 — 재부팅 후에도 자동 기동되지 않는다. `bootout`(현재 인스턴스 unload) + `launchctl disable`(향후 load 차단) + 잔존 listener 강제 kill. ⚠️ **시스템 전역** — 모든 프로젝트·세션의 hub 렌더·Q&A 폼 회수·dashboard(Mode C)가 정지한다.
 
 ```bash
+# Issue446: 상태 경로는 셸이 계산하지 않는다 — hub 의 python 에게 물어본다
+. "${FPM_BASE:?FPM_BASE 미설정 — sh/fpm.sh 부트스트랩 필요}/sh/fpm-hub-paths.sh" || exit 1
 PORT=${HTM_SERVER_PORT:-9876}
 UID_=$(id -u); JOB="gui/$UID_/kr.finfra.htm-server"
 launchctl bootout "$JOB" 2>/dev/null    # 현재 인스턴스 unload
 launchctl disable "$JOB" 2>/dev/null    # 재부팅·향후 load 영구 차단
 PIDS=$(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | awk 'NR>1{print $2}' | sort -u)
 for P in $PIDS; do kill -9 "$P" 2>/dev/null; done
-rm -f /tmp/___pm/claude-htm-server/pid
+rm -f "$HUB_STATE_DIR"/pid
 sleep 1
 DOWN=$(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | awk 'NR>1{print $2}' | sort -u)
 if [ -z "$DOWN" ]; then
@@ -201,7 +212,9 @@ curl -s http://127.0.0.1:"$PORT"/healthz
 서버 엔드포인트: `POST /clear-done` (127.0.0.1 trust, 토큰 불요). hub UI 우측 상단 `🧹 Clear done/stopped` 버튼과 동일 동작.
 
 ```bash
-PID=$(cat /tmp/___pm/claude-htm-server/pid 2>/dev/null)
+# Issue446: 상태 경로는 셸이 계산하지 않는다 — hub 의 python 에게 물어본다
+. "${FPM_BASE:?FPM_BASE 미설정 — sh/fpm.sh 부트스트랩 필요}/sh/fpm-hub-paths.sh" || exit 1
+PID=$(cat "$HUB_STATE_DIR"/pid 2>/dev/null)
 if [ -z "$PID" ] || ! kill -0 "$PID" 2>/dev/null; then
   echo "hub not running — start with /hub start first"
   exit 1
@@ -246,14 +259,16 @@ curl -sS -X POST "http://127.0.0.1:9876/token-rotate?$Q" | python3 -m json.tool
 **full wipe + restart**. 순서:
 1. `POST /clear-done` — done dashboard 파일 (.dash.* + 동반 .html) 삭제 (서버 실행 중에 수행)
 2. 서버 stop
-3. `/tmp/___pm/claude-htm-server/tokens.json`, `sessions.json`, `opened-*` 마커 삭제
+3. `$HUB_STATE_DIR/tokens.json`, `sessions.json`, `opened-*` 마커 삭제
 4. 서버 start
 
 clear + restart 의 상위 집합. tokens/sessions 메모리 상태까지 완전 초기화.
 
 ```bash
+# Issue446: 상태 경로는 셸이 계산하지 않는다 — hub 의 python 에게 물어본다
+. "${FPM_BASE:?FPM_BASE 미설정 — sh/fpm.sh 부트스트랩 필요}/sh/fpm-hub-paths.sh" || exit 1
 # 1. done dash 정리 (서버 살아있을 때만 의미 있음)
-PID=$(cat /tmp/___pm/claude-htm-server/pid 2>/dev/null)
+PID=$(cat "$HUB_STATE_DIR"/pid 2>/dev/null)
 if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
   curl -sS -X POST http://127.0.0.1:9876/clear-done | python3 -m json.tool
 fi
@@ -261,17 +276,17 @@ fi
 # 2. stop
 [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null && kill "$PID" && sleep 1
 [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null && kill -9 "$PID"
-rm -f /tmp/___pm/claude-htm-server/pid
+rm -f "$HUB_STATE_DIR"/pid
 
 # 3. state wipe
-rm -f /tmp/___pm/claude-htm-server/tokens.json
-rm -f /tmp/___pm/claude-htm-server/sessions.json
-rm -f /tmp/___pm/claude-htm-server/opened-*
+rm -f "$HUB_STATE_DIR"/tokens.json
+rm -f "$HUB_STATE_DIR"/sessions.json
+rm -f "$HUB_STATE_DIR"/opened-*
 
 # 4. start
-mkdir -p /tmp/___pm/claude-htm-server
+mkdir -p "$HUB_STATE_DIR"
 nohup python3 ~/_git/___pm/services/hub/server.py \
-  >/tmp/___pm/claude-htm-server/stdout.log 2>&1 &
+  >"$HUB_STATE_DIR"/stdout.log 2>&1 &
 sleep 1
 curl -s http://127.0.0.1:9876/healthz
 ```

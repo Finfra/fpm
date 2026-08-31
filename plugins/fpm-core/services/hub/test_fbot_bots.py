@@ -294,7 +294,11 @@ def main():
     #     소스에서 뽑아 박제한다: 문구만 바뀌고 판정이 뒤집히는 종류의 회귀를 잡는다.
     hub_dir = os.path.dirname(os.path.abspath(server.__file__))
     src = open(os.path.join(hub_dir, "server.py"), encoding="utf-8").read()
-    check("퇴근 칩이 botChip 으로 배선", "rest.map(botChip)" in src)
+    # prj1#Issue449: 퇴근 칩은 최근(24h) 만 남기고 나머지는 "외 N개" 로 접는다 —
+    #   무한 성장 방지(실측 워커 11칩). 전체는 조직도 ?all=1 이 담당.
+    check("최근 퇴근만 botChip 으로 배선", "recent.map(botChip)" in src)
+    check("오래된 퇴근은 외 N개 링크로 접힘", "bot-rest-more" in src and "bots.restMore" in src)
+    check("접힘 링크는 조직도 전체 뷰로", "&all=1" in src)
     check("24h 상수 존재", "const BOT_RECENT_SEC = 86400;" in src)
     check("경계 비교 방향(24h 미만 = 최근)",
           "const fresh = (Date.now() / 1000 - ts) < BOT_RECENT_SEC;" in src)
@@ -302,6 +306,69 @@ def main():
     check("기록 없으면 시각을 지어내지 않는다", "if (!ts) return" in src)
     check("최근 퇴근 칩 전용 클래스", ".bot-chip-recent" in src)
     for key in ("bots.chipCheckout", "bots.chipLastSeen"):
+        check(f"{key} 사용", key in src)
+        for loc in ("ko", "en"):
+            lp = os.path.join(os.path.dirname(os.path.dirname(hub_dir)),
+                              "data", "locales", f"{loc}.json")
+            check(f"{key} 번역 존재({loc})", key in open(lp, encoding="utf-8").read())
+
+    # 15) Issue445 — 지시 관계와 봇↔세션 연결. **표시가 없으면 사용자가 세션 UUID 를
+    #     들고 와 되물어야 한다**(2026-08-31 실발생). 두 축을 함께 박제한다:
+    #     ⓐ 결속 컬럼이 있는 DB 에서 값이 실린다  ⓑ 없는 DB 에서도 죽지 않는다.
+    BIND_SCHEMA = SCHEMA.replace(
+        "lease_expires INT, created_at INT NOT NULL) STRICT;",
+        "lease_expires INT, created_at INT NOT NULL,"
+        " tmux_target TEXT, session_id TEXT) STRICT;")
+    with tempfile.TemporaryDirectory() as tmp:
+        aoa = os.path.join(tmp, "aoa")
+        os.makedirs(aoa)
+        now = int(time.time())
+        con = sqlite3.connect(os.path.join(aoa, "registry.db"))
+        con.executescript(BIND_SCHEMA)
+        con.executemany(
+            "INSERT INTO bot VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                # 지시자는 **퇴근** 상태다 — 활성 봇만으로 호칭 맵을 만들면 여기서 깨진다.
+                ("b-boss", "나래(중역)", "exec", "checkout", "정식",
+                 None, "", None, "", None, None, now, "pm:w.0", "sid-boss"),
+                ("b-kid", "리서치 워커", "research", "working", "수습",
+                 None, "", 3, "조사", "b-boss", now + 600, now, None, "sid-kid"),
+                # 부모가 레지스트리에서 사라진 봇 — 이름을 **지어내면 안 된다**.
+                ("b-lost", "고아 워커", "qa", "working", "수습",
+                 None, "", None, "", "b-gone", now + 600, now, None, None),
+            ])
+        con.commit()
+        con.close()
+        server.FBOT_AOA_DIR = aoa
+        server.FBOT_ROOT = tmp
+        by = {b["bot_id"]: b for b in server._collect_bots()["bots"]}
+        check("지시자 호칭 resolve (ID 원문 아님)", by["b-kid"]["parent_title"] == "나래(중역)")
+        check("지시자가 퇴근해도 호칭이 남는다", by["b-kid"]["parent_bot_id"] == "b-boss")
+        check("session_id 편입", by["b-kid"]["session_id"] == "sid-kid")
+        check("tmux_target 없으면 빈 값(NULL 을 문자열로 오염시키지 않는다)",
+              by["b-kid"]["tmux_target"] == "")
+        check("부모가 명부에 없으면 호칭을 지어내지 않는다", by["b-lost"]["parent_title"] == "")
+        # 조직도도 같은 값을 봐야 한다 — 홈과 조직도가 다른 사실을 말하면 안 된다.
+        nodes = {n["bot_id"]: n for n in server._fbot_org_data()["nodes"]}
+        check("조직도 노드에도 결속이 실린다", nodes["b-boss"]["tmux_target"] == "pm:w.0")
+        check("조직도 노드 session_id 일치", nodes["b-kid"]["session_id"] == "sid-kid")
+
+    # 15-b) 결속 컬럼이 **없는** 구 스키마(prj3#Issue448 마이그레이션 전). 명시 SELECT 가
+    #       `no such column` 으로 죽으면 핀봇 섹션이 통째로 오류가 된다 — 그 회귀를 막는다.
+    with tempfile.TemporaryDirectory() as tmp:
+        build_fixture(tmp)
+        r = server._collect_bots()
+        check("구 스키마에서도 오류 없음", "bots_error" not in r and r["bots_active"] == 4)
+        check("구 스키마 결속 값은 빈 문자열",
+              all(b["session_id"] == "" and b["tmux_target"] == "" for b in r["bots"]))
+        check("구 스키마에서도 조직도가 선다", server._fbot_org_data()["error"] == "")
+
+    # 15-c) 클라이언트 배선 — 표면 노출과 상세 resolve 를 소스에서 박제한다.
+    check("카드 표면에 지시자·세션 칩 줄", 'class="bot-meta"' in src)
+    check("지시자는 호칭 우선 ID 폴백", "b.parent_title || b.parent_bot_id" in src)
+    check("상세의 parent 는 이름(ID) 병기", "${b.parent_title} (${b.parent_bot_id})" in src)
+    for key in ("bots.parentBy", "bots.parentTitle", "bots.sessionTitle",
+                "bots.d.session", "bots.d.pane"):
         check(f"{key} 사용", key in src)
         for loc in ("ko", "en"):
             lp = os.path.join(os.path.dirname(os.path.dirname(hub_dir)),

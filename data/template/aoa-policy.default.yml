@@ -1,0 +1,67 @@
+# aoa 정책 템플릿 (정본) — 소비자 머신의 `$AOA_MEMORY_DIR/policy.yml` 초기값
+#
+# 이 파일은 **배포되는 템플릿**이고, 실제로 읽히는 것은 복사본인 policy.yml 이다.
+#   생성: sh/fbot-bootstrap.sh — 부재면 통째 복사, 있으면 **없는 키만** 말미에 덧붙인다(비파괴)
+#   ⚠️ 여기를 고쳐도 이미 policy.yml 을 가진 머신의 기존 값은 바뀌지 않는다. 새 키만 전파된다
+#
+# 형식은 `key: value` 평면만 — 의존성 0 파서다(mcp/aoa-memory/policy.py · hooks/fbot-*.py).
+#   중첩·리스트·앵커를 쓰면 조용히 무시된다. 주석은 `#` 이후 전부.
+#
+# 값의 성격이 두 갈래다 — 섞지 말 것:
+#   • aoa-memory 계열 → 파일이 없어도 policy.py 의 DEFAULTS 로 **fail-soft**
+#   • fbot_* 계열     → hooks/fbot-hr-gate.py·fbot-taskmgr.py 가 **fail-loud**. 키가 없으면 게이트가 죽는다
+#   즉 fbot_* 를 지우면 핀봇 채용·배분이 통째로 멈춘다. 값을 조정하되 키는 남긴다
+#
+# 설계 SSOT: _doc_arch/fbot-arch.md · prj5 _doc_arch/aoa-memory-design.md "데이터 에이징 정책"
+
+# ── 에이징 ── 삭제되는 것은 파생·이력·회전 데이터뿐이다. 지식(instinct·evolved)은 영속.
+observation_retention_days: 90   # raw 관측. ⚠️ watermark 성공 게이트 통과분만 대상
+job_retention_days: 30           # 종결(done/failed) job 행
+
+# ── consolidation ──
+learn_consolidation_enabled: true
+consolidation_strategy: stats    # stats = 무과금 집계(기본) | llm = Batch API 요약
+                                 # ⚠️ llm 로 바꾸기 전에 ① ANTHROPIC_API_KEY ② 아래 model ③ 아래 예산
+                                 #    셋을 먼저 채운다. 하나라도 비면 배치가 fail-loud 로 정지하고
+                                 #    30분마다 실패 잡이 누적된다
+
+consolidation_model:             # 🔴 빈 값이 정상 — 모델 ID 를 코드·템플릿에 박지 않는다(prj3#Issue415).
+                                 #    llm 전략을 켤 때 **그 시점의 현행 모델**을 운영자가 여기에만 적는다
+
+# 🔴 월 토큰 상한 — 0 이면 llm 전략이 fail-loud 로 멈춘다. 한도 없는 배치는 실행하지 않는다(prj5#Issue70).
+#    0 은 "아직 정하지 않았다" 는 뜻이지 "무제한" 이 아니다. llm 을 켤 때 반드시 함께 정한다.
+#    산정은 각자의 관측량으로 — 참고(jm4 실측): 최근월 4.3M 토큰 → 상한 15M(백로그 1회 소화분 포함)
+consolidation_budget_monthly_tokens: 0
+
+# 늦은 도착 유예 — 이 기간이 지난 구간만 watermark 를 전진시킨다.
+# 근거(2026-08-16 실측 · 관측 41,534행): p50 0.0일 · p95 3.9일 · p99 29.5일 · 최대 87.9일
+consolidation_grace_days: 90
+
+# ── job 실행 (설계 §실행 토폴로지) ── 둘 다 초기값이며 실측 재산정 대상이다.
+lease_ttl_secs: 300
+job_max_attempts: 2              # 재시도 상한 1회 = attempts 2
+
+# ── fbot 공급측 (채용 게이트 — hooks/fbot-hr-gate.py POLICY_KEYS) ─────────
+# 판정 단일 지점은 게이트다 — 이 수치를 코드·타 스크립트에 복제하지 않는다. 셋 다 보수적 초기값.
+fbot_spawn_depth_limit: 3        # 스폰 깊이 상한 — fpm-do PM_DO_DEPTH_LIMIT(3) 선례 승계
+fbot_concurrent_limit: 5         # 동시 상주 상한 — state != checkout 인 봇 수
+fbot_spawn_budget_monthly: 30    # 월 채용 상한 — 원장 registry.kv ns=fbot:budget key=YYYY-MM
+                                 #   (신규 월 키 생성이 곧 리셋 — 별도 리셋 잡 없음)
+
+# ── fbot 수요측 (배분 가드 — hooks/fbot-taskmgr.py POLICY_KEYS) ───────────
+fbot_dispatch_monthly_limit: 30     # 월 배분 상한 — ns=fbot:dispatch
+fbot_dispatch_concurrent_limit: 3   # 동시 배분 상한 — registry.job kind=fbot_dispatch 활성 건수
+
+# ── fbot 수명주기 (승격·아카이브 — hooks/fbot-hr-gate.py LIFECYCLE_KEYS) ──
+# 배치 상한과 **키 축이 분리**돼 있어 한쪽이 없어도 다른 쪽은 동작한다.
+fbot_promote_job_min: 10         # 수습→정식 승격 요건 — 봇 귀속 job 완료 건수(kind=fbot_* 만 집계)
+fbot_promote_fail_pct_max: 20    # 승격 실패율 상한(%) — 분모는 done+failed. cancelled 제외
+fbot_idle_archive_days: 14       # ⓐ 유휴 아카이브 — 마지막 job 이후 이 일수 경과 시 휴직 후보
+fbot_unused_archive_days: 5      # ⓑ 조기회수 — 배치 후 job 0건 (제약: ⓑ < ⓐ)
+
+# ── fbot 보고 (중역핀봇 발신) ─────────────────────────────────────────────
+# Discord 발신 대상 id(채널 id 또는 `user:<id>`). openclaw `--target` 에 그대로 전달된다.
+# ⚠️ 개인 환경값이라 **공백이 기본**이다 — 비어 있으면 Discord 단이 성립하지 않고
+#   폴백 사다리(hub → 파일)로 내려간다. 조용한 사망이 아니라 전환 사유를 로그로 남긴다.
+#   실제 채널 id 기입은 외부 발신 개시라 사용자 결정 사항이다.
+fbot_report_discord_target:

@@ -38,11 +38,26 @@ import time
 # 경로 계약 (Issue450) — env 가 정식 설정. 미설정 시 제품 중립 기본(prj5 미클론 머신 대응).
 DEFAULT_AOA_DIR = os.path.join(os.path.expanduser("~"), ".claude", "data", "aoa")
 
-# role 카탈로그 SSOT — fbot-icon 스킬 소유 (fbot-arch.md §조직 role 등록 절차 ⑤단계)
-CATALOG_PATH = os.path.join(os.path.expanduser("~"), ".claude", "data", "fbot", "icons", "catalog.yml")
+# role 카탈로그 SSOT — fbot-icon 스킬 소유 (fbot-arch.md §조직 role 등록 절차 ⑤단계).
+#   env 는 테스트 픽스처 주입용(fbot-recruit.py 와 동일 규약).
+CATALOG_PATH = os.environ.get("FBOT_CATALOG") or os.path.join(
+    os.path.expanduser("~"), ".claude", "data", "fbot", "icons", "catalog.yml")
 
 # policy.yml 필수 키 3종 (T1 편입분) — 로드 실패 시 판정 ② fail-loud
 POLICY_KEYS = ("fbot_spawn_depth_limit", "fbot_concurrent_limit", "fbot_spawn_budget_monthly")
+
+# 수명주기 판정 키 (prj3#Issue481) — 배치(hire) 판정과 **축이 다르므로 따로 로드**한다.
+#   같은 튜플에 넣으면 키 하나가 없을 때 배치까지 죽는다(가용성 축 분리).
+LIFECYCLE_KEYS = ("fbot_promote_job_min", "fbot_promote_fail_pct_max",
+                  "fbot_idle_archive_days", "fbot_unused_archive_days")
+
+# 봇 귀속 job kind — `job` 테이블은 봇 전용이 아니다. aoa-memory 배치(`consolidation`,
+#   owner=`jm4/12345`)가 수백 건 섞여 있어, kind 로 거르지 않으면 승격 판정이 통째로 오염된다.
+FBOT_JOB_KINDS = ("fbot_session", "fbot_dispatch", "fbot_report")
+
+# 상비 role — 값의 SSOT 는 fbot-state.py CORE_ROLES 다(여기는 후보 스캔용 사본).
+#   ⚠️ 값을 바꿀 일이 생기면 그쪽을 먼저 고친다. 판정 자체는 기록 계층이 최종 방어한다.
+CORE_ROLES = ("exec", "recruit", "hr", "taskmgr")
 
 BUDGET_NS = "fbot:budget"  # registry.kv 예산 원장 네임스페이스 (registry budget/budget_monthly 재사용 금지 — 계약 T2)
 
@@ -81,8 +96,12 @@ def registry_path() -> str:
     return p
 
 
-def load_policy() -> dict:
-    """aoa policy.yml 의 fbot_* 3키 로드. 파일·키 부재 = 판정 ② fail-loud (기본값 폴백 금지)."""
+def load_policy(keys=POLICY_KEYS) -> dict:
+    """aoa policy.yml 의 fbot_* 키 로드. 파일·키 부재 = 판정 ② fail-loud (기본값 폴백 금지).
+
+    `keys` 로 검증 대상을 갈아끼운다 — 배치(POLICY_KEYS)와 수명주기(LIFECYCLE_KEYS)는
+    축이 달라, 한쪽 키 부재가 다른 쪽 기능을 죽이면 안 된다.
+    """
     path = os.path.join(aoa_dir(), "policy.yml")
     if not os.path.exists(path):
         raise Reject(2, f"policy 로드 실패 — 파일 없음: {path}")
@@ -92,24 +111,80 @@ def load_policy() -> dict:
             m = re.match(r"^(fbot_[a-z_]+):\s*(\d+)", line)
             if m:
                 pol[m.group(1)] = int(m.group(2))
-    missing = [k for k in POLICY_KEYS if k not in pol]
+    missing = [k for k in keys if k not in pol]
     if missing:
         raise Reject(2, f"policy 로드 실패 — {path} 에 키 부재: {', '.join(missing)}")
-    bad = [k for k in POLICY_KEYS if pol[k] <= 0]
+    bad = [k for k in keys if pol[k] <= 0]
     if bad:
         raise Reject(2, f"policy 값 불량(양수 아님): {', '.join(f'{k}={pol[k]}' for k in bad)}")
     return pol
 
 
+# ── 수명주기 판정 (prj3#Issue481) ────────────────────────────────────────────
+
+def bot_job_stats(con: sqlite3.Connection, bot_id: str) -> dict:
+    """봇 귀속 job 통계 — 완료·실패 건수와 마지막 활동 시각.
+
+    ⚠️ `cancelled` 는 완료에도 실패에도 넣지 않는다. 계약 §배분 상태가 *"취소는 성과가
+       아니다"* 로 done 과 분리했듯, 워커가 일했다고 주장하지 않는 사건이라 실패율의
+       분모에도 들어가면 안 된다 — 넣으면 취소가 많은 봇이 무능한 봇으로 오판된다.
+    """
+    ph = ",".join("?" * len(FBOT_JOB_KINDS))
+    row = con.execute(
+        f"SELECT SUM(status = 'done') AS done, SUM(status = 'failed') AS failed,"
+        f" COUNT(*) AS total, MAX(created_at) AS last_at"
+        f" FROM job WHERE owner = ? AND kind IN ({ph})",
+        (bot_id, *FBOT_JOB_KINDS),
+    ).fetchone()
+    done = row["done"] or 0
+    failed = row["failed"] or 0
+    judged = done + failed
+    return {
+        "done": done, "failed": failed, "total": row["total"] or 0,
+        "last_at": row["last_at"],
+        "fail_pct": round(failed * 100 / judged, 1) if judged else 0.0,
+    }
+
+
+def judge_promote(stats: dict, pol: dict) -> tuple:
+    """승격 요건 판정 (s2 확정: job N건 + 실패율 <M%). 사람 승인은 호출자 몫."""
+    reasons = []
+    if stats["done"] < pol["fbot_promote_job_min"]:
+        reasons.append(f"완료 {stats['done']}건 < 요건 {pol['fbot_promote_job_min']}건")
+    if stats["fail_pct"] >= pol["fbot_promote_fail_pct_max"]:
+        reasons.append(f"실패율 {stats['fail_pct']}% ≥ 상한 {pol['fbot_promote_fail_pct_max']}%")
+    return (not reasons), reasons
+
+
+def judge_archive(bot: sqlite3.Row, stats: dict, pol: dict, now: int) -> tuple:
+    """유휴 판정 2축 — ⓐ 마지막 job 이후 유휴 ⓑ 배치 후 무활동 조기회수.
+
+    ⓑ 가 없으면 **한 번도 일하지 않은 봇은 판정 자체가 성립하지 않는다** — "마지막 job"
+    이 없기 때문이다. 실측(2026-08-31)에서 13봇 중 8봇이 그 상태였다.
+    """
+    if stats["last_at"]:
+        days = (now - stats["last_at"]) // 86400
+        limit = pol["fbot_idle_archive_days"]
+        return (days >= limit), f"마지막 활동 {days}일 전 (임계 {limit}일)", days
+    days = (now - bot["created_at"]) // 86400
+    limit = pol["fbot_unused_archive_days"]
+    return (days >= limit), f"배치 {days}일 경과·활동 0건 (조기회수 임계 {limit}일)", days
+
+
 def load_catalog() -> dict:
-    """role 카탈로그 로드 — {role: base_color}. 카탈로그 부재는 fail-loud (판정 ① 의 전제)."""
+    """role 카탈로그 로드 — {role: base_color}. 카탈로그 부재는 fail-loud (판정 ① 의 전제).
+
+    `status=archived` 인 role 은 **로드 자체에서 뺀다** (prj3#Issue480 직능 아카이브) —
+    판정 ① 이 "미등재" 와 동일하게 거부하게 되어, 아카이브 검사 지점이 따로 늘지 않는다.
+    부활(revive)은 status 제거 1줄이므로 이 함수는 상태를 캐시하지 않는다.
+    """
     if not os.path.exists(CATALOG_PATH):
         raise FbotError(f"role 카탈로그 없음: {CATALOG_PATH} — fbot-icon 스킬로 초기화하라")
     roles = {}
     with open(CATALOG_PATH, encoding="utf-8") as fh:
         for line in fh:
             m = re.match(r"^([a-z][a-z0-9_-]*):\s*shape=\S+\s+base=(#[0-9A-Fa-f]{6})", line)
-            if m:
+            if m and "status=archived" not in line:
                 roles[m.group(1)] = m.group(2)
     if not roles:
         raise FbotError(f"role 카탈로그 파싱 결과 0건: {CATALOG_PATH} — 형식 확인")
@@ -319,6 +394,176 @@ def cmd_hire(args) -> int:
     return 0
 
 
+def move_career(bot_id: str, to: str, reason: str) -> None:
+    """기록은 state.py 가 한다 — `hire`→`register` 와 동일한 판정/기록 분리.
+
+    상비 role 보호·전이 규칙은 그쪽 계층이 소유하므로, 게이트가 판정을 통과시켜도
+    기록 계층이 거부하면 그대로 실패한다(이중 방어).
+    """
+    r = subprocess.run(
+        [sys.executable, STATE_PY, "career", "--bot-id", bot_id, "--to", to, "--reason", reason],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        raise Reject(2, f"career 전이 실패({bot_id} → {to}): {(r.stderr or r.stdout).strip()}")
+
+
+def lifecycle_candidates(con, pol, now, mode):
+    """수명주기 후보 스캔 — 상비봇과 이미 해고된 봇은 대상에서 뺀다.
+
+    ⚠️ 상비 판정은 **role + parent 없음**이다. role 만 보면 `fbot-exec-issue331`
+       (role=exec, parent=fbot-taskmgr) 같은 이슈 워커까지 영구 보호되어, 정작 정리
+       대상인 워커가 상비봇 행세를 하며 남는다(2026-08-31 실측으로 좁힌 조건).
+       최종 방어는 기록 계층(fbot-state.py `is_core_bot`)이 한 번 더 한다 — 여기는
+       후보에서 빼는 것이고 거기는 전이 자체를 막는 것이라 역할이 다르다.
+    """
+    out = []
+    for bot in con.execute("SELECT * FROM bot ORDER BY created_at").fetchall():
+        if bot["role"] in CORE_ROLES and bot["parent_bot_id"] is None:
+            continue  # 계약 §조직 — 상비봇 영구 제외
+        if bot["career"] == "terminated":
+            continue
+        stats = bot_job_stats(con, bot["bot_id"])
+        if mode == "promote":
+            if bot["career"] != "probation":
+                continue
+            ok, why = judge_promote(stats, pol)
+            if ok:
+                out.append({"bot_id": bot["bot_id"], "title": bot["title"], "role": bot["role"],
+                            "career": bot["career"], "stats": stats, "verdict": "승격 가능"})
+            continue
+        if mode == "archive":
+            if bot["career"] == "leave":
+                continue
+            hit, why, days = judge_archive(bot, stats, pol, now)
+            if hit:
+                out.append({"bot_id": bot["bot_id"], "title": bot["title"], "role": bot["role"],
+                            "career": bot["career"], "idle_days": days, "reason": why,
+                            "stats": stats})
+            continue
+        if mode == "fire":
+            # 해고 후보는 **휴직자 중에서만** 나온다 — 되돌릴 수 있는 단계를 반드시 거친다
+            if bot["career"] != "leave":
+                continue
+            hit, why, days = judge_archive(bot, stats, pol, now)
+            if hit:
+                out.append({"bot_id": bot["bot_id"], "title": bot["title"], "role": bot["role"],
+                            "career": bot["career"], "idle_days": days, "reason": why,
+                            "stats": stats})
+    return out
+
+
+def cmd_wake(args) -> int:
+    """`hire` 의 형제 (prj3#Issue498 ⓐ) — 있는 개체를 깨운다.
+
+    hire=없는 개체를 만든다(카탈로그+예산+등록) / wake=있는 개체의 세션을 다시 띄운다.
+    새 개체가 아니므로 예산 차감 없음 — 판정은 **동시 상주 상한 하나**다(폭주 가드는 유지).
+    세션 기동 집행은 dispatch 와 같은 계약으로 **호출자(fpm-do/Agent) 몫** — 여기는 판정과
+    복귀 기록까지. `checkout` 은 부재가 아니라 cold(대기)다 — 계약 §상태 기계 ⓓ.
+    """
+    pol = load_policy()
+    con = connect()
+    try:
+        row = con.execute("SELECT * FROM bot WHERE bot_id = ?", (args.bot,)).fetchone()
+        if row is None:
+            raise Reject(1, f"미등록 봇: {args.bot} — 없는 개체는 wake 가 아니라 hire 다")
+        if row["career"] == "terminated":
+            raise Reject(1, f"해고된 봇: {args.bot} — 종결 상태는 깨우지 않는다(재채용은 hire)")
+        if row["state"] != "checkout":
+            raise Reject(1, f"이미 활동 중: {args.bot} (state={row['state']}) — wake 불요, SendMessage 로 직접")
+        judge_concurrent(con, pol)   # ⑤ 동시 상주 상한 — hire 와 같은 판정 재사용
+    finally:
+        con.close()
+    # career 휴직이면 복귀(계약 §career 전이: 재출근=자동 복귀·승인 불요) — 기록은 state.py 경유
+    revived = False
+    if row["career"] == "leave":
+        r = subprocess.run([sys.executable, STATE_PY, "career", "--bot-id", args.bot,
+                            "--to", "active", "--reason", "wake 재출근 자동 복귀 (Issue498)"],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            raise Reject(2, f"휴직 복귀 실패: {(r.stderr or r.stdout).strip()}")
+        revived = True
+    emit({"ok": True, "action": "wake", "verdict": "허가", "bot_id": args.bot,
+          "career_revived": revived,
+          "next": "세션 기동은 호출자 몫(fpm-do/Agent — dispatch 와 동일 계약). "
+                  "기동되면 SessionStart 훅이 checkin 을 기록한다"})
+    return 0
+
+
+def cmd_promote(args) -> int:
+    """승격 판정 — 기본은 후보 목록만. `--apply --bot-id` 가 사람 승인 1회를 대신한다."""
+    pol = load_policy(LIFECYCLE_KEYS)
+    now = int(time.time())
+    con = connect()
+    try:
+        cands = lifecycle_candidates(con, pol, now, "promote")
+    finally:
+        con.close()
+    if not args.apply:
+        emit({"ok": True, "action": "promote", "mode": "판정만", "count": len(cands),
+              "candidates": cands,
+              "next": "집행은 --apply --bot-id ID (자동 승격 금지 — s2 확정 '사람 승인 1회')"})
+        return 0
+    if not args.bot_id:
+        raise Reject(2, "--apply 는 --bot-id 를 함께 요구한다 — 일괄 승격은 승인 게이트를 무력화한다")
+    if args.bot_id not in [c["bot_id"] for c in cands]:
+        raise Reject(1, f"승격 요건 미충족·대상 아님: {args.bot_id}")
+    move_career(args.bot_id, "active", args.reason or "승격 요건 충족(사람 승인)")
+    emit({"ok": True, "action": "promote", "mode": "집행", "bot_id": args.bot_id})
+    return 0
+
+
+def cmd_archive(args) -> int:
+    """유휴 개체 아카이브(휴직). 되돌리기가 값싸므로 `--apply` 는 일괄 집행을 허용한다."""
+    pol = load_policy(LIFECYCLE_KEYS)
+    now = int(time.time())
+    con = connect()
+    try:
+        cands = lifecycle_candidates(con, pol, now, "archive")
+    finally:
+        con.close()
+    if not args.apply:
+        emit({"ok": True, "action": "archive", "mode": "dry-run", "count": len(cands),
+              "candidates": cands, "next": "집행은 --apply (휴직은 복귀 1회로 되돌아온다)"})
+        return 0
+    moved = []
+    for c in cands:
+        if args.bot_id and c["bot_id"] != args.bot_id:
+            continue
+        move_career(c["bot_id"], "leave", c["reason"])
+        moved.append(c["bot_id"])
+    emit({"ok": True, "action": "archive", "mode": "집행", "count": len(moved), "moved": moved})
+    return 0
+
+
+def cmd_fire(args) -> int:
+    """해고 — **제안이 기본**이고 집행은 개체 단위 명시 + 사유 필수.
+
+    휴직자만 후보가 된다(§수명주기: leave → terminated 만 허용). 되돌릴 수 없는 전이라
+    일괄 집행 경로를 두지 않는다 — 그것이 이 커맨드와 archive 의 유일한 설계 차이다.
+    """
+    pol = load_policy(LIFECYCLE_KEYS)
+    now = int(time.time())
+    con = connect()
+    try:
+        cands = lifecycle_candidates(con, pol, now, "fire")
+    finally:
+        con.close()
+    if not args.apply:
+        emit({"ok": True, "action": "fire", "mode": "제안", "count": len(cands),
+              "candidates": cands,
+              "next": "집행은 --apply --bot-id ID --reason '사유' (되돌릴 수 없다 — 사람 승인 필수)"})
+        return 0
+    if not args.bot_id or not args.reason:
+        raise Reject(2, "--apply 는 --bot-id 와 --reason 을 함께 요구한다 (비가역 전이)")
+    if args.bot_id not in [c["bot_id"] for c in cands]:
+        raise Reject(1, f"해고 후보 아님: {args.bot_id} — 휴직 상태 + 유휴 임계 경과만 대상이다")
+    move_career(args.bot_id, "terminated", args.reason)
+    emit({"ok": True, "action": "fire", "mode": "집행", "bot_id": args.bot_id,
+          "reason": args.reason, "note": "기록은 영속 — homunculus 학습 원천 유지(계약 §수명주기)"})
+    return 0
+
+
 def cmd_check(args) -> int:
     """일반 위임(비봇) 게이트 — 판정 ④ 깊이 + ⑤ 동시 상주만. 등록·차감 없음."""
     parent = None if args.parent == "-" else args.parent
@@ -394,6 +639,21 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--kind", default="delegate")
     sp.add_argument("--depth", type=int, default=None, help="레지스트리 밖 체인 깊이 신고값(fpm-do PM_DO_DEPTH) — 역추적과 max 취합")
     sp.set_defaults(func=cmd_check)
+
+    sp = sub.add_parser("wake", help="퇴근(cold) 봇 재기동 판정 — hire 의 형제, 상주 상한만 확인 (Issue498)")
+    sp.add_argument("--bot", required=True)
+    sp.set_defaults(func=cmd_wake)
+
+    for name, helptext, fn in (
+        ("promote", "승격 판정 — 기본 후보 목록, --apply --bot-id 로 집행(사람 승인 1회)", cmd_promote),
+        ("archive", "유휴 개체 아카이브(휴직) — 기본 dry-run, --apply 로 집행", cmd_archive),
+        ("fire", "해고 제안 — 휴직자만 후보. --apply 는 --bot-id+--reason 필수(비가역)", cmd_fire),
+    ):
+        sp = sub.add_parser(name, help=helptext)
+        sp.add_argument("--apply", action="store_true", help="판정만 하지 않고 집행")
+        sp.add_argument("--bot-id", default=None)
+        sp.add_argument("--reason", default=None, help="전이 사유(감사 기록용)")
+        sp.set_defaults(func=fn)
 
     sp = sub.add_parser("status", help="이번 달 예산 소진·동시 상주·limit")
     sp.set_defaults(func=cmd_status)

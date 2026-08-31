@@ -42,14 +42,20 @@ date: 2026-05-19
 이미 실행 중이면 PID 안내 후 종료. 새로 띄울 경우:
 
 ```bash
-mkdir -p /tmp/___pm/claude-htm-server
+# prj3#Issue497: AOA_MEMORY_DIR 없이 뜨면 핀봇이 통째로 안 보인다("핀봇이 아직 없습니다") —
+#   셸 env 우선, 없으면 settings.local.json env 절에서 해소(값을 문서에 복제하지 않는다)
+[ -z "${AOA_MEMORY_DIR:-}" ] && AOA_MEMORY_DIR="$(python3 -c 'import json,os;p=os.path.expanduser("~/.claude/settings.local.json");d=json.load(open(p)) if os.path.exists(p) else {};print(d.get("env",{}).get("AOA_MEMORY_DIR",""))' 2>/dev/null)"
+[ -n "${AOA_MEMORY_DIR:-}" ] && export AOA_MEMORY_DIR
+# prj3#Issue499 규칙: /tmp 리터럴 금지(Windows 셸↔python 분열) — 같은 계산식으로 해소
+TMPNS=$(python3 -c 'import os,tempfile;print(os.path.join(os.environ.get("FPM_TMP_ROOT") or ("/tmp" if os.name=="posix" else tempfile.gettempdir()),"___pm"))')
+mkdir -p "$TMPNS/claude-htm-server"
 nohup python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/_git/___pm}/services/hub/server.py" \
-  >/tmp/___pm/claude-htm-server/stdout.log 2>&1 &
+  >"$TMPNS/claude-htm-server/stdout.log" 2>&1 &
 sleep 1
 curl -s http://127.0.0.1:9876/healthz
 ```
 
-성공 시: healthz JSON 출력 + PID 안내. 실패 시: `/tmp/___pm/claude-htm-server/server.log` 참조.
+성공 시: healthz JSON 출력 + PID 안내. 실패 시: `$TMPNS/claude-htm-server/server.log` 참조.
 
 port override: `HTM_SERVER_PORT=NNNN /board-server start`
 

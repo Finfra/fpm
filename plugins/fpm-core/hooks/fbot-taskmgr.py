@@ -65,6 +65,11 @@ ISSUE_MAP_PY = os.path.join(
     os.path.expanduser("~"), ".claude", "skills", "issue-map", "build_issue_map.py"
 )
 
+# prj 해소 resolver (prj3#Issue479) — 계약 §기존 규약 접점 "projects map".
+#   ⚠️ 파일 값 = projects 디렉토리 **절대경로 그 자체**다. 추가 `/projects` join 금지
+#      (fpm MCP `_base_dir()` 와 동일 구현 — 개인 경로 하드코딩 폴백도 금지).
+PM_BASE_FILE = os.path.join(os.path.expanduser("~"), ".info", "__pmBasePath.txt")
+
 # HR 게이트 (스폰 판정 단일 SSOT — 판정 로직 중복 구현 금지)
 TASKMGR_ID = "fbot-taskmgr"
 HR_GATE_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fbot-hr-gate.py")
@@ -141,6 +146,54 @@ def load_policy() -> dict:
     if bad:
         raise FbotError(f"policy 값 불량(양수 아님): {', '.join(f'{k}={pol[k]}' for k in bad)}")
     return pol
+
+
+def pm_projects_dir():
+    """projects/ 디렉토리 절대경로. 부재·빈 값은 None (fpm MCP `_base_dir()` 동형)."""
+    if not os.path.isfile(PM_BASE_FILE):
+        return None
+    with open(PM_BASE_FILE, encoding="utf-8") as fh:
+        raw = fh.read().strip()
+    return os.path.expanduser(os.path.expandvars(raw)) if raw else None
+
+
+def resolve_prj(cwd: str, base=None):
+    """cwd → 등록 prj 번호. **최장 prefix 일치**(hub `_resolve_project_root` 와 동일 정책).
+
+    왜 fail-loud 가 아닌가 — `prj` 는 주 담당을 가리키는 **메타 필드**이고, 미등록 경로에서의
+    배분은 정당하다(s3 실증이 `/tmp/fbot-s3/demo-prj` 에서 돈다). 해소 실패로 배분 자체를
+    막으면 가용성 손실이 더 크다. 대신 **조용히 넘어가지 않는다** — resolver 부재는 stderr
+    경고를 낸다(설정 사고와 정상적인 미등록을 구분하기 위함).
+
+    ⚠️ **한계**: `bot.prj` 가 INT 라 `42a` 같은 **비숫자 prj 는 담을 수 없다.** 그런 경로는
+       상위 숫자 프로젝트로 귀속된다(실측: `42a`=Projects_deck 은 `42`=m2slide 의 하위라
+       42 로 잡힌다). 정확한 귀속이 필요해지면 스키마 축 확장이 선행 조건이다.
+    """
+    if base is None:
+        base = pm_projects_dir()
+    if not base or not os.path.isdir(base):
+        print(f"[fbot-taskmgr] ⚠️ prj resolver 없음({PM_BASE_FILE}) — prj 미기록으로 진행",
+              file=sys.stderr)
+        return None
+
+    target = os.path.realpath(os.path.expanduser(cwd))
+    best_num, best_len = None, -1
+    for name in os.listdir(base):
+        if not name.isdigit():
+            continue  # `42a`·README 등 — INT 컬럼에 못 담는다(위 한계 주석)
+        entry = os.path.join(base, name)
+        if not os.path.isfile(entry):
+            continue
+        with open(entry, encoding="utf-8") as fh:
+            raw = fh.read().strip()
+        if not raw:
+            continue
+        root = os.path.realpath(os.path.expanduser(raw))
+        # 경계 검사 — 순수 문자열 prefix 로 보면 `…/m2slide-other` 가 `…/m2slide` 에 걸린다
+        if target == root or target.startswith(root.rstrip(os.sep) + os.sep):
+            if len(root) > best_len:
+                best_num, best_len = int(name), len(root)
+    return best_num
 
 
 def load_workflow(cwd: str) -> str:
@@ -602,6 +655,9 @@ def cmd_dispatch(args) -> int:
     """
     cwd = os.path.abspath(os.path.expanduser(args.cwd))
     workflow = load_workflow(cwd)
+    # prj 해소 (prj3#Issue479) — cwd 는 workflow 만 해소하고 prj 는 버려지고 있었다. 그 결과
+    #   전 봇이 prj=NULL 로 등록되어 "어느 prj 담당인가" 를 물을 수 없었다(2026-08-31 실측 13/13).
+    prj = resolve_prj(cwd)
     pol = load_policy()
     con = connect()
     try:
@@ -611,21 +667,23 @@ def cmd_dispatch(args) -> int:
 
     if args.dry_run:
         emit({"ok": True, "action": "dispatch", "mode": "dry-run", "verdict": "허가",
-              "issue": args.issue, "role": args.role, "workflow": workflow, "guard": guard})
+              "issue": args.issue, "role": args.role, "workflow": workflow,
+              "prj": prj, "guard": guard})
         return 0
 
-    # ② HR 게이트 경유 채용 — 게이트 없는 스폰 경로 금지 (계약 §호출 경계)
+    # ② HR 게이트 경유 배치 — 게이트 없는 스폰 경로 금지 (계약 §호출 경계)
     bot_id = args.bot_id or "fbot-{}-{}".format(
         args.role, re.sub(r"[^a-z0-9-]", "", args.issue.lower()) or uuid.uuid4().hex[:6]
     )
-    hire = subprocess.run(
-        [sys.executable, HR_GATE_PY, "hire",
-         "--bot-id", bot_id, "--role", args.role,
-         "--title", f"{args.issue} 담당 {args.role} 워커",
-         # 체인 기록 필수 — parent 는 깊이 판정(④)의 데이터 원천 (계약 F1 parent_bot_id)
-         "--parent", TASKMGR_ID],
-        capture_output=True, text=True,
-    )
+    hire_cmd = [sys.executable, HR_GATE_PY, "hire",
+                "--bot-id", bot_id, "--role", args.role,
+                "--title", f"{args.issue} 담당 {args.role} 워커",
+                # 체인 기록 필수 — parent 는 깊이 판정(④)의 데이터 원천 (계약 F1 parent_bot_id)
+                "--parent", TASKMGR_ID]
+    if prj is not None:
+        # 미해소는 --prj 를 아예 넘기지 않는다 — 게이트가 "전역봇(NULL)" 로 해석한다
+        hire_cmd += ["--prj", str(prj)]
+    hire = subprocess.run(hire_cmd, capture_output=True, text=True)
     if hire.returncode != 0:
         raise FbotError(
             f"HR 게이트 채용 거부·실패(exit {hire.returncode}) — 배분 중단: "
@@ -635,8 +693,10 @@ def cmd_dispatch(args) -> int:
     # ③ 배분 기록 — bot_id=fbot-taskmgr 귀속(F4) + 원장 증분(BEGIN IMMEDIATE 재검증)
     now = int(time.time())
     job_id = f"fbotdisp-{now}-{uuid.uuid4().hex[:8]}"
+    # 계약 §레지스트리 스키마: "어느 prj 일을 했나" 는 **작업 기록**이 답한다 — bot.prj(주 담당)와
+    #   축이 다르므로 배분 원장에도 남긴다(겸임은 기록 레벨에서 표현된다).
     payload = {"issue": args.issue, "role": args.role, "worker_bot_id": bot_id,
-               "cwd": cwd, "workflow": workflow}
+               "cwd": cwd, "workflow": workflow, "prj": prj}
     con = connect()
     try:
         # 명시 롤백 없이 구성한다 — 상한 재검증 실패는 쓰기 전에 빈 COMMIT 으로 빠지고,
@@ -697,7 +757,7 @@ def cmd_watch(args) -> int:
             if bot is None:
                 reason = f"워커 봇 레코드 부재: {wid}"
             elif bot["state"] == "checkout":
-                reason = f"워커 봇 퇴근 상태(작업 미완): {wid}"
+                reason = f"워커 봇 퇴근 상태(작업 미완): {wid} — 조치: fbot-hr-gate.py wake --bot {wid} (Issue498)"
             elif bot["lease_expires"] is not None and bot["lease_expires"] < now:
                 reason = f"워커 봇 lease 만료({now - bot['lease_expires']}초 경과): {wid}"
             else:

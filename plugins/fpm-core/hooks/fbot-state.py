@@ -21,6 +21,7 @@ import re
 import sqlite3
 import sys
 import time
+import uuid
 
 # ── 계약 상수 ────────────────────────────────────────────────────────────────
 
@@ -38,6 +39,35 @@ STATE_LABEL = {
 
 # 경력 축 (계약 §봇 수명주기 — career 필드가 SSOT)
 CAREERS = ("probation", "active", "leave", "terminated")
+
+CAREER_LABEL = {
+    "probation": "수습", "active": "정식", "leave": "휴직", "terminated": "해고",
+}
+
+# career 전이표 (prj3#Issue481) — 계약 §수명주기 "career 전이" 표 그대로.
+#   probation → active   : 승격(job 10건·실패율<20%·사람 승인 1회 — 판정은 HR 게이트)
+#   probation → leave    : 수습도 휴직 대상이다. 승격 요건을 못 채운 봇이 오히려 유휴일
+#                          확률이 높아, active 를 선행 조건으로 묶으면 정작 정리해야 할
+#                          개체가 영구 잔류한다
+#   active    → leave    : 아카이브
+#   leave     → active   : 재출근 복귀 (매뉴얼·레코드가 잔존하므로 재채용이 아니다)
+#   leave     → terminated: 해고. **휴직 경유가 필수**다 — 되돌릴 수 없는 전이 앞에
+#                          되돌릴 수 있는 단계를 반드시 하나 두어, 사람 승인 게이트가
+#                          건너뛰어지지 않게 한다
+#   terminated → (없음)  : 종료 상태. 기록은 영속이나 상태는 되돌리지 않는다
+CAREER_TRANSITIONS = {
+    "probation": {"active", "leave"},
+    "active": {"leave"},
+    "leave": {"active", "terminated"},
+    "terminated": set(),
+}
+
+# 상비 role (계약 §조직 4종) — 상비봇 판정의 **필요조건**. 본 파일이 이 값의 SSOT 다.
+#   ⚠️ role 만으로는 부족하다 — `is_core_bot()` 이 `parent_bot_id IS NULL` 까지 본다.
+#      `fbot-exec-issue331`(role=exec, parent=fbot-taskmgr)은 이슈 워커이지 중역이 아니다.
+#   ⚠️ 이 가드는 **기록 계층**에 둔다. "이 봇은 해고 불가" 는 상황 판정이 아니라 불변
+#      제약이므로, 판정 계층(HR 게이트)을 우회한 어떤 경로로 와도 막혀야 한다.
+CORE_ROLES = ("exec", "recruit", "hr", "taskmgr")
 
 # 전이표 — 계약 §상태 기계의 진입·이탈 조건을 그대로 옮긴 것.
 #   checkin  → working   : 매뉴얼+봇별 상태 로드 완료
@@ -74,7 +104,25 @@ BIND_COLUMNS = (
     ("tmux_target", "TEXT"),   # 'session:window.pane' — tmux 실행 형태에서만 채워진다
     ("session_id", "TEXT"),    # claude 세션 id — Agent 형태 포함 모든 실행 형태에서 취득 가능
     ("last_task", "TEXT"),     # 퇴근 시 current_task 를 옮겨 담는다(Issue441)
+    ("form", "TEXT"),          # 실행 형태 'session'|'agent' — NULL 은 미판정(Issue495)
 )
+
+# ── 실행 형태 (Issue495) ────────────────────────────────────────────────────
+#   왜 축이 필요한가 — 같은 "봇" 이라도 **수명주기 훅이 다르다**. 세션 형태는
+#   SessionStart→heartbeat→Stop 3단이 다 있지만, Agent 형태는 부모 세션 안에서 돌아
+#   `FBOT_ID` env 가 구조적으로 없다(fbot-heartbeat.sh Issue442/448 주석 참조).
+#   그 차이를 기록해 두지 않으면 진단이 "왜 이 봇만 기록이 없나" 를 매번 다시 캔다.
+#
+#   ⚠️ **완료 판정을 이 축으로 분기시키지 않는다.** 분기는 판정을 둘로 쪼개 한쪽만
+#   낡게 만든다. 대신 Agent 형태에도 퇴근 훅(fbot-agent-done.sh)을 주어 **같은 증거**
+#   (`fbot_session` job)를 남기게 했다 — 형태가 달라도 판정은 하나다.
+FORMS = ("session", "agent")
+
+# reap 이 강제 종결한 배분의 status (Issue495 ⓒ).
+#   `done`(완료 확인) 도 `cancelled`(무의미해져 접음) 도 아닌 **완료 여부 미상**이다.
+#   소비처는 ('open','blocked') 밖을 전부 종결로 보므로 새 값이 안전하다.
+#   (`DISPATCH_KIND` 는 배분 원장 절에서 정의한다 — 함수 실행 시점엔 이미 바인딩돼 있다.)
+DISPATCH_REAPED = "reaped"
 
 # 경로 계약 (Issue450) — env 가 정식 설정. 미설정 시 제품 중립 기본(prj5 미클론 머신 대응).
 DEFAULT_AOA_DIR = os.path.join(os.path.expanduser("~"), ".claude", "data", "aoa")
@@ -141,6 +189,18 @@ def ensure_schema(con: sqlite3.Connection) -> None:
             con.execute(f"ALTER TABLE bot ADD COLUMN {name} {typ}")
 
 
+def _dispatch_worker(payload) -> str:
+    """배분 원장 payload 에서 워커 bot_id 를 꺼낸다 (Issue495).
+
+    payload 는 JSON TEXT 이고 손상돼 있을 수 있다. 파싱 실패를 예외로 올리면 reap 전체가
+    죽어 **정상 봇의 회수까지 막힌다** — 그 한 건만 대상에서 빠지는 것이 맞다.
+    """
+    try:
+        return (json.loads(payload or "{}") or {}).get("worker_bot_id") or ""
+    except (ValueError, TypeError):
+        return ""
+
+
 def fetch_bot(con: sqlite3.Connection, bot_id: str) -> sqlite3.Row:
     row = con.execute("SELECT * FROM bot WHERE bot_id = ?", (bot_id,)).fetchone()
     if row is None:
@@ -176,6 +236,84 @@ def validate_career(career: str) -> str:
     return career
 
 
+def validate_form(form):
+    """실행 형태 검증 (Issue495). None 은 통과 — **미판정과 오값은 다르다.**
+
+    기존 행은 전부 NULL 이고 그것이 정상이다(마이그레이션 시점엔 형태를 소급할 수 없다).
+    오값만 거부해 새로 들어오는 값의 품질을 지킨다.
+    """
+    if form is None:
+        return None
+    if form not in FORMS:
+        raise FbotError(
+            f"미정의 form 값: {form!r} — 허용값 {', '.join(FORMS)}"
+        )
+    return form
+
+
+def is_core_role(role: str) -> bool:
+    """상비 role 계열 여부 (계약 §조직 4종). ⚠️ 이것만으로 상비봇을 판정하지 말 것 —
+    `is_core_bot()` 을 쓴다. role 은 필요조건일 뿐이다."""
+    return role in CORE_ROLES
+
+
+def is_core_bot(row) -> bool:
+    """상비봇 판정 = **상비 role + parent 없음** (2026-08-31 실측으로 좁힌 조건).
+
+    role 만 보면 과보호가 된다 — `fbot-exec-issue331`(role=exec, parent=fbot-taskmgr)은
+    작업핀봇이 배치한 **이슈 워커**이지 중역핀봇이 아니다. 그런 개체까지 영구 보호하면
+    정작 정리 대상인 워커가 상비봇 행세를 하며 남는다.
+
+    상비봇은 조직 골격이라 누가 채용한 것이 아니다 — 그래서 `parent_bot_id IS NULL` 이
+    구조적 표지가 된다(실측: 상비 3종만 parent 가 비어 있다).
+    """
+    return is_core_role(row["role"]) and row["parent_bot_id"] is None
+
+
+def validate_career_transition(cur: str, to: str) -> str:
+    """career 전이 규칙 검증 (prj3#Issue481). 불법이면 허용 목록과 함께 fail-loud."""
+    validate_career(cur)
+    validate_career(to)
+    if cur == to:
+        raise FbotError(
+            f"동일 career 전이 금지: {CAREER_LABEL[cur]}({cur}) — 상태 변화가 없다"
+        )
+    if to not in CAREER_TRANSITIONS[cur]:
+        allowed = ", ".join(sorted(CAREER_TRANSITIONS[cur])) or "(없음 — 종료 상태)"
+        raise FbotError(
+            f"불법 career 전이 거부: {CAREER_LABEL[cur]}({cur}) → {CAREER_LABEL[to]}({to}). "
+            f"{CAREER_LABEL[cur]} 에서 허용된 전이: {allowed}"
+        )
+    return to
+
+
+def apply_career(con, bot_id: str, to: str) -> dict:
+    """career 전이를 레코드에 반영한다 — **규칙 검증만, 판정 없음**.
+
+    승격 요건(job 건수·실패율)·유휴 임계 판정은 HR 게이트 소관이다. 여기는 `register`
+    가 `hire` 에 대해 갖는 관계와 동형인 기록 계층이다.
+
+    휴직은 lease 를 해제한다 — 계약 §수명주기 *"비활성 보존 — 레코드 유지·lease 해제"*.
+    lease 를 남기면 reap 스캔이 계속 그 봇을 후보로 잡아 휴직이 무의미해진다.
+    """
+    row = fetch_bot(con, bot_id)
+    cur = row["career"]
+    if is_core_bot(row) and to in ("leave", "terminated"):
+        raise FbotError(
+            f"상비봇 보호: {bot_id}(role={row['role']}, parent 없음) 는 {CAREER_LABEL[to]} 대상이 아니다 "
+            f"— 조직 골격이라 비면 판정 주체가 사라진다 (계약 §조직). "
+            f"상비 role: {', '.join(CORE_ROLES)}"
+        )
+    validate_career_transition(cur, to)
+    if to == "leave":
+        con.execute(
+            "UPDATE bot SET career = ?, lease_expires = NULL WHERE bot_id = ?", (to, bot_id))
+    else:
+        con.execute("UPDATE bot SET career = ? WHERE bot_id = ?", (to, bot_id))
+    return {"from": cur, "from_label": CAREER_LABEL[cur],
+            "to": to, "to_label": CAREER_LABEL[to]}
+
+
 def validate_transition(cur: str, to: str) -> None:
     """계약 전이표에 없는 전이는 거부한다(fail-loud)."""
     validate_state(to)
@@ -199,6 +337,7 @@ def validate_transition(cur: str, to: str) -> None:
 def cmd_register(args) -> int:
     """봇 레코드 생성. 멱등이 아니다 — 이미 있으면 갱신하지 않고 명시 실패한다."""
     validate_career(args.career)
+    form = validate_form(getattr(args, "form", None))
     now = int(time.time())
     con = connect()
     try:
@@ -212,8 +351,8 @@ def cmd_register(args) -> int:
         con.execute(
             "INSERT INTO bot (bot_id, title, role, state, career, icon, color, prj,"
             " current_task, parent_bot_id, lease_expires, created_at,"
-            " tmux_target, session_id)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " tmux_target, session_id, form)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 args.bot_id, args.title, args.role,
                 "checkin",                       # 신규 봇은 출근중으로 시작한다(계약 진입 조건)
@@ -224,6 +363,10 @@ def cmd_register(args) -> int:
                 # Issue448 — 스폰 시점에 알 수 있으면 기록, 모르면 NULL(= 판정 불가).
                 #   Agent 형태는 여기서 항상 NULL 이고 그것이 정상이다.
                 args.tmux_target, args.session_id,
+                # Issue495 — 등록 시점엔 대개 형태를 모른다(집행이 fpm-do 인지 Agent 인지는
+                #   배분 뒤에 갈린다). 그래서 기본은 NULL 이고, 실제로 Agent 로 뜨면
+                #   PreToolUse(`Agent`) 훅의 bind 가 그때 'agent' 로 확정한다.
+                form,
             ),
         )
         con.execute("COMMIT")
@@ -270,6 +413,31 @@ def cmd_transition(args) -> int:
             "to": to, "to_label": STATE_LABEL[to],
             "reason": TRANSITION_REASON.get((cur, to), "세션 종료·lease 만료 등"),
             "lease_expires": now + ttl, "lease_ttl_secs": ttl,
+            "bot": row_to_dict(fetch_bot(con, args.bot_id)),
+        })
+    finally:
+        con.close()
+    return 0
+
+
+def cmd_career(args) -> int:
+    """career 전이 (prj3#Issue481) — 규칙 검증 후 반영. **판정은 하지 않는다.**
+
+    승격 요건·유휴 임계 판정은 HR 게이트가 소유한다(`register`↔`hire` 와 동형 분리).
+    사람이 직접 부르는 경로이기도 하므로 상비 role 보호는 여기서 건다.
+    """
+    con = connect()
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        try:
+            moved = apply_career(con, args.bot_id, validate_career(args.to))
+        except Exception:
+            con.execute("ROLLBACK")
+            raise
+        con.execute("COMMIT")
+        emit({
+            "ok": True, "action": "career", **moved,
+            "reason": args.reason or "(사유 미기재)",
             "bot": row_to_dict(fetch_bot(con, args.bot_id)),
         })
     finally:
@@ -338,6 +506,18 @@ def cmd_reap(args) -> int:
 
     계약 §상태 기계: 크래시한 봇이 "작업중"으로 영원히 남지 않게 lease 만료 시 강제 퇴근한다.
     회수 경로는 s1 plan 확정대로 maint(s0 상주 스케줄러)가 본 서브커맨드를 부른다.
+
+    **배분 원장 동반 종결 (Issue495 ⓒ)** — 봇만 퇴근시키고 원장을 두면 그 배분은 영원히
+    `open` 이다. 완료 판정(`fbot-taskmgr.py detect_completions`)은 퇴근한 봇의 **작업 기록**
+    을 요구하는데, 강제 퇴근된 봇은 정의상 그 기록을 남길 기회가 없었기 때문이다. 그렇게
+    남은 `open` 은 ① 조직도에 "유실 배분" 경보로 영구 노출되고 ② 작업핀봇의 WIP 슬롯
+    (실측 상한 3)을 영구 점유해 **조직 전체의 배분을 막는다**. 2026-08-31 실측이 정확히
+    그것이었다 — Agent 형태 3건이 슬롯 3칸을 다 먹어 새 배분이 전부 거절됐다.
+
+    ⚠️ 종결 status 는 `done` 이 아니라 `reaped` 다. 여기서 아는 것은 *"lease 가 만료됐다"*
+    뿐이고 *"일이 끝났다"* 가 아니다. 완료로 적으면 원장이 거짓말을 한다. 정상 완료는
+    퇴근 훅이 남긴 기록으로 sweep 이 `done` 을 찍는 것이 정규 경로이며, 이쪽은 그 경로가
+    실패했을 때만 도는 **마지막 방벽**이다.
     """
     now = int(time.time())
     con = connect()
@@ -352,7 +532,17 @@ def cmd_reap(args) -> int:
         for e in expired:
             e["overdue_secs"] = now - int(e["lease_expires"])
 
-        reaped = []
+        # 각 만료 봇이 물고 있는 미종결 배분 — dry-run 에서도 보여야 판단이 된다.
+        for e in expired:
+            e["open_dispatches"] = [
+                r["id"] for r in con.execute(
+                    "SELECT id, payload FROM job WHERE kind = ? AND status = 'open'",
+                    (DISPATCH_KIND,),
+                ).fetchall()
+                if _dispatch_worker(r["payload"]) == e["bot_id"]
+            ]
+
+        reaped, closed = [], []
         if args.apply and expired:
             con.execute("BEGIN IMMEDIATE")
             try:
@@ -365,6 +555,19 @@ def cmd_reap(args) -> int:
                         " WHERE bot_id = ?", (e["bot_id"],)
                     )
                     reaped.append(e["bot_id"])
+                    for job_id in e["open_dispatches"]:
+                        con.execute(
+                            "UPDATE job SET status = ?, result = ?"
+                            " WHERE id = ? AND status = 'open'",
+                            (DISPATCH_REAPED,
+                             json.dumps({"verdict": "reaped",
+                                         "reason": "워커 lease 만료로 강제 퇴근 — 완료 여부 미상",
+                                         "worker_bot_id": e["bot_id"],
+                                         "overdue_secs": e["overdue_secs"],
+                                         "reaped_at": now}, ensure_ascii=False),
+                             job_id),
+                        )
+                        closed.append(job_id)
             except Exception:
                 con.execute("ROLLBACK")
                 raise
@@ -377,6 +580,7 @@ def cmd_reap(args) -> int:
             "expired_count": len(expired),
             "expired": expired,
             "reaped": reaped,
+            "dispatches_closed": closed,
         })
     finally:
         con.close()
@@ -467,6 +671,7 @@ def cmd_bind(args) -> int:
     형태는 tmux pane 이 원래 없기 때문이다. NULL 은 "미등록" 이 아니라 "pane 기반
     판정 불가" 다 — 소비처는 이 둘을 반드시 구분해야 한다.
     """
+    form = validate_form(getattr(args, "form", None))
     con = connect()
     try:
         con.execute("BEGIN IMMEDIATE")
@@ -477,6 +682,10 @@ def cmd_bind(args) -> int:
                 sets.append("tmux_target = ?"); params.append(args.tmux_target or None)
             if args.session_id is not None:
                 sets.append("session_id = ?"); params.append(args.session_id or None)
+            if form is not None:
+                # Issue495 — 결속 시점이 형태를 **확정**하는 자리다. PreToolUse(`Agent`)
+                #   훅이 부르면 그 봇은 Agent 형태이고, 그 사실은 여기서만 알 수 있다.
+                sets.append("form = ?"); params.append(form)
             if sets:
                 params.append(args.bot_id)
                 con.execute(f"UPDATE bot SET {', '.join(sets)} WHERE bot_id = ?", params)
@@ -555,6 +764,114 @@ def cmd_whois(args) -> int:
     return 0
 
 
+# ── 배분 원장 사후 기록 (prj1#Issue445) ─────────────────────────────────────
+
+DISPATCH_KIND = "fbot_dispatch"       # 조직도·작업핀봇이 공용하는 배분 원장 kind
+# 사후 기록 전용 status — `open` 을 쓰지 않는 근거는 cmd_dispatch_record 참조.
+DISPATCH_LOGGED = "logged"
+
+
+def norm_issue(text: str) -> str:
+    """이슈 표기 정규화 — 중복 기록 판정에만 쓴다.
+
+    같은 배분을 작업핀봇은 ``Issue335`` 로, fpm-do 는 ``prj42#Issue335`` 로 부른다.
+    문자열을 그대로 비교하면 같은 사건이 원장에 두 줄이 되어 "배분 2회" 라는 거짓말이 된다.
+    """
+    t = (text or "").strip().lower()
+    m = re.findall(r"issue[_-]?(\d+(?:_\d+)*)", t)
+    return "issue" + m[-1] if m else t
+
+
+def cmd_dispatch_record(args) -> int:
+    """**이미 집행된** 배분을 원장에 사후 기록한다 (prj1#Issue445).
+
+    왜 필요한가 — 배분 원장(``job.kind='fbot_dispatch'``)에 쓰는 주체가 작업핀봇
+    (`fbot-taskmgr.py dispatch`) **하나뿐**이라, 조직이 가장 많이 쓰는 경로인 ``fpm-do``
+    직접 위임이 원장을 통째로 비켜갔다. 실측(2026-08-31) 배분 엣지 11건이 전부
+    작업핀봇 소유였고 중역핀봇은 **0건** — 조직도에서 중역핀봇 밑이 채용 실선만으로
+    그려진 것이 이 결손의 표면이다.
+
+    🔴 **여기에 상한 판정을 두지 않는다.** 이 명령이 기록하는 것은 *일어날 일* 이 아니라
+    *이미 일어난 일* 이다. 상한으로 거절하면 배분은 그대로 일어나고 **기록만 사라져**
+    지금 고치려는 결손이 그대로 재발한다. 승인 게이트는 스폰 직전(HR 게이트)에 있고,
+    판정 지점은 하나여야 한다.
+
+    🔴 **status 는 ``open`` 이 아니라 ``logged``** 다. ``open`` 은 작업핀봇의 **WIP 슬롯**
+    (`fbot_dispatch_concurrent_limit`, 실측 3)을 점유하는 값이다. 사후 기록이 그 슬롯을
+    먹으면 fpm-do 위임 3건만으로 작업핀봇 배분이 통째로 막힌다 — 관측을 고치려다 조직을
+    세우는 셈이다. ``logged`` 는 조직도(배분 엣지·원장 표)에는 그대로 보이면서 WIP·완료
+    감지 질의(둘 다 ``open`` 필터)에는 걸리지 않는다.
+
+    배분자(owner) 해소 순서 — ① ``--by`` 명시 ② 대상 봇의 ``parent_bot_id``(채용 사슬이
+    곧 지시 계통이다) ③ 둘 다 없으면 **기록하지 않고 정상 종료**. ③ 은 루트 봇이 자기
+    주도로 위임한 경우라 지시 관계 자체가 없다 — 오류가 아니다. 반면 지목된 봇이
+    레지스트리에 없으면(대상·배분자 모두) fail-loud 다.
+    """
+    con = connect()
+    try:
+        worker = fetch_bot(con, args.worker)          # 미등록 대상이면 fail-loud
+        owner = args.by or (worker["parent_bot_id"] or "")
+        if not owner:
+            # ⚠️ 이것은 **오류가 아니다.** 루트 봇(부모 없음)이 자기 주도로 위임한 경우이며,
+            #   그때는 지시 관계 자체가 없다. 출발지 없는 배분 엣지는 조직도에서 거짓말이
+            #   되므로 **기록하지 않는 것**이 정답이고, 정상 상태를 에러로 만들면 호출측
+            #   (fpm-do)이 매 위임마다 무의미한 경고를 뱉는다.
+            emit({"ok": True, "action": "dispatch-record", "recorded": False,
+                  "reason": "배분자 미상 — 대상의 parent_bot_id 가 없고 --by 도 없다"
+                            "(루트 봇의 자기 주도 위임 = 지시 관계 아님)",
+                  "worker_bot_id": args.worker, "issue": args.issue or ""})
+            return 0
+        fetch_bot(con, owner)                          # 유령 배분자는 fail-loud
+        key = norm_issue(args.issue or "")
+
+        # 중복 기록 방지 — 작업핀봇이 배분(open)하고 fpm-do 가 스폰하는 정상 경로에서
+        #   같은 사건이 두 줄이 되면 안 된다. 원장은 작아서(실측 12행) 전건 스캔으로 족하다.
+        for r in con.execute(
+                "SELECT id, payload, status FROM job WHERE kind = ? AND owner = ?"
+                " AND status != 'cancelled'", (DISPATCH_KIND, owner)).fetchall():
+            try:
+                pl = json.loads(r["payload"] or "{}")
+            except (ValueError, TypeError):
+                continue
+            if pl.get("worker_bot_id") == args.worker and norm_issue(pl.get("issue") or "") == key:
+                emit({"ok": True, "action": "dispatch-record", "recorded": False,
+                      "reason": "이미 원장에 있는 배분 — 중복 기록하지 않는다",
+                      "job_id": r["id"], "status": r["status"],
+                      "owner": owner, "worker_bot_id": args.worker, "issue": args.issue or ""})
+                return 0
+
+        now = int(time.time())
+        job_id = f"fbotdisp-{now}-{uuid.uuid4().hex[:8]}"
+        payload = {
+            "issue": args.issue or "", "role": worker["role"] or "",
+            "worker_bot_id": args.worker, "cwd": args.cwd or "",
+            "prj": args.prj,
+            # 어느 경로로 들어온 기록인지 — 원장 소비처가 사후 기록과 정규 배분을
+            #   구분해야 할 때의 유일한 단서다.
+            "source": args.source or "fpm-do",
+        }
+        con.execute("BEGIN IMMEDIATE")
+        try:
+            con.execute(
+                "INSERT INTO job (id, store, kind, status, payload, result, attempts,"
+                " owner, lease_until, blocked_since, created_at)"
+                " VALUES (?,?,?,?,?,NULL,0,?,NULL,NULL,?)",
+                (job_id, "fbot", DISPATCH_KIND, DISPATCH_LOGGED,
+                 json.dumps(payload, ensure_ascii=False), owner, now),
+            )
+        except Exception:
+            con.execute("ROLLBACK")
+            raise
+        con.execute("COMMIT")
+        emit({"ok": True, "action": "dispatch-record", "recorded": True,
+              "job_id": job_id, "status": DISPATCH_LOGGED,
+              "owner": owner, "worker_bot_id": args.worker,
+              "issue": args.issue or "", "payload": payload})
+    finally:
+        con.close()
+    return 0
+
+
 # ── CLI ─────────────────────────────────────────────────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
@@ -575,12 +892,20 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--color", default=None)
     sp.add_argument("--tmux-target", default=None, help="tmux 'session:window.pane' (없으면 NULL)")
     sp.add_argument("--session-id", default=None, help="claude 세션 id (없으면 NULL)")
+    sp.add_argument("--form", default=None, choices=FORMS,
+                    help="실행 형태 (없으면 NULL=미판정 — bind 시점에 확정된다)")
     sp.set_defaults(func=cmd_register)
 
     sp = sub.add_parser("transition", help="전이 규칙 검증 후 상태 변경(+lease 갱신)")
     sp.add_argument("--bot-id", required=True)
     sp.add_argument("--to", required=True, help=f"{'|'.join(STATES)}")
     sp.set_defaults(func=cmd_transition)
+
+    sp = sub.add_parser("career", help="career 전이(수습·정식·휴직·해고) — 규칙 검증만, 판정 없음")
+    sp.add_argument("--bot-id", required=True)
+    sp.add_argument("--to", required=True, help=f"{'|'.join(CAREERS)}")
+    sp.add_argument("--reason", default=None, help="전이 사유(감사 기록용)")
+    sp.set_defaults(func=cmd_career)
 
     sp = sub.add_parser("heartbeat", help="lease_expires = now + TTL 갱신")
     sp.add_argument("--bot-id", default=None)
@@ -605,12 +930,25 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--bot-id", required=True)
     sp.add_argument("--tmux-target", default=None, help="빈 문자열이면 NULL 로 지운다")
     sp.add_argument("--session-id", default=None, help="빈 문자열이면 NULL 로 지운다")
+    sp.add_argument("--form", default=None, choices=FORMS,
+                    help="실행 형태 확정 — Agent 훅이 'agent' 를 찍는다 (Issue495)")
     sp.set_defaults(func=cmd_bind)
 
     sp = sub.add_parser("whois", help="pane·세션 → 봇 역조회(3값 verdict) — Issue448")
     sp.add_argument("--pane", default=None, help="tmux 'session:window.pane'")
     sp.add_argument("--session-id", default=None)
     sp.set_defaults(func=cmd_whois)
+
+    sp = sub.add_parser("dispatch-record",
+                        help="이미 집행된 배분을 원장에 사후 기록 — prj1#Issue445 (상한 미판정)")
+    sp.add_argument("--worker", required=True, help="배분 대상 bot_id(등록돼 있어야 한다)")
+    sp.add_argument("--by", default=None,
+                    help="배분자 bot_id. 생략 시 대상의 parent_bot_id 를 쓴다")
+    sp.add_argument("--issue", default=None, help="이슈 표기(ex: prj42#Issue335)")
+    sp.add_argument("--prj", type=int, default=None, help="배분된 일의 prj 번호")
+    sp.add_argument("--cwd", default=None, help="배분 대상 작업 경로")
+    sp.add_argument("--source", default="fpm-do", help="기록 유입 경로(기본 fpm-do)")
+    sp.set_defaults(func=cmd_dispatch_record)
 
     sp = sub.add_parser("set-task", help="current_task 갱신")
     sp.add_argument("--bot-id", required=True)
