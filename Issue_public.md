@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: 2da63947691cf65c3b9ebe308a4161f76eab61ae31d77cf25a76a6be68724a9f
+source_sha: c20e853bc605e9c8f261275d7ad5bfe462c729aee321a1d114d8abb4c67153d6
 ---
 
 # 안내
@@ -27,6 +27,51 @@ source_sha: 2da63947691cf65c3b9ebe308a4161f76eab61ae31d77cf25a76a6be68724a9f
 직접 편집하지 말 것 — `scripts/fpm-issue-digest.sh` 가 덮어쓴다.
 
 # 이슈 근거
+
+## Issue435: `run-tdd.sh` 가 케이스 0건을 돌고 "전부 통과" 를 낸다 — 검증 체계 자신이 실패를 삼킨다
+* 목적: jpc1 실측에서 `bash tdd/run-tdd.sh` 가 **PASS 0 / FAIL 0 / exit 0 / "✅ 이 머신에서 전부 통과"** 를 출력했다. 한 건도 돌지 않았는데 통과로 보고한 것이다. tdd 는 "조용한 실패" 를 잡으려고 만든 폴더인데 **러너 자신이 그 패턴의 사례**가 됐다
+* depends: Issue436
+* 구현 명세:
+    - ⓐ 케이스 수 파싱을 **fail-loud** 로: 파서가 실패하면 `0` 이 아니라 **즉시 비정상 종료**(rc≠0)한다. "돌 게 없다" 와 "돌 수 없다" 를 구분한다
+    - ⓑ **실행 0건이면 통과가 아니다** — `PASS+FAIL == 0` 이면 성공 문구를 내지 말고 rc=1 로 끝낸다. 파싱을 고쳐도 이 가드는 남긴다(다른 이유로 0건이 되는 경우가 또 생긴다)
+    - ⓒ 인터프리터 해석을 `python3 → python → py -3` 순 폴백으로. `core.yml:python3-available` 이 이미 쓰는 계약과 일치시킨다
+    - ⓓ 검증: 인터프리터를 일부러 못 찾게 한 상태에서 러너를 돌려 **rc≠0** 인지 확인한다
+
+## Issue436: `python3` 가 MS Store 스텁인데 설치기가 그것을 실물로 잡아 MCP 커맨드에 박는다
+* 목적: jpc1 에서 MCP 서버 2종(`aoa-mq`·`aoa-memory`)이 **연결 실패**(`CONNECTION_CLOSED`)한다. 원인은 등록된 커맨드가 `…/WindowsApps/python3` — 실행하면 rc=49 로 죽는 **Microsoft Store 리디렉터 스텁**이다. Windows 는 `python3` 라는 이름이 *"있지만 실행되지 않는"* 상태가 기본값이라, `command -v` 만으로는 판정이 안 된다
+* 구현 명세:
+    - ⓐ 인터프리터 판정을 **존재 → 실행**으로 바꾼다: `"$c" -c 'import sys' >/dev/null 2>&1` 이 통과한 후보만 채택. 후보 순서는 `$FBOT_PYTHON` → `python3` → `python` → `py -3`
+    - ⓑ 채택 근거를 **1줄 로그**로 남긴다(어느 후보가 왜 탈락했는지). 지금은 스텁을 잡은 사실이 출력에 안 보인다
+    - ⓒ MCP 재등록에 **경로 검증 후 갱신** 경로를 둔다 — 등록된 커맨드의 인터프리터가 실행 불가면 "보존" 이 아니라 교체한다. 사용자 커스터마이즈 보존 원칙과 충돌하므로, 교체는 **실행 실패가 확인된 경우로 한정**한다
+    - ⓓ `fbot-bootstrap.sh` 의 실패 메시지에서 FTS5 단정을 걷어낸다 — FTS5 여부를 **실제로 검사한 뒤에만** 그 원인을 말한다
+    - ⓔ 검증: jpc1 에서 `claude mcp list` 가 2종 모두 ✔ Connected 인지 확인
+
+## Issue437: Git Bash 에 `pkill`·`pgrep`·`setsid` 가 없다 — hub 재기동이 Windows 에서 성립하지 않는다
+* 목적: 설계문서 W6 축의 실측 결과. tdd `process-mgmt` 가 **FAIL** 이다. Git Bash(MSYS2)는 procps 를 동봉하지 않아 세 명령이 **모두 부재**한다 — "동작 차이" 가 아니라 "없음" 이다
+* 구현 명세:
+    - ⓐ 프로세스 조회·종료를 **헬퍼 1지점**으로 모은다(`_fpm_pgrep`·`_fpm_pkill`). OS 로 분기하지 말고 **도구 가용성으로 분기**한다 — 원칙 3-1
+    - ⓑ Windows 폴백: `tasklist`/`taskkill` 또는 MSYS `ps` 파싱. 어느 쪽이 PID 정합을 유지하는지 jpc1 에서 먼저 측정한다
+    - ⓒ 폴백조차 없으면 **조용히 넘어가지 말고** 경고를 낸다 — "재기동했다" 는 거짓 보고가 지금의 실패 양상이다
+    - ⓓ 검증: jpc1 에서 `process-mgmt` 케이스 PASS + hub stop/start 실제 확인
+
+## Issue440: `tdd/results/` 가 소비자 repo 에서 추적 후보로 뜬다 — 미러 `.gitignore` 는 sync 대상이 아니다 ✅
+* 목적: [`tdd/README.md`](tdd/README.md) 는 *"결과는 `tdd/results/` 에 남고 **gitignore** 다 — 개인 경로·호스트명이 섞이므로 공유하지 않는다"* 고 규정한다. 그러나 소비자 머신에서 `git status` 는 `?? tdd/results/` 를 낸다 — 규약과 실제가 어긋나 **개인 정보가 커밋될 수 있는 상태**다
+* 구현 명세:
+    - ⓐ 미러 `.gitignore` 를 고치는 길은 C1 규약상 **단명 브랜치 왕복**이 필요하다 → 채택하지 않는다
+    - ⓑ 대신 **결과 폴더가 스스로를 무시**하게 한다 — 러너가 `results/` 를 만들 때 그 안에 `.gitignore`(`*`) 를 함께 둔다. 미러를 건드리지 않고 어느 설치본에서든 성립한다
+
+## Issue439: rc 블록이 있으면 **경로가 달라도 갱신하지 않는다** — repo 이전·재설치에서 낡은 경로가 고착된다 ✅
+* 목적: host 클린 설치 실측에서 드러났다. `~/_git/fpm` 을 지웠는데 `.zshrc:242`·`.bashrc:137` 의 fpm 블록은 남아, 셸을 열 때마다 `no such file or directory: …/sh/fpm.sh` 가 났다. 그 상태로 재설치했더니 [`sh/install.sh`](sh/install.sh) 는 **"이미 fpm 블록 존재 — skip"** 을 냈다
+* 구현 명세:
+    - ⓐ 블록 안의 `FPM_BASE` 를 읽어 **현재 repo 와 비교**한다. 같으면 skip, 다르면 갱신
+    - ⓑ 갱신은 **백업 후 블록 범위 안에서만** 치환한다 — rc 의 다른 라인은 건드리지 않는다
+    - ⓒ 검증: 낡은 경로 블록 + 블록 밖 동명 변수(decoy)를 둔 rc 로 설치해 **블록만 갱신**되는지 확인
+
+## Issue438: `source` 의 rc 로 판정해 cdf 로드를 오탐한다 — 부트스트랩의 rc 가 우연에 좌우된다 ✅
+* 목적: host `check.sh` 가 `cdf 함수 로드 실패` WARN 을 냈다. 그러나 실제 셸에서 `cdf` 는 **정상 동작한다**. 검증기가 멀쩡한 설치를 실패로 보고한 것이다
+* 구현 명세:
+    - ⓐ `check.sh` 의 판정을 **결과 기준**으로 — source 의 rc 를 보지 않고 `cdf` 가 정의됐는지만 본다
+    - ⓑ `fpm.sh` 의 **source rc 를 계약으로 고정** — 말미에 명시적 성공을 둔다. 부트스트랩의 rc 가 "마지막 선택 파일의 존재 여부" 에 좌우되면 안 된다. ⓐ 만으로는 `source fpm.sh && …` 를 쓰는 다른 소비자가 같은 함정에 빠진다
 
 ## Issue421: 미러에 릴리스 브랜치를 두면 F5-0 가드와 충돌한다 ✅
 * 목적: prj7 미러를 `release/0.8.0` 으로 체크아웃한 상태에서 `forward` 를 돌리면 **F5-0 가드가 차단**한다(*"미러 상주 브랜치는 main 하나다"*). 릴리스 라인을 6곳에 맞추라는 운영 요구와, 미러를 단일 브랜치로 묶는 가드가 **서로를 배제**한다. 이번(Issue420)에는 두 브랜치가 같은 커밋이라 `main` 전환 → forward → `release/*` 를 main 으로 이동해 넘겼지만, **수동 3단계를 매번 반복**해야 하고 잊으면 미러 브랜치가 갈라진다

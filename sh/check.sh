@@ -185,8 +185,12 @@ fi
 
 # ── 6. cdf 함수 로드 여부 (현재 셸) ───────────────────────────
 # check.sh 는 bash 서브셸 → 부모 셸 함수 미상속. fpm.sh 직접 source 후 확인.
+# ⚠️ 판정은 **결과(cdf 가 정의됐는가)** 로 한다 — source 의 rc 로 판정하지 않는다.
+#    fpm.sh 말미는 `[ -f … ] && . …` 형태라 마지막 test 가 거짓이면(선택 파일 부재)
+#    로드는 정상인데 rc=1 이 된다. 종전 `source … && command -v cdf` 는 그 rc 에 단락돼
+#    cdf 를 확인조차 못 하고 WARN 을 냈다 (Issue438 — prj3#Issue477 의 "rc 아닌 출력 기준" 과 같은 교훈).
 # shellcheck disable=SC1090  # 런타임 동적 경로(매니페스트 유래) — 정적 추적 불가, 의도적
-if (source "$FUNC_FILE" >/dev/null 2>&1 && command -v cdf >/dev/null 2>&1); then
+if ( source "$FUNC_FILE" >/dev/null 2>&1; command -v cdf >/dev/null 2>&1 ); then
     ok "cdf 함수 로드 가능 ($FPM_BOOTSTRAP_REL_REPO source)"
 else
     warn "cdf 함수 로드 실패 — $FPM_BOOTSTRAP_REL_REPO source 후에도 미정의 (셸 재시작 확인)"

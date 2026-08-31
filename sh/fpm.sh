@@ -46,3 +46,9 @@ unset _fpm_cache
 # fpm_editors.sh: 에디터 어댑터 + 경로 런처(v/z). cdfv 가 어댑터를 쓰므로 function 뒤 (Issue327)
 [ -f "$FPM_BASE/sh/fpm_editors.sh" ]  && . "$FPM_BASE/sh/fpm_editors.sh"
 [ -f "$FPM_BASE/sh/fpm_aliases.sh" ]  && . "$FPM_BASE/sh/fpm_aliases.sh"
+
+# --- source rc 안정화 ---
+# 위 로드는 전부 `[ -f … ] && . …` 라, **선택 파일이 없으면 마지막 test 가 거짓**이 되어
+# `source fpm.sh` 전체가 rc=1 로 끝난다. 로드는 정상인데 실패로 읽힌다 — 실제로 check.sh 가
+# 그 rc 에 속아 "cdf 로드 실패" WARN 을 냈다(Issue438 실측). 부트스트랩의 rc 는 우연이 아니라 계약이다.
+:

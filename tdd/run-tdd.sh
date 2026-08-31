@@ -35,6 +35,31 @@ fi
 # wsl 은 linux 케이스를 쓴다 (차이가 드러나면 그때 분리한다)
 CASE_PLATFORM="$PLATFORM"; [ "$PLATFORM" = "wsl" ] && CASE_PLATFORM="linux"
 
+# ── 케이스 파서 인터프리터 해석 (Issue435 ⓒ) ──────────────────
+# 판정 기준은 **존재가 아니라 "케이스를 실제로 읽을 수 있는가"** 다.
+#   · jpc1 실측: Windows 의 `python3` 는 MS Store 스텁이라 이름만 있고 실행되지 않는다
+#   · jma 실측: `python3` 가 정상 동작해도 그 인터프리터에 pyyaml 이 없으면 파싱이 통째로 실패한다
+# 존재만 보면 둘 다 통과시켜 놓고 파싱에서 죽는다 — 그래서 `import yaml` 까지를 조건으로 삼는다.
+PY=""; PY_REJECT=""
+# shellcheck disable=SC2086  # "py -3" 는 단어 분리가 의도된 후보다
+for _c in "${FBOT_PYTHON:-}" python3 python "py -3"; do
+  [ -n "$_c" ] || continue
+  if $_c -c 'import yaml' >/dev/null 2>&1; then PY="$_c"; break; fi
+  if $_c -c 'import sys' >/dev/null 2>&1; then
+    PY_REJECT="$PY_REJECT $_c(pyyaml 없음)"
+  else
+    PY_REJECT="$PY_REJECT $_c(실행 불가)"
+  fi
+done
+if [ -z "$PY" ]; then
+  # ⓐ fail-loud — "돌 게 없다" 가 아니라 "돌 수 없다" 다. 0 으로 뭉개지 않는다.
+  printf '\n\033[31m🚨 케이스를 읽을 인터프리터가 없다 — 검사를 수행할 수 없다\033[0m\n' >&2
+  printf '   후보 탈락:%s\n' "${PY_REJECT:- (후보 없음)}" >&2
+  printf '   조치: pyyaml 이 있는 python 을 PATH 에 두거나 FBOT_PYTHON 으로 지정한다\n' >&2
+  printf '         ex) pip3 install pyyaml   /   FBOT_PYTHON=/usr/bin/python3 bash tdd/run-tdd.sh\n' >&2
+  exit 2
+fi
+
 PASS=0; FAIL=0
 printf '\n\033[1m▶ fpm TDD — platform=%s (uname=%s)\033[0m\n' "$PLATFORM" "$(uname -s 2>/dev/null)"
 
@@ -43,23 +68,28 @@ run_file() {
   [ -f "$yf" ] || return 0
   printf '\n\033[1m[%s]\033[0m %s\n' "$label" "$yf"
   # YAML 파싱은 python 에 맡긴다 — 셸 파서를 손으로 짜면 그 자체가 버그원이다
-  local n; n=$(python3 -c "
+  # ⚠️ 실패를 0 으로 뭉개지 않는다 (Issue435 ⓐ) — 그 삼킴이 "0건 돌고 전부 통과" 의 발원지였다.
+  local n
+  if ! n=$($PY -c "
 import yaml,io,sys
 d=yaml.safe_load(io.open('$yf',encoding='utf-8')) or {}
-print(len(d.get('cases') or []))" 2>/dev/null || echo 0)
+print(len(d.get('cases') or []))"); then
+    printf '\n\033[31m🚨 케이스 파일을 읽지 못했다: %s (파서=%s)\033[0m\n' "$yf" "$PY" >&2
+    exit 2
+  fi
   local i=0
   while [ "$i" -lt "$n" ]; do
     local id desc run expect out rc
-    id=$(python3 -c "
+    id=$($PY -c "
 import yaml,io; d=yaml.safe_load(io.open('$yf',encoding='utf-8'))
 print(d['cases'][$i].get('id',''))")
-    desc=$(python3 -c "
+    desc=$($PY -c "
 import yaml,io; d=yaml.safe_load(io.open('$yf',encoding='utf-8'))
 print(d['cases'][$i].get('desc',''))")
-    run=$(python3 -c "
+    run=$($PY -c "
 import yaml,io; d=yaml.safe_load(io.open('$yf',encoding='utf-8'))
 print(d['cases'][$i].get('run',''))")
-    expect=$(python3 -c "
+    expect=$($PY -c "
 import yaml,io; d=yaml.safe_load(io.open('$yf',encoding='utf-8'))
 print(d['cases'][$i].get('expect','exit0'))")
     i=$((i+1))
@@ -97,10 +127,22 @@ esac
 [ "$LIST_ONLY" = 1 ] && exit 0
 
 mkdir -p "$TDD_DIR/results"
+# (Issue440) 결과에는 개인 경로·호스트명이 섞인다. prj1 은 .gitignore 로 막지만 **그 .gitignore 는 미러로
+# sync 되지 않는다**(publishable-policy 의 exclude 항목 — 미러가 자체 관리). 그래서 소비자 repo
+# (fg1·jma 실측)에서는 `?? tdd/results/` 로 추적 후보에 뜬다. 폴더가 스스로를 무시하게 두면
+# 미러 .gitignore 에 손대지 않고 어느 설치본에서든 성립한다.
+[ -f "$TDD_DIR/results/.gitignore" ] || printf '*\n' > "$TDD_DIR/results/.gitignore"
 printf '%s platform=%s pass=%s fail=%s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$PLATFORM" "$PASS" "$FAIL" \
   >> "$TDD_DIR/results/history.log"
 
 printf '\n────────────────────────────────\n'
 printf '결과: \033[32mPASS %d\033[0m / \033[31mFAIL %d\033[0m  (platform=%s)\n' "$PASS" "$FAIL" "$PLATFORM"
+# ⓑ 0건은 통과가 아니다 — 파싱을 고쳐도 이 가드는 남긴다. 다른 이유로 0건이 되는 경우가 또 생긴다
+#   (케이스 파일 부재·--only 오타·플랫폼 판정 실패). "돌지 않았다" 를 "통과" 로 읽히게 두지 않는다.
+if [ "$((PASS+FAIL))" -eq 0 ]; then
+  printf '\033[31m🚨 실행된 케이스가 0건 — 통과가 아니라 "돌지 않았다"\033[0m\n' >&2
+  printf '   확인: 케이스 파일 존재 여부 · --only 인자 · platform=%s 판정\n' "$PLATFORM" >&2
+  exit 1
+fi
 [ "$FAIL" -eq 0 ] || { printf '\033[31m❌ 이 머신에서 동작하지 않는 기능이 있다 — 위 항목의 why 를 볼 것\033[0m\n'; exit 1; }
 printf '\033[32m✅ 이 머신에서 전부 통과\033[0m\n'

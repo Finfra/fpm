@@ -300,7 +300,24 @@ fi
 for RC in "${RC_FILES[@]}"; do
     rc_name="$(basename "$RC")"
     if grep -qF "$MARKER" "$RC" 2>/dev/null; then
-        info "$rc_name 에 이미 fpm 블록 존재 — skip"
+        # 블록의 유무만이 아니라 **가리키는 경로가 맞는지**까지 본다.
+        # repo 를 옮기거나 지웠다 다시 깔면 블록만 남아 낡은 경로를 계속 source 한다 —
+        # Issue439 실측(2026-08-31): repo 삭제 후에도 rc 라인이 남아 셸을 열 때마다
+        # `no such file or directory: …/sh/fpm.sh` 가 났고, 재설치는 "이미 존재" 로 skip 했다.
+        # 감지도 블록 범위로 한정 — rc 다른 곳의 FPM_BASE 를 잘못 읽지 않는다
+        cur_base="$(sed -n "\|$MARKER|,\|$MARKER_END| { s|^export FPM_BASE=\"\(.*\)\"\$|\1|p; }" "$RC" | tail -1)"
+        if [[ "$cur_base" == "$REPO_DIR" ]]; then
+            info "$rc_name 에 이미 fpm 블록 존재 (경로 일치) — skip"
+        else
+            cp "$RC" "$RC.fpm-backup.$(date +%Y%m%d%H%M%S)"
+            # 치환 범위를 마커 블록 안으로 한정 — rc 의 다른 라인은 건드리지 않는다
+            sed -i.fpmtmp "\|$MARKER|,\|$MARKER_END| {
+                s|^export FPM_BASE=\".*\"$|export FPM_BASE=\"$REPO_DIR\"|
+                s|^source \".*\"$|source \"$FUNC_FILE\"|
+            }" "$RC"
+            rm -f "$RC.fpmtmp"
+            warn "$rc_name 의 fpm 블록 경로 갱신: ${cur_base:-<불명>} → $REPO_DIR (원본 백업함)"
+        fi
     else
         {
             echo ""
