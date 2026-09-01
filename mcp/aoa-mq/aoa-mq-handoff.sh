@@ -20,7 +20,8 @@
 #   aoa-mq-handoff.sh count                # 미소비 건수만 출력 (hook·tick 용, 숫자 1줄)
 #   aoa-mq-handoff.sh promote <id> [--note "..."] [--dry-run]   # 이슈 승격 → 대상 prj Issue.md 🌱 이슈후보 (prj3#Issue26)
 #   aoa-mq-handoff.sh promote-stale [--days N] [--dry-run]      # stale 초과분 일괄 승격 (tick 용, prj3#Issue26)
-#   aoa-mq-handoff.sh audit [--restore]    # 승격분이 대상 Issue.md 에 아직 있는지 감사 (소실분 재등록)
+#   aoa-mq-handoff.sh audit [--restore]    # 승격분이 대상 Issue.md 에 아직 있는지 감사 (유실분 재등록)
+#   aoa-mq-handoff.sh audit --dismiss <id> --note "..."         # 유실분 무효 판정 종결 (감사 대상 제외, prj3#Issue504)
 #
 # 보장: 큐(queue/·queue_done/)는 건드리지 않음 — handoff/ 하위만 읽기·이동.
 #   삭제 대신 z_consumed/ 이관(감사 추적 보존). silent 실패 금지 — 오류는 stderr + exit≠0.
@@ -299,31 +300,71 @@ case "$CMD" in
     ;;
 
   audit)
-    # 승격 사후 감사 (prj3#Issue26 후속): z_consumed 의 promoted_to 대상 파일에 marker 가 아직 있는지 재확인.
+    # 승격 사후 감사 (prj3#Issue26 후속 · 판정 2단화 prj3#Issue504).
     # 승격분은 타 repo 의 uncommitted 작업본이라, 다른 세션이 stale 사본으로 덮어쓰면 조용히 사라진다
-    # (2026-07-20 social 3건 실제 소실). --restore 는 사라진 줄만 다시 append 한다.
-    restore=0
+    # (2026-07-20 social 3건 실제 소실).
+    #
+    # ⚠️ 마커 부재 ≠ 유실 (prj3#Issue504) — 이슈후보 줄은 정식 이슈로 승격되거나 불필요 판정되면
+    #   지워지는 것이 정상이다(issue-g 규칙4). 1단계(마커 grep)만으로는 그 정상 경로와
+    #   덮어쓰기 유실이 구분되지 않아 2026-09-01 실측에서 16건 중 10건이 오탐이었다.
+    #   2단계 판별: 대상 repo git 이력에 그 마커가 **한 번이라도 커밋된 적 있으면 소비된 것**이다.
+    #   덮어쓰기 유실은 append 가 커밋 전에 사라지므로 이력에 흔적이 남지 않는다.
+    # --restore 는 유실(lost)분만 재등록한다 — 소비분을 되살리면 Issue.md 가 오염된다.
+    restore=0; dismiss_id=""; dismiss_note=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --restore) restore=1; shift ;;
+        --dismiss) dismiss_id="${2:-}"; [ -n "$dismiss_id" ] || die "audit --dismiss: id 누락"; shift 2 ;;
+        --note)    dismiss_note="${2:-}"; shift 2 ;;
         *) die "audit: 알 수 없는 인자 $1" ;;
       esac
     done
+    # 무효 판정 종결 (prj3#Issue504) — 유실은 사실이나 대상 이슈가 취소·완료됐거나 요구 기능이
+    # 이미 구현되어 재등록이 무의미한 건을 닫는다. 없으면 같은 경고가 매 tick 영구 반복된다.
+    if [ -n "$dismiss_id" ]; then
+      dcf="$CONSUMED/$dismiss_id.json"
+      [ -f "$dcf" ] || die "audit --dismiss: 레코드 없음 — $dcf"
+      [ -n "$dismiss_note" ] || die "audit --dismiss: --note 필수 (무효 판정 근거를 남긴다)"
+      tmpf="$dcf.tmp.$$"
+      "$JQ" --arg n "$dismiss_note" --arg t "$(date +%Y-%m-%dT%H:%M:%S)" \
+        '.audit_dismissed = {note:$n, ts:$t}' "$dcf" > "$tmpf" \
+        || { rm -f "$tmpf"; die "audit --dismiss: jq 실패 — $dismiss_id"; }
+      mv "$tmpf" "$dcf"
+      echo "⊘ $dismiss_id  무효 판정 종결 — $dismiss_note"
+      exit 0
+    fi
     [ -d "$CONSUMED" ] || die "z_consumed 디렉토리 없음: $CONSUMED"
-    miss=0; okc=0; fixed=0
+    okc=0      # 정상 잔존 — 대상 Issue.md 에 마커 그대로
+    used=0     # 소비 완료 — 마커는 없으나 git 이력에 존재 (이슈 승격·불필요 판정)
+    lost=0     # 유실 — 마커도 이력도 없음 (덮어쓰기 의심)
+    undet=0    # 판정 불가 — 대상이 git repo 가 아니거나 파일 부재
+    dism=0     # 무효 판정 종결 — 유실이나 재등록 무의미 (--dismiss 로 닫음)
+    fixed=0
     while IFS= read -r cf; do
       [ -n "$cf" ] || continue
       pt=$("$JQ" -r '.promoted_to // empty' "$cf")
       [ -n "$pt" ] || continue                       # 일반 소비(done)분은 감사 대상 아님
+      if [ "$("$JQ" -r '.audit_dismissed.note // empty' "$cf")" != "" ]; then
+        dism=$((dism+1)); continue                   # 무효 판정 종결분 (prj3#Issue504)
+      fi
       id=$("$JQ" -r '.id' "$cf")
       tgt="${pt% 🌱 이슈후보 *}"                      # "…/Issue.md 🌱 이슈후보 3" → 경로만
       if [ ! -f "$tgt" ]; then
-        echo "✗ $id  대상 파일 없음: $tgt"; miss=$((miss+1)); continue
+        echo "⚠ $id  판정 불가 — 대상 파일 없음: $tgt"; undet=$((undet+1)); continue
       fi
       if grep -Fq "handoff $id" "$tgt"; then
         okc=$((okc+1)); continue
       fi
-      miss=$((miss+1))
+      # 2단계 — git 이력 판별
+      repo=$(dirname "$tgt")
+      if ! git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
+        echo "⚠ $id  판정 불가 — 마커 부재이나 대상이 git repo 아님: $tgt"; undet=$((undet+1)); continue
+      fi
+      hits=$(git -C "$repo" log -S "handoff $id" --oneline -- "$(basename "$tgt")" 2>/dev/null | wc -l | tr -d ' ')
+      if [ "${hits:-0}" -gt 0 ]; then
+        used=$((used+1)); continue                   # 커밋된 적 있음 → 정상 소비
+      fi
+      lost=$((lost+1))
       if [ "$restore" = 1 ]; then
         n=$(append_candidate "$tgt" "$(candidate_line "$cf")") \
           || { echo "✗ $id  재등록 실패: $tgt" >&2; continue; }
@@ -331,16 +372,17 @@ case "$CMD" in
           || { echo "✗ $id  재등록 후에도 marker 부재: $tgt" >&2; continue; }
         echo "↺ $id  재등록 → $tgt (🌱 이슈후보 $n)"; fixed=$((fixed+1))
       else
-        echo "✗ $id  marker 소실: $tgt"
+        echo "✗ $id  유실 (마커·git 이력 모두 부재): $tgt"
       fi
     done < <(find "$CONSUMED" -maxdepth 1 -type f -name '*.json' 2>/dev/null | sort)
-    if [ "$miss" = 0 ]; then
-      echo "승격 감사 정상 — ${okc}건 전부 대상 파일에 잔존"
-    elif [ "$restore" = 1 ]; then
-      echo "승격 감사: 정상 ${okc}건 · 소실 ${miss}건 → 재등록 ${fixed}건"
-      [ "$fixed" = "$miss" ] || exit 1
+    summary="승격 감사: 잔존 ${okc}건 · 소비 ${used}건 · 유실 ${lost}건 · 무효종결 ${dism}건 · 판정불가 ${undet}건"
+    if [ "$restore" = 1 ]; then
+      echo "$summary → 재등록 ${fixed}건"
+      [ "$fixed" = "$lost" ] || exit 1
+    elif [ "$lost" = 0 ]; then
+      echo "$summary — 유실 없음"
     else
-      echo "승격 감사: 정상 ${okc}건 · 소실 ${miss}건 (복구: aoa-mq-handoff.sh audit --restore)"
+      echo "$summary (복구: audit --restore — 유실분만 재등록 / 무의미분: audit --dismiss <id> --note \"...\")"
       exit 1
     fi
     ;;

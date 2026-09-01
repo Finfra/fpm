@@ -72,6 +72,26 @@ mkdir -p "$QUEUE" "$QDONE" "$HANDOFF" "$HTM_DIR"
 log() { printf '%s %s\n' "$("$DATE" '+%Y-%m-%dT%H:%M:%S')" "$*" >> "$LOG"; }
 
 # policy 파서 (flat key: value — board_policy.yml _bp 패턴 동일)
+# ── openclaw 발신 래퍼 (prj3#Issue505) ────────────────────────────────────
+# 왜 필요한가: 종전 가드는 `command -v openclaw` 였는데, openclaw 는 homebrew 심볼릭
+#   링크이고 shebang 이 `#!/usr/bin/env node` 라 **PATH 에 node 가 없으면 탐지는 통과하고
+#   실행만 127 로 죽는다**. launchd(hub) 프로세스 PATH 에 nvm 이 빠져 있어 정시 tick 의
+#   Discord 발송이 3일간 전부 실패했는데, 호출부가 stderr 를 >/dev/null 로 버려
+#   로그에는 "실패(무시)" 만 남았다. 검사하는 것과 실패하는 것이 어긋난 가드였다.
+# 따라서 ① 가드를 **실행 기반**으로 바꾸고 ② 실패 시 stderr 마지막 줄과 exit code 를 남긴다.
+OC_ERRTAIL=""            # 직전 oc_send 실패의 stderr 마지막 줄 (호출부가 log 에 병기)
+oc_ready() { openclaw --version >/dev/null 2>&1; }
+oc_send() {              # $@ = openclaw 인자. 성공 0 / 실패 비0 + OC_ERRTAIL 설정
+  local _err _rc
+  _err=$(openclaw "$@" 2>&1 >/dev/null); _rc=$?
+  if [ "$_rc" -ne 0 ]; then
+    OC_ERRTAIL="rc=$_rc: $(printf '%s' "$_err" | tail -1)"
+  else
+    OC_ERRTAIL=""
+  fi
+  return "$_rc"
+}
+
 pol() { # $1=key $2=default
   local v
   v=$(grep -E "^[[:space:]]*$1:" "$POLICY" 2>/dev/null | head -1 \
@@ -212,14 +232,14 @@ finalize() { # $1=file $2=terminal_status  — 종결: 상태 기록 → handoff
     fi
   fi
   # 응답 결과 Discord 통지 (notify_on_response)
-  if [ "$(pol notify_on_response false)" = "true" ] && command -v openclaw >/dev/null 2>&1; then
+  if [ "$(pol notify_on_response false)" = "true" ] && oc_ready; then
     local acct tgt m
     acct=$(pol discord_account ""); tgt=$(pol discord_target "")
     if [ -n "$acct" ] && [ -n "$tgt" ]; then
       m=$("$JQ" -r '.message' "$QDONE/$base" 2>/dev/null)
-      openclaw message send --channel discord --account "$acct" --target "$tgt" \
-        --message "🟢 aoa-mq 응답 접수: \"$m\" → $st ($NOW_ISO)$exec_note" >/dev/null 2>&1 \
-        || log "응답 통지 실패(무시): $base"
+      oc_send message send --channel discord --account "$acct" --target "$tgt" \
+        --message "🟢 aoa-mq 응답 접수: \"$m\" → $st ($NOW_ISO)$exec_note" \
+        || log "응답 통지 실패: $base — $OC_ERRTAIL"
     fi
   fi
   # 읽기용 digest: 종결 항목을 월단위 archive 에 append + Aoa-mq-list 재생성 (prj3#Issue20)
@@ -501,7 +521,7 @@ HTMLTAIL
   log "질의 렌더: $(echo "$pending_items" | grep -c .) 건 → $FORM"
 
   # Discord 질의 통지 (notify_on_ask=true 시) — 1단계(첫 due)에서만. 질문 요약 + 폼 링크. ACK 는 폼에서.
-  if [ "$max_asks" -eq 0 ] && [ "$(pol notify_on_ask false)" = "true" ] && command -v openclaw >/dev/null 2>&1; then
+  if [ "$max_asks" -eq 0 ] && [ "$(pol notify_on_ask false)" = "true" ] && oc_ready; then
     DC_ACCOUNT=$(pol discord_account "")
     DC_TARGET=$(pol discord_target "")
     if [ -n "$DC_ACCOUNT" ] && [ -n "$DC_TARGET" ]; then
@@ -510,13 +530,13 @@ HTMLTAIL
       FORM_URL="http://$ADVERTISE_HOST:$PORT/htm-doc?path=$FORM"
       # 처리 링크를 먼저 준다 (prj3#Issue493) — 폼은 스냅샷일 뿐이고 버튼은 /mq 에만 있다.
       MQ_URL="http://$ADVERTISE_HOST:$PORT/mq"
-      openclaw message send --channel discord --account "$DC_ACCOUNT" --target "$DC_TARGET" \
+      oc_send message send --channel discord --account "$DC_ACCOUNT" --target "$DC_TARGET" \
         --message "📬 aoa-mq 확인 요청 ($NOW_ISO)
 $SUMMARY
 처리: $MQ_URL
-이 회차 스냅샷: $FORM_URL" >/dev/null 2>&1 \
+이 회차 스냅샷: $FORM_URL" \
         && log "Discord 질의 통지 발송: $DC_TARGET" \
-        || log "Discord 질의 통지 실패 (openclaw send 에러) — 폼 렌더는 정상"
+        || log "Discord 질의 통지 실패 — $OC_ERRTAIL (폼 렌더는 정상)"
     else
       log "Discord 통지 skip — discord_account/discord_target 미설정"
     fi
@@ -613,17 +633,16 @@ else
       log "handoff 통지 백오프 상한 도달(${nag_cnt}회) — 로그만, Discord 미발송"
     elif [ $(( $("$DATE" +%s) - nag_last )) -lt $(( step * 86400 )) ]; then
       log "handoff 통지 백오프 대기(${step}일 간격, ${nag_cnt}회 발송됨)"
-    elif [ "$(pol notify_on_handoff_stale true)" = "true" ] && command -v openclaw >/dev/null 2>&1; then
+    elif [ "$(pol notify_on_handoff_stale true)" = "true" ] && oc_ready; then
       ho_acct=$(pol discord_account ""); ho_tgt=$(pol discord_target "")
       if [ -n "$ho_acct" ] && [ -n "$ho_tgt" ]; then
-        if openclaw message send --channel discord --account "$ho_acct" --target "$ho_tgt" \
-             --message "📥 aoa-mq 미소비 handoff ${HOCOUNT}건 — 응답은 접수됐으나 실제 작업 미착수. 세션에서 \`/mq-handoff\` 실행 요망 (다음 통지는 백오프 적용)" \
-             >/dev/null 2>&1; then
+        if oc_send message send --channel discord --account "$ho_acct" --target "$ho_tgt" \
+             --message "📥 aoa-mq 미소비 handoff ${HOCOUNT}건 — 응답은 접수됐으나 실제 작업 미착수. 세션에서 \`/mq-handoff\` 실행 요망 (다음 통지는 백오프 적용)"; then
           # 발송 성공분만 카운트 — 실패를 카운트하면 미발송인데 백오프가 벌어진다
           printf '%s %s\n' "$("$DATE" +%s)" "$((nag_cnt+1))" > "$NAG_STATE"
           log "handoff 적체 통지 발송(${nag_cnt}→$((nag_cnt+1))회)"
         else
-          log "handoff 적체 통지 실패(무시)"
+          log "handoff 적체 통지 실패 — $OC_ERRTAIL"
         fi
       fi
     fi

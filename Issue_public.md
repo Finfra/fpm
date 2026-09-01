@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: 3309d4e3aea3cf8cfbad929ee60d3ad8bb47aac599ad3625bd9a95427856ab77
+source_sha: c356f37dc2ca8204c6a00ca9f724ddf09e36152095e0ee8232927be4a0511386
 ---
 
 # 안내
@@ -28,7 +28,19 @@ source_sha: 3309d4e3aea3cf8cfbad929ee60d3ad8bb47aac599ad3625bd9a95427856ab77
 
 # 이슈 근거
 
-## Issue441: `INSTALL.md` 가 prj1 ↔ 미러로 갈라졌다 — 미러 쪽이 더 최신이다
+## Issue463: `z_htm` 읽기 경로 제거 — 유지 근거의 전제 2개가 모두 소멸 ✅
+* 목적: `_doc_arch/htm-lifecycle-design.md` 가 읽기 경로를 유지한 유일한 근거는 "제거하면 prj2 의 htm 77건이 즉시 403" 이었는데, 2026-09-01 재대조에서 그 피해 대상이 실측 0건으로 확인됨. 문서가 스스로 적어 둔 재검토 조건이 충족된 상태
+* 구현 명세: `services/hub/server.py:144` `HTM_DIRS` 1줄 제거 + 주석·docstring 6건 정리 → `htm-lifecycle-design.md` FIXME 종결. 제거 후 hub 문서 링크 스모크 1회
+
+## Issue457: deploy 에 정본↔미러 문서 diff 검출 가드 — INSTALL drift 재발 방지 ✅
+* 목적: 코드·브랜치 가드(F5 계열)는 문서 역류를 못 잡는다 — INSTALL.md drift(Issue441) 실측의 재발 방지. `fpm-gitflow.md` "문서 파일도 C1~C3 대상" [TODO] 의 집행체 (후보 승격)
+* 구현 명세: deploy 전 단계에서 정본↔미러 md 대조(tdd `mirror-doc-no-orphan-edit` 의 배포 게이트 편입 검토)
+
+## Issue456: `check.sh` editor.yml 파싱이 로케일에 좌우된다 — LC_ALL=ko 에서 주석 미제거 WARN 13건 ✅
+* 목적: [`sh/check.sh`](sh/check.sh) 409행 `sed -E` 가 host(`LC_ALL=ko_KR.UTF-8`)에서 주석을 못 걷어 한글 낱말을 에디터 이름으로 오인, WARN 13건 잡음. 실해는 없으나 같은 파싱이 다른 값에 번지면 오판이 된다 (후보 승격 — host 실측 2026-08-31)
+* 구현 명세: 해당 sed 호출에 `LC_ALL=C` 접두(또는 파싱을 python 으로) + host 재실측으로 WARN 0 확인
+
+## Issue441: `INSTALL.md` 가 prj1 ↔ 미러로 갈라졌다 — 미러 쪽이 더 최신이다 ✅
 * 목적: host 설치 테스트 중 `INSTALL.md` 의 요구사항 절을 보강하려다 발견했다. **미러(prj7)에는 있고 prj1 에는 없는 내용**이 있다 — SSOT 가 하위 사본보다 낡았다
 * 구현 명세:
     - ⓐ 두 판본을 **대조**해 미러에만 있는 개선을 prj1 으로 역류시킨다 (i18n 짝 `INSTALL_ko.md` 동반)

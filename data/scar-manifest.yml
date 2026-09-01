@@ -96,6 +96,7 @@ payloads:
         - fpm-show
       skills:
         - fbot-icon             # 핀봇 아이콘 카탈로그+결정론 SVG 생성기 (prj3#Issue436)
+        - fbot-recruit          # 리크루팅핀봇 — role 신설 전담(agents 우선→웹검색 폴백) (prj3#Issue479)
         - fpm-cdf
         - fpm-issue-map
         - fpm-pm
@@ -119,6 +120,7 @@ payloads:
         - fbot-exec-report.py
         - fbot-heartbeat.sh
         - fbot-hr-gate.py
+        - fbot-recruit.py       # 리크루팅핀봇 실행체 — register/archive/revive/list (prj3#Issue479)
         - fbot-manual-review.py
         - fbot-schedule.sh
         - fbot-state.py

@@ -411,7 +411,7 @@ if [[ -f "$REPO_DIR/sh/fpm_editors.sh" ]]; then
         || fail "data/editor.yml 없음 (data/editor_org.yml 복사 필요)"
     # CLI 해석 — enabled_editors 각각. 미설치 에디터는 WARN(환경 의존)
     _ed_list=$(grep -E '^[[:space:]]*enabled_editors[[:space:]]*:' "$REPO_DIR/data/editor.yml" 2>/dev/null \
-        | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//' | tr ',' ' ')
+        | LC_ALL=C sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//' | tr ',' ' ')   # Issue456: ko 로케일에서 [[:space:]] 클래스가 주석을 못 걷어 한글 낱말을 에디터로 오인(fg1 실측 WARN 13)
     for _ed in ${_ed_list:-vscode}; do
         if ( export FPM_BASE="$REPO_DIR"; . "$REPO_DIR/sh/fpm_editors.sh" >/dev/null 2>&1; _fpm_editor_bin "$_ed" >/dev/null 2>&1 ); then
             ok "에디터 CLI 해석: $_ed"

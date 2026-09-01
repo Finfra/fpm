@@ -138,10 +138,12 @@ def _migrate_legacy_state() -> None:
 
 # Issue289: htm 산출물 수명주기 — 쓰기는 활성 폴더 1곳, 읽기는 아래 목록 전체.
 #   활성 `_doc_work/htm/` → 아카이브 `_doc_work/z_done/htm/` → legacy `_doc_work/z_htm/`.
-#   legacy 항목은 전 프로젝트 마이그레이션(P3) 완료 후 P4 에서 제거한다.
+#   legacy `_doc_work/z_htm/` 읽기 경로는 P4 에서 제거했다(Issue463) — 2026-09-01 실측으로
+#   등록 49개 프로젝트 중 z_htm 보유 1곳·파일 0개, 활성 htm-registry 38건 중 z_htm 0건이라
+#   유지 근거였던 "제거 시 즉시 403" 의 피해 대상이 0 이었다.
 #   설계 SSOT: _doc_arch/htm-lifecycle-design.md
 HTM_ACTIVE_DIR = "htm"
-HTM_DIRS = ["htm", "z_done/htm", "z_htm"]
+HTM_DIRS = ["htm", "z_done/htm"]
 
 
 def _htm_dirs_for(cwd: str) -> list:
@@ -1429,9 +1431,13 @@ def _live_dismiss_add(h: str, sid: str) -> None:
 # /register-doc 는 글로벌 SCAR(htm 스킬)가 책임지나 서버 다운·호출 누락 시 영구 미등록 됨.
 # hook 이벤트는 항상 수신되므로 detail 의 htm 경로를 디스크 확인 후 보강한다.
 # Issue289: 단일 z_htm 고정에서 HTM_DIRS 전체 alternation 으로 확장.
+# Issue463: **읽기 경로와 인식 패턴은 다른 관심사다.** HTM_DIRS 에서 legacy `z_htm` 을 뺐지만
+#   과거 feed·대화 기록에는 그 경로 문자열이 그대로 남아 있어, 인식까지 끊으면 self-heal 이
+#   조용히 실패한다(서빙 중단 ≠ 문자열 소멸). 따라서 autoheal 은 legacy 를 계속 인식한다.
+_HTM_DOC_SCAN_DIRS = HTM_DIRS + ["z_htm"]
 _HTM_DOC_PATH_RE = re.compile(
     r"/[^\s`\"'<>]+/_doc_work/(?:"
-    + "|".join(re.escape(d) for d in HTM_DIRS)
+    + "|".join(re.escape(d) for d in _HTM_DOC_SCAN_DIRS)
     # Issue353_1: 현행 hub_htm_*.{htm,md} 도 feed autoheal 대상 (md-first 산출 포함)
     + r")/(?:claude-htm-[^\s`\"'<>]+\.html|hub_htm_[^\s`\"'<>]+\.(?:htm|md))")
 
@@ -6008,7 +6014,7 @@ class Handler(BaseHTTPRequestHandler):
     def _scan_dashes(self, cwd: str) -> list:
         """Issue16_7 / Issue31: cwd 하위 htm 폴더에서 *.dash.{json,yaml,yml} 스캔.
         Issue41: 자동 hub 갱신 경로에서 제거됨 — /hub-rescan(수동 부트스트랩) 전용.
-        Issue289: 단일 z_htm 대신 HTM_DIRS 전체를 훑는다(활성→아카이브→legacy).
+        Issue289: 단일 경로 대신 HTM_DIRS 전체를 훑는다(활성→아카이브). legacy 제거는 Issue463.
         yaml 은 stdlib 미지원이므로 dashboard.md 양식 한정 경량 파서 사용 (Issue31 (a))."""
         results = []
         pairs = []
@@ -9476,7 +9482,7 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         """/tmp fallback 문서가 미등록 403 일 때, raw JSON 대신 원인·해결 안내 HTML serve.
         원인: 프로젝트에 활성 htm 폴더 부재 → 트리거가 /tmp/___pm 로 fallback → register 훅
         (htm 경로만 매칭)이 등록 스킵 → whitelist 403. 해결: 프로젝트에 htm 폴더 생성 후 재렌더.
-        Issue289: 안내 폴더를 legacy `z_htm` 에서 활성 `_doc_work/htm/` 으로 교체."""
+        Issue289: 안내 폴더를 legacy 경로에서 활성 `_doc_work/htm/` 으로 교체(legacy 는 Issue463 에서 제거)."""
         base = os.path.basename(abs_path)
         port = self.server.server_address[1]
         reg_cmd = (
@@ -9505,7 +9511,7 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             "<div class=box><b>영구 해결</b> — 프로젝트 루트에서 htm 폴더 생성 후 다시 렌더:"
             "<pre>mkdir -p _doc_work/htm</pre>"
             "이후 hub 렌더는 프로젝트 <code>_doc_work/htm/</code> 에 저장되어 자동 등록됩니다. "
-            "(legacy <code>_doc_work/z_htm/</code> 도 읽기는 계속 지원 — Issue289)</div>"
+            "(legacy <code>_doc_work/z_htm/</code> 읽기 지원은 종료 — Issue463)</div>"
             "<p><b>이 문서만 즉시 복구</b> (수동 등록):</p>"
             "<pre>" + reg_cmd + "</pre>"
             "<p style=color:#888>파일: <code>" + abs_path + "</code></p>"
@@ -9570,7 +9576,7 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
 
         허용 조건(전부 충족해야 등록 — 화이트리스트 보안 모델 유지):
           1. 실존 일반 파일 + 확장자 .htm/.html/.md (Issue353_1: md-first 산출 포함)
-          2. 부모 폴더가 canonical htm 출력 폴더 (`_doc_work/{htm,z_done/htm,z_htm}`) 또는 TMP_OUT_DIR
+          2. 부모 폴더가 canonical htm 출력 폴더 (`_doc_work/{htm,z_done/htm}`) 또는 TMP_OUT_DIR
           3. 파일명이 htm 출력 규약(`hub_htm_*` / legacy `claude-htm-*`) 준수
           4. HTM_CLEARED tombstone 에 없음 — 사용자가 명시 제거한 문서는 부활시키지 않음
         임의 경로 노출은 2·3 이 막고, 사용자 의사(clear)는 4 가 존중한다."""

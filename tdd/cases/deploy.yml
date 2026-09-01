@@ -93,11 +93,15 @@ cases:
       개발 중 정상이라 통과시킨다 — 그러지 않으면 상시 FAIL 이 되어 아무도 안 본다.
       대상에 aoa 정책 템플릿도 넣는다(Issue449) — 미러본에 수명주기 4키가 빠져 있어
       소비자의 fbot 승격·아카이브 판정이 fail-loud 로 죽던 것이 이 검사의 첫 수확이다.
+      ⚠️ 전제 정정(Issue441 종결 규명, 2026-09-01): INSTALL.md/_ko 는 publishable
+      **denylist** 문서 — 미러(prj7)가 정본을 소유하고 forward 가 나르지 않는다.
+      따라서 "미러 직접 커밋 = 위반" 판정 대상에서 **제외**한다(직접 커밋이 정본 편집이다).
+      이 검사가 계속 보는 것은 forward 로 회수되는 문서(aoa 정책 템플릿 등)뿐이다.
     run: |
       dst="${FPM_DST:-$HOME/_git/__all/fpm}"
       [ -d "$dst/.git" ] || { echo "ok(미러 미보유 — 소비자 머신)"; exit 0; }
       bad=""
-      for f in INSTALL.md INSTALL_ko.md data/template/aoa-policy.default.yml; do
+      for f in data/template/aoa-policy.default.yml; do
         [ -f "$dst/$f" ] && [ -f "$REPO_DIR/$f" ] || continue
         cmp -s "$dst/$f" "$REPO_DIR/$f" && continue
         msg="$(git -C "$dst" log -1 --format=%s -- "$f" 2>/dev/null)"
