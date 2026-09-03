@@ -9,7 +9,7 @@ date: 2026-03-26
 prj: 7
 identity: prj1 pm 의 공개 배포 미러 — 설치 위치 무관 셸 도구와 hub 서버를 외부에 제공하는 제품 표면
 not: 개발하는 곳이 아니다 — 소스는 prj1 이고 여기는 sanitize 를 거친 반출본이다
-goal_parent:
+goal_parent: Infra
 lifetime: perpetual
 outcome: 소비자 머신(jma·fg1)이 plugin update 로 최신 배포를 받는가
 status: active
