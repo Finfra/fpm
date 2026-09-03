@@ -2,6 +2,17 @@
 name: CLAUDE
 description: Guide that Claude Code refers to when working in this repository
 date: 2026-03-26
+
+# ── L1 아이덴티티 (Issue472) ──────────────────────────────────────────
+# 스키마 정본: prj6 ~/_git/___architect/_doc_arch/project-identity-scheme.md
+# ⚠️ 빈 필드는 추측으로 채우지 말 것 — 틀린 값은 빈 값보다 나쁘다
+prj: 7
+identity: prj1 pm 의 공개 배포 미러 — 설치 위치 무관 셸 도구와 hub 서버를 외부에 제공하는 제품 표면
+not: 개발하는 곳이 아니다 — 소스는 prj1 이고 여기는 sanitize 를 거친 반출본이다
+goal_parent:
+lifetime: perpetual
+outcome: 소비자 머신(jma·fg1)이 plugin update 로 최신 배포를 받는가
+status: active
 ---
 
 > 🌐 **English** | [한국어](CLAUDE_ko.md)
