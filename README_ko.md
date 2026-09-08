@@ -207,6 +207,16 @@ fpm 의 설계 개념을 다룬 글 모음.
 | nPTiR — 공용 정의               | <https://finfra.kr/jg/2026/04/20/nptir_define/>                  |
 | Claude Code `..htm` (HTML 출력) | <https://finfra.kr/jg/2026/05/17/claude-code-html-output-htm-2/> |
 
+## 함께 쓰는 도구
+
+fpm 과 같이 만들어 같이 쓰는 도구입니다.
+
+| | 도구 | 하는 일 | 설치 |
+| :-- | :--- | :--- | :--- |
+| <img src="img/fcapture-icon.png" alt="fCapture" width="40"> | [fCapture](https://finfra.kr/product/fCapture/kr/index.html) | macOS 스크린 캡처 CLI — 화면·윈도우·영역을 JSON 설정이나 CLI 옵션으로 캡처하고, 같은 동작을 Claude Code 에 MCP 로 노출합니다 | `brew install finfra/tap/fcapture` |
+
+두 도구는 라이선스 모델도 같습니다 — 비상업 사용 무료, 상업 사용은 별도 라이선스.
+
 ## 라이선스
 
 [PolyForm Noncommercial 1.0.0](LICENSE) — 개인·비영리 무료. 기업·상업적 사용은 [상용 라이선스](COMMERCIAL_ko.md) 필요.

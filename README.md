@@ -207,6 +207,16 @@ A collection of posts covering fpm's design concepts.
 | nPTiR — common definition        | <https://finfra.kr/jg/2026/04/20/nptir_define/>                  |
 | Claude Code `..htm` (HTML output) | <https://finfra.kr/jg/2026/05/17/claude-code-html-output-htm-2/> |
 
+## Related tools
+
+Tools we build and use alongside fpm.
+
+| | Tool | What it does | Install |
+| :-- | :--- | :--- | :--- |
+| <img src="img/fcapture-icon.png" alt="fCapture" width="40"> | [fCapture](https://finfra.kr/product/fCapture/en/index.html) | macOS screen capture CLI — captures screens, windows, and regions from JSON presets or CLI flags, and exposes the same actions to Claude Code over MCP | `brew install finfra/tap/fcapture` |
+
+Both tools share the same license model: free for noncommercial use, commercial licensed separately.
+
 ## License
 
 [PolyForm Noncommercial 1.0.0](LICENSE) — free for personal/non-commercial use. Enterprise/commercial use requires a [commercial license](COMMERCIAL.md).
