@@ -1,0 +1,24 @@
+# release-gates.yml — G3 병합 게이트 통과 기록 (Issue478_2)
+#
+# ⚠️ 손으로 쓰지 않는다. scripts/fpm-deploy-record.sh --gate 가 append 한다.
+#   "이 커밋이 5스테이지 통합 검증을 통과했다" 의 이력이다. 줄을 지우거나 고치지 말 것.
+#
+# 생산: sh/release-check.sh 전체 실행(--no-sandbox 아님) 이 전건 PASS 일 때만
+# 소비: scripts/fpm-sync.sh do_deploy 진입부(G4) — 통과 기록이 현재 HEAD 의 조상인지 확인
+# 설계: _doc_arch/fpm-release-gate.md "G3 — 병합 게이트" / "G4 — 출고 게이트"
+#
+# ⚠️ dirty: yes 는 **그 커밋을 검증한 것이 아니다**(워킹트리에 미커밋 변경이 있었다).
+#   G4 는 그런 줄을 통과 근거로 쓰지 않는다.
+
+gates:
+  - { date: 2026-09-05T21:55:46+0900, suite: release, version: 0.8.3, branch: release/0.8.3, commit: 9ad9eb5, tree: 482e2b8, dirty: yes }
+  - { date: 2026-09-05T22:16:31+0900, suite: release, version: 0.8.3, branch: release/0.8.3, commit: 54c4ead, tree: c6f502b, dirty: yes }
+  - { date: 2026-09-05T22:20:26+0900, suite: release, version: 0.8.3, branch: release/0.8.3, commit: b918c94, tree: 492c457, dirty: yes }
+  - { date: 2026-09-05T22:28:30+0900, suite: release, version: 0.8.3, branch: release/0.8.3, commit: b918c94, tree: 492c457, dirty: yes }
+  - { date: 2026-09-05T22:37:26+0900, suite: release, version: 0.8.3, branch: release/0.8.3, commit: 96a3ce3, tree: 4a3aa07, dirty: yes }
+  - { date: 2026-09-05T23:19:48+0900, suite: release, version: 0.8.3, branch: release/0.8.3, commit: 090221c, tree: cbbc647, dirty: yes }
+  - { date: 2026-09-05T23:33:46+0900, suite: release, version: 0.8.3, branch: release/0.8.3, commit: a564a39, tree: b5f5409, dirty: yes }
+  - { date: 2026-09-05T23:50:26+0900, suite: release, version: 0.8.3, branch: release/0.8.3, commit: f1c58c9, tree: 59ce167, dirty: yes }
+  - { date: 2026-09-06T00:02:26+0900, suite: release, version: 0.8.3, branch: release/0.8.3, commit: 988eb2c, tree: 6201d26, dirty: yes }
+  - { date: 2026-09-06T00:36:20+0900, suite: release, version: 0.8.3, branch: release/0.8.3, commit: 888b661, tree: bbfbd41, dirty: yes }
+  - { date: 2026-09-06T01:03:08+0900, suite: release, version: 0.8.3, branch: release/0.8.3, commit: 888b661, tree: bbfbd41, dirty: yes }

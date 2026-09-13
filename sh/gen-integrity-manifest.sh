@@ -18,10 +18,22 @@
 #     ⑶ 마켓 전체 버전·타 플러그인 버전은 판정 근거로 쓰지 않는다
 #   본 스크립트는 `plugins/fpm-core/` 밖을 **읽지도 쓰지도 않는다**.
 #
-# 사용: bash sh/gen-integrity-manifest.sh [--check] [--bundle <dir>]
+# 사용: bash sh/gen-integrity-manifest.sh [--check] [--bundle <dir>] [--repo <dir>]
 #         (기본)   생성·기록. publish 직전에 부른다
 #         --check  기록하지 않고 현재 번들과 기존 매니페스트를 대조 (drift 검사)
+#         --bundle 해시 대상 번들 디렉토리 (기본: 정본 $REPO_DIR/plugins/fpm-core)
+#         --repo   메타 `git_sha` 를 읽을 repo (기본: --bundle 을 담은 정본 repo)
 # exit: 0=성공/일치, 1=실패/불일치
+#
+# 🔴 **생성 시점 계약 (prj1#Issue459)** — 매니페스트는 *배송될 바이트* 위에서 만든다.
+#   fpm 은 배송 경로가 둘이고 **트리가 서로 다르다**:
+#     ⑴ 마켓(prj20) 경로 : $SRC/plugins/fpm-core 를 그대로 vendor  → 정본 바이트
+#     ⑵ 미러(fpm) 경로   : forward 가 scripts/fpm-sanitize.sh 로 **치환한 사본**을 rsync
+#   그래서 정본 기준 매니페스트를 미러에 그대로 실으면 sanitize 대상 파일 전건이
+#   영구 CHANGED 로 잡힌다(2026-09-01 실측: changed 8 + removed 1). 상시 FAIL 은
+#   진짜 변조를 묻으므로 게이트가 무력화된다.
+#   ⇒ ⑵ 는 **sanitize 이후 미러 트리에서** `--bundle <미러>/plugins/fpm-core` 로
+#      재생성한다. 배선 지점은 scripts/fpm-sync.sh do_forward 말미(커밋 직전) 하나다.
 
 set -euo pipefail
 
@@ -30,15 +42,22 @@ die() { printf 'gen-integrity-manifest: %s\n' "$*" >&2; exit 1; }
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 BUNDLE="${REPO_DIR}/plugins/fpm-core"
 MODE="write"
+# git_sha 출처 repo. --bundle 로 **미러 트리**를 지정할 때는 그 미러가 파생된
+# 정본 repo 를 --repo 로 함께 준다 — 미러 자신의 HEAD 는 아직 만들어지지 않은
+# 커밋(지금 스테이징 중인 sync 커밋)이라 기록해도 의미가 없다.
+SHA_REPO=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --check)  MODE="check"; shift ;;
         --bundle) BUNDLE="$2"; shift 2 ;;
-        -h|--help) echo "usage: sh/gen-integrity-manifest.sh [--check] [--bundle <dir>]"; exit 0 ;;
+        --repo)   SHA_REPO="$2"; shift 2 ;;
+        -h|--help) echo "usage: sh/gen-integrity-manifest.sh [--check] [--bundle <dir>] [--repo <dir>]"; exit 0 ;;
         *) die "알 수 없는 인자: $1" ;;
     esac
 done
+[[ -n "$SHA_REPO" ]] || SHA_REPO="$REPO_DIR"
+[[ -d "$SHA_REPO" ]] || die "git_sha repo 부재: $SHA_REPO"
 
 [[ -d "$BUNDLE" ]] || die "번들 디렉토리 부재: $BUNDLE"
 MANIFEST="${BUNDLE}/.fpm-integrity.json"
@@ -46,7 +65,7 @@ MANIFEST="${BUNDLE}/.fpm-integrity.json"
 # 파서 무의존 원칙 (scar-manifest.yml 규약) — python3 만 쓴다.
 PY="$(command -v python3)" || die "python3 미발견"
 
-"$PY" - "$BUNDLE" "$MANIFEST" "$MODE" "$REPO_DIR" <<'PYEOF'
+"$PY" - "$BUNDLE" "$MANIFEST" "$MODE" "$SHA_REPO" <<'PYEOF'
 import hashlib, json, os, subprocess, sys, datetime
 
 bundle, manifest, mode, repo = sys.argv[1:5]
@@ -65,7 +84,12 @@ EXCLUDE_SUFFIX = ('.pyc', '.pyo', '.log', '.tmp')
 #   저작 머신 작업트리에만 있는 빌드 산출물(ex: vscode-ext/*.vsix — 하위 .gitignore 로
 #   의도적 제외)을 해시에 담으면, 정상 설치본이 영구 REMOVED 로 잡힌다.
 #   거짓 경고는 진짜 경고를 묻는다 — prj3#Issue452 가 정확히 그 실패였다.
-#   ⚠️ write 모드에서만 적용한다. check 모드의 대상(설치본 캐시)은 git repo 가 아니다.
+#   ⚠️ **write·check 양쪽에 적용한다** (2026-09-05, prj1#Issue479). 종전엔 write 전용이라
+#      비대칭이었고, 그 비대칭이 **저작 머신 자기검사를 원리적으로 불가능**하게 만들었다:
+#      write 가 제외한 미추적 산출물(vscode-ext/*.vsix)을 check 가 훑어 재생성 **직후에도**
+#      `ADDED 1건` 으로 FAIL 한다(실측). 상시 FAIL 은 진짜 변조를 묻는다 — 본 스크립트가
+#      막으려던 바로 그 실패다. 설치본 캐시 대상에서는 `git ls-files` 가 실패해 TRACKED=None
+#      이 되므로 **종전 동작 그대로**다. 즉 이 대칭화는 저작 트리에만 영향을 준다.
 #   ⚠️ 근사임을 명시한다 — 실제 배송 집합은 **마켓(prj20) 추적 파일**이고 여기서 쓰는 것은
 #      **소스(prj1) 추적 파일**이다. 한쪽에만 추적되는 파일(ex: prj1 미추적인데 마켓엔
 #      커밋된 README)은 해시에서 빠진다. 방향은 **과소 포함**이라 거짓 경고를 만들지 않고
@@ -81,7 +105,7 @@ def tracked_set():
     except Exception:
         return None
 
-TRACKED = tracked_set() if mode == 'write' else None
+TRACKED = tracked_set()
 
 def walk():
     for root, dirs, files in os.walk(bundle):

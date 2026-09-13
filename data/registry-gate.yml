@@ -1,0 +1,23 @@
+# registry-gate.yml — 프로젝트 **등록 게이트** 판정 데이터 (Issue476)
+#
+# ⚠️ 값만 둔다. 판정 로직은 sh/fpm-registry-gate 가 소유한다.
+#   여기 목록이 낡으면 게이트가 **내 프로젝트를 남의 것으로 오판**한다 —
+#   새 GitHub 계정·조직을 쓰기 시작하면 그때 한 줄 추가한다.
+#
+# 판정 한 줄: *"내 커밋이 0건이고 origin 이 upstream 이면 등록하지 않는다."*
+#   ⚠️ **둘 다** 여야 한다. fork 후 내가 커밋했으면 정당한 내 프로젝트이고,
+#      남의 계정 repo 에 협업 커밋을 쌓고 있어도 내 프로젝트다.
+#      실측(2026-09-05): prj35 fSnippetWinv-basic 은 origin 이 `ahjoeNam` 이지만
+#      내 커밋 20건(전체 65건) — 한쪽 조건만 봤으면 오판했을 자리다.
+#   ⚠️ **경로 기준으로 잡지 않는다.** `~/_git/_open/` 하위 제외 같은 규칙은 관례일
+#      뿐이라 보관소 **밖**에 둔 남의 repo 를 못 잡는다(Issue476 판정 근거).
+
+# origin 소유자(호스트 다음 첫 경로 조각)가 여기 있으면 "내 계정" 이다
+owned_git_accounts:
+  - Finfra
+  - nowage
+
+# git author 로 쓰는 이메일. `git config user.email` 은 **자동 포함**되므로 적지 않아도 된다
+owned_authors:
+  - user@gmail.com
+  - user@example.com

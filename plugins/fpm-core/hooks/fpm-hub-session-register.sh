@@ -37,7 +37,10 @@ except Exception:
 # prj1#Issue341→prj3#Issue428: pid 산출(생존 확인 + 부모 체인 claude 승격)은
 #   lib/claude-pid.sh 단일 지점. topic.sh·model.sh 재등록 경로와 판정 공유.
 # shellcheck source=lib/claude-pid.sh
-. "$HOME/.claude/hooks/lib/claude-pid.sh"
+# prj3#Issue545 — 번들(플러그인) 설치본은 ~/.claude/hooks/lib 가 없다. 자기 옆의 lib/ 로 폴백한다
+FPM_LIB_DIR="$HOME/.claude/hooks/lib"
+[ -d "$FPM_LIB_DIR" ] || FPM_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)/lib"
+. "$FPM_LIB_DIR/claude-pid.sh"
 PID=$(fpm_resolve_claude_pid "$PID_JSON" "$PPID")
 
 [ -z "$CWD" ] && exit 0   # Issue179: PWD fallback 제거 — hook 컨텍스트 PWD 는 frontmost 반영 위험(세션 오귀속), doc-register.sh:43 표준 정합
@@ -69,7 +72,7 @@ ENTRY="${CLAUDE_CODE_ENTRYPOINT:-}"
 EDITOR_SIG=""
 if [ "$ENTRY" != "claude-vscode" ]; then
   # shellcheck source=lib/zed-detect.sh
-  . "$HOME/.claude/hooks/lib/zed-detect.sh" 2>/dev/null || true
+  . "$FPM_LIB_DIR/zed-detect.sh" 2>/dev/null || true
   if command -v zed_detect_by_proc >/dev/null 2>&1 && zed_detect_by_proc "$PID"; then
     EDITOR_SIG="zed"
     zed_mark "$SID"

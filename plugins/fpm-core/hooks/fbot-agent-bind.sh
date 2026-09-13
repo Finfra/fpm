@@ -58,10 +58,32 @@ sid=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)
 #   1순위: tool_input.name — 핀봇 스폰은 Agent 이름을 bot_id 로 준다(SendMessage 주소와 일치).
 #   2순위: 프롬프트 본문의 첫 `fbot-…` 토큰 — 스폰 프롬프트가 자기 정체를 밝히는 자리다.
 #   ⚠️ 추출은 후보를 만들 뿐이다. **실재 판정은 레지스트리가 한다**(아래 ③).
+#
+# 🔴 프롬프트 scan 폐기 (Issue589, 2026-09-09) — **`name` 축만 남긴다.**
+#   종전 2순위(프롬프트 본문의 `fbot-…` 토큰)는 **본문에 등장하기만 하면** 적중했다.
+#   익명 하청의 프롬프트가 부모나 설계 문서를 언급하는 것은 지극히 자연스러운데,
+#   그 순간 실재 개체가 후보로 잡혀 결속·`--form agent` 오염·checkin 되고, 하청이
+#   끝나면 fbot-agent-done.sh 가 **같은 규칙**으로 허위 작업기록을 남기고 checkout
+#   시킨다 — **부모가 자기 하청에게 강제 퇴근당한다**(실측 재현).
+#
+#   ⚠️ 첫 수정(2026-09-08)은 `subagent_type` **유무**로 갈랐는데 **틀렸다.** 그 필드는
+#   Agent 도구의 **선택 인자**라 생략이 가능하고, 생략된 호출이 곧 익명 하청이다.
+#   실측(트랜스크립트 전수 141건): `subagent_type` 부재 **20건(14%)** · 그중 name 이
+#   비봇이면서 프롬프트가 실재 봇을 언급한 것 **3건**(fbot-chief-narae·fbot-exec-mireu).
+#   가드가 가장 흔한 형태를 그대로 통과시키고 있었다.
+#
+#   폐기가 안전한 근거 — 계약이 이미 `name` 을 스폰 규약으로 못박았다:
+#     · fbot-lead.py `_spawn_commands` 는 `Agent(name='<bot_id>', …)` 만 낸다
+#     · fbot-arch.md §F1 이 *"프롬프트에 결속 1줄을 넣던 절차는 **폐지**한다"* 로 확정
+#     · 실측 141건 중 봇 스폰 31건 **전부** `name` 이 `fbot-` 로 시작한다
+#   즉 2순위는 **폐지된 관행을 위한 폴백**이었고, 그것이 유일한 공격면이었다.
+#
+#   ⚠️ 판별자를 `subagent_type` 화이트리스트로 두지 않는 이유도 같다 — 새 에이전트가
+#   생길 때마다 낡고, 부재 케이스를 원리적으로 못 막는다. 신뢰의 근거는 이름이다.
+
 cands=$(printf '%s' "$input" | jq -r '
-    [ (.tool_input.name // empty),
-      ((.tool_input.prompt // "") | [scan("fbot-[A-Za-z0-9_-]+")] | .[]) ]
-    | map(select(startswith("fbot-"))) | unique | .[]
+    [ (.tool_input.name // "") ]
+    | map(select(type == "string" and startswith("fbot-"))) | unique | .[]
   ' 2>/dev/null)
 [ -n "$cands" ] || exit 0
 

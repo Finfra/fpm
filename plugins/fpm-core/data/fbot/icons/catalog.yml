@@ -1,13 +1,18 @@
-# fbot 아이콘 카탈로그 — 사람 편집 가능. 형식: {role}: shape=<도형> base=<#hex> label=<한글> tags=<t1|t2>
-# 도형 어휘: star shield hexagon triangle grid check magnifier
-exec: shape=star base=#B8860B label=중역핀봇 tags=보고|승인
-hr: shape=shield base=#2E6E4E label=인사핀봇 tags=채용|게이트
-taskmgr: shape=hexagon base=#3A5FA0 label=작업핀봇 tags=배분|모니터링
-architect: shape=triangle base=#7A4FA0 label=설계핀봇 tags=설계|점검
-planner: shape=grid base=#A0623A label=기획자핀봇 tags=plan|task
-qa: shape=check base=#3A8A8A label=QA핀봇 tags=검증|판정
-research: shape=magnifier base=#6E6E3A label=리서치핀봇 tags=조사|선례
-recruit: shape=magnet base=#8A3A5F label=리크루팅핀봇 tags=직능|발굴
-igmaker: shape=frame base=#5F8A3A label=인포그래픽핀봇 tags=변환|개선
-consultant: shape=speech base=#3A6E8A label=컨설턴트핀봇 tags=선례|큐레이션
-crosscheck: shape=venn base=#A03A3A label=교차검증핀봇 tags=2차의견|외부LLM
+# fbot 아이콘 카탈로그 — 사람 편집 가능.
+# 형식: {role}: shape=<도형> base=<#hex> label=<한글> tags=<t1|t2> [origin=<출처>] [origin_seen=<epoch>] [status=archived] [manager=true]
+# 도형 어휘: star shield hexagon triangle grid check magnifier magnet frame speech venn tag
+# origin (prj3#Issue589): agent:N | skill:N | plugin:M/N | web:URL | native — 복수는 '|'.
+#   ⚠️ 값에 공백·따옴표 불가(파서가 split() 기준). 쓰기는 훅 경유만 — 직접 Edit 금지.
+#   origin_seen = drift 판정 기준선(원본을 본 시각). 매뉴얼 mtime 을 기준선으로 쓰지 않는다.
+chief: shape=star base=#B8860B label=총괄핀봇 tags=보고|승인 manager=true origin=native
+hr: shape=shield base=#2E6E4E label=인사핀봇 tags=채용|게이트 manager=true origin=native
+lead: shape=hexagon base=#3A5FA0 label=팀장핀봇 tags=배분|모니터링 manager=true origin=native
+architect: shape=triangle base=#7A4FA0 label=설계핀봇 tags=설계|점검 origin=native
+planner: shape=grid base=#A0623A label=기획핀봇 tags=plan|task origin=native
+qa: shape=check base=#3A8A8A label=QA핀봇 tags=검증|판정 origin=native
+research: shape=magnifier base=#6E6E3A label=조사핀봇 tags=조사|선례 origin=native
+scout: shape=magnet base=#8A3A5F label=발굴핀봇 tags=직능|발굴 origin=native
+graphic: shape=frame base=#5F8A3A label=도해핀봇 tags=변환|개선 origin=agent:ig-maker
+consult: shape=speech base=#3A6E8A label=자문핀봇 tags=선례|큐레이션 origin=agent:consultant-m
+crosscheck: shape=venn base=#A03A3A label=교차검증핀봇 tags=2차의견|외부LLM origin=skill:agy-diff-reviewer|skill:agy-file-processor|skill:agy-image-describer|skill:agy-scrapper
+release: shape=tag base=#8A5A2B label=배포핀봇 tags=배포|릴리즈 origin=native

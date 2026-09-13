@@ -1,0 +1,53 @@
+#!/bin/bash
+# claude-pid.sh — hub live 등록용 claude 세션 pid 산출 공용 헬퍼 (source 전용, 실행 파일 아님)
+#
+# ⚠️ 글로벌 SCAR 변경 가드 (Issue46): 본 헬퍼는 모든 프로젝트가 공유. cwd ≠ ~/.claude
+#   면 즉시 수정 금지 → ~/.claude/Issue.md 이슈 등록 후 처리. 설계 SSOT:
+#   ~/_git/___pm/_doc_arch/hub_live_session.md. 절차: ~/.claude/rules/global-scar-change-rules.md
+#
+# Issue428 (prj1#Issue341 일반화): stdin JSON 의 pid·훅 $PPID 를 그대로 믿으면 안 된다.
+#   일부 환경(Linux/VSCode 확장·macOS native-binary)에서 그 값이 장수 claude 세션이 아니라
+#   훅을 스폰한 **단기 wrapper/subprocess pid** 다. 그 pid 로 /session/register 하면 등록
+#   직후 pid 가 죽어 서버 _collect_live_sessions 가 세션을 terminal 로 강등 →
+#   살아있는 세션이 hub 활성 세션 카드에서 사라진다(prj9a 실측: 생존 4세션 중 2개만 표시).
+#
+#   원래 fpm-hub-session-register.sh(SessionStart)에만 있던 보정을 본 lib 로 추출해
+#   topic.sh(UserPromptSubmit)·model.sh(Stop·PostToolUse) 재등록 경로에도 동일 적용한다
+#   — 판정 단일 지점. 재등록은 서버에서 live_pid 를 무조건 덮어쓰므로(server.py
+#   _handle_session_register) 한 곳이라도 오염 pid 를 보내면 좋은 pid 가 교체된다.
+#
+# 비용 가드: ps 조회는 체인 최대 10단계 × 프로세스당 2회. 등록 훅은 전부
+#   fire-and-forget 경로라 차단성 아님. 비해당 이벤트에서는 source 자체가 안 일어난다.
+
+_fpm_pid_alive() { kill -0 "$1" 2>/dev/null; }
+
+_fpm_ppid_of() { ps -o ppid= -p "$1" 2>/dev/null | tr -d ' '; }
+
+# comm basename 이 claude 계열이거나, args 가 claude 배포본 cli.js/native-binary 를 실행
+# 중이면 세션 프로세스.
+#   ⚠️ args 에 "claude" 문자열만 보고 판정하면 안 된다 — `zsh -c source ~/.claude/...`
+#      같은 무관 프로세스가 걸린다(실측 오탐).
+_fpm_is_claude_proc() {
+  _c=$(ps -o comm= -p "$1" 2>/dev/null); _c=${_c##*/}
+  case "$_c" in claude|claude-code) return 0 ;; esac
+  case "$(ps -o args= -p "$1" 2>/dev/null)" in
+    *claude*cli.js*|*claude-code*|*native-binary/claude*) return 0 ;;
+  esac
+  return 1
+}
+
+# fpm_resolve_claude_pid <candidate_pid> <hook_ppid> → stdout: 산출 pid
+#   1) candidate 가 정수 아니거나 사망 → hook_ppid 로 대체
+#   2) 부모 체인을 최대 10단계 타고 올라가 claude 세션 프로세스를 찾으면 승격
+#   3) 못 찾으면 1) 결과 그대로 (기존 fallback 동작 유지)
+fpm_resolve_claude_pid() {
+  _pid="$1"; _hook_ppid="$2"
+  case "$_pid" in ''|*[!0-9]*) _pid="$_hook_ppid" ;; esac
+  _fpm_pid_alive "$_pid" || _pid="$_hook_ppid"
+  _p="$_pid"; _i=0
+  while [ -n "$_p" ] && [ "$_p" != "0" ] && [ "$_p" != "1" ] && [ "$_i" -lt 10 ]; do
+    if _fpm_is_claude_proc "$_p"; then _pid="$_p"; break; fi
+    _p=$(_fpm_ppid_of "$_p"); _i=$((_i + 1))
+  done
+  printf '%s' "$_pid"
+}

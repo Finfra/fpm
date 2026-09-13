@@ -33,7 +33,9 @@ echo "═══ A-4 / E-4 공개 미러 dry-run + 설치 ═══"
 
 # [1] forward 레시피 재현 (fpm 미적용) ────────────────────────────
 git -C "$REPO" archive HEAD | tar -x -C "$TMP" || { echo "🚨 git archive 실패"; exit 1; }
-"$HERE/fpm-sanitize.sh" "$TMP" >/dev/null 2>&1 || { bad "sanitize 실행"; }
+# 성공도 카운트한다 (Issue480) — 종전엔 실패만 bad 로 집계해 PASS 총계가 실제 검사 수와
+#   어긋났고, "전건 PASS" 를 몇 건 기준으로 읽어야 하는지가 모호했다.
+if "$HERE/fpm-sanitize.sh" "$TMP" >/dev/null 2>&1; then ok "sanitize 실행"; else bad "sanitize 실행"; fi
 rsync -a "${EXCLUDES[@]}" "$TMP"/ "$TMP2"/ >/dev/null 2>&1 && ok "미러 스냅샷 생성(exclude rsync)" || bad "미러 rsync"
 
 # [2] 게이트 통과 (E-4) ───────────────────────────────────────────

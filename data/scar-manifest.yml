@@ -96,7 +96,7 @@ payloads:
         - fpm-show
       skills:
         - fbot-icon             # 핀봇 아이콘 카탈로그+결정론 SVG 생성기 (prj3#Issue436)
-        - fbot-recruit          # 리크루팅핀봇 — role 신설 전담(agents 우선→웹검색 폴백) (prj3#Issue479)
+        - fbot-scout            # 발굴핀봇 — role 신설·아카이브·부활 전담(agents 우선→웹검색 폴백) (prj3#Issue479, 개명 prj3#Issue610)
         - fpm-cdf
         - fpm-issue-map
         - fpm-pm
@@ -113,19 +113,30 @@ payloads:
         - dispatch-sessionend.sh
         - dispatch-sessionstart.sh
         - fbot-agent-bind.sh
+        - fbot-agent-done.sh
         - fbot-board-init.sh
         - fbot-board-monitor.sh
         - fbot-checkin.sh
         - fbot-checkout.sh
-        - fbot-exec-report.py
+        - fbot-chief-nudge.sh   # 매니저 무배분 직접작업 환기 (prj3#Issue605)
+        - fbot-chief-report.py
         - fbot-heartbeat.sh
         - fbot-hr-gate.py
-        - fbot-recruit.py       # 리크루팅핀봇 실행체 — register/archive/revive/list (prj3#Issue479)
+        - fbot-idle.sh
+        - fbot-inbox-nudge.sh
+        - fbot-inbox.py
         - fbot-manual-review.py
+        - fbot-name-nudge.sh
+        - fbot-org.py
+        - fbot-outbox.py
+        - fbot-scout.py         # 발굴핀봇 실행체 — register/archive/revive/list (prj3#Issue479)
+        - fbot-registry-audit.py # fbot 레지스트리(registry.db) 정합성 검사기 (prj3#Issue515)
         - fbot-schedule.sh
         - fbot-state.py
-        - fbot-taskmgr.py
+        - fbot-lead.py
         - fbot-tick.sh
+        - fbot-ups.sh           # UserPromptSubmit fbot 3종 래퍼 — fork 3→1 (prj3#Issue594)
+        - fbot-writeguard.sh    # 매니저 prj 산출물 직접 수정 차단 (prj3#Issue607)
         - fbot-worker-plist.sh
         - fbot-worker-unit.sh
         - fpm-ask-form-template.js
@@ -140,6 +151,12 @@ payloads:
         - fpm-hub-session-topic.sh
         - fpm-hub-trigger.sh
         - hooks.json
+        - lib/ask-common.sh
+        - lib/claude-pid.sh
+        - lib/hub-context.sh
+        - lib/hub-instruction.py
+        - lib/schedule-core.py
+        - lib/zed-detect.sh
     # ── hooks 정본 판정 (Issue412 ①, 2026-08-29) ─────────────────────────────
     #   **정본은 prj3(`~/.claude/hooks/`) 이고 번들은 사본이다.** 근거:
     #     ① 이름 일치 27건이 **전건 내용 일치**이고 prj3 가 상위집합(prj3 전용 45건)

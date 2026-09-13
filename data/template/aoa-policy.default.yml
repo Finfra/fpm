@@ -9,7 +9,7 @@
 #
 # 값의 성격이 두 갈래다 — 섞지 말 것:
 #   • aoa-memory 계열 → 파일이 없어도 policy.py 의 DEFAULTS 로 **fail-soft**
-#   • fbot_* 계열     → hooks/fbot-hr-gate.py·fbot-taskmgr.py 가 **fail-loud**. 키가 없으면 게이트가 죽는다
+#   • fbot_* 계열     → hooks/fbot-hr-gate.py·fbot-lead.py 가 **fail-loud**. 키가 없으면 게이트가 죽는다
 #   즉 fbot_* 를 지우면 핀봇 채용·배분이 통째로 멈춘다. 값을 조정하되 키는 남긴다
 #
 # 설계 SSOT: _doc_arch/fbot-arch.md · prj5 _doc_arch/aoa-memory-design.md "데이터 에이징 정책"
@@ -48,7 +48,7 @@ fbot_concurrent_limit: 5         # 동시 상주 상한 — state != checkout �
 fbot_spawn_budget_monthly: 30    # 월 채용 상한 — 원장 registry.kv ns=fbot:budget key=YYYY-MM
                                  #   (신규 월 키 생성이 곧 리셋 — 별도 리셋 잡 없음)
 
-# ── fbot 수요측 (배분 가드 — hooks/fbot-taskmgr.py POLICY_KEYS) ───────────
+# ── fbot 수요측 (배분 가드 — hooks/fbot-lead.py POLICY_KEYS) ───────────
 fbot_dispatch_monthly_limit: 30     # 월 배분 상한 — ns=fbot:dispatch
 fbot_dispatch_concurrent_limit: 3   # 동시 배분 상한 — registry.job kind=fbot_dispatch 활성 건수
 

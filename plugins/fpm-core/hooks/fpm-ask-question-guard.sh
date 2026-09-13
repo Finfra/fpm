@@ -13,7 +13,7 @@
 #   설계상 한계(코드 버그 아님)이며, 본 hook 이 재발 방지 가드 역할.
 #
 # 동작:
-#   - .hub-mode-active-<hash> 없음 or effective=off → exit 0 (평소) [Issue283]
+#   - .hub-active/<hash> 없음 or effective=off → exit 0 (평소) [Issue283]
 #   - stop_hook_active true               → exit 0 (무한 루프 방지)
 #   - Mode D 마커(htm-form:auto:v1) 존재  → exit 0 (Mode D 가 정당 처리)
 #   - 직전 assistant 응답이 평문 결정 질문 패턴 매칭

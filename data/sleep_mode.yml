@@ -19,7 +19,7 @@ rules:
   # ① 권장형 진행 — 크리티컬 아니면 AskUserQuestion 없이 권장안 자율 진행
   autonomous: true
   # ② 새 hub tab 미개방 — 자동 hub 렌더/브라우저 open 억제
-  suppress_hub: true
+  suppress_hub: false
   # ③ say 무음 — 음성 알림 전 카테고리 차단
   silence_say: true
   # ④ 완료 후 당일 이슈 검토 — 요청 마무리 후 당일 이슈 검토 + 로그 append

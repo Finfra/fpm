@@ -66,7 +66,7 @@ FPM_SCAR_COMMANDS=(
 )
 FPM_SCAR_SKILLS=(
     fbot-icon
-    fbot-recruit
+    fbot-scout
     fpm-cdf
     fpm-issue-map
     fpm-pm

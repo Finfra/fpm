@@ -1,0 +1,5 @@
+# doc-base.yml — `_doc_base/` git 추적 선언 (Issue477)
+#   판정 SSOT: _doc_arch/gitignore-policy.md "# `_doc_base/` 예외 — 명시 선언 규칙"
+#   검사: sh/doc-base-check.sh
+tracking: allow
+reason: "remote origin 없는 로컬 전용 repo — 유출 경로가 없고, 추적이 유일한 버전 이력이다"

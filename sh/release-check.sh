@@ -13,6 +13,10 @@
 #
 # 설계 SSOT: _doc_arch/fpm-release-test.md / plan: _doc_work/plan/fpm-release-test_plan.md
 #
+# 배선 (Issue478_2): 호출은 `bash tdd/run-tdd.sh --only release` 가 표준이다.
+#   러너·판정·결과 경로가 이미 표준화돼 있어 새 규약이 생기지 않는다. 전체 PASS 시
+#   scripts/fpm-deploy-record.sh --gate release 로 통과 기록을 남기고, 출고(G4)가 그것을 읽는다.
+#
 # 사용: bash sh/release-check.sh            전체 (1+2+3)
 #       bash sh/release-check.sh --no-sandbox  스테이지3 생략 (단위+게이트만)
 #       bash sh/release-check.sh --quiet       서브 출력 숨김, 스테이지 요약만
@@ -65,7 +69,11 @@ if [ "$SANDBOX" -eq 1 ]; then
     trap 'rm -rf "$SBX"' EXIT
     sb_fail=0
     # 격리 HOME. install.sh 가 $HOME/.zshrc·$HOME/.info 에만 쓰도록 제한.
-    sb() { run env HOME="$SBX" bash "$1" "${@:2}"; }
+    # FPM_BACKUP_DIR 을 함께 격리한다 (Issue483) — HOME 만 옮기면 uninstall.sh 의 백업이
+    #   `${FPM_BACKUP_DIR:-<repo>/_doc_work/z_done}` 기본값을 타고 **실 저장소**로 나간다.
+    #   격리 HOME 인데 산출물은 밖에 쌓이는 구조라, 게이트를 돌릴 때마다 미추적 폴더가
+    #   하나씩 늘었다(2026-09-05 실측 2건). 샌드박스는 흔적을 남기지 않아야 한다.
+    sb() { run env HOME="$SBX" FPM_BACKUP_DIR="$SBX/backup" bash "$1" "${@:2}"; }
 
     MARKER="# >>> fpm functions >>>"
 
@@ -161,6 +169,18 @@ fi
 hr
 if [ "$STAGE_FAIL" -eq 0 ]; then
     echo "✅ release-check: 자동 영역 전부 PASS"
+    # ── G3 통과 기록 (Issue478_2) ────────────────────────────────────
+    #   왜 여기인가: 통과 여부를 아는 곳이 여기 하나다. G4(do_deploy 진입부)는
+    #   "이 코드가 5스테이지를 통과했는가" 를 물어야 하는데, 기록이 없으면
+    #   물을 대상 자체가 없어 게이트가 **호출처 0건**으로 돌아간다(결손2 재발).
+    #   ⚠️ `--no-sandbox` 는 기록하지 않는다 — 스테이지 3·4(샌드박스 설치·미러
+    #      dry-run)를 건너뛴 부분 실행이라 통과 근거가 될 수 없다. 부분 실행을
+    #      전체 통과로 기록하면 게이트가 존재만 하고 아무것도 지키지 못한다.
+    if [ "$SANDBOX" -eq 1 ] && [ -x "$REPO/scripts/fpm-deploy-record.sh" ]; then
+        bash "$REPO/scripts/fpm-deploy-record.sh" --gate release --repo "$REPO" || true
+    elif [ "$SANDBOX" -eq 0 ]; then
+        echo "ℹ️ --no-sandbox 실행이라 G3 통과 기록 생략 (출고 게이트 근거가 되지 않는다)"
+    fi
 else
     echo "🚨 release-check: $STAGE_FAIL 스테이지 FAIL"
 fi

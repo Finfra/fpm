@@ -39,7 +39,7 @@ import time
 DEFAULT_AOA_DIR = os.path.join(os.path.expanduser("~"), ".claude", "data", "aoa")
 
 # role 카탈로그 SSOT — fbot-icon 스킬 소유 (fbot-arch.md §조직 role 등록 절차 ⑤단계).
-#   env 는 테스트 픽스처 주입용(fbot-recruit.py 와 동일 규약).
+#   env 는 테스트 픽스처 주입용(fbot-scout.py 와 동일 규약).
 CATALOG_PATH = os.environ.get("FBOT_CATALOG") or os.path.join(
     os.path.expanduser("~"), ".claude", "data", "fbot", "icons", "catalog.yml")
 
@@ -57,7 +57,7 @@ FBOT_JOB_KINDS = ("fbot_session", "fbot_dispatch", "fbot_report")
 
 # 상비 role — 값의 SSOT 는 fbot-state.py CORE_ROLES 다(여기는 후보 스캔용 사본).
 #   ⚠️ 값을 바꿀 일이 생기면 그쪽을 먼저 고친다. 판정 자체는 기록 계층이 최종 방어한다.
-CORE_ROLES = ("exec", "recruit", "hr", "taskmgr")
+CORE_ROLES = ("chief", "scout", "hr", "lead")
 
 BUDGET_NS = "fbot:budget"  # registry.kv 예산 원장 네임스페이스 (registry budget/budget_monthly 재사용 금지 — 계약 T2)
 
@@ -102,7 +102,16 @@ def load_policy(keys=POLICY_KEYS) -> dict:
     `keys` 로 검증 대상을 갈아끼운다 — 배치(POLICY_KEYS)와 수명주기(LIFECYCLE_KEYS)는
     축이 달라, 한쪽 키 부재가 다른 쪽 기능을 죽이면 안 된다.
     """
+    # prj3#Issue626 — **정책 수치의 정본은 prj3** 다. 데이터(registry.db·learn.db)는 용량 때문에
+    #   prj5 에 남지만(zshenv 명시 결정) 수치는 prj3 소관이다. 폴백 순서가 핵심이다:
+    #   ⓐ `aoa_dir()` 에 있으면 그것 — **테스트가 픽스처에 쓴 policy 를 계속 읽는다**
+    #   ⓑ 없으면 prj3. 운영에서는 prj5 사본을 걷었으므로 여기로 온다
+    #   순서를 뒤집으면 테스트가 운영 policy 를 읽어 픽스처가 무력해진다.
     path = os.path.join(aoa_dir(), "policy.yml")
+    if not os.path.exists(path):
+        _p3 = os.path.join(os.path.expanduser("~"), ".claude", "data", "aoa", "policy.yml")
+        if os.path.exists(_p3):
+            path = _p3
     if not os.path.exists(path):
         raise Reject(2, f"policy 로드 실패 — 파일 없음: {path}")
     pol = {}
@@ -411,15 +420,19 @@ def move_career(bot_id: str, to: str, reason: str) -> None:
 def lifecycle_candidates(con, pol, now, mode):
     """수명주기 후보 스캔 — 상비봇과 이미 해고된 봇은 대상에서 뺀다.
 
-    ⚠️ 상비 판정은 **role + parent 없음**이다. role 만 보면 `fbot-exec-issue331`
-       (role=exec, parent=fbot-taskmgr) 같은 이슈 워커까지 영구 보호되어, 정작 정리
+    ⚠️ 상비 판정은 **role + parent 없음**이다. role 만 보면 `fbot-chief-issue331`
+       (role=chief, parent=fbot-lead) 같은 이슈 워커까지 영구 보호되어, 정작 정리
        대상인 워커가 상비봇 행세를 하며 남는다(2026-08-31 실측으로 좁힌 조건).
        최종 방어는 기록 계층(fbot-state.py `is_core_bot`)이 한 번 더 한다 — 여기는
        후보에서 빼는 것이고 거기는 전이 자체를 막는 것이라 역할이 다르다.
     """
     out = []
     for bot in con.execute("SELECT * FROM bot ORDER BY created_at").fetchall():
-        if bot["role"] in CORE_ROLES and bot["parent_bot_id"] is None:
+        # prj3#Issue609 — 판정은 `fbot-state.is_core_bot` 과 **같은 규칙**이어야 한다(갈리면 한쪽만 보호한다).
+        #   PM(lead)은 채용으로 생겨 parent 가 있으므로, 표지는 parent 가 아니라 **조직 자리**다.
+        _core = ((bot["prj"] is not None and bool(bot["seat_id"])) if bot["role"] == "lead"
+                 else (bot["role"] in CORE_ROLES and bot["parent_bot_id"] is None))
+        if _core:
             continue  # 계약 §조직 — 상비봇 영구 제외
         if bot["career"] == "terminated":
             continue

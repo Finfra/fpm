@@ -201,6 +201,7 @@ HANDLERS = {"aoa_mq_enqueue": t_enqueue, "aoa_mq_list": t_list, "aoa_mq_ack": t_
 
 
 SESSION_TOUCH = os.path.join(MQ, ".last-session-touch")
+DISCOVER_TTL_MS = 60000  # prj1#Issue484 — server/discover·tools/list 캐시 수명. prj20 cd8972f 와 동일 값
 
 
 def touch_session():
@@ -241,14 +242,25 @@ def main():
         except Exception:
             continue
         method, rid = req.get("method"), req.get("id")
-        if method in ("initialize", "tools/call"):
+        # prj1#Issue484 — server/discover 를 함께 마커로 삼는다. 신 클라이언트는 initialize 를 아예 보내지
+        # 않으므로 이 항목이 빠지면 세션 개시 시점의 마커가 찍히지 않고, MCP 도구를 한 번도 부르지
+        # 않는 세션은 tick 이 죽은 것으로 오판해 통지를 과다 발송한다.
+        if method in ("server/discover", "initialize", "tools/call"):
             touch_session()                             # F3-3 세션 활성 마커
-        if method == "initialize":
+        if method == "server/discover":
+            # MCP 2026-07-28 무상태 코어(SEP-2575). 이 서버의 모듈 전역은 TOOLS·HANDLERS·상수뿐이라
+            # 요청 간 세션 변수가 없다 — 이 분기는 이미 무상태인 사실을 프로토콜 표면에 선언하는 것이다.
+            reply(rid, {"ttlMs": DISCOVER_TTL_MS,
+                        "cacheScope": "private",
+                        "supportedVersions": ["2026-07-28"],
+                        "capabilities": {"tools": {"listChanged": False}}})
+        elif method == "initialize":
+            # 삭제하지 않는다 — server/discover 를 모르는 구 클라이언트의 유일한 진입점이다.
             reply(rid, {"protocolVersion": "2024-11-05",
                         "capabilities": {"tools": {}},
                         "serverInfo": {"name": "aoa-mq", "version": "1.0.0"}})
         elif method == "tools/list":
-            reply(rid, {"tools": TOOLS})
+            reply(rid, {"ttlMs": DISCOVER_TTL_MS, "cacheScope": "private", "tools": TOOLS})  # prj1#Issue484 캐시 힌트(SEP-2549)
         elif method == "tools/call":
             p = req.get("params") or {}
             fn = HANDLERS.get(p.get("name"))
@@ -259,7 +271,8 @@ def main():
                 text = fn(p.get("arguments") or {})
             except Exception as e:                      # fail-soft — 서버가 죽으면 세션이 끊긴다
                 text = f"❌ 실행 오류: {e}"
-            reply(rid, {"content": [{"type": "text", "text": text}]})
+            # prj1#Issue484 — resultType 은 2026-07-28 필수 필드. 부분 응답을 만들지 않으므로 항상 complete.
+            reply(rid, {"content": [{"type": "text", "text": text}], "resultType": "complete"})
         elif rid is not None:
             reply(rid, error={"code": -32601, "message": f"unknown method: {method}"})
 

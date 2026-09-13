@@ -60,7 +60,7 @@ if [ -z "$PY" ]; then
   exit 2
 fi
 
-PASS=0; FAIL=0
+PASS=0; FAIL=0; SKIP=0
 printf '\n\033[1m▶ fpm TDD — platform=%s (uname=%s)\033[0m\n' "$PLATFORM" "$(uname -s 2>/dev/null)"
 
 run_file() {
@@ -106,7 +106,19 @@ for c in (d.get("cases") or []):
     if [ "$LIST_ONLY" = 1 ]; then printf '  · %-24s %s\n' "$id" "$desc"; continue; fi
 
     out=$(bash -c "$run" 2>/dev/null); rc=$?
-    local okflag=1
+    local okflag=1 skipflag=0
+    # skip 은 판정 대상이 아니다 (Issue482) — *"이 머신의 역할이 아니다"* 를 케이스가 스스로
+    #   신고하는 규약이며, 아래 case 문 주석("역할이 아닌 항목은 케이스가 skip 을 낸다")이
+    #   이미 그렇게 선언하고 있었다. 그런데 **인식하는 코드가 없어** `expect: nonempty` 가
+    #   사실상의 skip 통과 수단으로 쓰였고, nonempty 는 어떤 출력이든 통과시키므로
+    #   **진짜 실패까지 함께 통과**시켰다(실측: 번들이 표류한 상태에서 bundle-in-sync 가
+    #   PASS 였고, 같은 --check 를 forward 게이트가 부르자 곧바로 중단됐다).
+    #   skip 을 1급으로 올려야 판정을 `contains:ok` 로 좁힐 수 있다.
+    #   ⚠️ skip 은 PASS 로 세지 않는다 — 검사하지 않은 것을 통과로 세면 "전부 통과" 가
+    #      거짓이 된다. 별도 집계라 skip 남발도 눈에 띈다.
+    case "${out%%$'\n'*}" in
+      skip|skip[!A-Za-z0-9]*) skipflag=1 ;;
+    esac
     case "$expect" in
       exit0)          [ "$rc" -eq 0 ] || okflag=0 ;;
       nonempty)       [ -n "$out" ] || okflag=0 ;;
@@ -114,7 +126,9 @@ for c in (d.get("cases") or []):
       contains:*)     case "$out" in *"${expect#contains:}"*) ;; *) okflag=0 ;; esac ;;
       *)              [ "$rc" -eq 0 ] || okflag=0 ;;
     esac
-    if [ "$okflag" = 1 ]; then
+    if [ "$skipflag" = 1 ]; then
+      printf '  \033[33m⏭\033[0m  %-24s %s\n' "$id" "$desc"; SKIP=$((SKIP+1))
+    elif [ "$okflag" = 1 ]; then
       printf '  \033[32m✅\033[0m %-24s %s\n' "$id" "$desc"; PASS=$((PASS+1))
     else
       printf '  \033[31m❌\033[0m %-24s %s\n' "$id" "$desc"
@@ -142,11 +156,11 @@ mkdir -p "$TDD_DIR/results"
 # (fg1·jma 실측)에서는 `?? tdd/results/` 로 추적 후보에 뜬다. 폴더가 스스로를 무시하게 두면
 # 미러 .gitignore 에 손대지 않고 어느 설치본에서든 성립한다.
 [ -f "$TDD_DIR/results/.gitignore" ] || printf '*\n' > "$TDD_DIR/results/.gitignore"
-printf '%s platform=%s pass=%s fail=%s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$PLATFORM" "$PASS" "$FAIL" \
+printf '%s platform=%s pass=%s fail=%s skip=%s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$PLATFORM" "$PASS" "$FAIL" "$SKIP" \
   >> "$TDD_DIR/results/history.log"
 
 printf '\n────────────────────────────────\n'
-printf '결과: \033[32mPASS %d\033[0m / \033[31mFAIL %d\033[0m  (platform=%s)\n' "$PASS" "$FAIL" "$PLATFORM"
+printf '결과: \033[32mPASS %d\033[0m / \033[31mFAIL %d\033[0m / \033[33mSKIP %d\033[0m  (platform=%s)\n' "$PASS" "$FAIL" "$SKIP" "$PLATFORM"
 # ⓑ 0건은 통과가 아니다 — 파싱을 고쳐도 이 가드는 남긴다. 다른 이유로 0건이 되는 경우가 또 생긴다
 #   (케이스 파일 부재·--only 오타·플랫폼 판정 실패). "돌지 않았다" 를 "통과" 로 읽히게 두지 않는다.
 if [ "$((PASS+FAIL))" -eq 0 ]; then
@@ -155,4 +169,8 @@ if [ "$((PASS+FAIL))" -eq 0 ]; then
   exit 1
 fi
 [ "$FAIL" -eq 0 ] || { printf '\033[31m❌ 이 머신에서 동작하지 않는 기능이 있다 — 위 항목의 why 를 볼 것\033[0m\n'; exit 1; }
-printf '\033[32m✅ 이 머신에서 전부 통과\033[0m\n'
+if [ "$SKIP" -gt 0 ]; then
+  printf '\033[32m✅ 이 머신에서 전부 통과\033[0m \033[33m(skip %d — 이 머신의 역할이 아닌 항목)\033[0m\n' "$SKIP"
+else
+  printf '\033[32m✅ 이 머신에서 전부 통과\033[0m\n'
+fi

@@ -6,7 +6,7 @@
 #   ~/.claude/_doc_arch/hub-mode-arch.md. 절차: ~/.claude/rules/global-scar-change-rules.md
 #
 # 프롬프트에 a모드 render 트리거 `..show` (Issue133, 구 `..hub` deprecated alias) 감지 시:
-#   1. .hub-mode-active-<md5(cwd)[:8]> 플래그 touch (Q&A intercept 활성화, Issue283 cwd 스코프)
+#   1. .hub-active/<md5(cwd)[:8]> 플래그 touch (Q&A intercept 활성화, Issue283 cwd 스코프)
 #   2. HTML 렌더링 + 기본 브라우저 표시 + 후속 질문 form 처리 지시문 주입
 # `..hub stop` 또는 `..hub off` 감지 시 플래그 해제 (단방향 모드 복귀 — 토글은 `..hub` 유지)
 # Issue133: render 트리거만 `..hub`→`..show` rename. 우산 토글(`..hub on|off|start|stop`)·
@@ -23,9 +23,10 @@
 #   - 활성 htm/ → legacy z_htm/ → htm/ 신규 순으로 채택, 없으면 /tmp/ fallback
 
 input=$(cat)
-# Issue283: cwd 스코프 플래그. cwd 파싱 후 `.hub-mode-active-<hash>` 로 재할당됨(아래).
+# Issue283: cwd 스코프 플래그. cwd 파싱 후 `.hub-active/<hash>` 로 재할당됨(hub-context.sh).
 #   전역 단일 파일 시절엔 hub on 세션 플래그를 off 세션 hook 이 주워 b모드 form 이 누수됨.
-FLAG_FILE="$HOME/.claude/.hub-mode-active-none"
+#   2026-09-05: 루트 산재(`.hub-mode-active-<hash>`) → `.hub-active/` 디렉토리로 이전.
+FLAG_FILE="$HOME/.claude/.hub-active/none"
 # Issue83: 프로젝트 폴더 hub 기본 on — per-cwd 상태 파일로 override
 STATE_DIR="$HOME/.claude/.hub-state"
 # Issue105: 시스템 단위 마스터 OFF 플래그 (모든 프로젝트 자동 모드 차단)
@@ -173,7 +174,40 @@ PYEOF
   exit 0
 fi
 
-. "$HOME/.claude/hooks/lib/hub-context.sh"
+# ── hub-context 로드 가드 (prj3#Issue543) ────────────────────────────────
+#   ⚠️ 이 파일은 **번들로도 배포된다**. 그런데 번들에 `hooks/lib/` 가 없다 —
+#   prj1 `fpm-bundle-sync.sh` 의 `sync_dir_by_name` 이 "번들에 이미 있는 것만"
+#   동기하므로 신규 디렉토리는 영영 오지 않고, `scar-manifest.yml` 에도 선언이 없다.
+#
+#   이 스크립트에는 `set -e`·`set -u` 가 없다. 가드가 없으면 source 가 실패해도
+#   **죽지 않고 계속 진행**해서 `hub_ctx_identity`(L178)·`hub_ctx_surface`(L506)·
+#   `hub_ctx_live_preopen`(L538) 이 전부 `command not found` 로 새고, 사용자에게는
+#   "hub 가 안 뜬다" 로만 보인다. **조용한 열화가 가장 나쁜 형태**라 fail-loud 로 바꾼다.
+#
+#   실측(2026-09-05): fg1·jma 둘 다 `hooks/lib/` 부재. 다만 설치본이 fpm-core 0.8.1
+#   이고 그 번들에는 이 hook 자체가 없어 **아직 터지지 않았다** — 다음 릴리스를
+#   배포하는 순간 발생한다. 근본 조치(번들·매니페스트 편입)는 prj1 자산이다.
+# prj3#Issue545 — 번들(플러그인) 설치본은 `~/.claude/hooks/lib/` 가 없다. 자기 옆의 `lib/` 를 먼저 본다
+#   (번들에 hooks/lib 편입). 그래도 없으면 종전 절대경로 → Issue543 가드가 경고한다.
+_SELF_LIB="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)/lib/hub-context.sh"
+HUB_CTX_LIB="$HOME/.claude/hooks/lib/hub-context.sh"
+[ -f "$HUB_CTX_LIB" ] || [ ! -f "$_SELF_LIB" ] || HUB_CTX_LIB="$_SELF_LIB"
+if [ -r "$HUB_CTX_LIB" ]; then
+  . "$HUB_CTX_LIB"
+else
+  python3 - <<'PYEOF'
+import json
+print(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
+  "additionalContext": (
+    "## ⚠️ hub 렌더 비활성 — `hooks/lib/hub-context.sh` 부재 (prj3#Issue543)\n\n"
+    "이 머신의 설치본에 `hooks/lib/` 가 없어 hub 트리거가 컨텍스트를 만들 수 없다. "
+    "**hub 렌더·Q&A 폼·board 진입이 이번 세션에서 동작하지 않는다.**\n\n"
+    "- 요청된 작업 자체는 정상 수행할 것 — 렌더는 결과의 *표현*이지 작업이 아니다\n"
+    "- 복구: 저작 머신(jm4)에서 `hooks/lib/` 를 번들·`scar-manifest.yml` 에 편입 후 재배포"
+  )}}, ensure_ascii=False))
+PYEOF
+  exit 0
+fi
 hub_ctx_identity
 
 # Issue163: `..text`/`..txt`/`/text`/`/txt` — 단발(이번 turn 한정) render-off 트리거.
@@ -455,7 +489,7 @@ topic_clause = f"`{topic}`" if topic else "(트리거에 주제 없음 — 사�
 context = (
     "## `..ask` 트리거 감지 — b모드 (양방향 Q&A 폼 자동 회수, Issue126)\n\n"
     f"주제 = {topic_clause}\n\n"
-    "`.hub-mode-active-<hash>` 플래그 활성화됨. 본 turn 은 **사용자에게 결정을 묻는 폼 1회 제시**가 목적 "
+    "`.hub-active/<hash>` 플래그 활성화됨. 본 turn 은 **사용자에게 결정을 묻는 폼 1회 제시**가 목적 "
     "(\"나에게 물어봐\" 모드 — 응답 자체가 결정 회수 폼).\n\n"
     "### 처리 절차 (필수)\n"
     "1. 주제에 대해 사용자가 선택할 **2~4개 옵션**을 도출 (권장안은 첫 옵션 + label 끝 `(권장)`).\n"

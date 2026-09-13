@@ -19,6 +19,66 @@ date: 2026-04-11
 | 번호 대역 규칙 | `___pm/Projects.md` > `## 번호 대역 규칙` | 프로젝트 번호 할당 기준     |
 | 템플릿 파일    | `___pm/data/template/`                    | 프로젝트 초기화 템플릿      |
 
+# 등록 게이트 — `pm-new` · `adopt` 공통 (Issue476)
+
+**명부에 넣기 전에 묻는 자리다.** 단계가 하나씩 늘어나므로 **체인으로 못 박는다** — 뒤에 오는 작업이 기존 단계 본문을 헤집지 않게 하기 위함이다.
+
+| 단계 | 무엇을 묻나 | 집행체 | 등급 | 실패 시 |
+| :--- | :--- | :--- | :--- | :--- |
+| **G-A** | *"이게 내 프로젝트인가"* | [`sh/fpm-registry-gate`](sh/fpm-registry-gate) (결정적) | **확인**(차단 아님) | 사용자에게 1회 확인 후 진행 여부 결정 |
+| **G-B** | *"아이덴티티가 있는가"* | 아래 "L1 아이덴티티 기재" 절 | 필수 | 모르는 필드는 **비워 둔다**(추측 금지) |
+| **G-C** | *"조직 인스턴스가 필요한가"* | [`sh/fpm-registry-gate`](sh/fpm-registry-gate) `gate_org` + 아래 "G-C" 절 | **선택**(차단·확인 아님) | `skip` 이면 그냥 넘어간다 — 조직 기능 미도입 환경이 정상이다 |
+
+## 확장 지점 규약 — 새 단계를 더할 때
+
+1. **위 표에 행을 하나 더하고, 그 단계의 절을 하나 추가한다.** 기존 단계의 절차 본문은 고치지 않는다
+2. **결정적 판정은 [`sh/fpm-registry-gate`](sh/fpm-registry-gate) 에 check 함수로 더한다.** `gate_<이름>()` 을 만들고 말미 호출 목록에 한 줄 추가하면 끝이다 — 출력 형식 `GATE <이름> <ok|warn|skip> <메시지>` 와 rc 규약(0=통과 · 2=사람 확인 · 1=오류)은 그대로 쓴다
+3. **사람이 판단해야 하는 것만 스킬 절차에 남긴다.** 스크립트는 "무엇이 사실인가" 를 답하고, 스킬은 "그래서 등록할까" 를 묻는다
+4. 판정에 쓰는 **값**은 [`data/registry-gate.yml`](data/registry-gate.yml) 에 둔다 — 코드에 계정·이메일을 박지 않는다
+
+## G-A — 저작자 판정
+
+```bash
+bash sh/fpm-registry-gate <대상경로>     # rc: 0=통과 · 2=사용자 확인 필요
+```
+
+* **판정 한 줄**: *"내 커밋이 0건이고 origin 이 upstream 이면 등록하지 않는다."* — **둘 다** 여야 한다
+* rc=2 면 **경고 후 사용자 확인**이다. 차단하지 않는다 — 협업·인수·학습용 포크처럼 의도적 등록도 있다
+* ⚠️ **경로 기준(`~/_git/_open/` 하위 제외)으로 잡지 말 것.** 그것은 관례일 뿐이라 보관소 **밖**에 둔 남의 repo 를 못 잡는다. 실제 사고(prj17)도 보관소 안에 있었지만, 규칙이 막은 게 아니라 **우연히 하나만 샜다**
+* 왜 AND 인가 — 실측(2026-09-05)에서 `origin` 만 봤으면 오판할 자리가 실재했다: prj35 `fSnippetWinv-basic` 은 origin 이 `ahjoeNam`(외부)이지만 **내 커밋 20건**인 협업 프로젝트다. 반대로 커밋만 봤으면 fork 후 손대지 않은 남의 repo 를 놓친다
+* 기존 명부 **전수 점검은 하지 않는다** — prj6#Issue7 이 미할당 25건을 이미 훑었고 나온 것은 prj17 하나다. 나머지는 손댈 때 이 게이트에 걸린다
+
+## G-C — 조직 인스턴스 (prj3#Issue538)
+
+**등록된 프로젝트에 조직(부서·자리)을 세운다.** 자리는 개체와 독립이므로 봇을 한 명도
+앉히지 않아도 조직도가 선다 — 오히려 그 상태의 공석이 *"무엇이 없는가"* 를 말한다.
+
+```bash
+# 게이트 출력에서 org 행을 본다
+bash sh/fpm-registry-gate <대상경로>
+#   GATE org ok   … → 아래 절차 진행
+#   GATE org skip … → 조직 기능 미도입. 그냥 넘어간다(등록은 정상 완료)
+```
+
+| 단계 | 무엇을 | 비고 |
+| :--- | :--- | :--- |
+| 1 | `~/.claude/data/fbot/org/{번호}.yml` 생성 | `extends: _template/{타입}.yml` · `prj`·`title`·`machine` 기재 |
+| 2 | 해소 확인 | `python3 ~/.claude/hooks/fbot-org.py resolve --prj {번호}` |
+| 3 | **PM 개체 배치는 묻는다** | 아래 |
+
+* **타입 → 템플릿**: `general`(자리 4) · `web`(7) · `mac`(6). 타입은 "# 프로젝트 타입" 절의 판정을 그대로 쓴다
+* 🔴 **PM 개체를 자동으로 앉히지 않는다.** 조직도 도구 조사(Organimi)가 경고한 함정이 *"모든 노드에 사람이 붙어야 하는 플랫폼은 공석마다 플레이스홀더 계정을 만들게 되어 headcount 가 바뀔 때마다 수작업이 늘어난다"* 였다. 자리는 선언으로 충분하고, 개체는 **일이 생길 때** 인사핀봇이 앉힌다
+* 사람에게 물을 것: *"prj{N} 에 PM핀봇 개체를 지금 배치할까요? (아니오 = 공석으로 두고 배분이 생길 때 채용)"*
+* 배치하기로 했으면 — `fbot-hr-gate.py hire` 로 채용 후 `fbot-org.py bind --bot-id … --seat-id ops-taskmgr-1 --prj {N} --apply`
+
+### `pm-del` 짝 — 조직도 함께 접는다
+
+프로젝트를 명부에서 뺄 때 조직 선언만 남으면 **감사기가 고아로 잡는다**(`check_org` ②).
+
+* `org/{번호}.yml` 을 `org/z_done/` 으로 이동(삭제하지 않는다 — 되살릴 때 재작성 비용이 크다)
+* 그 조직에 결속된 개체가 있으면 `fbot-hr-gate.py archive` 로 **휴직** 처리. 해고가 아니다 — 프로젝트가 되살아날 수 있다
+
+
 # 프로젝트 타입
 
 | 타입 | 파라미터값 | 도메인 서픽스 | Domain 레이어            |
@@ -59,8 +119,45 @@ ___pm/
 | :-------------- | :------------------------------ |
 | `{{프로젝트명}}` | `프로젝트명` (영문 id name)     |
 | `{{설명}}`       | `설명` 컬럼 전문                |
+| `{{날짜}}`       | 생성일 `YYYY.MM.DD`             |
+| `{{prj}}`        | 발급 번호 (`id`)                |
+| `{{goal_parent}}`| `Projects.md` `# Project Map` 트리의 **부모 노드명** |
+| `{{lifetime}}`   | `finite` / `perpetual` — 아래 판정표 |
 
 * 프로젝트 성격이 파악되면 `## 목적`·`## 폴더 구조`·`## 불변식` 섹션을 실제 내용으로 보강 (generic stub 방치 금지).
+
+## L1 아이덴티티 기재 (Issue472 — 조항 3 필수)
+
+**아이덴티티 없이 프로젝트를 만들지 않는다.** prj6 [architect-identity.md](~/_git/___architect/_doc_arch/architect-identity.md) 조항 3 이 2026-09-03 재개정되며 아이덴티티가 **필수**로, 청사진이 **선택**으로 바뀌었다. 스키마 정본은 prj6 [project-identity-scheme.md](~/_git/___architect/_doc_arch/project-identity-scheme.md).
+
+### 두 경로 — prj6 는 관문이 아니다
+
+| 경로 | 언제 | L1 값의 원천 |
+| :--- | :--- | :--- |
+| **A — prj6 경유** | 만들기 **전에** 정해야 할 것이 있을 때 | prj6 청사진(`blueprint/2.draft/`)에서 옮겨 적는다 |
+| **B — prj1 직접** | 만들면서 정할 수 있을 때 | `pm-new` 가 아는 것만 채우고, 나머지는 그 prj 가 **nPTiR 진행 중에** 채운다 |
+
+* 판정 한 줄: *"만들기 전에 정해야 할 것이 있으면 A, 만들면서 정할 수 있으면 B"* — **둘 다 정상 경로다**
+* 경로 A 로 왔으면 청사진의 값을 그대로 옮긴다. 값이 나중에 달라지면 **L1 이 옳고 청사진은 이력이므로 고치지 않는다**
+
+### `pm-new` 가 채우는 것 / 사람이 쓰는 것
+
+| 자동 (토큰 치환) | 사람이 쓴다 (빈칸으로 둔다) |
+| :--- | :--- |
+| `prj` — 발급 번호 | `identity` — 지금 무엇인가 |
+| `status: active` | `not` — 무엇이 아닌가 |
+| `goal_parent` — 부모를 정하고 만드므로(조항 2) | `outcome` — 기대 성과 |
+| `lifetime` — 아래 판정으로 대개 자명 | `deadline` — 판정 시점 |
+
+* 🔑 **모르는 필드는 추측해서 채우지 않는다. 비워 둔다.** `Identity.md` 에 `⚠️ 미기재` 로 노출되는 편이 낫다 — **틀린 값은 빈 값보다 나쁘다.** 한 번 박히면 아무도 다시 안 읽고, 집계표에서 채워진 것처럼 보여 **미기재 신호 자체가 죽는다**
+* `lifetime` 만은 자명하면 채운다 — 비면 일몰 판정이 원리적으로 불가능해진다
+
+| `lifetime` | 대상 |
+| :--- | :--- |
+| `finite` | 외주·컨설팅(prj81·82·85) · 논문(prj9a) · 강의 자료(prj65~67) — **산출물 납품으로 끝나는 것** |
+| `perpetual` | 제품(fApp) · 인프라(prj1·3·5·6) · 라이브러리 — **살아 있는 동안 목표를 갈아 끼우는 것** |
+
+* 생성 후 `sh/fpm-identity-collect` 를 실행해 [Identity.md](../../../Identity.md) 에 새 prj 가 나타나는지 확인한다
 
 # 타입별 폴백 기본값 (Harness.md global layer)
 
@@ -286,7 +383,7 @@ status: {success|partial|failed|cancelled}
 | initial commit          | **스킵**. 변경분만 별도 커밋(사용자 컨펌)           | initial commit                   |
 
 * nPTiR 산출물·로컬 문서가 `.gitignore` 정책상 ignore 대상이면 `.gitkeep` 불필요 — 폴더만 생성
-* **`_doc_base` 무조건 생성 (사용자 지시, 2026-07-23)**: 구 규정은 원천 자료 필요 시만 생성하는 *선택 폴더*였으나, 신규·adopt 모두 항상 생성한다. gitignore 는 origin 기반 — remote origin 있는 repo 는 ignore·untrack(폴더만 로컬 존재), origin 없으면 추적. 판정 SSOT: `_doc_arch/doc-base-design.md` "# .gitignore — origin 기반 규칙"
+* **`_doc_base` 무조건 생성 (사용자 지시, 2026-07-23)**: 구 규정은 원천 자료 필요 시만 생성하는 *선택 폴더*였으나, 신규·adopt 모두 항상 생성한다. gitignore 는 **명시 선언 기반** (Issue477 — 구 origin 기반 폐기): `.claude/doc-base.yml` 의 `tracking: allow|deny` 를 따르고, **미선언이면 `deny`(ignore·untrack)** 로 적용한다 — 새로 만드는 것은 닫힌 채 시작한다. 기존 repo 검사에서는 미선언이 위반이 아니다(적용 기본값 ≠ 검사 기본값). 판정 SSOT: [`_doc_arch/gitignore-policy.md`](../../../_doc_arch/gitignore-policy.md) "# `_doc_base/` 예외 — 명시 선언 규칙" · 검사: `sh/doc-base-check.sh`
 * **`htm` 필수 사유 (Issue289 — 구 `z_htm`)**: hub 렌더(`..show`/`..ask` 등)는 `$cwd/_doc_work/htm/` 존재 시 거기 저장하고, 그때만 register 훅(`fpm-hub-doc-register`)이 hub registry 에 자동 등록한다. 부재 시 `/tmp/___pm` fallback → 등록 스킵 → `/htm-doc` 403 dead link. 따라서 신규·adopt 프로젝트는 `htm` 을 함께 생성한다 (pm 스킬은 fpm 컨텍스트 전용이라 가드 자동 충족 — 글로벌 wrapper·nptir-rules 는 `[ -d ~/_git/___pm ] || command -v fpm` 가드로 비-fpm 환경 제외). 아카이브 대상은 `z_done/htm/` 이며 legacy `z_htm/` 은 읽기만 지원. 수명주기 SSOT: `_doc_arch/htm-lifecycle-design.md`
 
 ## 에디터 폴더 조건화 (Issue327)

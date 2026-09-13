@@ -131,7 +131,7 @@ python3 "$BIM" --all
 
 # 기계 출력 `--json` (Issue436_3)
 
-파싱·판정 결과를 stdout 에 **순수 JSON 1건**으로 출력한다. htm 을 생성하지 않고 mmdc 도 호출하지 않으므로 빠르고 무의존이다. 경고류는 전부 stderr 로 나간다. 소비처는 fbot-taskmgr(착수 판정 재료) 등 — **판정은 htm 렌더와 동일 지점(`blocking_of`)을 공유**하므로 소비처가 착수 가능을 재판정하지 않는다.
+파싱·판정 결과를 stdout 에 **순수 JSON 1건**으로 출력한다. htm 을 생성하지 않고 mmdc 도 호출하지 않으므로 빠르고 무의존이다. 경고류는 전부 stderr 로 나간다. 소비처는 fbot-lead(착수 판정 재료) 등 — **판정은 htm 렌더와 동일 지점(`blocking_of`)을 공유**하므로 소비처가 착수 가능을 재판정하지 않는다.
 
 ```json
 {"root": "<프로젝트 절대경로>", "generated": <epoch int>,

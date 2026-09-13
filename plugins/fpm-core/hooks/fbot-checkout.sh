@@ -109,7 +109,11 @@ fi
 # Issue442 — 세션 id 마커 회수. heartbeat 폴백이 읽는 캐시라 퇴근하면 의미가 없다.
 #   남겨두면 UUID 이름 파일이 세션 수만큼 무한 누적된다(자기 상태 파일 — 규칙8 예외).
 if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
-  rm -f "$CLAUDE_DIR/.fbot-handoff/sid-$CLAUDE_CODE_SESSION_ID.id" 2>/dev/null || true
+  # Issue549 — `.hb` 도 함께. 판정 재료가 둘인데 하나만 지우면 반쪽이다:
+  #   `.id` 는 결속 조회용, `.hb` 는 heartbeat 스로틀용이라 남으면 퇴근한 봇이
+  #   lease 를 되살린다. 불변은 "퇴근 = 마커 소멸".
+  rm -f "$CLAUDE_DIR/.fbot-handoff/sid-$CLAUDE_CODE_SESSION_ID.id" \
+        "$CLAUDE_DIR/.fbot-handoff/sid-$CLAUDE_CODE_SESSION_ID.hb" 2>/dev/null || true
 fi
 
 exit 0

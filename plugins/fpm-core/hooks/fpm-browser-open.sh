@@ -8,7 +8,7 @@
 #   Firefox / reuse=false        = open 폴백 (Firefox 는 tab 제어 사전 부재 → 누적 감수)
 #
 # Usage: fpm-browser-open.sh [-a app] [-f focus] [-r reuse] [-m match] <url>
-#   -a app    chrome|safari|edge|firefox | 앱명 | .app 경로   (기본: firefox — Issue297)
+#   -a app    chrome|safari|edge|firefox|ego | 앱명 | .app 경로   (기본: firefox — Issue297)
 #   -f focus  true=포커스 가져옴 | false=백그라운드            (기본: true)
 #   -r reuse  true=탭 재사용 | false=항상 새 탭               (기본: true)
 #   -m match  탭 매칭 URL prefix                              (기본: url 의 scheme://host:port)
@@ -65,6 +65,7 @@ case "$app_raw" in
   chrome|Chrome)      app="Google Chrome" ;;
   edge|Edge)          app="Microsoft Edge" ;;
   safari|Safari)      app="Safari" ;;
+  ego|Ego|"ego lite") app="ego lite" ;;   # prj3#Issue533: ego lite (http/https/file 핸들러 등록됨). AppleScript 탭 제어 없음 → firefox 와 동일 open 폴백
   none|None|NONE|off) exit 0 ;;   # 브라우저 미존재 환경(서버) — open 생략, 무해 종료
   *)                  app="$app_raw" ;;
 esac

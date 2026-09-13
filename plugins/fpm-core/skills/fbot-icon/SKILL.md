@@ -39,10 +39,10 @@ G=~/.claude/skills/fbot-icon/scripts/fbot-icon-gen.py
 python3 "$G" list                                  # 카탈로그 조회 (부재 시 표준 7종 자동 초기화)
 python3 "$G" gen --all                             # 전 role 기본 아이콘 일괄 생성
 python3 "$G" gen --role exec                       # role 기본 아이콘 1종
-python3 "$G" gen --role exec --bot-id fbot-exec-narae   # 개체 아이콘 (색 = bot_id 결정론 유도)
+python3 "$G" gen --role exec --bot-id fbot-chief-narae   # 개체 아이콘 (색 = bot_id 결정론 유도)
 python3 "$G" add-role qa2 --shape check --base "#3A8A8A" --label "QA2핀봇" --tags "검증"  # role 등재
 
-python3 "$G" gen --role exec --bot-id fbot-exec-narae --json   # 생성 결과(경로·개체색)를 JSON 으로
+python3 "$G" gen --role exec --bot-id fbot-chief-narae --json   # 생성 결과(경로·개체색)를 JSON 으로
 python3 "$G" sync-registry                          # 레지스트리 icon/color 드리프트 조회 (dry-run)
 python3 "$G" sync-registry --apply                  # 드리프트 봇에 개체 아이콘 생성 + DB 갱신
 python3 "$G" sync-registry --apply --force          # 사람이 손본 아이콘까지 덮어쓴다(기본은 보호)

@@ -165,6 +165,49 @@ cases:
         || echo "open 직접 호출 ${n}곳 잔여"
     expect: contains:ok
 
+  - id: hub-open-editor-portable
+    desc: hub 의 '에디터 지정 열기' 가 3축 분기를 갖는다
+    why: |
+      Issue466 — Issue432 가 '열기' 자체는 3축화했으나 **에디터를 지정해 여는
+      경로**는 `open -a` 로 남았다. `open -a` 는 앱 *표시 이름*을 받는데 그 개념이
+      macOS 밖엔 없어, 비-macOS 는 앱 지정을 통째로 버리고 기본 연결로 열었다 —
+      fg1(Linux)·jpc1(Windows)이 실사용 머신이라 실사용 결손이다. 게다가
+      `/open-session`·`/open-simple-browser` 는 `bash -c 'open -a …; sleep; open …'`
+      셸 문자열이라 `open` 과 `bash` 를 **둘 다** 전제했다.
+      해소: 계약을 앱 표시 이름 → **에디터 식별자**로 바꾸고, 비-macOS 는
+      `_editor_bin()`(셸 `_fpm_editor_bin` 과 같은 해석 순서)으로 **실행 파일을 직접
+      호출**한다. 셸 문자열 2곳은 `_open_editor_then_uri()` 로 대체(셸 의존 0).
+      본 케이스는 세 축 **전부를 현재 머신에서 드라이런**한다 — 조립 결과만 보므로
+      실제 에디터는 뜨지 않는다.
+    run: |
+      f="$REPO_DIR/services/hub/server.py"
+      [ -f "$f" ] || { echo "skip(hub 미보유)"; exit 0; }
+      # 셸 문자열 잔재 0건 — f-string 으로 조립하던 `open -a`, 그리고 그것을 태우던 bash -c.
+      #   (주석·docstring 의 `open -a` 언급은 잡지 않는다 — 따옴표 접두 f 가 코드 표식)
+      grep -qE "f['\"]open -a" "$f" && { echo "f-string open -a 잔여"; exit 0; }
+      grep -qE '\["bash", *"-c"' "$f" && { echo "bash -c 잔여"; exit 0; }
+      cd "$(dirname "$f")" || exit 0
+      python3 - <<'EOF'
+      import sys
+      from unittest import mock
+      sys.path.insert(0, ".")
+      import server as s
+      def cmd(sysname, which, *a):
+          with mock.patch.object(s.platform, "system", return_value=sysname), \
+               mock.patch.object(s.shutil, "which", side_effect=lambda x: which.get(x)), \
+               mock.patch.object(s.os.path, "isfile", return_value=False):
+              return s._open_cmd(*a)
+      w = {"code": "/usr/bin/code"}
+      assert cmd("Darwin", {}, "/p", "vscode")[:3] == ["open", "-a", "Visual Studio Code"]
+      assert cmd("Linux", w, "/p", "vscode") == ["/usr/bin/code", "/p"]
+      assert cmd("Linux", {}, "/p") == ["xdg-open", "/p"]
+      assert cmd("MSYS_NT-10.0", {"code": "C:/c/code.cmd"}, "/p", "vscode")[:2] == ["cmd", "/c"]
+      assert cmd("Windows", {}, "/p") == ["cmd", "/c", "start", "", "/p"]
+      assert callable(s._open_editor_then_uri)
+      print("ok")
+      EOF
+    expect: contains:ok
+
   - id: claude-cli-available
     desc: claude CLI 가 있다 (플러그인·MCP 배선의 전제)
     why: |

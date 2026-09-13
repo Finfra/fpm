@@ -15,7 +15,7 @@
 #   - bool 은 true/false, 숫자는 따옴표 없이. `#` 뒤는 주석.
 
 # ── 탭 1: 기본 (basic) — 브라우저·렌더 표시·언어 ──
-default_browser: chrome    # 렌더 브라우저 — firefox/chrome/edge/safari 또는 .app 절대경로 / none(open 생략, 채팅 URL만 emit). chrome 권장(탭 재사용 가능)
+default_browser: chrome    # 렌더 브라우저 — firefox/chrome/edge/safari/ego 또는 .app 절대경로 / none(open 생략, 채팅 URL만 emit). chrome 권장(탭 재사용 가능). ego=ego lite(prj3#Issue533, macOS 전용) — 탭 재사용 미지원
 browser_open: background   # 렌더 브라우저 자동 open — off=자동 open 안 함(채팅 URL만) / background=백그라운드 open(포커스 미탈취, 권장. Chromium 은 AppleScript 로 전면화 회피) / foreground=포커스 탈취
 browser_tab_reuse: true    # hub 탭 재사용 — true=fpm-hub 명명 탭 재사용 / false=매번 새 탭. Chrome/Edge/Safari 전용(AppleScript 탭 제어) — firefox·커스텀 앱은 설정창 토글 비활성 (Issue272)
 render_tab_mode: browser-tab # 렌더 표시 방식 — browser-tab(기본·OS 탭) / hub-internal(/hub-shell 내부 iframe 탭, OS 새 탭 미생성)

@@ -20,6 +20,15 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write|NotebookEdit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fbot-writeguard.sh"
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -45,6 +54,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fbot-agent-done.sh",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "Stop": [
@@ -60,6 +79,11 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fpm-ask-question-guard.sh",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fbot-idle.sh",
+            "timeout": 5
           }
         ]
       }
@@ -112,6 +136,21 @@
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fpm-hub-session-topic.sh",
             "timeout": 5,
             "statusMessage": "Updating hub session topic..."
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fbot-heartbeat.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fbot-name-nudge.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fbot-inbox-nudge.sh",
+            "timeout": 5
           }
         ]
       }

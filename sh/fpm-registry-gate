@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# fpm-registry-gate — 프로젝트 등록 전 확인 게이트 (Issue476)
+#
+# ⚠️ 글로벌 SCAR 변경 가드: cwd ≠ ~/_git/___pm 이면 즉흥 수정 금지.
+#   값 SSOT: data/registry-gate.yml · 절차 SSOT: .claude/skills/pm/SKILL.md "# 등록 게이트"
+#
+# 왜: 등록 시 *"이게 내 프로젝트인가"* 를 묻는 자리가 없어 **외부 저작 클론이 명부에
+#   섞였다**(prj17 — 커밋 5건 전부 타인 저작, origin 이 upstream 그대로). 비용이 조용한
+#   것이 문제다: 명부에 있는 한 cdf·집계·일몰 스캔이 전부 정상 프로젝트로 취급하고,
+#   실제로 prj17 은 212일 무커밋 🔴 로 일몰 심사 후보까지 올라갔다 — 방치가 아니라
+#   **남의 repo** 였는데도.
+#
+# ⚠️ **차단이 아니라 확인이다.** 의도적 등록(협업·인수·학습용 포크)도 있다.
+#   rc=2 는 "사람에게 물어라" 이지 "하지 마라" 가 아니다.
+#
+# ⚠️ 판정은 **결정적**이다 — LLM 판단 금지(scripts/fpm-guard.sh 와 같은 원칙).
+#   스킬은 이 스크립트의 rc 와 출력만 보고, 스스로 저작자를 추정하지 않는다.
+#
+# Usage:
+#   bash sh/fpm-registry-gate <프로젝트경로> [--quiet]
+# 출력: `GATE <이름> <ok|warn|skip> <메시지>` 한 줄씩 (기계 파싱 가능)
+# rc:  0 = 확인 불필요 / 2 = 사용자 확인 필요 / 1 = 인자·환경 오류
+
+set -uo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+CONF="${FPM_REGISTRY_GATE_CONF:-$HERE/../data/registry-gate.yml}"
+
+TARGET="" QUIET=0
+for a in "$@"; do
+    case "$a" in
+        --quiet|-q) QUIET=1 ;;
+        -h|--help)  echo "usage: sh/fpm-registry-gate <프로젝트경로> [--quiet]"; exit 0 ;;
+        -*)         echo "❌ 알 수 없는 인자: $a" >&2; exit 1 ;;
+        *)          TARGET="$a" ;;
+    esac
+done
+[ -n "$TARGET" ] || { echo "❌ 프로젝트 경로 필요" >&2; exit 1; }
+
+WARN=0
+emit() { [ "$QUIET" = 1 ] && [ "$2" = "ok" ] && return 0; printf 'GATE %s %s %s\n' "$1" "$2" "$3"; }
+
+# ── 목록 파싱: `key:` 아래 `  - 값` 만 읽는다(플랫 리스트 전용) ──────
+yaml_list() {
+    [ -f "$CONF" ] || return 0
+    awk -v k="$1" '
+        $0 ~ "^"k":" { inb=1; next }
+        inb && /^[a-zA-Z_]+:/ { inb=0 }
+        inb && /^[[:space:]]*-[[:space:]]*/ {
+            sub(/^[[:space:]]*-[[:space:]]*/, ""); sub(/[[:space:]]*(#.*)?$/, "");
+            if (length($0)) print $0
+        }
+    ' "$CONF"
+}
+
+# ── G-A: 저작자 판정 ────────────────────────────────────────────────
+# 판정: 내 커밋 0건 **그리고** origin 소유자가 내 계정이 아니면 → 확인 필요
+gate_authorship() {
+    if [ ! -d "$TARGET/.git" ]; then
+        emit authorship skip "git repo 아님 — 저작자 판정 대상 아님"; return 0
+    fi
+
+    local authors mine=0 a
+    authors="$(yaml_list owned_authors)"
+    # git config 의 현재 신원은 항상 포함한다 — 설정 파일이 낡아도 자기 자신은 놓치지 않는다
+    local cfg_mail cfg_name
+    cfg_mail="$(git config user.email 2>/dev/null || true)"
+    cfg_name="$(git config user.name  2>/dev/null || true)"
+    [ -n "$cfg_mail" ] && authors="$authors
+$cfg_mail"
+    [ -n "$cfg_name" ] && authors="$authors
+$cfg_name"
+
+    # ⚠️ `--author` 는 여러 개를 주면 git 이 **OR** 로 묶는다. 패턴마다 따로 세어
+    #   더하면 이름·이메일이 같은 커밋을 이중으로 세어 건수가 부풀려진다(실측 1758→5280).
+    #   판정 자체는 "0 인가" 뿐이라 결과는 같지만, 사람에게 보여 줄 숫자가 거짓이 된다.
+    local -a AOPT=()
+    while IFS= read -r a; do
+        [ -n "$a" ] || continue
+        AOPT+=(--author="$a")
+    done <<< "$authors"
+    if [ "${#AOPT[@]}" -gt 0 ]; then
+        mine="$(git -C "$TARGET" log --all "${AOPT[@]}" --oneline 2>/dev/null | wc -l | tr -d ' ')"
+        mine="${mine:-0}"
+    fi
+
+    local origin owner=""
+    origin="$(git -C "$TARGET" remote get-url origin 2>/dev/null || true)"
+    if [ -n "$origin" ]; then
+        # git@host:owner/repo.git · https://host/owner/repo(.git) 양쪽에서 owner 추출
+        owner="$(printf '%s' "$origin" | sed -E 's#^(git@[^:]+:|ssh://[^/]+/|https?://[^/]+/)##; s#/.*##')"
+    fi
+
+    local owned=0 o
+    while IFS= read -r o; do
+        [ -n "$o" ] || continue
+        [ "$o" = "$owner" ] && owned=1
+    done <<< "$(yaml_list owned_git_accounts)"
+
+    if [ -z "$origin" ]; then
+        emit authorship ok "origin 없음(로컬 전용) — 내 프로젝트로 본다 (내 커밋 ${mine}건)"; return 0
+    fi
+    if [ "$owned" = 1 ]; then
+        emit authorship ok "origin 소유자 '$owner' 는 내 계정 (내 커밋 ${mine}건)"; return 0
+    fi
+    if [ "$mine" -gt 0 ]; then
+        # fork 후 내가 커밋했거나, 남의 계정 repo 에 협업 중 — 둘 다 정당한 내 프로젝트다
+        emit authorship ok "origin 소유자 '$owner' 는 외부지만 **내 커밋 ${mine}건** — 협업/포크로 판정"; return 0
+    fi
+    WARN=1
+    emit authorship warn "내 커밋 0건 + origin 소유자 '$owner' 가 외부 — 남의 repo 일 수 있다 ($origin)"
+    return 0
+}
+
+# ── G-C: 조직 인스턴스 (prj3#Issue538) ──────────────────────────────
+# 판정: 조직 기능이 도입돼 있고 타입 템플릿이 있으면 **조직 인스턴스를 만들 수 있다**.
+#   ⚠️ 여기서 만들지는 않는다 — 스크립트는 *"무엇이 사실인가"* 만 답하고, 만들지
+#   말지는 스킬이 사람에게 묻는다(확장 지점 규약 3).
+# skip 인 경우가 정상이다: fbot 조직 기능은 prj3 자산이라 없는 환경이 있을 수 있고,
+#   그때 등록이 막히면 안 된다.
+gate_org() {
+    local orgdir="$HOME/.claude/data/fbot/org"
+    local resolver="$HOME/.claude/hooks/fbot-org.py"
+    if [ ! -f "$resolver" ]; then
+        emit org skip "조직 해소기 부재 — fbot 조직 기능 미도입 (등록에 영향 없음)"; return 0
+    fi
+    local have=""
+    for t in general web mac; do
+        [ -f "$orgdir/_template/$t.yml" ] && have="$have $t"
+    done
+    if [ -z "$have" ]; then
+        emit org skip "타입 템플릿이 하나도 없다 — 조직 인스턴스 생성 불가"; return 0
+    fi
+    emit org ok "조직 인스턴스 생성 가능 (템플릿:$have) — 등록 후 org/{번호}.yml 을 만든다"
+    return 0
+}
+
+gate_authorship
+gate_org
+
+if [ "$WARN" = 1 ]; then
+    if [ "$QUIET" != 1 ]; then
+        printf '\n⚠️ 등록 전 사용자 확인이 필요하다 (차단 아님)\n'
+        printf '   물을 것: "%s 를 내 프로젝트로 등록할까요? 외부 저작 클론으로 보입니다."\n' "$TARGET"
+        printf '   내 계정·이메일이 빠졌을 뿐이라면: %s 에 추가\n' "${CONF#"$HERE/../"}"
+    fi
+    exit 2
+fi
+exit 0

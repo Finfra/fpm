@@ -21,6 +21,7 @@ set -u
 # ── 0. 인자 파싱 ────────────────────────────────────────────────────
 GATE_SEC=0          # >0 이면 .last-tick 기준 그 초 이내 재실행 억제
 FORCE_RENDER=0      # 세션 활성이어도 통지 계층 강제 수행
+NO_ASK_WAIT=0       # 1이면 렌더 뒤 ask-wait 셀프 폴링을 건너뛴다 (prj3#Issue593 — 진단·수동 호출용)
 # --consume-only (prj1#Issue423): inbox 소비만 하고 즉시 종료한다.
 #   hub /mq 페이지가 액션을 접수한 직후 호출한다 — 종전엔 정규 tick(5분 주기 · 1회 3분
 #   소요)을 기다려야 해서 "눌렀는데 목록에서 안 사라진다" 로 보였다. 상태 전이 로직을
@@ -29,7 +30,8 @@ CONSUME_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --gate)         GATE_SEC="${2:-0}"; shift 2 ;;
-    --force-render) FORCE_RENDER=1; shift ;;
+    --force-render) FORCE_RENDER=1; NO_ASK_WAIT=1; shift ;;   # prj3#Issue593: 진단 호출은 ask-wait 로 3분 잡지 않는다
+    --no-ask-wait)  NO_ASK_WAIT=1; shift ;;
     --consume-only) CONSUME_ONLY=1; shift ;;
     *)              shift ;;
   esac
@@ -58,14 +60,21 @@ PORT="${HTM_SERVER_PORT:-9876}"
 JQ=/usr/bin/jq
 DATE=/bin/date
 STAT=/usr/bin/stat
-# 외부(tailnet) 기기용 광고 host — MagicDNS hostname 우선 (.Self.DNSName, ex host.tailnet.ts.net).
-# IP 무관 고정·전 tailnet 기기 해석·가독성. 과거 raw IP 우회(commit 9031c44)는 jm4 자기해석
-# 실패 때문이었으나, 근본원인=macOS 시스템 resolver 의 ts.net split-DNS 누락(tailscaled·MagicDNS
-# 정상)으로 재진단되어 /etc/resolver/ts.net(→100.100.100.100) 영속 수리 → hostname 부활.
-# hub advertise_host(prj1 prj3#Issue267)와 통일. tailscaled 미가용 시 .local fallback.
-TS_BIN=$(command -v tailscale || echo /Applications/Tailscale.app/Contents/MacOS/Tailscale)
-TS_HOST=$("$TS_BIN" status --json 2>/dev/null | "$JQ" -r '.Self.DNSName // empty' 2>/dev/null | sed 's/\.$//')
-ADVERTISE_HOST="${TS_HOST:-host-1.local}"
+# ── 외부 링크 base — **hub 에 물어서** 만든다 (prj1#Issue469 / fpm-identity 조항 1) ──
+# 정본 패턴: plugins/fpm-core/hooks/fbot-exec-report.py `hub_links()`.
+#   `/healthz` 의 `advertise_url` 을 그대로 쓰고, 값이 없으면 **링크를 만들지 않는다**.
+#   hub 는 이미 tailscale MagicDNS·설정값을 종합해 advertise_host 를 계산하므로,
+#   여기서 tailscale 을 다시 조회하는 것은 같은 규약의 재발명이었다(성숙도만 갈림).
+# ⚠️ 종전엔 tailscale 조회가 비면 `<hostname>.local` 로 떨어졌다. 그 폴백의 성질:
+#   `.local` 은 mDNS 라 LAN 한정이다. 셀룰러로 Discord 알림을 받은 폰에서는 열리지 않는다.
+#   그런데 이 결함은 **발신 머신에서 테스트하면 정상 동작한다** — 죽는 것은 받는 쪽에서만이라
+#   만든 사람이 끝까지 모른다. prj3#Issue505(`command -v openclaw` 가 실행 실패를 못 잡음)와
+#   같은 계열, 즉 **검사하는 지점과 실패하는 지점이 어긋난** 구조다.
+# 반환: "http://host:port" 또는 빈 문자열(= 링크 만들지 않음)
+hub_base() {
+  curl -s --max-time 3 "http://127.0.0.1:$PORT/healthz" 2>/dev/null \
+    | "$JQ" -r '.advertise_url // empty' 2>/dev/null
+}
 
 mkdir -p "$QUEUE" "$QDONE" "$HANDOFF" "$HTM_DIR"
 
@@ -232,7 +241,18 @@ finalize() { # $1=file $2=terminal_status  — 종결: 상태 기록 → handoff
     fi
   fi
   # 응답 결과 Discord 통지 (notify_on_response)
-  if [ "$(pol notify_on_response false)" = "true" ] && oc_ready; then
+  # prj3#Issue574: `post_executed` 는 **기본 억제**한다. 잡을 detached 로 띄우므로
+  #   (위 post 블록의 `nohup … &`) tick 은 결과를 알 수 없고, 결과는 **잡이 스스로**
+  #   보고한다. 둘 다 보내면 같은 초에 2건이 간다(2026-09-06 실측 — 디스크 보고 +
+  #   "응답 접수" 가 16:28:54 에 나란히). 종전 동작이 필요하면 policy 에
+  #   `notify_on_post_executed: true`.
+  #   ⚠️ 발신 로직이 없는 post 잡은 아무 통지도 안 간다 — 그 책임은 잡에 있다.
+  local _notify=1
+  if [ "$st" = "post_executed" ] && [ "$(pol notify_on_post_executed false)" != "true" ]; then
+    _notify=0
+    log "응답 통지 억제(post_executed) — 결과는 잡이 보고한다: $base"
+  fi
+  if [ "$_notify" = "1" ] && [ "$(pol notify_on_response false)" = "true" ] && oc_ready; then
     local acct tgt m
     acct=$(pol discord_account ""); tgt=$(pol discord_target "")
     if [ -n "$acct" ] && [ -n "$tgt" ]; then
@@ -527,14 +547,22 @@ HTMLTAIL
     if [ -n "$DC_ACCOUNT" ] && [ -n "$DC_TARGET" ]; then
       SUMMARY=$(echo "$pending_items" | while read -r mf; do
         "$JQ" -r '"• [\(.status)] \(.message)"' "$mf" 2>/dev/null; done | head -10)
-      FORM_URL="http://$ADVERTISE_HOST:$PORT/htm-doc?path=$FORM"
-      # 처리 링크를 먼저 준다 (prj3#Issue493) — 폼은 스냅샷일 뿐이고 버튼은 /mq 에만 있다.
-      MQ_URL="http://$ADVERTISE_HOST:$PORT/mq"
+      # 링크 블록 — advertise_url 이 없으면 **줄을 빼고 그 사실을 본문에 남긴다** (prj1#Issue469).
+      #   localhost 로 때우면 폰에서 안 열리는 링크가 가고, 받는 쪽은 그것이 죽은 링크인지
+      #   hub 가 꺼진 것인지 구분할 수 없다. 조용한 누락도 같은 이유로 금지.
+      HUB_BASE=$(hub_base)
+      if [ -n "$HUB_BASE" ]; then
+        # 처리 링크를 먼저 준다 (prj3#Issue493) — 폼은 스냅샷일 뿐이고 버튼은 /mq 에만 있다.
+        LINKS="처리: $HUB_BASE/mq
+이 회차 스냅샷: $HUB_BASE/htm-doc?path=$FORM"
+      else
+        LINKS="(링크 없음 — hub 외부 주소 미설정. hub_setting.yml 의 advertise_host 를 채우면 링크가 붙는다)"
+        log "Discord 질의 통지: advertise_url 부재 — 링크 줄 생략(fpm-identity 조항1)"
+      fi
       oc_send message send --channel discord --account "$DC_ACCOUNT" --target "$DC_TARGET" \
         --message "📬 aoa-mq 확인 요청 ($NOW_ISO)
 $SUMMARY
-처리: $MQ_URL
-이 회차 스냅샷: $FORM_URL" \
+$LINKS" \
         && log "Discord 질의 통지 발송: $DC_TARGET" \
         || log "Discord 질의 통지 실패 — $OC_ERRTAIL (폼 렌더는 정상)"
     else
@@ -545,7 +573,14 @@ $SUMMARY
   # ask-wait 셀프 폴링 — 렌더 직후 잠깐 inbox 를 재확인해 빠른 클릭을 즉시 종결
   # (없으면 클릭 응답이 다음 tick(최대 1h)까지 queue 에 잔류 — 2026-07-05 실사용 마찰 2회로 신설)
   ASK_WAIT=$(pol ask_wait_secs 180)
+  # prj3#Issue593 — 로그 침묵이 "정지" 오진을 낳았다(Issue591 S7). 진입·종료를 반드시 남기고,
+  #   진단 경로(--force-render·--no-ask-wait)는 아예 들어가지 않는다.
+  if [ "$NO_ASK_WAIT" = "1" ]; then
+    log "ask-wait skip (진단 호출) — 클릭 응답은 다음 tick 이 회수한다"
+    ASK_WAIT=0
+  fi
   if [ "$ASK_WAIT" -gt 0 ] 2>/dev/null; then
+    log "ask-wait ${ASK_WAIT}s 진입 — 이 동안 tick 은 반환하지 않는다(5초 간격 inbox 재확인)"
     waited=0
     while [ "$waited" -lt "$ASK_WAIT" ]; do
       sleep 5; waited=$((waited+5))

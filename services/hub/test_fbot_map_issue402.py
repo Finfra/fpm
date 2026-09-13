@@ -2,13 +2,13 @@
 # test_fbot_map_issue402.py — Issue402 회귀 테스트 (핀봇 조직도)
 #
 # ⚠️ 글로벌 SCAR 아님 (___pm 프로젝트 소유). server.py 의 조직도 데이터 수집기
-#   (_fbot_root_map / _fbot_dispatch_edges / _fbot_org_data / _fbot_map_mermaid /
+#   (_fbot_root_map / _fbot_dispatch_edges / _fbot_org_data /
 #    _render_fbot_map / _fbot_roster)와 홈 섹션 그룹 렌더(JS)를 검증한다.
 #
 # 이 테스트의 핵심 명제는 하나다 — **엣지는 2원천 합성이어야 한다.**
 #   배분 원장(job.kind='fbot_dispatch')만으로 그리면 `fpm-do` 직접 위임이 원장을 거치지
-#   않아(prj3#Issue438 ④) 중역핀봇 밑이 텅 빈다. 실측(2026-08-27) 배분 엣지 9건이 전부
-#   작업핀봇 소유였고 중역핀봇의 배분 엣지는 0건이었다. 한쪽 원천만 쓰는 회귀가 나면
+#   않아(prj3#Issue438 ④) 총괄핀봇 밑이 텅 빈다. 실측(2026-08-27) 배분 엣지 9건이 전부
+#   팀장핀봇 소유였고 총괄핀봇의 배분 엣지는 0건이었다. 한쪽 원천만 쓰는 회귀가 나면
 #   화면은 "봇이 없다" 처럼 보이고 아무도 그것을 버그로 인지하지 못한다 → 박제한다.
 #
 # 실행: python3 services/hub/test_fbot_map_issue402.py
@@ -29,6 +29,15 @@ import server  # noqa: E402
 PASS = 0
 FAIL = 0
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+import importlib.util as _ilu, inspect as _insp, os as _os
+_op = _os.path.expanduser("~/.claude/hooks/fbot-org.py")
+_org_mod = None
+if _os.path.exists(_op):
+    _sp = _ilu.spec_from_file_location("fbot_org_t", _op)
+    _org_mod = _ilu.module_from_spec(_sp); _sp.loader.exec_module(_org_mod)
+_org_alive_src = _insp.getsource(_org_mod.team_alive) if _org_mod else ""
 
 
 def check(name, cond):
@@ -65,7 +74,7 @@ def build_fixture(tmp):
     os.makedirs(aoa)
     icons = os.path.join(tmp, "root", "data", "fbot", "icons")
     os.makedirs(icons)
-    with open(os.path.join(icons, "exec.svg"), "wb") as f:
+    with open(os.path.join(icons, "chief.svg"), "wb") as f:
         f.write(ICON_SVG)
     now = int(time.time())
     con = sqlite3.connect(os.path.join(aoa, "registry.db"))
@@ -74,14 +83,14 @@ def build_fixture(tmp):
         "INSERT INTO bot VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         [
             # bot_id, title, role, state, career, icon, color, prj, task, parent, lease, created
-            ("R1", "나래", "exec", "working", "probation",
-             "data/fbot/icons/exec.svg", "#964E9B", 1, "조직도 구현", None, now + 600, now),
-            ("R2", "작업핀봇", "taskmgr", "checkout", "active", None, "#558675", None, "", None, None, now),
+            ("R1", "나래", "chief", "working", "probation",
+             "data/fbot/icons/chief.svg", "#964E9B", 1, "조직도 구현", None, now + 600, now),
+            ("R2", "팀장핀봇", "lead", "checkout", "active", None, "#558675", None, "", None, None, now),
             ("C1", "설계핀봇", "architect", "checkout", "probation", None, "#B4857D", None, "", "R1", None, now),
             ("C2", "리서치핀봇", "research", "checkin", "probation", None, "", None, "", "R1", now + 600, now),
             ("G1", "손자봇", "qa", "checkout", "probation", None, "", None, "", "C1", None, now),
             ("W1", "워커1", "qa", "checkout", "probation", None, "#627C9E", None, "", "R2", None, now),
-            ("B1", "고립봇", "exec", "checkout", "probation", None, "", None, "", "ghost", None, now),
+            ("B1", "고립봇", "chief", "checkout", "probation", None, "", None, "", "ghost", None, now),
             ("X1", "순환1", "qa", "checkout", "probation", None, "", None, "", "X2", None, now),
             ("X2", "순환2", "qa", "checkout", "probation", None, "", None, "", "X1", None, now),
         ])
@@ -182,46 +191,27 @@ def main():
         nr = server._fbot_org_data("C1")
         check("루트가 아닌 봇 id 도 폴백(하위 트리 잘림 방지)", nr["unknown_root"] is True)
 
-        print("\n== mermaid 렌더 (Issue402 ⓓⓔ) ==")
-        mmd = server._fbot_map_mermaid(d)
-        # LR 인 이유는 렌더러 주석 참조 — TD 는 팬아웃이 넓어 축소율이 0.5 밑으로 떨어진다
-        check("flowchart LR 선언", mmd.startswith("flowchart LR"))
-        check("루트별 subgraph", mmd.count("subgraph ") == 5)
-        check("그룹 헤더에 소속·활성 수", "명(활성 " in mmd)
-        check("채용은 실선(--- )", " --- " in mmd)
-        check("배분은 화살표 + 이슈·status 라벨",
-              '-->|"T-1 · done"|' in mmd)
-        check("취소 배분 라벨도 남는다", '-->|"T-2 · cancelled"|' in mmd)
-        check("linkStyle 3종(채용·배분·취소) 분리", mmd.count("linkStyle ") == 3)
-        check("취소 엣지는 흐리게", "opacity:0.45" in mmd)
-        check("개체색 재사용(새 색 체계 금지)", "fill:#964E9B" in mmd)
-        check("고아는 점선으로 구분", "stroke-dasharray: 5 3" in mmd)
-        check("고아 라벨이 사유를 밝힌다", "명부에 없음" in mmd)
-        check("세션 배지", "⚙ 세션 2" in mmd)
-
-        print("\n== prj3#Issue496 — 노드 3종 표기(prj·아이콘·개체색) ==")
-        # ⓐ prj 배지 — NULL 은 "전역"(빈칸이면 미설정과 구별 불가). R1 만 prj=1 이다.
-        _lines = {l.split("[", 1)[0].strip(): l for l in mmd.splitlines()
-                  if '["' in l and not l.strip().startswith("subgraph")}
-        check("prj 실측치는 prjN 로 라벨에 실린다", "prj1" in _lines.get("B_R1", ""))
-        check("prj NULL 은 전역으로 표기", "전역" in _lines.get("B_R2", ""))
-        # ⓑ 아이콘 — 개체 아이콘(R1) + role 폴백(B1: exec.svg). 속성은 홑따옴표여야
-        #   한다 — 라벨이 mermaid 쌍따옴표 문자열 안에 들어가므로.
-        check("개체 아이콘 <img> data URI 인라인",
-              "<img src='data:image/svg+xml;base64," in _lines.get("B_R1", ""))
-        check("개체 아이콘 부재 시 role 아이콘 폴백(B1→exec.svg)",
-              "<img src='data:image/svg+xml;base64," in _lines.get("B_B1", ""))
-        check("아이콘 img 에 쌍따옴표 없음(mermaid 문자열 파괴 금지)",
-              '<img src="' not in mmd)
-        check("role 아이콘도 없으면 img 를 만들지 않는다(C2·research)",
-              "<img" not in _lines.get("B_C2", ""))
-        # 고아는 명부 밖 — prj 축 자체가 없다.
-        check("고아 노드에는 prj 표기 없음", "전역" not in _lines.get("B_GHOSTBOT", ""))
-        # ⓒ 개체색 — 위 "개체색 재사용(새 색 체계 금지)" 이 검증한다(fill:#964E9B).
-        # 라벨 안전화 — 따옴표·대괄호·백틱이 그대로 나가면 노드가 통째로 사라진다.
-        lab = server._fbot_mmd_label('a"b[c]`d|e<f>')
-        check("라벨 안전화", all(c not in lab for c in '"[]`|<>'))
-        check("노드 id 는 영숫자·언더스코어", server._fbot_mmd_id("B_", "a-b.c") == "B_a_b_c")
+        # prj1#Issue489 — 조직도 mermaid 렌더는 2세대 보드(Cytoscape)로 대체되어 제거됐다.
+        #   `_fbot_map_mermaid`·`_fbot_mmd_*` 는 더 없다. 검증 대상은 **렌더 문자열이 아니라
+        #   그 렌더가 먹던 데이터**로 내려온다 — 표기 요구(prj·아이콘·개체색·고아 구분)는
+        #   여전히 유효하고, 이제 노드 필드가 그 계약을 진다.
+        print("\n== 노드 표기 계약 (Issue402 ⓔ · prj3#Issue496 — 2세대 데이터 층) ==")
+        by_id = {n["bot_id"]: n for n in d["nodes"]}
+        check("prj 실측치가 노드에 실린다(R1=prj1)", by_id["R1"]["prj"] == 1)
+        check("prj NULL 은 None 으로 구분된다(0 이나 빈칸으로 뭉개지 않는다)",
+              by_id["R2"]["prj"] is None)
+        check("개체 아이콘은 data URI 로 실린다",
+              by_id["R1"]["icon_uri"].startswith("data:image/svg+xml;base64,"))
+        check("개체 아이콘 부재 시 role 아이콘 폴백(B1)",
+              by_id["B1"]["icon_uri"].startswith("data:image/svg+xml;base64,"))
+        check("role 아이콘도 없으면 빈 문자열(카드가 깨지지 않는다)",
+              by_id["C2"]["icon_uri"] == "")
+        check("개체색이 노드에 실린다(새 색 체계 금지 — 기존 색 재사용)",
+              by_id["R1"]["color"] == "#964E9B")
+        check("고아는 필드로 구분된다(점선 표기의 근거)", by_id["GHOSTBOT"]["orphan"] is True)
+        check("고아에는 prj 축이 없다(명부 밖)", by_id["GHOSTBOT"]["prj"] is None)
+        check("세션 수가 노드에 실린다(배지의 근거 — R1 은 2세션)",
+              by_id["R1"]["sessions"] == 2)
         check("어두운 개체색 위 글자는 흰색", server._fbot_text_on("#111111") == "#ffffff")
         check("밝은 개체색 위 글자는 검정", server._fbot_text_on("#eeeeee") == "#111111")
         check("색 없으면 검정 폴백", server._fbot_text_on("") == "#111111")
@@ -231,9 +221,11 @@ def main():
         #   이 절은 "전부 그렸을 때" 를 검증하므로 전체+기록 보기로 렌더한다(prj1#Issue454).
         page = server.Handler._render_fbot_map(d, True, True).decode("utf-8")
         check("canonical <header> 합성", "<header>" in page)
-        check("mermaid 블록", '<pre class="mermaid">' in page)
-        check("mermaid 소스는 HTML 이스케이프(브라우저 textContent 가 복원)",
-              "--&gt;" in page and "&lt;br/&gt;" in page)
+        # prj1#Issue489 — 2세대 그래프는 Cytoscape 다. 서버는 mermaid 문자열 대신
+        #   컨테이너 + 인라인 JSON(`var DATA={org:…,flow:…}`) 을 내고 그림은 클라이언트가 그린다.
+        check("Cytoscape 컨테이너 2종(조직·흐름)",
+              'id="fb-cy-org"' in page and 'id="fb-cy-flow"' in page)
+        check("그래프 데이터가 인라인 JSON 으로 실린다", "var DATA={org:" in page)
         check("런타임 <script> 를 저작하지 않는다(서버 표준 주입에 맡김)",
               "mermaid.min.js" not in page)
         # prj3#Issue494: 명부·원장은 roster 탭으로 분리 — "표는 전수" 원칙은 그대로다.
@@ -243,7 +235,7 @@ def main():
         check("배분 원장 표는 roster 탭에", "<h2>배분 원장</h2>" in rpage)
         # prj3#Issue488: 전체 보기에서는 칩이 `&all=1` 을 실어 나른다(칩 이동으로 표시
         #   범위가 풀리면 안 되므로). 칩의 계약은 "root 를 담은 링크" 이므로 접두로 본다.
-        check("루트 필터 칩", 'href="/fbot-map?root=R1' in page)
+        check("루트 필터 칩", bool(re.search(r'href="/fbot-map\?(tab=map&amp;)?root=R1', page)))   # prj3#Issue588: 기본 탭 board — map 링크는 tab=map 을 싣는다
         check("고아 경고 표시", "GHOSTBOT" in page and "fm-warn" in page)
         check("2원천 설명이 페이지에 있다", "채용" in page and "배분" in page)
         check("취소 행은 흐리게", "fm-cancel" in rpage)
@@ -295,7 +287,8 @@ def main():
         server.FBOT_ROOT = tmp
         e = server._fbot_org_data()
         check("fbot 미설치 → 오류가 아닌 빈 결과", e["error"] == "" and e["nodes"] == [])
-        check("미설치 시 mermaid 는 빈 문자열", server._fbot_map_mermaid(e) == "")
+        check("미설치 시 엣지도 빈 결과(그릴 것이 없다)",
+              e["hires"] == [] and e["dispatch"] == [])
         os.makedirs(os.path.join(tmp, "aoa2"))
         sqlite3.connect(os.path.join(tmp, "aoa2", "registry.db")).close()
         server.FBOT_AOA_DIR = os.path.join(tmp, "aoa2")
@@ -329,7 +322,8 @@ def main():
         row = re.search(r"<tr[^>]*>(?:(?!</tr>).)*?prj3#Issue777.*?</tr>", page2, re.S)
         check("사후 기록은 취소 행으로 흐려지지 않는다",
               row is not None and "fm-cancel" not in row.group(0))
-        check("mermaid 에도 배분 화살표가 선다", "R1" in server._fbot_map_mermaid(after))
+        check("조직 데이터에도 그 배분 엣지가 선다",
+              any(e["src"] == "R1" for e in after["dispatch"]))
 
     _check_issue488()
     _check_issue494()
@@ -348,10 +342,10 @@ def main():
 
 
 # ── prj3#Issue488: 활성 필터 · 교착 검출 · 배분 흐름 ────────────────────────
-# 대상 4종(`_fbot_filter_active`·`_fbot_cycles`·`_fbot_deadlocks`·`_fbot_flow_mermaid`)은
+# 대상 3종(`_fbot_filter_active`·`_fbot_cycles`·`_fbot_deadlocks`)은
 #   dict 를 받는 순수 함수라 DB 픽스처 없이 **판정 자체**를 정밀하게 세울 수 있다.
 def _n488(bid, state="checkin", orphan=False, root=None):
-    return {"bot_id": bid, "title": bid, "role": "exec", "state": state,
+    return {"bot_id": bid, "title": bid, "role": "chief", "state": state,
             "state_label": server.FBOT_STATE_LABEL.get(state, state),
             "state_emoji": "🟢", "career": "", "color": "", "prj": None,
             "current_task": "", "parent": "", "root": root or bid,
@@ -362,7 +356,7 @@ def _n488(bid, state="checkin", orphan=False, root=None):
 #   ⚠️ 픽스처의 이슈 값은 `ISS-*` 로 둔다 — `IssueN` 으로 쓰면 tagcheck(prj3#Issue325)가
 #     실제 이슈 참조로 읽어 커밋을 막는다. 여기서는 원장에 실리는 **문자열 값**일 뿐이다.
 def _e488(src, dst, status="open", issue="ISS-A", ago_h=0.0):
-    return {"src": src, "dst": dst, "issue": issue, "role": "exec",
+    return {"src": src, "dst": dst, "issue": issue, "role": "chief",
             "status": status, "ts": int(time.time() - ago_h * 3600)}
 
 
@@ -433,8 +427,9 @@ def _check_issue488():
     nodes = [_n488("MGR"), _n488("LIVE", root="MGR"),
              _n488("GONE", state="checkout", root="MGR"),
              _n488("BUSY", state="checkout", root="MGR")]
-    disp = [_e488("MGR", "BUSY", issue="OPEN1"),          # 열린 배분 — 대상은 퇴근
-            _e488("MGR", "GONE", status="done", issue="OLD1")]
+    disp = [_e488("MGR", "BUSY", issue="OPEN1", ago_h=1), # 열린 배분 — 대상은 퇴근. ago_h=1: 스폰 유예(Issue573, 10분) 밖
+            # prj3#Issue556 — 종결 배분은 **오래된 것만** 빠진다(3일 창). ago_h=96 = 4일 전
+            _e488("MGR", "GONE", status="done", issue="OLD1", ago_h=96)]
     d = _d488(nodes, disp)
     v = server._fbot_filter_active(d)
     ids = {n["bot_id"] for n in v["nodes"]}
@@ -443,19 +438,28 @@ def _check_issue488():
     check("열린 배분의 대상은 퇴근했어도 남는다(교착을 가리키므로)", "BUSY" in ids)
     check("종료된 배분은 화면에서 빠진다",
           [e["issue"] for e in v["dispatch"]] == ["OPEN1"])
+    # prj3#Issue556 — 최근(3일) 종결 배분은 양끝이 퇴근했어도 남는다. 완료 사인(✓)이
+    #   붙는 순간 그림에서 빠지면 "중역에게 시킨 일이 어떻게 전파됐나" 를 볼 수 없다
+    #   (2026-09-06 실측: 체인 완주 직후 전원 퇴근 → mermaid 0개).
+    v2 = server._fbot_filter_active(_d488(nodes, disp + [
+        _e488("MGR", "GONE", status="done", issue="NEW1", ago_h=1)]))
+    ids2 = {n["bot_id"] for n in v2["nodes"]}
+    check("최근 종결 배분의 퇴근 대상은 남는다(Issue556)", "GONE" in ids2)
+    check("최근 종결 배분 엣지가 기본 화면에 남는다(Issue556)",
+          sorted(e["issue"] for e in v2["dispatch"]) == ["NEW1", "OPEN1"])
     check("원본 data 는 손대지 않는다(표시 계층 필터)",
           len(d["nodes"]) == 4 and len(d["dispatch"]) == 2)
     check("칩 목록(roots)은 거르지 않는다", v["roots"] == d["roots"])
 
-    print("\n== prj3#Issue488 ⓑ 배분 흐름 그래프 ==")
+    # prj1#Issue489 — 흐름 그래프도 2세대에서 서버 mermaid 문자열을 만들지 않는다.
+    #   교착 판정(`_fbot_deadlocks`)은 그대로 서버 몫이고, 그리는 것은 클라이언트다.
+    print("\n== prj3#Issue488 ⓑ 배분 흐름 — 교착 판정(데이터 층) ==")
     dl = server._fbot_deadlocks(d)
-    flow = server._fbot_flow_mermaid(d, dl)
-    check("흐름 그래프가 선다", flow.startswith("flowchart LR"))
-    check("조직도와 노드 id 접두가 다르다(같은 페이지 충돌 방지)",
-          "F_MGR" in flow and "B_MGR" not in flow)
-    check("배분 라벨에 이슈가 실린다", "OPEN1" in flow)
-    check("교착 엣지는 굵은 빨강", "stroke:#c62828,stroke-width:3px" in flow)
-    check("배분이 없으면 빈 문자열", server._fbot_flow_mermaid(_d488([], [])) == "")
+    check("교착 판정이 선다(그림의 근거)", isinstance(dl, dict) and "cycles" in dl)
+    check("배분 엣지에 이슈가 실린다", any(e["issue"] == "OPEN1" for e in d["dispatch"]))
+    check("배분이 없으면 교착도 없다",
+          not any(server._fbot_deadlocks(_d488([], [])).get(k)
+                  for k in ("cycles", "orphaned", "stale")))
 
     print("\n== prj3#Issue488 — 페이지 통합 ==")
     page = server.Handler._render_fbot_map(d).decode("utf-8")
@@ -468,23 +472,108 @@ def _check_issue488():
           _SOFT in page and "미종결" in page)
     check("퇴근 대상 유실은 붉은 교착 배너가 아니다", _BANNER not in page)
     check("유실 배분 사유가 배너에 적힌다", "대상이 퇴근함" in page)
-    check("전체 보기 토글 링크", 'href="/fbot-map?all=1"' in page)
+    check("전체 보기 토글 링크", bool(re.search(r'href="/fbot-map\?(tab=map&amp;)?all=1"', page)))
     check("배분 흐름 섹션", "<h2>배분 흐름</h2>" in page)
     # prj1#Issue451: 명부는 **항상 전수**다(퇴역 보존처) — "활성만" 은 그래프에만 적용된다.
-    #   그래서 페이지 전체 부재가 아니라 mermaid 블록 부재 + 명부 행 존재를 본다.
-    _mm = page[page.index('<pre class="mermaid">'):]
+    #   그래서 페이지 전체 부재가 아니라 **그래프 데이터** 부재 + 명부 행 존재를 본다.
+    _mm = page[page.index("var DATA={org:"):]
     check("기본은 활성만 — 그래프에 퇴근 봇 없음", "GONE" not in _mm)
     # prj3#Issue494: 명부는 roster 탭 — 전수 보존 검증도 그 탭에서.
     _rp = server.Handler._render_fbot_map(d, False, False, "roster").decode("utf-8")
     check("퇴근 봇도 명부에는 남는다(전수 보존)", ">GONE<" in _rp)
     page_all = server.Handler._render_fbot_map(d, True).decode("utf-8")
     check("전체 보기에서 퇴근 봇이 돌아온다", "B_GONE" in page_all)
-    check("전체 보기 토글은 활성으로 되돌린다", 'href="/fbot-map"' in page_all)
+    check("전체 보기 토글은 활성으로 되돌린다", bool(re.search(r'href="/fbot-map(\?tab=map)?"', page_all)))
     _healthy = server.Handler._render_fbot_map(
         _d488([_n488("M"), _n488("W", root="M")],
               [_e488("M", "W")])).decode("utf-8")
     check("교착이 없으면 배너도 없다(⛔·⏳ 양쪽)",
           _BANNER not in _healthy and _SOFT not in _healthy)
+
+    print("\n== prj3#Issue578·575 — JSON v2 정규화(jobs·timeline·events) ==")
+    _nb2 = [_n488("EXEC", state="working"), _n488("PM", state="checkout", root="EXEC")]
+    _e_v = dict(_e488("EXEC", "PM", issue="V1"), job_id="fbotdisp-v-11111111", ts=int(time.time())-100)
+    _xj = [
+        {"id":"fbotreq-1","kind":"fbot_request","status":"open","owner":"EXEC","created_at":int(time.time())-50,
+         "payload":json.dumps({"from":"HR","body":"검토 요청","corr_id":"fbotreq-1"})},
+        {"id":"fbotjob-1","kind":"fbot_session","status":"done","owner":"PM","created_at":int(time.time())-80,
+         "payload":json.dumps({"cwd":"/x","session_id":"abcd1234","current_task":"작업 X"})},
+        {"id":"fbotev-1","kind":"fbot_event","status":"done","owner":"EXEC","created_at":int(time.time())-10,
+         "payload":json.dumps({"type":"state:working","detail":"checkin arrow working","ref":""})},
+    ]
+    _pl2 = server._fbot_board_payload(_d488(_nb2, [_e_v]), {"available":True,"seats":[]}, extra_jobs=_xj)
+    check("jobs 통합 — dispatch+request+session+event", set(j["kind"] for j in _pl2["jobs"].values()) == {"dispatch","request","session","event"})
+    check("timeline 은 봇별 job id 역순", bool(_pl2["timeline"].get("EXEC")) and _pl2["jobs"][_pl2["timeline"]["EXEC"][0]]["ts"] >= _pl2["jobs"][_pl2["timeline"]["EXEC"][-1]]["ts"])
+    check("events 는 fbot_event 만·시간 역순", [e["type"] for e in _pl2["events"]] == ["state:working"])
+    check("요약 events_24h 계상", _pl2["summary"]["events_24h"] == 1)
+    check("1세대 키(dispatch·scopes·bots) 유지", all(k in _pl2 for k in ("dispatch","scopes","bots")))
+    _bh2 = server._fbot_board_html("", None)
+    check("보드 셸 2세대 — 모드 토글·스트림·SSE·요청 폼 훅", all(x in _bh2 for x in ('id="fb-mode-task"','id="fb-stream-body"','EventSource','__fbToken')))
+
+    print("\n== prj3#Issue573 — 스폰 대기 유예: 배분 직후 퇴근 대상은 미종결이 아니다 ==")
+    _nsp = [_n488("EXEC", state="working"), _n488("PM", state="checkout", root="EXEC")]
+    _fresh = dict(_e488("EXEC", "PM", issue="FRESH"), job_id="fbotdisp-7-fresh0000", ts=int(time.time())-20, spawned_at=int(time.time())-15)
+    _stale_open = dict(_e488("EXEC", "PM", issue="OLDOPEN"), job_id="fbotdisp-8-oldopen0", ts=int(time.time())-7200)
+    _dl = server._fbot_deadlocks(_d488(_nsp, [_fresh, _stale_open]))
+    check("배분 15초 뒤 퇴근 대상은 spawning(유예)", [e["issue"] for e in _dl["spawning"]] == ["FRESH"])
+    check("유예를 넘긴 open 배분은 종전대로 soft 미종결", [e["issue"] for e in _dl["orphaned"]] == ["OLDOPEN"] and _dl["orphaned"][0]["why"] == "대상이 퇴근함")
+    check("hard 교착은 0(둘 다 명부에 있다)", _dl["hard_count"] == 0)
+    _pl0 = server._fbot_board_payload(_d488(_nsp, [_fresh, _stale_open]), {"available": True, "seats": []}, dl=_dl)
+    check("보드 요약 — 교착 0 · 스폰 대기 1 · 미종결 1", _pl0["summary"]["deadlocks"] == 0 and _pl0["summary"]["spawning"] == 1 and _pl0["summary"]["unsettled"] == 1)
+    _pg_sp = server.Handler._render_fbot_map(_d488(_nsp, [_fresh])).decode("utf-8")
+    check("배너 — 스폰 대기 안내, 원장 종결 버튼 없음", "스폰 대기" in _pg_sp and 'class="fm-close-btn"' not in _pg_sp)
+
+    print("\n== prj3#Issue569 — 보드 페이로드(/fbot-map.json) · 보드 셸 ==")
+    _nb = [_n488("EXEC", state="working"), _n488("PM", state="checkout", root="EXEC"),
+           _n488("WK", state="checkout", root="EXEC")]
+    _e_a = dict(_e488("EXEC", "PM", issue="A"), job_id="fbotdisp-1-aaaaaaaa", ts=int(time.time())-600)
+    _e_b = dict(_e488("PM", "WK", issue="B", status="blocked"), job_id="fbotdisp-2-bbbbbbbb", ts=int(time.time())-300)
+    _e_old = dict(_e488("EXEC", "WK", issue="OLD", status="done", ago_h=96), job_id="fbotdisp-3-cccccccc")
+    _full = _d488(_nb, [_e_a, _e_b, _e_old])
+    _org = {"available": True, "seats": [
+        {"addr": "hq/hq-chief-1", "id": "hq-chief-1", "role": "chief", "dept": "hq", "dept_label": "본사", "source": "central",
+         "reports_to_addr": "", "vacant": False, "occupant": "EXEC", "scope_prj": None, "scope_title": "본사"},
+        {"addr": "2/ops-lead-1", "id": "ops-lead-1", "role": "lead", "dept": "ops", "dept_label": "운영부서", "source": "inherited",
+         "reports_to_addr": "hq/hq-chief-1", "vacant": False, "occupant": "PM", "scope_prj": 2, "scope_title": "obsidian"},
+        {"addr": "2/dev-architect-1", "id": "dev-architect-1", "role": "architect", "dept": "dev", "dept_label": "개발부서", "source": "inherited",
+         "reports_to_addr": "2/ops-lead-1", "vacant": True, "occupant": "", "scope_prj": 2, "scope_title": "obsidian"}]}
+    _pl = server._fbot_board_payload(_full, _org, extras={"EXEC": {"last_active_at": int(time.time())-30, "grade": "active", "employment": "employed"}},
+                                     inbox={"EXEC": 2}, escal={"EXEC": 1})
+    check("페이로드 최상위 키", all(k in _pl for k in ("generated", "summary", "scopes", "bots", "dispatch", "deadlocks")))
+    check("bots 는 전수(퇴근 포함) 3", len(_pl["bots"]) == 3 and _pl["bots"]["WK"]["state"] == "checkout")
+    check("extras·인박스 집계가 개체에 붙는다", _pl["bots"]["EXEC"]["inbox_open"] == 2 and _pl["bots"]["EXEC"]["escalated"] == 1 and _pl["bots"]["EXEC"]["grade"] == "active")
+    check("scopes 는 본사 → prj 순, 자리 3", [sc["prj"] for sc in _pl["scopes"]] == [None, 2] and _pl["summary"]["seats"] == 3 and _pl["summary"]["vacant"] == 1)
+    check("자리에 점유자 bot_id·보고선", next(st for sc in _pl["scopes"] for d in sc["depts"] for st in d["seats"] if st["addr"] == "2/ops-lead-1")["reports_to"] == "hq/hq-chief-1")
+    _by = {e["job_id"]: e for e in _pl["dispatch"]}
+    check("배분 체인 parent — PM→WK 의 부모는 EXEC→PM", _by["fbotdisp-2-bbbbbbbb"]["parent"] == "fbotdisp-1-aaaaaaaa")
+    check("problem·recent 판정이 실린다", _by["fbotdisp-2-bbbbbbbb"]["problem"] is True and _by["fbotdisp-3-cccccccc"]["recent"] is False and _by["fbotdisp-1-aaaaaaaa"]["recent"] is True)
+    check("요약 — 열린 1 · 문제 1 · 인박스 2", _pl["summary"]["open_dispatch"] == 1 and _pl["summary"]["problem_dispatch"] == 1 and _pl["summary"]["inbox_open"] == 2)
+    _bh = server._fbot_board_html("", 2)
+    check("보드 셸 — 3-pane 컨테이너·요약·필터·폴링 스크립트", all(x in _bh for x in ('id="fb-tree"', 'id="fb-detail"', 'id="fb-chain"', 'id="fb-toggle-problem"', "/fbot-map.json", "setInterval(load, 30000)")))
+    check("보드 셸 — 쿼리 전달(prj=2)", 'window.__fbQuery="prj=2"' in _bh)
+    _pg_b = server.Handler._render_fbot_map(_d488(_nb, [_e_a]), tab="board").decode("utf-8")
+    check("tab=board 렌더 — 탭바에 보드 on + 셸 포함", 'class="fm-tab on" href="/fbot-map"' in _pg_b and 'id="fb-tree"' in _pg_b)   # prj3#Issue588: board 가 기본 → 링크에 tab 생략
+    check("보드 탭은 그래프 캔버스를 만들지 않는다", 'id="fb-cy-org"' not in _pg_b)
+
+    print("\n== prj3#Issue561·562 — 상단 상태 요약 · 흐름 필터 ==")
+    _n561 = [_n488("M", state="working"), _n488("A", state="waiting_input", root="M"),
+             _n488("B", state="checkout", root="M")]
+    _summ = server._fbot_state_summary(_n561, [_e488("M", "A"), _e488("M", "B", status="done")])
+    check("요약줄에 상태별 개수(작업중 1·수신대기 1·퇴근 1)",
+          "작업중 1" in _summ and "수신대기 1" in _summ and "퇴근 1" in _summ)
+    check("요약줄에 열린 배분 수", "열린 배분 1" in _summ)
+    _e1 = dict(_e488("M", "A", issue="ROOT"), job_id="fbotdisp-1-aaaaaaaa", ts=100)
+    _e2 = dict(_e488("A", "B", issue="CHILD"), job_id="fbotdisp-2-bbbbbbbb", ts=200)
+    _e3 = dict(_e488("M", "B", issue="OTHER", status="blocked"), job_id="fbotdisp-3-cccccccc", ts=300)
+    _fl = server._fbot_flow_filter([_e1, _e2, _e3], None, job="fbotdisp-1-aaaaaaaa")
+    check("job 필터 — 그 배분 + 하위 체인만(ROOT·CHILD)",
+          sorted(e["issue"] for e in _fl) == ["CHILD", "ROOT"])
+    _fp = server._fbot_flow_filter([_e1, _e2, _e3], None, problem=True)
+    check("problem 필터 — blocked 만", [e["issue"] for e in _fp] == ["OTHER"])
+    check("없는 job 은 빈 목록", server._fbot_flow_filter([_e1], None, job="fbotdisp-9-zzzzzzzz") == [])
+    _pg = server.Handler._render_fbot_map(_d488(_n561, [_e1, _e2, _e3]), flow_problem=True).decode("utf-8")
+    check("페이지에 지시 선택 select 와 전체 보기 토글", "지시 선택:" in _pg and "전체 보기" in _pg)
+    check("페이지 헤더에 상태 요약줄", "열린 배분" in _pg)
 
     print("\n== prj3#Issue488 — 빈 다이어그램 회귀 (2026-09-01 실발생) ==")
     # 활성 0 + 열린 배분 0 → 그릴 것이 없다. 이때 빈 <pre class="mermaid"></pre> 를 내면
@@ -492,14 +581,14 @@ def _check_issue488():
     #   `?root=fbot-hr`·`?root=fbot-exec-narae` 에서 실제로 그렇게 깨졌다.
     dead_only = _d488([_n488("M", state="checkout"),
                        _n488("W", state="checkout", root="M")],
-                      [_e488("M", "W", status="done")])
+                      [_e488("M", "W", status="done", ago_h=96)])   # 오래된 종결(Issue556 창 밖)
     p = server.Handler._render_fbot_map(dead_only).decode("utf-8")
-    check("활성 0이어도 빈 mermaid 블록을 만들지 않는다",
-          '<pre class="mermaid"></pre>' not in p)
+    check("활성 0이어도 빈 그래프를 만들지 않는다",
+          'id="fb-cy-org"' not in p)
     check("대신 비어 있는 이유와 다음 행동을 적는다",
           "활성인 핀봇이 없습니다" in p and "전체 보기" in p)
     check("전체 보기로 넘기면 조직도가 그려진다",
-          '<pre class="mermaid">flowchart' in
+          "var DATA={org:" in
           server.Handler._render_fbot_map(dead_only, True).decode("utf-8"))
 
 
@@ -535,7 +624,7 @@ def _check_issue502():
           '<div class="fm-warn fm-open">' in page and "미종결 원장 1건" in page)
     check("ⓒ 계수 분리 — 진짜 교착 0건이 명시된다", "진짜 교착(⛔)은 0건" in page)
 
-    # ⓑ 원클릭 종결 — job_id 가 있을 때만 버튼. 집행은 taskmgr cancel 경유.
+    # ⓑ 원클릭 종결 — job_id 가 있을 때만 버튼. 집행은 lead cancel 경유.
     e = _e488("MGR", "W1", ago_h=2)
     e["job_id"] = "job-XYZ"
     d5 = _d488([_n488("MGR"), _n488("W1", state="checkout", root="MGR")], [e])
@@ -543,8 +632,8 @@ def _check_issue502():
     check("종결 버튼은 job_id 가 있을 때만",
           'data-job="job-XYZ"' in p5 and "fm-close-btn" in p5
           and "data-job" not in page)
-    check("집행 경로 고지 — taskmgr cancel 경유(원장 직접 UPDATE 금지)",
-          "fbot-taskmgr.py cancel" in p5)
+    check("집행 경로 고지 — lead cancel 경유(원장 직접 UPDATE 금지)",   # prj3#Issue610 rename
+          "fbot-lead.py cancel" in p5)
     check("종결 스크립트가 /fbot-dispatch-close 를 부른다",
           "/fbot-dispatch-close" in p5)
     check("종결 엔드포인트 핸들러 실재",
@@ -566,23 +655,104 @@ def _check_issue494():
     """
     print("\n== prj3#Issue494 — 탭 2분할(map/roster) ==")
     nodes = [_n488("MGR"), _n488("W1", state="checkout", root="MGR")]
-    disp = [_e488("MGR", "W1", issue="ISS-OPEN")]
+    disp = [_e488("MGR", "W1", issue="ISS-OPEN", ago_h=1)]   # 스폰 유예(Issue573) 밖 — 미종결 배너 대상
     d = _d488(nodes, disp)
     pmap = server.Handler._render_fbot_map(d).decode("utf-8")
     prost = server.Handler._render_fbot_map(d, False, False, "roster").decode("utf-8")
 
     check("기본(map) 탭은 관계 구조 전용 — 표 없음",
           "<h2>명부</h2>" not in pmap and "<h2>배분 원장</h2>" not in pmap)
-    check("map 탭에 mermaid 가 선다", '<pre class="mermaid">' in pmap)
+    check("map 탭에 그래프 캔버스가 선다", 'id="fb-cy-org"' in pmap)
     check("roster 탭에 명부·원장 표", "<h2>명부</h2>" in prost and "<h2>배분 원장</h2>" in prost)
-    check("roster 탭에는 mermaid 가 없다", '<pre class="mermaid">' not in prost)
+    check("roster 탭에는 그래프 캔버스가 없다", 'id="fb-cy-org"' not in prost)
     check("탭 nav 가 양 탭에 선다",
           'class="fm-tabs"' in pmap and 'class="fm-tabs"' in prost)
     check("roster 링크는 ?tab=roster", 'href="/fbot-map?tab=roster"' in pmap)
     check("map 링크는 tab 쿼리 생략(기본값 계약)", 'href="/fbot-map"' in prost)
+    # prj3#Issue538: 탭이 3개가 되며 map 탭 이름이 "조직도"→"관계 구조" 로 바뀌었다.
+    #   실제 조직 구조(부서·자리) 탭이 생긴 이상 "조직도" 라는 이름은 그쪽 것이고,
+    #   둘 다 "조직" 으로 부르면 사용자가 무엇을 보는지 알 수 없다.
     check("현재 탭에 on 표식",
-          '<a class="fm-tab on" href="/fbot-map">조직도</a>' in pmap
+          '<a class="fm-tab on" href="/fbot-map?tab=map"' in pmap and '>그래프</a>' in pmap  # prj3#Issue580·588: 그래프 탭은 tab=map 명시, 기본=보드
           and 'fm-tab on" href="/fbot-map?tab=roster"' in prost)
+    porg = server.Handler._render_fbot_map(d, False, False, "org").decode("utf-8")
+    check("조직 구조 탭 — 선언된 자리가 봇 상태와 무관하게 선다",
+          'fm-tab on" href="/fbot-map?tab=org"' in porg)
+    # prj3#Issue538 조직 생명주기: 전체 뷰는 조직별로 갈리고 본사만 펼쳐 둔다 —
+    #   20개 조직 97자리를 평면으로 늘어놓으면 "어느 프로젝트의 개발부서인가" 를 못 읽는다.
+    _multi = dict(d, org={"available": True, "scopes": 2, "archived_count": 1,
+                          "unseated": [], "stale_drops": [], "title": None,
+                          "seats": [
+        {"id": "hq-chief-1", "addr": "hq/hq-chief-1", "role": "chief", "dept": "hq",
+         "dept_label": "본사", "source": "central", "vacant": True,
+         "state_label": "공석", "occupant": "", "scope_prj": None, "scope_title": "본사"},
+        {"id": "dev-qa-1", "addr": "16/dev-qa-1", "role": "qa", "dept": "dev",
+         "dept_label": "개발부서", "source": "inherited", "vacant": True,
+         "state_label": "공석", "occupant": "", "scope_prj": 16, "scope_title": "fWarrange"}]})
+    pmulti = server.Handler._render_fbot_map(_multi, False, False, "org").decode("utf-8")
+    # prj3#Issue597 이후 펼침 기준은 "본사인가" 가 아니라 **활성 세션이 있는가** 다.
+    #   이 픽스처는 두 조직 다 공석이라 양쪽이 접힌 채(idle) 갈리는 것이 정상이다.
+    check("전체 뷰 — 조직별로 갈리고, 활성 없는 조직은 접힌다",
+          pmulti.count('<details class="fm-scope') == 2
+          and pmulti.count('fm-scope idle') == 2
+          and pmulti.count(" open>") == 0
+          and "prj16 · fWarrange" in pmulti)
+    check("휴면 팀은 그리지 않고 계수만 한다(공석 배경 방지)",
+          "휴면 1팀" in pmulti)
+    # prj3#Issue538: 팀의 생사는 PM핀봇 career 가 답한다. state 를 보면 안 된다 —
+    #   checkout 은 cold 라 퇴근을 죽음으로 읽으면 매일 밤 전 조직이 사라진다.
+    # 소스 텍스트를 훑지 않는다 — docstring 의 설명까지 잡혀 통과하는 구현도 실패한다
+    #   (실측). 판정에 쓰는 **SQL** 이 career 만 읽고 state 를 안 보는지로 확인한다.
+    _sql = [l for l in _org_alive_src.splitlines() if "SELECT" in l.upper()]
+    check("퇴근(state)은 죽음이 아니다 — 판정 쿼리가 career 만 읽는다",
+          bool(_sql) and all("career" in l and "state" not in l for l in _sql))
+    check("살아있는 career 는 probation·active 둘뿐",
+          _org_mod.ALIVE_CAREERS == ("probation", "active"))
+    check("본사는 항상 살아 있다(조직 골격)", _org_mod.team_alive(None) is True)
+
+    # ── prj3#Issue538: 탭마다 축이 다르다 (사용자 관측 2026-09-06) ──────────
+    #   조직 탭에 루트 칩을 두면 눌러도 화면이 그대로여서 "탭마다 차이가 없다" 로 읽힌다.
+    _d2 = dict(d, org={"available": True, "scopes": 1, "archived_count": 0,
+                       "unseated": [], "stale_drops": [], "title": "fWarrange",
+                       "all_scopes": [(16, "fWarrange"), (3, "claude")],
+                       "seats": [{"id": "ops-lead-1", "addr": "16/ops-lead-1",
+                                  "role": "lead", "dept": "ops", "dept_label": "운영부서",
+                                  "source": "inherited", "vacant": False, "occupant": "pm16",
+                                  "state_label": "퇴근", "scope_prj": 16,
+                                  "scope_title": "fWarrange"}]})
+    _porg2 = server.Handler._render_fbot_map(_d2, False, False, "org", 16).decode("utf-8")
+    check("조직 탭 칩은 프로젝트 축(루트가 아니다)",
+          "tab=org&amp;prj=3" in _porg2 and "root=" not in _porg2.split('fm-chips')[1][:400])
+    check("prj 를 골라도 다른 prj 로 넘어갈 수 있다(갇히지 않는다)",
+          _porg2.count('class="fm-chip') >= 3)
+    check("선택한 prj 칩에 on 표식", 'fm-chip on" href="/fbot-map?tab=org&amp;prj=16"' in _porg2)
+    check("조직이 하나면 접지 않는다(프로젝트 뷰 형태)",
+          '<details class="fm-scope"' not in porg)
+
+    # ── prj3#Issue538 s4: 작업 전파 — 완료 사인·시간축 ─────────────────────
+    #   기호가 상태를, 상대시각이 정체를 말한다. 종전 라벨은 status 문자열을 늘어놓아
+    #   둘 다 못 했고, 3분 전 배분과 26시간 전 배분이 같은 화살표로 그려졌다.
+    check("완료와 취소·회수가 다른 기호",
+          server._FBOT_FLOW_SIGN["done"] != server._FBOT_FLOW_SIGN["reaped"]
+          and server._FBOT_FLOW_SIGN["reaped"] != server._FBOT_FLOW_SIGN["cancelled"])
+    _now = 1_800_000_000
+    check("상대시각 — 경계",
+          server._fbot_rel_time(_now - 30, _now) == "방금"
+          and server._fbot_rel_time(_now - 600, _now) == "10분 전"
+          and server._fbot_rel_time(_now - 7200, _now) == "2시간 전"
+          and server._fbot_rel_time(_now - 200000, _now) == "2일 전")
+    check("ts 없으면 시각을 지어내지 않는다", server._fbot_rel_time(0) == "")
+    # prj1#Issue489 — 배분 흐름 mermaid(`_fbot_flow_mermaid`) 도 2세대에서 제거됐다.
+    #   기호·상대시각은 이제 **엣지 데이터**(sign·recent)로 나가고 그림은 클라이언트가 그린다.
+    _bd = server._fbot_board_data()
+    _reaped = [e for e in _bd["dispatch"] if e["status"] == "reaped"]
+    check("배분 엣지가 상태 기호를 데이터로 싣는다",
+          all(e["sign"] == server._FBOT_FLOW_SIGN["reaped"] for e in _reaped) if _reaped
+          else set(server._FBOT_FLOW_SIGN) >= {"reaped", "done", "cancelled"})
+    check("reaped 는 closed 와 다른 기호(완료로 뭉치지 않는다)",
+          server._FBOT_FLOW_SIGN["reaped"] != server._FBOT_FLOW_SIGN["done"])
+    check("상대시각 계산은 그대로 산다(라벨의 근거)",
+          server._fbot_rel_time(int(__import__("time").time()) - 3600) == "1시간 전")
 
     # ⓒ 경보 배너는 탭 밖 상단 공통 — 어느 탭에서도 보여야 한다.
     check("경보 배너가 양 탭 공통(탭 밖 상단)",
@@ -641,7 +811,11 @@ function check(n, c){ if(c){PASS++; console.log('  ok   '+n);} else {FAIL++; con
 JS_CHECKS = r"""
 renderBots(P.bots, P.bots_total, P.bots_today, P.bots_roster);
 let h = els['bots-grid'].innerHTML;
-check('루트 그룹 전건 렌더', (h.match(/class="bot-group"/g)||[]).length === P.__groups);
+// prj3#Issue611(사용자 지시 2026-09-10): 그룹은 **활성 봇을 가진 루트만** 선다. 팀장핀봇이
+//   프로젝트마다 상주해 전원 퇴근이 정상인 조직이 20개를 넘고, 전건을 그리면 홈이 명부가 된다.
+check('활성 있는 루트만 그룹으로 렌더',
+      (h.match(/class="bot-group"/g)||[]).length === P.__activeGroups &&
+      P.__activeGroups < P.__groups);
 // prj1#Issue449: 오래된 퇴근은 이름 나열 대신 "외 N개" 로 접힌다. 배분 0건 루트의
 //   하위가 증발하지 않는다는 원 의도는 활성 카드(리서치핀봇) + 그룹 소속 수(활성 2/4)
 //   + 접힘 수 표기로 검증한다 — 이름 전수 나열은 무한 성장이라 폐기된 사양이다.
@@ -657,7 +831,7 @@ check('활성 봇은 카드, 퇴근 봇은 칩·접힘(카드 아님)',
       (h.match(/class="bot-card"/g)||[]).length + 7 === 9);
 check('카운트 배지', els['bots-count'].textContent === '2/9');
 check('그룹 헤더에 조직도 링크(별도 어포던스)',
-      (h.match(/class="bot-map-link"/g)||[]).length === P.__groups &&
+      (h.match(/class="bot-map-link"/g)||[]).length === P.__activeGroups &&
       h.includes('/fbot-map?root=R1') && h.includes('target="_blank"'));
 check('카드는 여전히 아코디언 계약 보유',
       h.includes('data-bot="R1"') && h.includes('role="button"') && h.includes('tabindex="0"'));
@@ -672,7 +846,12 @@ openBotCards.clear();
 renderBots([], P.bots_total, P.bots_today, P.bots_roster);
 h = els['bots-grid'].innerHTML;
 check('전원 퇴근 — 유휴 요약 유지 (Issue400 무회귀)', h.includes('bot-idle'));
-check('전원 퇴근에도 조직 그룹은 보인다', (h.match(/class="bot-group"/g)||[]).length === P.__groups);
+// prj3#Issue611: 전원 퇴근이면 그룹은 하나도 서지 않는다. Issue400 의 "전원 퇴근을 숨기지
+//   않는다" 는 위 유휴 요약 1줄이 승계한다 — 기능 사망(total 0 → 섹션 자체 숨김)과는 계속 갈린다.
+check('전원 퇴근 — 조직 그룹은 서지 않는다',
+      (h.match(/class="bot-group"/g)||[]).length === 0);
+check('전원 퇴근이어도 섹션은 남는다(사망과 구분)',
+      els['bots-section'].style.display !== 'none');
 
 renderBots(P.bots, P.bots_total, P.bots_today, []);
 h = els['bots-grid'].innerHTML;
@@ -711,13 +890,26 @@ check('24h 초과여도 툴팁에 마지막 실행을 남긴다(정보 손실 �
 check('last_seen 없는 퇴근 봇은 툴팁도 만들지 않는다',
       (h.match(/마지막 실행/g)||[]).length === 1);
 
-// prj1#Issue449: 무기록 퇴근 멤버는 이름 대신 접힘 수로 남는다 — 그룹 증발 금지는 유지.
-check('루트가 명부에 없어도 그룹은 남는다(멤버 증발 금지)',
-      (renderBots([], 1, {}, [{bot_id:'z', title:'유령상사', role:'exec', state:'checkout',
-        state_label:'퇴근', state_emoji:'⬜', color:'', root:'z', is_root:false,
-        active:false, icon_uri:''}]),
-       els['bots-grid'].innerHTML.includes('bot-group') &&
-       els['bots-grid'].innerHTML.includes('bot-rest-more')));
+// prj1#Issue449 + prj3#Issue611: 루트가 명부에서 사라진(끊긴 사슬) 그룹이라도 **일하는 봇이
+//   있으면** 통째로 증발시키지 않는다 — id 만 뜨는 편이 소속 봇이 화면에서 사라지는 것보다 낫다.
+//   활성 0 이면 숨기는 새 사양과 충돌하지 않는다: 숨김의 기준은 루트의 존재가 아니라 활동이다.
+const ghostWorker = {bot_id:'zw', title:'유령 소속 워커', role:'qa', state:'working',
+  state_label:'작업중', state_emoji:'🟢', career:'', color:'', root:'z-gone', is_root:false,
+  active:true, icon_uri:''};
+renderBots([Object.assign({}, ghostWorker, {parent_bot_id:'z-gone', current_task:'', prj:null,
+  lease_stale:false, lease_expires:null, parent_title:'', session_id:'', tmux_target:''})],
+  2, {}, [ghostWorker]);
+h = els['bots-grid'].innerHTML;
+check('루트가 명부에 없어도 활성 멤버가 있으면 그룹은 남는다(멤버 증발 금지)',
+      h.includes('bot-group') && h.includes('유령 소속 워커'));
+check('그 그룹 헤더는 루트 id 로 폴백한다(이름을 지어내지 않는다)', h.includes('z-gone'));
+// 같은 사슬이라도 전원 퇴근이면 서지 않는다 — 판정이 "루트 부재" 가 아니라 "활동" 임을 박제.
+renderBots([], 1, {}, [{bot_id:'z', title:'유령상사', role:'exec', state:'checkout',
+  state_label:'퇴근', state_emoji:'⬜', color:'', root:'z-gone', is_root:false,
+  active:false, icon_uri:''}]);
+check('루트 부재 + 활성 0 은 숨긴다(판정 기준은 활동)',
+      !els['bots-grid'].innerHTML.includes('bot-group') &&
+      els['bots-grid'].innerHTML.includes('bot-idle'));
 
 // 실제 이벤트 위임 — 지도 링크가 카드 아코디언을 빼앗지 않는지 (Issue402 ⓒ)
 BIND_SRC;
@@ -799,6 +991,11 @@ def _run_js_checks():
         build_fixture(tmp)
         payload = server._collect_bots()
         payload["__groups"] = len({m["root"] for m in payload["bots_roster"]})
+        # prj3#Issue611: 화면에 서는 그룹은 **활성 봇을 가진 루트**뿐이다(사용자 지시
+        #   2026-09-10). 전건 수(__groups)는 접힘·명부 검증에 계속 쓰이므로 둘 다 둔다.
+        _act = {b["bot_id"] for b in payload["bots"]}
+        payload["__activeGroups"] = len({m["root"] for m in payload["bots_roster"]
+                                         if m["bot_id"] in _act})
         ko = json.load(open(os.path.join(REPO, "data", "locales", "ko.json"),
                             encoding="utf-8"))
         src = server.HUB_HTML

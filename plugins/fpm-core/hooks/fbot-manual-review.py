@@ -64,7 +64,16 @@ INDEX_ORIGIN = "fbot-manual-index"
 import re as _re
 
 def _review_policy():
+    # prj3#Issue626 — **정책 수치의 정본은 prj3** 다. 데이터(registry.db·learn.db)는 용량 때문에
+    #   prj5 에 남지만(zshenv 명시 결정) 수치는 prj3 소관이다. 폴백 순서가 핵심이다:
+    #   ⓐ `aoa_dir()` 에 있으면 그것 — **테스트가 픽스처에 쓴 policy 를 계속 읽는다**
+    #   ⓑ 없으면 prj3. 운영에서는 prj5 사본을 걷었으므로 여기로 온다
+    #   순서를 뒤집으면 테스트가 운영 policy 를 읽어 픽스처가 무력해진다.
     path = os.path.join(AOA_DIR, "policy.yml")
+    if not os.path.exists(path):
+        _p3 = os.path.join(os.path.expanduser("~"), ".claude", "data", "aoa", "policy.yml")
+        if os.path.exists(_p3):
+            path = _p3
     out = {}
     if os.path.exists(path):
         for line in open(path, encoding="utf-8"):
@@ -81,6 +90,10 @@ RETRY_RATE_MIN = _RP.get("fbot_review_retry_rate_min", 0.30)   # attempts >= 2 �
 IDLE_RATE_MIN = _RP.get("fbot_review_idle_rate_min", 0.50)     # 출근했는데 current_task 가 빈 세션 비율
 MISMATCH_MIN = _RP.get("fbot_review_mismatch_min", 1)      # strict role 인데 hash 증적 없이 done 건수
 OBS_FAIL_MIN = _RP.get("fbot_review_obs_fail_min", 3)      # 실패 키워드 동반 observation 건수
+# 매뉴얼 크기 상한 (prj3#Issue601) — 계약 §F5 의 900자. **파일 전체** 기준이다:
+#   fbot-checkin.sh 가 `cat "$MANUAL_DIR/$role.md"` 로 통째로 주입하므로 frontmatter 도
+#   매 출근 비용에 그대로 실린다(실측). 본문만 재면 `revisions:` 가 길어질수록 과소평가된다.
+MANUAL_MAX_CHARS = _RP.get("fbot_manual_max_chars", 900)
 
 HASH_RE = re.compile(r"\b[0-9a-f]{7,40}\b")
 OBS_FAIL_RE = re.compile(r"실패|오류|에러|반송|재시도|blocked|failed", re.I)
@@ -97,6 +110,13 @@ def die(msg):
 
 def today():
     return datetime.now().strftime("%Y.%m.%d")
+
+
+def _ts(epoch):
+    """epoch → 사람이 읽는 시각. 0/None 은 '미기록'(기준선 부재와 0시를 구분한다)."""
+    if not epoch:
+        return "미기록"
+    return datetime.fromtimestamp(int(epoch)).strftime("%Y.%m.%d %H:%M")
 
 
 def connect(db):
@@ -130,6 +150,16 @@ def write_canonical(path, text, ack):
         die("하드 가드 위반: ACK 레코드 없이 정본 쓰기 시도 — %s" % path)
     if not path.endswith(".md"):
         die("하드 가드 위반: 정본 경로가 아님 — %s" % path)
+    # prj3#Issue601 — 상한 초과를 **악화시키는** 쓰기만 막는다.
+    #   무조건 거부로 두면 이미 초과한 4종(chief·lead·crosscheck·consult)의 개정이
+    #   영구 불가가 되어, 정작 줄이는 개정까지 함께 막힌다. 줄어드는 방향은 통과시킨다.
+    n = len(text)
+    if n > MANUAL_MAX_CHARS:
+        cur = len(read_text(path)) if os.path.exists(path) else 0
+        if n > max(cur, MANUAL_MAX_CHARS):
+            die("매뉴얼 상한 초과 악화: %s — %d자 (상한 %d · 현재 %d). "
+                "매 출근 주입 비용이라 늘리는 개정은 막는다. 줄이는 개정은 통과한다."
+                % (path, n, MANUAL_MAX_CHARS, cur))
     _atomic_write(path, text)
 
 
@@ -248,7 +278,64 @@ def collect_obs_stats(roles):
 
 # ── 판정 ─────────────────────────────────────────────────────────────────────
 
-def evaluate(role, st, obs_fail, completion):
+# drift 판정이 불가능했던 사유 — review 요약이 마지막에 이것을 낸다(침묵 금지)
+DRIFT_UNAVAILABLE = []
+
+
+def _recruit_mod():
+    """fbot-scout.py 를 모듈로 로드한다 — origin 해소 로직의 **단일 지점**.
+
+    prj3#Issue589 — 경로 해소(`agent:` → `~/.claude/agents/N.md`)를 여기에 복제하면
+    카탈로그 문법이 바뀔 때 한쪽만 고쳐져 조용히 어긋난다. 카탈로그를 소유한 쪽에서 빌린다.
+    """
+    import importlib.util
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fbot-scout.py")
+    if not os.path.exists(path):
+        return None
+    spec = importlib.util.spec_from_file_location("_fbot_recruit_for_review", path)
+    m = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(m)
+        return m
+    except Exception:
+        return None
+
+
+def origin_drift(role):
+    """(origin, seen, cur) — 원본 내용 해시가 기준선과 다르면 drift. 아니면 None.
+
+    🔴 **기준선은 `origin_seen` 이지 매뉴얼 mtime 이 아니다.** 매뉴얼 mtime 을 쓰면
+      `reject` 가 그것을 갱신하지 않아(draft 만 지운다) 월요일 tick 이 **매주 같은 draft·
+      같은 `[컨펌]` 을 재생성**한다 — prj3#Issue518 이 경계한 폭주 그대로다. 감쇠하는
+      비율 신호(blocked_rate 등)와 달리 mtime 비교는 스스로 줄어들지 않기 때문이다.
+    """
+    r = _recruit_mod()
+    if r is None:
+        DRIFT_UNAVAILABLE.append("fbot-scout.py 로드 실패")
+        return None
+    try:
+        roles = r.parse_catalog()
+    except Exception as e:
+        # fail-soft 는 유지하되 **침묵하지 않는다** (prj3#Issue589 자체 검토 m4) —
+        #   카탈로그가 파손되면 drift 가 전 role 에서 사라지는데, 그것이 조용하면
+        #   운영자는 "신호 없음 = 최신"으로 읽는다. touch_origin_seen 은 이미 경고를
+        #   내므로 대칭을 맞춘다.
+        DRIFT_UNAVAILABLE.append("카탈로그 읽기 실패: %s" % e)
+        return None                     # 카탈로그 부재는 fail-soft — 다른 신호를 죽이지 않는다
+    f = roles.get(role) or {}
+    origin = f.get("origin")
+    if not origin or origin == "native":
+        return None                     # 원본이 없으면 drift 라는 개념이 성립하지 않는다
+    cur = r.origin_digest(origin)
+    if cur is None:
+        return None                     # web: 출처 — 로컬에 원본이 없어 판정 불가(계약 §A)
+    seen = f.get("origin_seen") or ""
+    # 미기입(미대조)도 drift 다 — *"아직 아무도 원본과 대조하지 않았다"* 는 사실이
+    #   침묵으로 사라지면 안 된다. apply·reject 가 대조 시점에 기준선을 잡는다.
+    return (origin, seen, cur) if cur != seen else None
+
+
+def evaluate(role, st, obs_fail, completion, drift=None, oversize=None):
     """관측 → 개정 근거 신호. **데이터로 관측 가능한 것만** 신호로 삼는다."""
     sig = []
     dt, se = st["dispatch_total"], st["session_total"]
@@ -289,12 +376,58 @@ def evaluate(role, st, obs_fail, completion):
                 "출근 직후 current_task 를 기록하도록 「작업 절차」에 첫 단계를 추가할 것을 "
                 "제안한다(기록 없는 작업은 개선 루프에서 보이지 않는다 — 계약 F4)."))
 
-    if obs_fail >= OBS_FAIL_MIN:
+    # 🔴 obs 의 교차 확인 재료는 **원장 파생 4신호뿐**이다 — 여기서 스냅샷을 뜬다.
+    #   prj3#Issue589 자체 검토에서 잡은 결함: drift 를 `sig` 에 얹은 뒤 obs 게이트가
+    #   `if ... and sig:` 를 보면 **drift 가 obs 의 잠금을 풀어버린다**. 그런데 둘은
+    #   무관하다 — *"원본 파일이 바뀌었다"* 가 *"트랜스크립트에 실패가 언급됐다"* 를
+    #   정당화하지 못한다. prj3#Issue522 가 세운 교차 확인의 뜻은 **원장 근거**였다.
+    #   실측: igmaker 는 drift 도입 전 신호 0건이었는데 도입 후 obs 51건이 함께 붙었다.
+    ledger_sig = list(sig)
+
+    # prj3#Issue589 — origin_drift 는 **단독 트리거**다. obs 와 정반대 성격이라 다르게 다룬다:
+    #   obs 는 트랜스크립트 전문 매칭이라 오탐이 섞이고 bot_id 귀속이 원리적으로 불가능한데,
+    #   drift 는 **role 축의 결정론적 사실**(파일 mtime 비교)이라 귀속이 애초에 필요 없고
+    #   오탐 여지가 없다. 기준선(`origin_seen`)이 apply·reject 양쪽에서 갱신되므로
+    #   "봤는데 안 고치기로 했다" 가 표현돼 재발 폭주도 막힌다.
+    # prj3#Issue601 — 크기 초과도 **단독 트리거**다. origin_drift 와 같은 성격
+    #   (role 축의 결정론적 사실 · bot_id 귀속 불요 · 오탐 여지 0)이며, 원장 신호가
+    #   0건이어도 비용은 매 출근 발생하므로 표본을 기다릴 이유가 없다.
+    #   ⚠️ 단, obs 의 교차 확인 재료로는 **쓰지 않는다** — ledger_sig 스냅샷 뒤에 붙인다.
+    if oversize:
+        n, limit = oversize
+        sig.append((
+            "manual_oversize",
+            "매뉴얼이 상한을 넘는다 — %d자 (상한 %d · 초과 %+d). "
+            "fbot-checkin.sh 가 파일을 통째로 주입하므로 매 출근 비용이다"
+            % (n, limit, n - limit),
+            "절을 줄이거나 상세를 설계 문서로 옮길 것을 제안한다. 5절 구조(임무·작업 절차·"
+            "워크플로우 어댑터·경계/금지·완료 판정)는 유지하고 각 절의 산문을 압축한다."))
+
+    if drift:
+        origin, seen, cur = drift
+        sig.append((
+            "origin_drift",
+            "승격 원본이 기준선과 다르다 — origin=%s · origin_seen=%s · 원본 현재 %s"
+            % (origin, seen or "미대조", cur),
+            "원본이 바뀌었다. 「작업 절차」가 인용한 원본 절차와 현재 원본을 대조해 "
+            "달라진 부분을 반영할 것을 제안한다. 반영하지 않기로 하면 `reject` 로 "
+            "기준선만 갱신한다(다음 주 재발 방지)."))
+
+    # prj3#Issue522 (2026-09-03) — obs 는 **단독 트리거가 될 수 없다.**
+    #   learn.db observation 은 세션 트랜스크립트(`tool_complete` 이벤트)라 *"봇이 실패했다"* 와
+    #   *"실패를 조사했다"* 를 구분하지 못한다. 실측: prj3#Issue517 리포트를 쓰는 동안 taskmgr 85건이
+    #   "실패 언급"으로 쌓였고 그 표본 상위 3건이 전부 조사자의 Bash stdout 이었다.
+    #   더 근본적으로 observation 에는 **bot_id 컬럼이 없다** — 계약 F4 가 요구하는 귀속이
+    #   원리적으로 불가능한 데이터다. 위 4종은 전부 registry.job 파생이라 귀속이 성립한다.
+    #   그래서 정보는 남기되(근거 표), **판정 권한은 주지 않는다**.
+    if obs_fail >= OBS_FAIL_MIN and ledger_sig:
         sig.append((
             "obs_failure_mentions",
-            "learn.db observation 중 본 role 봇을 실패 문맥으로 언급 %d건 (≥ 임계 %d)"
+            "learn.db observation 중 본 role 봇을 실패 문맥으로 언급 %d건 (≥ 임계 %d) "
+            "— ⚠️ 참고값: 트랜스크립트 전문 매칭이라 조사·논의도 함께 집계된다(prj3#Issue522)"
             % (obs_fail, OBS_FAIL_MIN),
-            "반복 언급된 실패 문맥을 「경계·금지」 절의 금지 항목으로 승격할 것을 제안한다."))
+            "반복 언급된 실패 문맥을 「경계·금지」 절의 금지 항목으로 승격할 것을 제안한다. "
+            "⚠️ 이 신호만으로 개정하지 말 것 — 위 원장 신호와 교차 확인이 전제다."))
     return sig
 
 
@@ -334,7 +467,10 @@ def cmd_review(args):
         st = stats.get(role, empty)
         text = read_text(manual_path(role))
         fm, _ = parse_frontmatter(text)
-        sig = evaluate(role, st, obs.get(role, 0), fm.get("completion", ""))
+        n = len(text)
+        sig = evaluate(role, st, obs.get(role, 0), fm.get("completion", ""),
+                       drift=origin_drift(role),
+                       oversize=(n, MANUAL_MAX_CHARS) if n > MANUAL_MAX_CHARS else None)
         if not sig:
             skipped.append((role, st))
             continue
@@ -344,6 +480,9 @@ def cmd_review(args):
         write_draft(draft_path(role), render_draft(role, text, sig, st, obs.get(role, 0)))
         made.append((role, sig, False))
 
+    if DRIFT_UNAVAILABLE:
+        print("⚠️ origin_drift 판정 불가 — %s (신호 없음이 최신을 뜻하지 않는다)"
+              % "; ".join(sorted(set(DRIFT_UNAVAILABLE))), file=sys.stderr)
     print("# fbot 매뉴얼 개정 후보 (%s)%s" % (today(), " [dry-run]" if args.dry_run else ""))
     print("* 대상 role %d종 · 매뉴얼 %s" % (len(roles), MANUAL_DIR))
     if not made:
@@ -370,6 +509,31 @@ def list_drafts():
     return sorted(glob.glob(os.path.join(MANUAL_DIR, "*" + DRAFT_SUFFIX)))
 
 
+def pending_confirm(role):
+    """`queue/`(미종결)에 같은 role 의 `[컨펌]` 이 이미 있으면 그 id 를 돌려준다.
+
+    prj3#Issue518 — `propose` 를 tick 에 편입하면서 필요해졌다. 개정 루프는 **주 1회**
+    도는데 draft 는 사람이 `apply`/`reject` 할 때까지 남는다. 중복 방지가 없으면 미결
+    draft 1건이 매주 새 `[컨펌]` 을 낳아 큐가 같은 요청으로 채워진다 — 그렇게 되면
+    사람이 통지를 끄고, 통지를 끄면 이 루프의 존재 이유가 사라진다.
+
+    매칭 규칙은 `find_ack()` 와 **같다**(`"role: %s." % role` — 마침표까지 봐서 접두
+    충돌을 막는다). 두 곳이 다른 규칙을 쓰면 한쪽만 갱신돼 갈라진다.
+    """
+    q = os.path.join(MQ_DIR, "queue")
+    if not os.path.isdir(q):
+        return None
+    for f in sorted(glob.glob(os.path.join(q, "*.json"))):
+        try:
+            d = json.load(open(f, encoding="utf-8"))
+        except Exception:
+            continue
+        msg = d.get("message") or ""
+        if CONFIRM_MARK in msg and ("role: %s." % role) in msg:
+            return d.get("id") or os.path.basename(f)
+    return None
+
+
 def cmd_propose(args):
     drafts = list_drafts()
     if not drafts:
@@ -377,14 +541,18 @@ def cmd_propose(args):
         return 0
     if not os.access(MQ_ENQUEUE, os.X_OK):
         die("mq helper 없음·실행 불가: %s (직접 큐 Write 금지 — helper 경유가 유일 경로)" % MQ_ENQUEUE)
-    out = []
+    out, dup = [], []
     for d in drafts:
         role = os.path.basename(d)[:-len(DRAFT_SUFFIX)]
+        already = pending_confirm(role)          # prj3#Issue518 — 주간 재등록 소음 차단
+        if already:
+            dup.append((role, already))
+            continue
         msg = ("[컨펌] %s — role: %s. 개정 초안 %s 를 정본에 반영할지 사람 전결 요청. "
                "승인 시 `~/.claude/hooks/fbot-manual-review.py apply --role %s`, "
                "반려 시 `reject --role %s --reason \"…\"`. 정본은 승인 전까지 무변경."
                % (CONFIRM_MARK, role, d, role, role))
-        cmd = [MQ_ENQUEUE, "--message", msg, "--due", "+0d", "--from-bot", "fbot-taskmgr"]
+        cmd = [MQ_ENQUEUE, "--message", msg, "--due", "+0d", "--from-bot", "fbot-lead"]
         if args.dry_run:
             print("[dry-run] %s" % " ".join(cmd))
             continue
@@ -394,6 +562,8 @@ def cmd_propose(args):
         out.append((role, p.stdout.strip()))
     for role, res in out:
         print("* %s → %s" % (role, res))
+    for role, mid in dup:
+        print("* %s → 스킵(미종결 컨펌 이미 있음: %s)" % (role, mid))
     if out:
         print("* ⚠️ ACK 는 사람이 한다 — 봇 auto-ack 금지(계약). 승인 확인 후 `apply --role <R>`.")
     return 0
@@ -439,7 +609,7 @@ def record_job(role, decision, detail):
               (jid, None, "fbot_manual_review", "done",
                json.dumps({"role": role, "decision": decision}, ensure_ascii=False),
                json.dumps({"detail": detail}, ensure_ascii=False),
-               0, "fbot-taskmgr", None, None, now))
+               0, "fbot-lead", None, None, now))
     c.commit()
     c.close()
     return jid
@@ -473,6 +643,33 @@ def append_revision(text, entry):
     return head + body
 
 
+def touch_origin_seen(role):
+    """drift 기준선을 현재 원본 **내용 해시**로 올린다 — apply·reject **양쪽**이 부른다.
+
+    🔴 reject 도 갱신한다. *"봤고, 반영하지 않기로 했다"* 역시 기준선이 움직여야 하는
+      사건이다. 갱신하지 않으면 draft 를 지워도 다음 주 review 가 같은 신호를 다시
+      내고 `[컨펌]` 이 매주 재생성된다(prj3#Issue518 폭주). 사람이 통지를 끄면 루프
+      자체의 존재 이유가 사라진다.
+    """
+    r = _recruit_mod()
+    if r is None:
+        return None
+    try:
+        f = (r.parse_catalog().get(role) or {})
+        origin = f.get("origin")
+        if not origin or origin == "native":
+            return None
+        cur = r.origin_digest(origin)
+        if cur is None:
+            return None                 # web: 출처 — 올릴 기준선이 없다
+        r.set_field(r.CATALOG_PATH, role, "origin_seen", cur)
+        return cur
+    except Exception as e:              # 기준선 갱신 실패가 본 명령을 되돌리지는 않는다
+        print("⚠️ origin_seen 갱신 실패(%s): %s — 다음 review 에서 같은 신호가 재발한다"
+              % (role, e), file=sys.stderr)
+        return None
+
+
 def cmd_apply(args):
     role = args.role
     d, m = draft_path(role), manual_path(role)
@@ -491,7 +688,10 @@ def cmd_apply(args):
     write_canonical(m, new, ack)
     os.remove(d)
     jid = record_job(role, "applied", "mq=%s ack_ts=%s" % (ack.get("id"), ack.get("ack_ts")))
-    print("✅ %s 정본 반영 (승인 %s · %s) · draft 삭제 · job 원장 %s" % (role, ack.get("id"), ack.get("ack_ts"), jid))
+    seen = touch_origin_seen(role)
+    print("✅ %s 정본 반영 (승인 %s · %s) · draft 삭제 · job 원장 %s%s"
+          % (role, ack.get("id"), ack.get("ack_ts"), jid,
+             (" · origin_seen→%s" % seen) if seen else ""))
     return 0
 
 
@@ -502,7 +702,10 @@ def cmd_reject(args):
         die("draft 없음: %s" % d)
     os.remove(d)
     jid = record_job(role, "rejected", args.reason)
-    print("🚫 %s draft 폐기 · 사유 job 원장 기록 %s: %s" % (role, jid, args.reason))
+    seen = touch_origin_seen(role)
+    print("🚫 %s draft 폐기 · 사유 job 원장 기록 %s: %s%s"
+          % (role, jid, args.reason,
+             (" · origin_seen→%s (재발 방지)" % seen) if seen else ""))
     return 0
 
 

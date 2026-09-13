@@ -115,7 +115,7 @@ date: 2026-05-19
 
 1. Claude 응답 본문에 v1 sentinel 쌍 마커 작성 + 응답 종료
 2. Stop hook (`fpm-ask-marker-detect.sh`) 발동:
-    - `.hub-mode-active-<hash>` 플래그 없음 or effective=off → 무동작 (Issue283 cwd 스코프)
+    - `.hub-active/<hash>` 플래그 없음 or effective=off → 무동작 (Issue283 cwd 스코프)
     - 플래그 있음 + BEGIN/END 매칭 → JSON 파싱·schema 검증 → server healthz/register → reason 주입 (`decision: "block"`)
 3. Claude 다음 turn:
     - reason 의 지시대로 form HTML 작성 (각 카드: freetext/select 분기)
@@ -137,7 +137,7 @@ date: 2026-05-19
 | 마커 JSON syntax error | hook reason 에 에러 메시지·schema 안내 |
 | schema 위반 (questions 누락 등) | hook reason 에 위반 필드 명시 |
 | 서버 down (healthz ≠ 200) | hook reason 에 `/board-server start` 또는 `..hub stop` 안내 |
-| `.hub-mode-active-<hash>` 없음 or effective=off | hook 즉시 exit 0 |
+| `.hub-active/<hash>` 없음 or effective=off | hook 즉시 exit 0 |
 | 단일 BEGIN 또는 단일 END 만 | 미매칭 (정규식 쌍 매칭 강제) → hook exit 0 |
 
 ### sentinel 노출 가이드 (Issue48)
@@ -465,6 +465,10 @@ flowchart TD
     - ❌ `P1["1. AI 프로젝트화"]` · `subgraph S1["2. 조합"]` · `N1["- 항목"]`
     - ✅ `P1["1단계 · AI 프로젝트화"]` · `subgraph S1["2) 조합"]` · `N1["항목"]`
     - hub 자동 렌더는 `mermaid-diagram` 스킬을 호출하지 않아 룰이 컨텍스트에 없음 → 링크 참조로 불충분(Issue242 재발 근거). 본 인라인 규칙이 렌더 경로의 1차 가드
+* **⚠️ timeline period 에 콜론 금지 (Issue529 — 인라인 필수)**: `timeline` 에서 `:` 는 period↔event 구분자라, 줄 첫 칸에 시각(`HH:MM`)을 쓰면 다이어그램 **전체가 `Syntax error in text` 로 렌더 실패**(부분 깨짐이 아니라 통째로 죽음)
+    - ❌ `00:23:24 : 부팅` · `00:37~00:41 : 실측`
+    - ✅ `00.23.24 : 부팅` · `00시23분 : 부팅` · `2026-09-04 : 00:23 부팅`(구분자 뒤 event 의 콜론은 안전)
+    - 재발 실측: hub 렌더 문서 2건(2026-08-12·2026-09-04)이 같은 형태로 깨져 있었음. 렌더 경로가 스킬을 호출하지 않는 것이 원인이라 8-2 와 같은 이유로 인라인 필요
 * mermaid 문법·다이어그램 유형 선택 기준은 [`~/.claude/skills/mermaid-diagram/mermaid-rules.md`](../skills/mermaid-diagram/mermaid-rules.md) 참조
 * 노드 라벨 한국어 허용. 특수문자(`()`, `[]`, `:`, `"` 등) 포함 시 라벨을 `"..."` 로 감쌈
 * 다이어그램 1개당 노드 **3~12개 권장**. 초과 시 다이어그램을 의미 단위로 분할
@@ -564,7 +568,7 @@ dashboard 서버 lifecycle wrapper: [`~/.claude/commands/fpm-board-server.md`](f
 
 ## 양방향 Q&A (form 자동 회수) — Issue45
 
-`..show` 트리거(구 `..hub`)가 발동되면 `~/.claude/.hub-mode-active-<md5(cwd)[:8]>` 플래그 파일이 생성되어 양방향 모드 활성 (Issue283: cwd 스코프 — 세션 간 누수 차단). 후속 `AskUserQuestion` 호출은 `fpm-ask-intercept.sh` (PreToolUse hook) 가 가로채 form HTML 생성 + ___pm htm-server inbox 자동 회수 지시를 주입.
+`..show` 트리거(구 `..hub`)가 발동되면 `~/.claude/.hub-active/<md5(cwd)[:8]>` 플래그 파일이 생성되어 양방향 모드 활성 (Issue283: cwd 스코프 — 세션 간 누수 차단). 후속 `AskUserQuestion` 호출은 `fpm-ask-intercept.sh` (PreToolUse hook) 가 가로채 form HTML 생성 + ___pm htm-server inbox 자동 회수 지시를 주입.
 
 ### 동작 원리
 
@@ -583,7 +587,7 @@ dashboard 서버 lifecycle wrapper: [`~/.claude/commands/fpm-board-server.md`](f
 
 | # | 조건 | 판정 신호 |
 | :-: | :--- | :--- |
-| 1 | hub 모드 활성 | `~/.claude/.hub-mode-active-<hash>` 존재 **+ effective=on** (intercept hook 이 자동 감지·재판정, Issue283) |
+| 1 | hub 모드 활성 | `~/.claude/.hub-active/<hash>` 존재 **+ effective=on** (intercept hook 이 자동 감지·재판정, Issue283) |
 | 2 | 응답이 N개 선택지 제시 | 번호 매긴 옵션 리스트 (`1.`/`2.`/`3.` 또는 `A.`/`B.`/`C.` 또는 `- 옵션 1` `- 옵션 2`) — 2~4개 |
 | 3 | 결정 요청 문구 포함 | "선택해줘", "어느 옵션", "y/N", "번호로 답해", "선택하세요", "골라줘", "어떤 방식", "어느 쪽", "Yes/No" 등 사용자 결정 요청 표현 |
 
@@ -628,7 +632,7 @@ intercept hook 이 deny + form 자동 회수 reason 주입 → Claude 가 form H
 
 #### 비-hub 모드
 
-hub 모드 미활성(`.hub-mode-active-<hash>` 없음 or effective=off) → 본 규칙 적용 안 함. AskUserQuestion 호출은 평소대로 채팅 UI 에 표시.
+hub 모드 미활성(`.hub-active/<hash>` 없음 or effective=off) → 본 규칙 적용 안 함. AskUserQuestion 호출은 평소대로 채팅 UI 에 표시.
 
 ### Form HTML 템플릿 요구사항
 
@@ -724,7 +728,7 @@ hub 가 생성한 htm 문서 안에서 **다른 htm 문서를 iframe·링크로 
 
 - `~/.claude/hooks/fpm-hub-trigger.sh` (UserPromptSubmit, `..show` 감지[구 `..hub` deprecated] + 플래그 touch + 본문 HTML 지시 주입)
 - `~/.claude/hooks/fpm-ask-intercept.sh` (PreToolUse matcher=AskUserQuestion, healthz 판정 + form 자동 회수 지시 또는 fail-loud)
-- `~/.claude/.hub-mode-active-<md5(cwd)[:8]>` (cwd 스코프 플래그 파일, 빈 파일이면 활성 — Issue283)
+- `~/.claude/.hub-active/<md5(cwd)[:8]>` (cwd 스코프 플래그 파일, 빈 파일이면 활성 — Issue283)
 - `~/.claude/hooks/hub-scope.sh` (플래그 경로·effective 판정 공통 헬퍼 — Issue283)
 - `~/_git/___pm/services/hub/server.py` — `/healthz`, `/register`, `/answer` endpoint (___pm 소유, 상시 운영)
 - `/tmp/___pm/claude-htm-inbox/{cwd_hash}/{sid}/{ts}.json` — 답변 파일 (Issue90 sid 서브폴더 세션 격리, Claude Read 후 삭제)

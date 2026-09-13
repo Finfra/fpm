@@ -7,7 +7,7 @@
 #   ~/.claude/rules/global-scar-change-rules.md
 #
 # 동작:
-#   - .hub-mode-active-<hash> 플래그 없음 or effective=off → exit 0 [Issue283]
+#   - .hub-active/<hash> 플래그 없음 or effective=off → exit 0 [Issue283]
 #   - 플래그 있음 + 직전 assistant 응답에 v1 sentinel 쌍 BEGIN/END 마커 발견
 #     → 마커 JSON 파싱·검증 → server healthz/register → form HTML 생성 지시를
 #       Stop hook `decision: "block"` reason 으로 주입하여 다음 turn 에서 Claude
@@ -34,7 +34,10 @@
 set -u
 
 . "$HOME/.claude/hooks/hub-scope.sh"
-. "$HOME/.claude/hooks/lib/ask-common.sh"   # Issue424_2: 공용 컨텍스트 5블록 (SID·이름/색·OUT_DIR·서버·브라우저)
+# prj3#Issue545 — 번들(플러그인) 설치본은 ~/.claude/hooks/lib 가 없다. 자기 옆의 lib/ 로 폴백한다
+FPM_LIB_DIR="$HOME/.claude/hooks/lib"
+[ -d "$FPM_LIB_DIR" ] || FPM_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)/lib"
+. "$FPM_LIB_DIR/ask-common.sh"   # Issue424_2: 공용 컨텍스트 5블록 (SID·이름/색·OUT_DIR·서버·브라우저)
 # Issue370: stdin 파싱 단일 지점 — 종전엔 **같은 JSON 을 python3 로 4번** 파싱했다
 #   (transcript_path·cwd·session_id·stop_hook_active). no-op 경로에서도 전부 물어
 #   인터프리터 콜드 스타트를 4배로 냈다. jq 1회로 같은 값을 얻는다(F2-1 과 같은 교훈).

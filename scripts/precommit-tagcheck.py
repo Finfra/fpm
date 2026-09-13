@@ -26,7 +26,9 @@ import sys
 # 그때마다 SKIP_TAGCHECK 로 우회하게 되어 검사 자체가 무력해진다 — L37 이 예고한 그 구멍이다.
 # `(?<!#)` 로 `#` 뒤를 배제하고, prj 접두 토큰도 함께 배제한다.
 TAG_RE = re.compile(r'(?<![#\w])(?<!prj)Issue(\d+(?:_\d+)+|\d+)\b')
-HEADING_RE = re.compile(r'^## Issue(\d+(?:_\d+)+|\d+)\s*:', re.M)
+# Issue474: 서브이슈 헤딩은 `### IssueN_M:` 형태다(issue-g 규칙6·7 — 부모 하위 배치).
+#   `##` 만 보면 TAG_RE 가 인식한 서브이슈 태그의 대응 헤딩을 못 찾아 정상 등록분도 거부된다.
+HEADING_RE = re.compile(r'^#{2,3} Issue(\d+(?:_\d+)+|\d+)\s*:', re.M)
 
 # 이력 서술 문맥 — 과거 이슈 번호를 자유롭게 인용하는 것이 정상이므로 검사 제외.
 EXCLUDE_EXACT = {'Issue.md', 'Issue_public.md', 'Issue_map.htm'}

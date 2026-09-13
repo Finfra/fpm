@@ -3,6 +3,8 @@
 
 규약: 도형은 role 소유(동형), 색은 개체(bot_id → 팔레트 슬롯) 유도. 표준 lib 만.
 카탈로그 형식(사람 편집): `{role}: shape=<도형> base=<#hex> label=<한글> tags=<t1|t2>`
+                          `[origin=<출처>] [origin_seen=<epoch>] [status=archived] [manager=true]`
+  origin (prj3#Issue589) = agent:N | skill:N | plugin:M/N | web:URL | native, 복수는 `|`.
 """
 import argparse, hashlib, json, os, re, sqlite3, sys
 
@@ -12,15 +14,24 @@ ICON_DIR = os.path.join(FBOT_ROOT, "data", "fbot", "icons")
 CATALOG = os.path.join(ICON_DIR, "catalog.yml")
 
 DEFAULT_CATALOG = """\
-# fbot 아이콘 카탈로그 — 사람 편집 가능. 형식: {role}: shape=<도형> base=<#hex> label=<한글> tags=<t1|t2>
-# 도형 어휘: star shield hexagon triangle grid check magnifier
-exec: shape=star base=#B8860B label=중역핀봇 tags=보고|승인
-hr: shape=shield base=#2E6E4E label=인사핀봇 tags=채용|게이트
-taskmgr: shape=hexagon base=#3A5FA0 label=작업핀봇 tags=배분|모니터링
-architect: shape=triangle base=#7A4FA0 label=설계핀봇 tags=설계|점검
-planner: shape=grid base=#A0623A label=기획자핀봇 tags=plan|task
-qa: shape=check base=#3A8A8A label=QA핀봇 tags=검증|판정
-research: shape=magnifier base=#6E6E3A label=리서치핀봇 tags=조사|선례
+# fbot 아이콘 카탈로그 — 사람 편집 가능.
+# 형식: {role}: shape=<도형> base=<#hex> label=<한글> tags=<t1|t2> [origin=<출처>] [origin_seen=<epoch>] [status=archived] [manager=true]
+# 도형 어휘: star shield hexagon triangle grid check magnifier magnet frame speech venn tag
+# origin (prj3#Issue589): agent:N | skill:N | plugin:M/N | web:URL | native — 복수는 '|'.
+#   ⚠️ 값에 공백·따옴표 불가(파서가 split() 기준). 쓰기는 훅 경유만 — 직접 Edit 금지.
+#   origin_seen = drift 판정 기준선(원본을 본 시각). 매뉴얼 mtime 을 기준선으로 쓰지 않는다.
+chief: shape=star base=#B8860B label=총괄핀봇 tags=보고|승인 manager=true origin=native
+hr: shape=shield base=#2E6E4E label=인사핀봇 tags=채용|게이트 manager=true origin=native
+lead: shape=hexagon base=#3A5FA0 label=팀장핀봇 tags=배분|모니터링 manager=true origin=native
+architect: shape=triangle base=#7A4FA0 label=설계핀봇 tags=설계|점검 origin=native
+planner: shape=grid base=#A0623A label=기획핀봇 tags=plan|task origin=native
+qa: shape=check base=#3A8A8A label=QA핀봇 tags=검증|판정 origin=native
+research: shape=magnifier base=#6E6E3A label=조사핀봇 tags=조사|선례 origin=native
+scout: shape=magnet base=#8A3A5F label=발굴핀봇 tags=직능|발굴 origin=native
+graphic: shape=frame base=#5F8A3A label=도해핀봇 tags=변환|개선 origin=agent:ig-maker
+consult: shape=speech base=#3A6E8A label=자문핀봇 tags=선례|큐레이션 origin=agent:consultant-m
+crosscheck: shape=venn base=#A03A3A label=교차검증핀봇 tags=2차의견|외부LLM origin=skill:agy-diff-reviewer|skill:agy-file-processor|skill:agy-image-describer|skill:agy-scrapper
+release: shape=tag base=#8A5A2B label=배포핀봇 tags=배포|릴리즈 origin=native
 """
 
 # 도형: 128x128 viewBox 중앙, 흰색 — role 동형의 실체
@@ -28,22 +39,23 @@ SHAPES = {
     "star": '<polygon fill="#fff" points="64,26 75,52 103,54 82,73 88,101 64,86 40,101 46,73 25,54 53,52"/>',
     "shield": '<path fill="#fff" d="M64 24 L98 36 V66 C98 88 84 100 64 108 C44 100 30 88 30 66 V36 Z"/>',
     "hexagon": '<polygon fill="#fff" points="64,24 98,44 98,84 64,104 30,84 30,44"/>',
+    "tag": '<polygon fill="#fff" points="24,64 64,24 104,64 64,104"/>',   # 릴리즈 — 태그(마름모, prj3#Issue566)
     "triangle": '<polygon fill="#fff" points="64,26 102,98 26,98"/>',
     "grid": '<g fill="#fff"><rect x="34" y="34" width="26" height="26" rx="4"/><rect x="68" y="34" width="26" height="26" rx="4"/><rect x="34" y="68" width="26" height="26" rx="4"/><rect x="68" y="68" width="26" height="26" rx="4"/></g>',
     "check": '<g stroke="#fff" stroke-width="10" fill="none" stroke-linecap="round"><circle cx="64" cy="64" r="34"/><polyline points="48,64 60,78 84,50"/></g>',
     "magnifier": '<g stroke="#fff" stroke-width="10" fill="none" stroke-linecap="round"><circle cx="56" cy="56" r="26"/><line x1="76" y1="76" x2="100" y2="100"/></g>',
-    # magnet — 리크루팅핀봇 (prj3#Issue480). 어휘 7종이 전부 사용 중이라 상비 4번째 봇에
+    # magnet — 발굴핀봇 (prj3#Issue480). 어휘 7종이 전부 사용 중이라 상비 4번째 봇에
     #   배정할 도형이 없었다(fbot-arch §미해결). U자 말굽자석 — "인재를 끌어온다".
     "magnet": '<g fill="none" stroke="#fff" stroke-width="14" stroke-linecap="butt">'
               '<path d="M44 30 V64 A20 20 0 0 0 84 64 V30"/></g>'
               '<g fill="#fff"><rect x="37" y="26" width="14" height="18"/>'
               '<rect x="77" y="26" width="14" height="18"/></g>',
-    # frame — 인포그래픽핀봇 (prj3#Issue482 E2E 첫 실증 role). 그림틀(사각 프레임) 안에
+    # frame — 도해핀봇 (prj3#Issue482 E2E 첫 실증 role). 그림틀(사각 프레임) 안에
     #   산·해 픽토그램 — "이미지를 도형으로" 의 시각적 은유.
     "frame": '<g fill="none" stroke="#fff" stroke-width="8"><rect x="30" y="34" width="68" '
              'height="60" rx="6"/></g><g fill="#fff"><circle cx="50" cy="52" r="7"/>'
              '<path d="M36 86 L58 62 L70 76 L80 66 L92 86 Z"/></g>',
-    # speech — 컨설턴트핀봇 (2026-09-01, consultant-m agent 승격). 어휘 9종이 전부
+    # speech — 자문핀봇 (2026-09-01, consultant-m agent 승격). 어휘 9종이 전부
     #   사용 중이라 신규 배정 도형이 없었다(magnet·frame 과 동일 경로). 꼬리 달린
     #   말풍선 — "조언·2차 의견". 내부 점 3개는 배경색으로 뚫어 상담 은유를 살린다.
     "speech": '<path fill="#fff" fill-rule="evenodd" d="M32 30 H96 A10 10 0 0 1 106 40 '
@@ -232,15 +244,47 @@ def cmd_gen(a):
         print(json.dumps(out if a.all else out[0], ensure_ascii=False))
 
 
+# prj3#Issue589 자체 검토 M3 — 이 파일이 **실제 카탈로그 쓰기 지점**인데 검증이 없었다.
+#   `fbot-scout.validate_origin` 은 recruit 경로에만 있어서, icon-gen 을 직접 부르면
+#   그대로 뚫린다. 실측 재현(2026-09-09):
+#     --origin 'native status=archived'      → 필드 주입(그 role 이 아카이브로 취급됨)
+#     --origin $'native\nqa: shape=… '        → 개행 주입으로 **기존 role 행 덮어쓰기**
+#   카탈로그는 평탄 kv 라 공백이 곧 필드 구분, 개행이 곧 행 구분이다 — 값에 둘 중
+#   하나만 들어가도 파일 구조가 바뀐다. 값싼 자리는 쓰기 직전 여기다.
+_RESERVED_KEYS = ("shape=", "base=", "label=", "tags=", "origin=", "origin_seen=",
+                  "status=", "manager=")
+
+
+def _safe_field(name, value):
+    """카탈로그 한 행에 실릴 값인지 검사한다. 위반은 fail-loud(쓰기 전에 죽는다)."""
+    v = value or ""
+    if "\n" in v or "\r" in v:
+        sys.exit(f"{name} 에 개행 불가 — 카탈로그 행 구조가 깨진다: {v!r}")
+    if any(c.isspace() for c in v):
+        sys.exit(f"{name} 에 공백 불가 — 평탄 kv 라 공백이 필드 구분이다: {v!r}")
+    for k in _RESERVED_KEYS:
+        if k in v:
+            sys.exit(f"{name} 값에 예약 키 {k!r} 불가 — 필드 주입: {v!r}")
+    return v
+
+
 def cmd_add_role(a):
     roles = load_catalog()
     if a.role in roles:
         sys.exit(f"이미 등재됨: {a.role}")
     if a.shape not in SHAPES:
         sys.exit(f"미정의 도형: {a.shape} — 어휘: {', '.join(SHAPES)}")
-    tags = a.tags.replace(",", "|") if a.tags else ""
+    tags = _safe_field("tags", a.tags.replace(",", "|") if a.tags else "")
+    _safe_field("label", a.label)
+    _safe_field("base", a.base)
+    # prj3#Issue589 — origin 은 **원문 그대로** 쓴다. tags 처럼 쉼표를 `|` 로 바꾸면
+    #   쉼표가 든 URL(`web:…?a=1,2`)이 두 출처로 쪼개져 조용히 파손된다.
+    origin = _safe_field("origin", (getattr(a, "origin", "") or "").strip())
+    line = f"{a.role}: shape={a.shape} base={a.base} label={a.label} tags={tags}"
+    if origin:
+        line += f" origin={origin}"
     with open(CATALOG, "a", encoding="utf-8") as f:
-        f.write(f"{a.role}: shape={a.shape} base={a.base} label={a.label} tags={tags}\n")
+        f.write(line + "\n")
     print(f"등재: {a.role} (shape={a.shape})")
 
 
@@ -371,13 +415,53 @@ def main():
     sr.add_argument("--force", action="store_true",
                     help="사람이 손본 것으로 판정된 아이콘까지 덮어쓴다 (기본은 보호·건너뜀)")
     sub.add_parser("audit", help="전 봇 개체색 배정 실측 + 동색 검출 (Issue440 검증구)")
+    sub.add_parser("check-default", help="DEFAULT_CATALOG(부트스트랩) 이 catalog.yml(SSOT) 과 같은지 — 다르면 rc 1 (prj3#Issue568)")
+    sub.add_parser("sync-default", help="catalog.yml → DEFAULT_CATALOG 재생성 (yml 이 SSOT, prj3#Issue568)")
     r = sub.add_parser("add-role")
     r.add_argument("role")
     r.add_argument("--shape", required=True)
     r.add_argument("--base", default="#555555")
     r.add_argument("--label", required=True)
     r.add_argument("--tags", default="")
+    r.add_argument("--origin", default="",
+                   help="재료 출처 — agent:N|skill:N|plugin:M/N|web:URL|native (prj3#Issue589)")
     a = p.parse_args()
+    if a.cmd == "check-default":
+        # prj3#Issue568 — yml 이 SSOT, DEFAULT 는 yml 부재 시 부트스트랩 전용. 두 벌이 갈리면 fail-loud.
+        cur = open(CATALOG, encoding="utf-8").read() if os.path.exists(CATALOG) else ""
+        def _roles(txt):
+            # 🔴 prj3#Issue589 — `origin_seen` 은 **런타임 관측값**이라 비교에서 뺀다.
+            #   fbot-manual-review 의 apply·reject 가 매번 이 필드를 갱신하는데, 그것을
+            #   정적 동일성 게이트에 넣으면 **정상 운영이 곧 게이트 위반**이 된다
+            #   (실측: touch_origin_seen 1회 → rc 1). 부트스트랩에 필요한 것은 직능 정의
+            #   (shape·base·label·tags·origin·status)이지 "언제 봤는가" 가 아니다.
+            def _strip(v):
+                return " ".join(t for t in v.split() if not t.startswith("origin_seen="))
+            return {l.split(":",1)[0].strip(): _strip(l.split(":",1)[1].strip())
+                    for l in txt.splitlines() if l.strip() and not l.startswith("#") and ":" in l}
+        d, y = _roles(DEFAULT_CATALOG), _roles(cur)
+        diff = sorted(set(d) ^ set(y)) + sorted(k for k in set(d) & set(y) if d[k] != y[k])
+        if diff:
+            print("❌ DEFAULT_CATALOG ≠ catalog.yml — 갈린 role:", ", ".join(diff))
+            print("   해소: python3 fbot-icon-gen.py sync-default  (yml → DEFAULT 재생성)")
+            return 1
+        print(f"✅ DEFAULT_CATALOG == catalog.yml ({len(y)} roles)")
+        return 0
+    if a.cmd == "sync-default":
+        # yml → 소스의 DEFAULT_CATALOG 블록 재생성 (SSOT 방향은 yml → py 한쪽뿐)
+        import re as _re
+        src = open(__file__, encoding="utf-8").read()
+        yml = open(CATALOG, encoding="utf-8").read()
+        # origin_seen 은 런타임 관측값이라 부트스트랩 상수에 굽지 않는다 (prj3#Issue589)
+        yml = "\n".join(
+            (" ".join(t for t in ln.split() if not t.startswith("origin_seen=")))
+            if (ln.strip() and not ln.startswith("#") and ":" in ln) else ln
+            for ln in yml.splitlines()) + "\n"
+        new_src = _re.sub(r'DEFAULT_CATALOG = """\\\n.*?"""',
+                          'DEFAULT_CATALOG = """\\\n' + yml.replace("\\", "\\\\") + '"""', src, count=1, flags=_re.S)
+        open(__file__, "w", encoding="utf-8").write(new_src)
+        print("DEFAULT_CATALOG 를 catalog.yml 로 재생성")
+        return 0
     if a.cmd == "gen" and a.bot_id and not a.role:
         sys.exit("--bot-id 는 --role 과 함께 (도형은 role 소유)")
     {"init": cmd_init, "list": cmd_list, "gen": cmd_gen, "add-role": cmd_add_role,
@@ -385,4 +469,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # prj3#Issue590 — main() 의 반환값을 프로세스 rc 로 내보낸다. 종전 `main()` 은
+    #   반환값을 버려 `check-default` 의 `return 1` 이 rc 0 으로
+    #   나갔다(prj3#Issue568 fail-loud 계약). 반환 None 은 sys.exit(None)=0.
+    sys.exit(main())

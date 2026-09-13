@@ -171,7 +171,9 @@ def backup_db(path, keep=BACKUP_KEEP):
     name = "%s-%s.db" % (os.path.basename(path).replace(".db", ""),
                          time.strftime("%Y%m%d-%H%M%S"))
     dst = os.path.join(bdir, name)
-    with S.connect(path) as src, S.connect(dst) as out:
+    # prj3#Issue519 — dst 는 **이제 막 만들 백업 파일**이라 생성이 정당하다.
+    #   원본(path)은 반대로 없으면 fail-loud 여야 한다(없는 것을 백업할 수는 없다).
+    with S.connect(path) as src, S.connect(dst, create=True) as out:
         src.backup(out)
     old = sorted(f for f in os.listdir(bdir)
                  if f.startswith(os.path.basename(path).replace(".db", "") + "-"))

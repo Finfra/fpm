@@ -33,6 +33,38 @@ SID="$HOOK_SESSION_ID"
 CWD="$HOOK_CWD"
 PID_JSON="$HOOK_PID"
 
+# prj3#Issue594 — 게이트가 비용보다 먼저다. 종전에는 SID 가 비어도 python3 로 라벨을 먼저 뽑았다
+#   (매 프롬프트 ~25ms 고정 지출, UserPromptSubmit 예산 200ms 의 12%).
+[ -z "$SID" ] && exit 0
+
+# prj3#Issue594 — fast path: 프롬프트에 태그(`<`)가 없으면 python3 없이 bash 로 끝낸다.
+#   실제 프롬프트 대다수가 평문이고, python3 기동(~25ms)이 이 hook 최대 비용이었다.
+#   ⚠️ 결과는 python3 경로와 **같아야 한다** — 첫 비어있지 않은 줄 · 제어문자 제거 ·
+#      공백 정규화 · 50자 절단(넘으면 `…`). 태그가 하나라도 있으면 그대로 python3 로 넘긴다
+#      (WRAP 블록 제거는 다중행 DOTALL 이라 bash 로 옮기면 의미가 달라진다).
+LABEL=""
+case "$HOOK_PROMPT" in
+  *"<"*) ;;                                  # 태그 있음 → 아래 python3 경로
+  *)
+    _line=""
+    while IFS= read -r _ln || [ -n "$_ln" ]; do
+      _t="${_ln#"${_ln%%[![:space:]]*}"}"; _t="${_t%"${_t##*[![:space:]]}"}"
+      [ -n "$_t" ] && { _line="$_t"; break; }
+    done <<< "$HOOK_PROMPT"
+    # ⚠️ tr 은 바이트 단위다 — `[:space:]` 를 로케일 상태로 쓰면 한글 UTF-8 이 깨진다
+    #    (실측: "안정성" → "안� �성"). LC_ALL=C + 명시 문자셋으로 고정한다.
+    #    python3 경로는 제어문자를 **공백으로 치환**한 뒤 \s+ 를 압축한다 — `tr -d` 로 지우면
+    #    "탭\t섞임" 이 "탭섞임" 이 되어 결과가 갈린다(실측). 한 번의 tr -s 로 치환+압축을 함께.
+    _line=$(printf '%s' "$_line" | LC_ALL=C tr -s '\000-\037\177 ' ' ')
+    _line="${_line#"${_line%%[![:space:]]*}"}"; _line="${_line%"${_line##*[![:space:]]}"}"
+    if [ "${#_line}" -gt 50 ]; then
+      _line="${_line:0:50}"
+      _line="${_line%"${_line##*[![:space:]]}"}…"
+    fi
+    LABEL="$_line"
+    ;;
+esac
+[ -n "$LABEL" ] || \
 LABEL=$(HOOK_PROMPT="$HOOK_PROMPT" python3 -c "
 import os, re
 # F2-1: JSON 재파싱 대신 이미 뽑아둔 prompt 를 env 로 받는다(python3 기동 1회 절약)
@@ -61,14 +93,15 @@ if len(line) > 50:
     line = line[:50].rstrip() + '…'
 print(line)
 ")
-
-[ -z "$SID" ] && exit 0
 [ -z "$LABEL" ] && exit 0   # 빈 프롬프트(첨부만 등) → 갱신 생략, 기존 label 보존
 
 # prj3#Issue428: $PPID 직등록 금지 — 단명 wrapper pid 가 live_pid 를 덮어써 세션이
 #   hub 카드에서 사라졌다(prj9a 실측). lib 단일 지점으로 생존 확인 + claude 승격.
 # shellcheck source=lib/claude-pid.sh
-. "$HOME/.claude/hooks/lib/claude-pid.sh"
+# prj3#Issue545 — 번들(플러그인) 설치본은 ~/.claude/hooks/lib 가 없다. 자기 옆의 lib/ 로 폴백한다
+FPM_LIB_DIR="$HOME/.claude/hooks/lib"
+[ -d "$FPM_LIB_DIR" ] || FPM_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)/lib"
+. "$FPM_LIB_DIR/claude-pid.sh"
 PID=$(fpm_resolve_claude_pid "$PID_JSON" "$PPID")
 [ -z "$CWD" ] && exit 0   # Issue179: PWD fallback 제거 — hook 컨텍스트 PWD 는 frontmost 반영 위험(세션 오귀속), doc-register.sh:43 표준 정합
 case "$CWD" in /*) ;; *) exit 0 ;; esac   # 절대경로만
@@ -79,7 +112,20 @@ HEALTH_URL="http://127.0.0.1:${SERVER_PORT}/healthz"
 health=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 "$HEALTH_URL" 2>/dev/null)
 [ "$health" = "200" ] || exit 0
 
-CWD_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$CWD")
+# prj3#Issue594 — urlencode 하나로 python3(~25ms)를 띄우던 것을 bash 로.
+#   ⚠️ LC_ALL=C 필수 — 없으면 한글 경로에서 코드포인트를 바이트로 오인해 잘못된 %XX 를 만든다
+#      (실측: /tmp/한글 → %D55C%AE00, 정답 %ED%95%9C%EA%B8%80). percent-encoding 은 바이트 단위다.
+#   fpm-hub-session-model.sh 의 같은 블록과 **동일 로직**이다(quote() 5케이스 동치 검증분).
+CWD_ENC=$(LC_ALL=C; _s="$CWD"; _o=""; _i=0
+  while [ "$_i" -lt "${#_s}" ]; do
+    _c="${_s:$_i:1}"
+    case "$_c" in
+      [A-Za-z0-9._~/-]) _o="$_o$_c" ;;
+      *) _o="$_o$(printf '%%%02X' "'$_c")" ;;
+    esac
+    _i=$((_i+1))
+  done
+  printf '%s' "$_o")
 REG_URL="http://127.0.0.1:${SERVER_PORT}/session/register?cwd=${CWD_ENC}"
 
 # Issue179: 매 프롬프트 재등록도 출처 신호(entrypoint)를 함께 전송.
@@ -112,7 +158,7 @@ fi
 EDITOR_SIG=""
 if [ "$ENTRY" != "claude-vscode" ]; then
   # shellcheck source=lib/zed-detect.sh
-  . "$HOME/.claude/hooks/lib/zed-detect.sh" 2>/dev/null || true
+  . "$FPM_LIB_DIR/zed-detect.sh" 2>/dev/null || true
   if command -v zed_is_marked >/dev/null 2>&1 && zed_is_marked "$SID"; then
     EDITOR_SIG="zed"
   fi

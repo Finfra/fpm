@@ -1,0 +1,19 @@
+# 조직 템플릿 — general (prj3#Issue538)
+#
+# 최소셋이다. 도메인 특화 부서(크리에이티브·리서치)는 필요가 생길 때 중앙 인스턴스
+# (`org/{N}.yml`)에서 더한다 — 템플릿이 두꺼우면 대부분의 프로젝트가 **쓰지 않는
+# 공석**을 지고 다니게 되고, 그러면 공석이 결원 신호로 기능하지 못한다.
+depts:
+  - id: dev
+    label: 개발부서
+    seats:
+      - { id: dev-architect-1, role: architect, reports_to: ops-taskmgr-1 }
+      - { id: dev-planner-1,   role: planner, reports_to: ops-taskmgr-1 }
+  - id: review
+    label: 리뷰부서
+    seats:
+      - { id: rev-qa-1, role: qa, reports_to: ops-taskmgr-1 }
+  - id: ops
+    label: 운영부서
+    seats:
+      - { id: ops-taskmgr-1, role: taskmgr, reports_to: hq/hq-taskmgr-1 }

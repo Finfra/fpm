@@ -233,9 +233,26 @@ def set_meta(con: sqlite3.Connection, key: str, value: str) -> None:
     )
 
 
-def connect(path: str) -> sqlite3.Connection:
-    """WAL + busy_timeout 을 건 커넥션. 다중 프로세스 동시 접근이 전제다(설계 §실행 토폴로지)."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+def connect(path: str, create: bool = False) -> sqlite3.Connection:
+    """WAL + busy_timeout 을 건 커넥션. 다중 프로세스 동시 접근이 전제다(설계 §실행 토폴로지).
+
+    prj3#Issue519 (2026-09-03) — **부재를 공백으로 바꾸지 않는다.**
+      종전에는 무조건 디렉토리·파일을 만들었다. 그래서 `AOA_MEMORY_DIR` 를 상속하지 못한
+      호출자가 기본값 경로(`~/.claude/data/aoa`)를 열면 **테이블 0개짜리 registry.db** 가
+      생기고, 그 뒤 모든 조회가 조용히 0건을 돌려준다. 실측된 유령 파일의 지문이 정확히
+      이것이다 — `journal_mode=wal` · `sqlite_master` 0행 · `-wal` 0바이트.
+      *"DB 가 아직 없다"* 와 *"봇이 0기다"* 는 완전히 다른 사실인데 구분이 사라진다.
+
+      그래서 **생성 권한은 부트스트랩(`init_stores`)만 갖는다.** 나머지 경로는 부재를
+      fail-loud 로 알린다 — 조용한 0 보다 시끄러운 오류가 낫다.
+    """
+    if not create and not os.path.exists(path):
+        raise FileNotFoundError(
+            "스토어 없음: %s — 생성하지 않는다(prj3#Issue519). "
+            "AOA_MEMORY_DIR 를 확인하거나 `init_stores()` 로 부트스트랩할 것." % path
+        )
+    if create:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
     con = sqlite3.connect(path, timeout=5.0)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA journal_mode=WAL")
@@ -265,7 +282,7 @@ def init_stores() -> dict:
     os.makedirs(AOA_DIR, exist_ok=True)
     created = {}
 
-    with connect(LEARN_DB) as lc:
+    with connect(LEARN_DB, create=True) as lc:
         check_fts5(lc)
         lc.executescript(LEARN_DDL)
         lc.executescript(LEARN_FTS_DDL)
@@ -282,7 +299,7 @@ def init_stores() -> dict:
         lc.commit()
         created["learn"] = LEARN_DB
 
-    with connect(REGISTRY_DB) as rc:
+    with connect(REGISTRY_DB, create=True) as rc:
         rc.executescript(REGISTRY_DDL)
         for name, path, note in (
             ("registry", REGISTRY_DB, "싱글톤 KV + 카탈로그"),

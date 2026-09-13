@@ -1,6 +1,6 @@
 ---
 name: research
-title: 리서치핀봇
+title: 조사핀봇
 description: 조사·선례 수집(경량 판정형) role 매뉴얼
 date: 2026.08.25
 completion: light

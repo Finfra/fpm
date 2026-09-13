@@ -1,0 +1,23 @@
+# 조직 템플릿 — mac (prj3#Issue538)
+#
+# general + 리뷰 강화·컨설턴트. macOS 앱은 배포 후 회수가 어렵고(App Store 심사·
+# 사용자 설치본) 플랫폼 특성 함정이 잦아, 교차검증과 선례 조회의 비중이 높다.
+depts:
+  - id: dev
+    label: 개발부서
+    seats:
+      - { id: dev-architect-1, role: architect, reports_to: ops-taskmgr-1 }
+      - { id: dev-planner-1,   role: planner, reports_to: ops-taskmgr-1 }
+  - id: review
+    label: 리뷰부서
+    seats:
+      - { id: rev-qa-1,         role: qa, reports_to: ops-taskmgr-1 }
+      - { id: rev-crosscheck-1, role: crosscheck, reports_to: ops-taskmgr-1 }
+  - id: research
+    label: 리서치부서
+    seats:
+      - { id: rsc-consultant-1, role: consultant, reports_to: ops-taskmgr-1 }
+  - id: ops
+    label: 운영부서
+    seats:
+      - { id: ops-taskmgr-1, role: taskmgr, reports_to: hq/hq-taskmgr-1 }

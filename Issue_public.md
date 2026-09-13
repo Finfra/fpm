@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: c356f37dc2ca8204c6a00ca9f724ddf09e36152095e0ee8232927be4a0511386
+source_sha: 9e65985f17eae2611490348afc3c0dfefc532b4c3b0ac666ff37be02afbab0ca
 ---
 
 # 안내
@@ -27,6 +27,179 @@ source_sha: c356f37dc2ca8204c6a00ca9f724ddf09e36152095e0ee8232927be4a0511386
 직접 편집하지 말 것 — `scripts/fpm-issue-digest.sh` 가 덮어쓴다.
 
 # 이슈 근거
+
+## Issue491: 상비 핀봇에 「해고 검토 요청」 버튼이 뜬다 — 조직 골격은 해고 대상이 아니다 ✅
+* 목적: 사용자 지시(2026-09-10) — *"필수 핀봇은 「해고 검토 요청」 버튼 있으면 아니됨."* 상비봇은 **조직 골격**이라 해고하면 그 자리의 기능이 통째로 사라진다. 눌릴 수 있는 자리에 둔 것 자체가 결함이다
+* 구현 명세:
+    - `_fbot_board_payload`(또는 bots 조립부)에서 각 봇에 **`core: true|false`** 를 싣는다. 판정은 prj3 `is_core_bot` 과 **동일 규칙**으로 — 규칙을 새로 쓰지 말고 옮긴다(단일 지점 유지)
+    - 카드 렌더에서 `core` 면 「해고 검토 요청」을 **만들지 않는다**. 숨김(CSS)이 아니라 미생성 — DOM 에 있으면 개발자도구로 눌린다
+    - 대신 **왜 없는지 1줄**을 남긴다(ex: *"상비 — 조직 골격이라 해고 대상이 아니다"*). 버튼만 사라지면 사용자는 렌더 실패로 읽는다
+    - 「재기동 요청(wake)」은 **그대로 둔다** — 상비봇도 깨울 수는 있어야 한다
+    - 서버측 `/fbot-mq-confirm` 에도 **같은 판정으로 방어**한다. 버튼을 지우는 것은 UI 이고, 엔드포인트는 직접 호출될 수 있다 — `action=terminate` + 상비면 거부
+    - 검증: ego-browser 로 상비 4종 카드에 버튼 부재·비상비 카드에 버튼 존재 · `curl -X POST /fbot-mq-confirm` 로 상비 terminate 가 거부되는지
+
+## Issue489: hub 테스트가 2세대에서 사라진 mermaid API 를 계속 부른다
+* 목적: 보드 2세대(Cytoscape) 전환 때 서버가 mermaid 문자열을 만들지 않게 되었는데 `test_fbot_map_issue402.py` 가 그 함수를 계속 호출해 **회귀가 통째로 죽어 있었다**. 이름 개편(prj3#Issue610) 회귀를 돌리다 드러났다
+* 구현 명세:
+    - 검증 대상을 **렌더 문자열에서 데이터 층으로** 내렸다 — 표기 요구(prj·아이콘·개체색·고아 구분·세션 배지)는 그대로 유효하고 이제 노드 필드가 그 계약을 진다
+    - 흐름 그래프는 `_fbot_deadlocks` 판정 + `dispatch[].sign`·`recent` 로, 페이지는 `id="fb-cy-org"`·`var DATA={org:` 로 확인
+    - 결과 **216 케이스 전건 통과** · hub 25파일 전건 통과
+
+## Issue486: hub 중요 칩 — 응답 대기 알림에서 대상 세션으로 못 가고, 실패해도 세션 ID 조차 못 얻음 ✅
+* 목적: 헤더 중요 칩 `fWarrangeCli — 응답 27분 대기, 요청 필요` 를 눌러도 그 세션에 도달할 수 없다. 칩이 가진 정보가 활동 피드 항목 id 뿐이라 **피드로 스크롤**만 하고(피드가 접혀 있으면 아무 일도 안 일어난다), 세션 이동 경로가 아예 없다. 사용자 지시 — 이동이 불가하면 **세션 ID 라도 클립보드에 복사**할 것
+* 구현 명세:
+    - 서버 `_compute_important_events` R2: 같은 cwd 의 live 세션 후보 중 **피드 항목 ts 와 갱신 시각이 가장 가까운** 세션을 골라 `sid`/`cwd`/`session_url`/`origin` 을 이벤트에 부착
+    - 클라 `renderImportant`: `sid` 보유 칩은 `impGotoSession(this)` 로 배선(데이터는 `data-*` 로 전달)
+    - `impGotoSession`: origin=vscode/zed → `openSessionRaw` 로 탭 포커스, 실패 시 sid 복사 / origin=terminal → 즉시 sid 복사 + 사유 토스트 / sid 없음 → 기존 피드 포커스 폴백
+    - 복사는 insecure context(host.local) 대비 `execCommand` → `prompt` 3단 폴백 (Issue276 과 동일 규약)
+    - i18n `msg.sidCopied*` ko/en 동시 추가 (test_i18n_parity 통과)
+
+## Issue484: prj1 MCP 서버 2종이 2026-07-28 무상태 스펙 미반영 — aoa-mq 는 `initialize` 를 세션 마커로 쓰고 있어 그대로 전환하면 깨진다 ✅ 완료 (<commit>, <commit>, prj3 <commit>)
+* 목적: prj20 f-claude-plugins 의 6개 MCP 서버는 무상태 스펙을 반영했으나(<commit>), prj1 이 소유한 [aoa-memory](mcp/aoa-memory/server.py)·[aoa-mq](mcp/aoa-mq/server.py) 는 미반영 상태다. 표준을 맞추되, aoa-mq 는 `initialize` 에 기능이 얹혀 있어 단순 복사가 회귀를 만든다 — 그 지점을 함께 처리한다.
+* 구현 명세:
+    - 로직:
+        1. 두 `server.py` 의 `main()` 디스패처 맨 앞에 `server/discover` 분기 추가 — `supportedVersions: ["2026-07-28"]` · `ttlMs` · `cacheScope: "private"` · `capabilities` 반환
+        2. `tools/list` 결과에 `ttlMs`·`cacheScope` 추가
+        3. `tools/call` 결과에 `resultType: "complete"` 추가
+        4. `initialize` 분기는 **삭제하지 않는다** — 구 클라이언트 하위호환
+        5. **aoa-mq 전용**: `if method in ("initialize", "tools/call")` 를 `("server/discover", "initialize", "tools/call")` 로 확장. 이 항목이 빠지면 위 회귀가 그대로 발생한다
+    - 검증:
+        - 신 클라이언트 경로 — `server/discover` → `tools/list` 만으로 도구 목록 수신(`initialize` 미발생)
+        - 구 클라이언트 경로 — `initialize` → `notifications/initialized` → `tools/list` 정상 동작
+        - aoa-mq 마커 — `server/discover` 단독 수신 후 세션 활성 마커 파일의 mtime 이 갱신되는지 실측
+        - 두 서버의 기존 도구 호출 각 1건 이상이 `resultType` 추가 후에도 정상 응답하는지 확인
+    - 참조: prj20 f-claude-plugins `<commit>` (동일 변경의 선행 사례, 서버당 +19줄)
+
+## Issue477: `_doc_base` gitignore 판정이 public/private 을 구분하지 않는다 — 백업 0 을 만든다 ✅ 완료 (<commit>, prj3 <commit>)
+* 목적: 규칙의 **근거는 유출 방지**인데 **판정은 origin 유무**다. private repo 는 유출 경로가 없는데도 ignore 되어, 원천자료가 **버전이력·원격백업 둘 다 없는** 상태로 남는다. 실피해 1건 실측
+* 구현 명세:
+    - **판정 축을 `origin 유무` → `origin 의 공개성`으로 좁힌다**: public/미확인 → ignore(현행 유지) · **private → 추적 허용**
+    - ⚠️ **반론을 함께 검토할 것 — 채택 전 결정 필요**:
+        - private → public 전환 시 이력에 원천자료가 남는다. 전환은 클릭 한 번이고 **되돌려도 이미 노출된 것은 회수 불가**다. 현행 보수적 판정은 이 시나리오를 막는다
+        - private 도 collaborator·조직 멤버에게는 열려 있다 — *"유출 0"* 이 아니라 *"유출면이 좁다"* 가 정확하다
+        - 따라서 **자동 판정보다 프로젝트별 명시 선언**(`.claude/` 에 `doc_base_tracking: allow|deny`)이 나을 수 있다. 판정을 코드가 추측하지 않고 사람이 적는다
+    - 어느 안이든 **백업 부재 자체는 별도 문제**다 — 정책을 안 고치더라도 원천자료의 백업 경로(별도 private repo·외부 백업)는 있어야 한다. aoa-mq 컨펌 항목이 그 결정을 묻고 있다
+    - 전 프로젝트 영향 조사 선행: `_doc_base/` 를 실사용하면서 origin 이 private 인 repo 가 몇 개인지 — prj9a 외에도 같은 상태가 있을 수 있다
+
+## Issue480: sanitize 가 문서 속 마커 *예시* 를 실제 redaction 마커로 센다 — forward 통째 중단 ✅ 완료 (<commit>)
+* 목적: [`fpm-sanitize.sh`](scripts/fpm-sanitize.sh) 가 `grep -cF` 로 `<!-- fpm_private -->` 개수를 세는데, **그 마커를 설명하는 문서**의 백틱 인라인 코드까지 실제 마커로 센다. 불균형 판정 → fail-loud `exit 2` → `set -euo pipefail` 인 `do_forward` 가 그 자리에서 죽는다. **지금 미러 반출이 통째로 막혀 있다**
+* 구현 명세:
+    - 후보 ① 마커 카운터가 백틱 인라인 코드(`` `<!-- fpm_private -->` ``)를 제외 ② sanitize 를 exclude 적용 **뒤**로 이동 ③ 문서에서 마커 예시를 백틱이 아닌 다른 표기로
+    - ⚠️ ②는 P3 가드(*"exclude 밖 파일에 private 블록"*)의 의미를 바꾼다 — 그 가드는 exclude 밖을 보는 것이 목적이라 순서를 옮기면 대상이 사라진다. ①이 가장 좁은 수정으로 보이나 **보안 게이트를 느슨하게 만드는 방향**이라 실측 후 확정
+    - 종결 조건: `bash scripts/test_mirror_install.sh` 11건 전건 PASS (현재 10 PASS / 1 FAIL)
+
+## Issue482: 게이트 판정이 공허하다 — `expect: nonempty` 는 절대 실패하지 않는다 ✅ 완료 (<commit>)
+* 목적: `bundle-in-sync`·`i18n-parity` 는 `echo ok || echo DRIFT` 라 **양쪽 분기 모두** 비지 않은 값을 낸다. `nonempty` 판정에서 **원리적으로 상시 PASS** 다. 상시 통과는 진짜 실패를 묻는다
+* 구현 명세:
+    - 지목된 2건만 `contains:ok` 로. 나머지 `nonempty` 는 **환경 사실 보고**형(플랫폼명·date 구현·case sensitivity)이라 판정이 아니라 기록이 목적 — 유지한다. `windows.yml` 주석이 이미 *"FAIL 대상이 아니라 기록 대상"* 이라 적고 있다
+    - ⚠️ **선행: 러너의 skip 인식**. `contains:ok` 로 좁히면 `skip(저작 머신 전용)` 출력이 FAIL 이 된다
+
+## Issue483: `release-check.sh` 샌드박스가 실 저장소를 오염시킨다 ✅ 완료 (<commit>)
+* 목적: 스테이지3 의 `uninstall.sh` 가 `HOME=$SBX` 로 돌아도 백업은 `${FPM_BACKUP_DIR:-<repo>/_doc_work/z_done}` 기본값을 타고 **실 저장소**로 나간다. 격리 HOME 인데 산출물은 밖에 쌓인다
+* 구현 명세: `sb()` 에 `FPM_BACKUP_DIR="$SBX/backup"` 을 얹는다. uninstall 호출은 전부 `sb()` 경유라 지점이 하나다
+
+## Issue478: release 라인 검수 게이트가 없다 — 안정화 브랜치가 그대로 미러로 나간다 ✅ 완료 (<commit>, <commit>, <commit>, prj3 <commit>)
+* 목적: `release/{X.Y}` 라인을 실운용(0.8.0·0.8.1·0.8.3)하면서도 **검수가 언제 도는가**가 정의되지 않았다. 그 결과 ① 안정화 중인 코드가 매 커밋 공개 미러로 반출되고 ② 만들어 둔 통합 검증 게이트는 한 번도 돌지 않는다. 게이트를 **전이(커밋·반출·병합·출고) 4지점**에 배선한다
+* 구현 명세:
+    - **판정 한 줄**: *"게이트는 브랜치가 아니라 전이에 붙는다."* 브랜치가 늘어도 게이트 수는 늘지 않는다
+    - **신설 자산은 `tdd/cases/release.yml` 하나** — `run-tdd.sh`·`release-check.sh`·브랜치 가드 셋은 이미 있다. 나머지는 전부 배선 문제다
+    - 사용자 결정(2026-09-05): ① `release` 를 **정식 브랜치로 승격** ② G3 는 **enforce + 수동 사인오프 분리**
+    - 서브 이슈 4건으로 분리. **478_1 이 최우선** — 유출이 진행 중이다
+
+## Issue479: 무결성 매니페스트가 번들 변경을 따라가지 못한다 — 저작 머신 `check.sh` 상시 FAIL ✅ 완료 (<commit>, <commit>)
+* 목적: `plugins/fpm-core/.fpm-integrity.json` 재생성이 `deploy`·`forward` 경로에만 배선돼 있어, **번들만 고치고 커밋하는 경로**가 매니페스트를 stale 로 남긴다. 그 결과 `sh/check.sh` 가 상시 FAIL 이고, **상시 FAIL 은 진짜 변조를 묻는다**
+* depends: Issue478_2
+* 구현 명세:
+    - **선행 조건**: 번들 표류 먼저 해소해야 한다 — `bash scripts/fpm-bundle-sync.sh --check` 가 현재 `plugins/fpm-core/commands/fpm-hub.md` 1건 DRIFT(prj3 Issue529 in-flight). 표류 상태에서 매니페스트를 재생성하면 **표류를 그대로 봉인**한다. 순서는 `bundle-sync → gen-integrity-manifest → 커밋` 이다
+    - 근본 원인 제거: 재생성 시점을 배포 경로에만 두지 말고 **번들이 바뀌는 지점**에 붙인다. 후보 ① `fpm-bundle-sync.sh` 말미에서 재생성 ② `pre-commit` 에 매니페스트 drift 검사 추가(prj1 은 이미 scar-manifest drift hook 보유 — 같은 계열)
+    - ②는 G1 게이트 강화이자 **커밋 시점 차단**이라 재발 자체를 없앤다. ①만 하면 손으로 번들을 고치는 경로가 남는다. 실측 후 선택
+    - ⚠️ 이 이슈를 닫기 전에는 `bash tdd/run-tdd.sh --only release` 가 FAIL 이므로 **출고(G4)가 막힌다**. 우회는 `FPM_SKIP_RELEASE_GATE=1` 이지만 그것은 무결성 결손을 안고 나가는 것이다
+
+## Issue476: `pm-new` 등록 게이트에 저작자 판정이 없다 — 남의 repo 가 명부에 든다
+* 목적: 등록 시 *"이게 내 프로젝트인가"* 를 묻는 자리가 없어 **외부 저작 클론이 명부에 섞였다**. 실발생 1건(prj17)이 212일 무커밋 🔴 로 잡혀 일몰 심사 후보까지 올라갔는데, 실제로는 방치가 아니라 **남의 repo** 였다
+* 구현 명세:
+    - **판정 한 줄**: *"내 커밋이 0건이고 origin 이 upstream 이면 등록하지 않는다."* 둘 다여야 한다 — fork 후 내가 커밋했으면 정당한 내 프로젝트다
+    - ⚠️ **경로 기준(`_open/` 하위 제외)으로 잡지 말 것** — 그것은 관례일 뿐이라 보관소 밖에 둔 남의 repo 를 못 잡는다. prj6 초안이 경로 기준이었고, 저작자 기준이 실측 가능하고 경로에 의존하지 않는다는 이유로 바꿨다
+    - `pm` 스킬 등록 절차에 확인 단계 추가 — `git log --author` 0건 + `git remote get-url origin` 이 upstream 이면 **경고 후 사용자 확인**. 차단이 아니라 확인이다(의도적 등록도 있을 수 있다)
+    - 기존 명부 전수 점검은 **하지 않는다** — prj6#Issue7 이 미할당 25건을 이미 훑었고 나온 것은 prj17 하나다. 나머지는 손댈 때 걸린다
+    - 연관: Issue472_7(`pm-new` 가 L1 을 얹는다)과 같은 등록 게이트를 건드리므로 함께 손보는 것이 자연스럽다
+
+## Issue471: `fpm-simple-browser` 허용목록이 조항1 을 거부한다 — grep 사각지대 ✅
+* 목적: [fpm-identity.md](_doc_arch/fpm-identity.md) 조항 1(외부 링크 = hub URL)을 **지킬수록 깨지는** 지점. hub 가 조항대로 `advertise_url`(MagicDNS 이름) 링크를 만들면 vscode 확장이 그 URL 을 **거부**한다
+* depends: Issue469
+* 구현 명세:
+    - 허용목록을 `advertise_host` 기반으로 — 하드코딩 대신 hub `/healthz` 값 또는 설정에서 유도. **보안 허용목록 완화를 겸하므로 범위를 좁게** 잡을 것(임의 외부 URL 이 열리면 안 된다)
+    - `vscode-ext/fpm-simple-browser/README.md:21` 동반 갱신
+    - 🔑 재발 방지: **준수 실측을 grep 으로 갈음하지 말 것** — 출구(외부 발신·URL 생성·허용목록) 목록을 전수 대조하는 것이 시작점이다
+
+## Issue475: `fpm-do` 가 자유 명령 위임에서 조용히 죽는다 — `set -e` + AND-list ✅
+* 목적: `/issue-fix-*` 형태로 **변환되지 않는 모든 위임**이 무출력·rc=0 으로 종료된다. 실패했는데 성공처럼 보이므로 호출자는 위임이 걸린 줄 안다
+* 구현 명세:
+    - `[ -n "$n" ] && { ...; }` → `if [ -n "$n" ]; then ...; fi` (AND-list 를 없앤다) 또는 각 분기 뒤 `|| true`
+    - 회귀 확인: ① `/issue-fix-g 3` ② `"Issue472 …"` ③ `"5 …"` ④ 숫자 0개 자유 명령 — **네 형태 모두** 위임이 걸리는가
+    - ⚠️ **소유 경계 확인 필요** — 설계 SSOT 는 prj3 [`_doc_arch/fpm-do-design.md`](~/.claude/_doc_arch/fpm-do-design.md), 실행체는 `~/.bin/fpm-do`(prj5 가 `~/.bin` 배포 관리). 글로벌 SCAR 변경 가드 대상이므로 **prj3 `Issue.md` 등록 후 별도 세션**에서 수정한다. 본 이슈는 prj1 측 발견 기록이다
+    - 무출력 자체도 결함이다 — `set -e` 로 죽더라도 trap 으로 사유 1줄은 남겨야 한다
+
+## Issue474: tagcheck 가 서브이슈 번호를 구조적으로 거부한다 — `HEADING_RE` 가 `##` 만 본다 ✅
+* 목적: 코드 주석에 **서브이슈 번호를 달 수 없다.** [precommit-tagcheck.py:29](scripts/precommit-tagcheck.py#L29) 의 `HEADING_RE` 가 `^## Issue` 만 매치하는데 서브이슈 헤딩은 `### Issue472_2:` 이므로, 정상 등록된 서브이슈도 *"오타·미등록 번호"* 로 판정되어 커밋이 거부된다
+* 구현 명세:
+    - `HEADING_RE` 를 `^#{2,3} Issue(...)` 로 확장. `issue-g.md` 규칙6·7 이 서브이슈를 부모 하위에 두도록 규정하므로 `###` 는 정상 형태다
+    - L109 의 `HEADING_RE.match` 도 같은 패턴을 쓰므로 자동 해소된다
+    - 회귀 확인: `### Issue{N}_{M}:` 등록분을 코드에 태그한 커밋이 통과하는가 · 미등록 `IssueN_M` 은 여전히 거부되는가
+    - ⚠️ **부모 번호 태그를 금지하지는 않는다** — 코드가 부모 이슈 전체의 산출물인 경우가 정상이다. 서브이슈 번호를 **쓸 수 있게** 하는 것이 목적이지 강제가 아니다
+
+## Issue472: 프로젝트 아이덴티티·목표 3층 체계 — CLAUDE.md frontmatter 소유 + Identity.md 집계 ✅
+* 목적: 프로젝트가 **무엇이고 어디로 가는가**가 4곳에 흩어져 대부분 비어 있다. [fpm-identity.md](_doc_arch/fpm-identity.md) 가 생긴 이유(*"규약을 아는 곳은 있었으나 규약이 적힌 곳이 없었다"*)가 프로젝트 단위로 그대로 반복되는 중
+* depends: Issue469, prj6#Issue2
+* 구현 명세:
+    - **3층 + 소유 주체** — L1 한 줄 정체성·수명은 각 프로젝트 `CLAUDE.md` frontmatter · L2 불변 조항 문서는 각 프로젝트 `_doc_arch/{name}-identity.md`(영속형+외부노출) · L3 **방법론·템플릿**은 prj6 `___architect`(조항 4) · **집계 생성물·수집기는 prj1**
+    - **L1 필드 9종** (선택 2) — `prj`·`identity`(현재 무엇인가)·`identity_origin`(최초 목적, **갈렸을 때만**)·`not`(무엇이 아닌가)·`goal_parent`(목적 트리 부모)·`lifetime`(`finite`/`perpetual`)·`outcome`(기대 성과)·`deadline`(시한, 영속형 생략 가능)·`status`
+    - **CLAUDE.md 에 두는 근거**: 매 세션 자동 로드되는 유일한 파일 → 정체성이 문서가 아니라 **작업 중 판정 기준**으로 작동한다. 별도 파일은 안 읽혀서 썩는다
+    - 집계 `Identity.md` 는 **생성물**(직접 편집 금지). 미기재는 `⚠️ 미기재` 로 출력
+    - ⚠️ **알림·스케줄·훅을 만들지 않는다** (prj6 조항 6) — 비어 있음·시한 경과는 **볼 때 보이는 표면**에만 노출한다. 목적 트리 `미할당` 과 같은 철학
+    - 50개 일괄 금지 — 활성분부터. 나머지는 미기재로 남겨 노출만 한다
+
+## Issue473: 조직도 노드가 아이콘 갤러리가 된다 — mermaid 주입 인라인 style 이 `width=16` 을 덮어씀 ✅
+* 목적: 사용자 지적 — 조직도 아이콘이 너무 커서 한 화면에 조직이 안 담긴다. 노드가 아이콘 갤러리가 되고 정작 **관계**가 안 보인다
+* 구현 명세:
+    - [server.py](plugins/fpm-core/services/hub/server.py) `_render_fbot_map` CSS 에 `pre.mermaid img{display:inline-block !important;width:2.4em !important;height:2.4em !important;vertical-align:middle;margin-right:.25em}` 1규칙 추가. 인라인 style 을 이기는 수단은 `!important` 뿐
+    - 아이콘 SVG 전환은 **불필요** — `data/fbot/icons/*.svg` 로 이미 전부 SVG 다(신규 생성분도 `fbot-icon` 스킬이 SVG 로 만든다). 구조 변경 0
+
+## Issue469: 조항1(외부 링크=hub URL) 코드 정합 — aoa-mq 폴백 통일 + 발신 가드 ✅
+* 목적: [fpm-identity.md](_doc_arch/fpm-identity.md) 조항 1 을 신설하며 실측했더니, 같은 규약이 코드 **3곳에서 각자 발명**되어 있었고 성숙도가 갈렸다. 조항을 문서로 박제했으니 구현을 그 문서에 맞춘다. 규약이 적힌 곳이 없어 새 출구마다 재발명되던 것이 근본 원인이다.
+* 구현 명세:
+    - `aoa-mq-tick.sh`: `ADVERTISE_HOST` 를 `/healthz` 의 `advertise_url` 조회로 교체. 값 부재 시 **Discord 발송에서 링크 줄을 빼고**, 그 사실을 본문에 1줄 명시(죽은 링크 금지 — 받는 쪽이 "링크 없음"과 "hub 꺼짐"을 구분할 수 있어야 함)
+    - 잔존 0건 검증: `grep -rn "host\.local" mcp/ plugins/ sh/ scripts/` → 0
+    - 조항 집행 가드(선택, 별도 판단): 외부 발신 직전 페이로드에서 로컬 절대경로·`file://`·`127.0.0.1`·`*.local` 을 검출하는 hook. 현재 조항 1 은 집행 수단이 없는 **passive** 상태이며, 가드를 넣어야 advisory 이상으로 올라간다
+    - 종결 시 [fpm-identity.md](_doc_arch/fpm-identity.md) "현행 준수 실측" 표와 "미해결 항목" 을 같은 커밋으로 갱신
+
+## Issue258: hub 내부 탭 alt+w 닫기 시 Chrome 크래시 — **macOS 접근성(AX) abort** ✅
+* 목적: Issue223(디바운스)·237(playwright headless)·250(iframe fallback) 이후에도 Chrome 이 죽는 케이스 잔존. 사용자 확정 repro: **"hub 탭 여러 개 떠있을 때 + 내부 탭 alt+w 로 닫을 때"**. "완전 해결"(탭 수 무관) 요구.
+* depends: Issue223, Issue237, Issue250
+
+## Issue461: 공개 마켓 repo 는 sanitize 미적용 — 미러와 위생 정책 비대칭 + 유물 태그 ✅
+* 목적: 미러(prj7)는 sanitize 를 거치는데 마켓 repo(prj20)로 가는 `do_publish` 는 **정본을 무치환 rsync** 한다. 공개 repo 에 내부 호스트명이 그대로 게시되는 상태
+* 구현 명세:
+    - 위생 정책을 어느 쪽으로 통일할지 **먼저 결정** — ⓐ 마켓도 sanitize 적용 vs ⓑ 내부 호스트명을 공개 허용으로 명문화
+    - 유물 태그 삭제는 **사용자 승인 필수**(원격 ref 파괴 — `input-interpretation-rules` 예외 아님)
+
+## Issue465: hub `server.py` 이중화 — 실행본과 배포 정본이 따로 있다 ✅
+* 목적: `services/hub/`(실행)와 `plugins/fpm-core/services/hub/`(배포 정본)가 따로 존재해 bundle-sync 로만 일치가 유지된다. 한쪽만 고치면 조용히 갈라지는 구조 — 2원 자산의 전형
+* 구현 명세: ⓐ 단일화(심볼릭 링크·단일 소스) vs ⓑ 현행 유지 + 자동 검증 강화 판정 → 택일 후 적용. 배포 경로에 영향이 크므로 배포 사이클 밖에서 착수
+
+## Issue466: 에디터 지정이 macOS 전용 — `open -a` 잔존 (Issue432 잔여) ✅
+* 목적: `_open_cmd()` 로 열기 자체는 3축 분기됐으나 **에디터 지정 경로**는 `open -a` 를 그대로 쓴다. Linux(host)·Windows(jpc1)에서 에디터 지정이 동작하지 않음
+* 구현 명세: `open -a` 사용처 전수 → 플랫폼 분기(macOS `open -a` · Linux `xdg-open`/직접 실행 · Windows `start`) → 3축 스모크
+
+## Issue459: 미러 무결성 매니페스트가 sanitize **이전** 기준으로 생성됨 — 소비자 `check.sh` 가 항상 FAIL ✅
+* 목적: `.fpm-integrity.json` 은 정본 `$SRC/plugins/fpm-core` 바이트로 생성되는데 forward 는 미러에 **sanitize 변환본**을 쓴다. 매니페스트가 미러 바이트를 검증할 수 없어 **설치한 소비자가 check.sh 를 돌리면 무조건 무결성 FAIL** — 진짜 변조와 구분이 안 되므로 게이트가 무력화됨
+* 구현 명세:
+    - `gen-integrity-manifest.sh` 호출 시점을 forward(sanitize) **이후 미러에서** 재생성·커밋하도록 배포 순서 교정
+    - 교정 후 미러에서 `check.sh --quiet` 무결성 FAIL 0 을 종결 조건으로 확인
+
+## Issue467: `_doc_work/board/**/README.md` 추적 정책 (Issue430 곁가지) ✅
+* 목적: gitignore 앵커를 고친 뒤 그동안 누락돼 있던 board README 들이 추적 대상으로 드러났다. 추적할지 계속 제외할지 정책 미정
+* 구현 명세: board 산출물의 수명(이슈 단위 휘발 vs 영속) 판정 → gitignore 확정 → 이미 추적 중인 것 정리
 
 ## Issue463: `z_htm` 읽기 경로 제거 — 유지 근거의 전제 2개가 모두 소멸 ✅
 * 목적: `_doc_arch/htm-lifecycle-design.md` 가 읽기 경로를 유지한 유일한 근거는 "제거하면 prj2 의 htm 77건이 즉시 403" 이었는데, 2026-09-01 재대조에서 그 피해 대상이 실측 0건으로 확인됨. 문서가 스스로 적어 둔 재검토 조건이 충족된 상태
@@ -589,10 +762,6 @@ source_sha: c356f37dc2ca8204c6a00ca9f724ddf09e36152095e0ee8232927be4a0511386
     - **채택: ① `EXCLUDE_PREFIX` 에 `plugins/` 추가 단독.** 근거는 "번들 태그는 공개 스위치가 아니다"가 **아니라** *"태그를 저작하는 곳이 여기가 아니라 원본이고, 원본은 이 검사를 그대로 받는다"* 이다. 번들 사본에서 차단해 봐야 고칠 곳이 여기가 아니라 조치로 이어지지 않고 동기 커밋만 막힌다
     - ⚠️ **digest 참조 코퍼스(`fpm-issue-digest.sh` pathspec)는 건드리지 않는다** — 초안은 `':(exclude)plugins/**'` 를 짝으로 넣었으나 검증에서 *"정당한 근거 손실 0"* 주장이 **거짓으로 반증**됐다(아래 결과 참조). 남는 구멍은 Issue365 로 분리
     - 검증: 번들 동기 커밋이 `SKIP_TAGCHECK` 없이 통과 · prj1 소스의 실제 오타 태그는 **여전히 차단**됨을 양성/음성 양쪽으로 실측
-
-## Issue258: hub 내부 탭 alt+w 닫기 시 Chrome 크래시 — **macOS 접근성(AX) abort** (iframe 이론 오판, 재개: 2026-07-11, 보류: 2026-07-11) ⏸️
-* 목적: Issue223(디바운스)·237(playwright headless)·250(iframe fallback) 이후에도 Chrome 이 죽는 케이스 잔존. 사용자 확정 repro: **"hub 탭 여러 개 떠있을 때 + 내부 탭 alt+w 로 닫을 때"**. "완전 해결"(탭 수 무관) 요구.
-* depends: Issue223, Issue237, Issue250
 
 ## Issue115: Hub 자동 리프레쉬 (tmux 백그라운드 프로세스 제거)
 * 목적: dashboard 데이터 파일 변경 시 hub 페이지 자동 리프레쉬 (수동 새로고침 제거). tmux 환경에서는 별도 백그라운드 프로세스 대신 window 내부 폴링으로 구현.

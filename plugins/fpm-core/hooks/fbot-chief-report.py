@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""fbot-exec-report.py — 중역핀봇 보고 파이프라인 (Issue436_3 s6 보고 계열).
+"""fbot-chief-report.py — 총괄핀봇 보고 파이프라인 (Issue436_3 s6 보고 계열).
 
-계약: ~/.claude/_doc_arch/fbot-arch.md §조직(중역핀봇 — daily report·온디맨드 현황) ·
+계약: ~/.claude/_doc_arch/fbot-arch.md §조직(총괄핀봇 — daily report·온디맨드 현황) ·
       §hub 주입(보고 폴백 사다리 3단, 각 단 전환 fail-loud) ·
       §범용 배포 요건(Discord/openclaw = 옵션 플러그 · 외부 발신은 sanitize 계열 필터 경유) ·
       §Discord 발신 경로 확정행(2026-08-25 실측) · §작업 기록(F4 — 봇 전용 대장 금지).
@@ -13,7 +13,7 @@
   daily [--dry-run] [--target ID] [--cwd DIR] [--no-record]
       일일 보고 조립·발신. ① 재료 수집(registry.db 봇 현황·상태별 수·채용/배분 원장 +
       aoa-mq digest + job 원장 요약) ② sanitize 필터 ③ 폴백 사다리 발신
-      ④ bot_id=fbot-exec 귀속 job 기록(kind=fbot_report)
+      ④ 총괄핀봇 **개체**(대장 role=chief) 귀속 job 기록(kind=fbot_report) — Issue528
   now   [--dry-run] [--target ID] [--cwd DIR] [--no-record]
       온디맨드 현황 스냅샷. daily 보다 간략 — 지금 상태만(원장 breakdown·큐 상세 없음)
 
@@ -38,7 +38,7 @@ sanitize 가드 (새 외부 출구 — Discord)
   FBOT_REPORT_TEST_INJECT   : sanitize **후**에 덧붙임 → 발신 직전 assert 가 막는지 확인용
   FBOT_REPORT_OPENCLAW      : openclaw 실행 파일 경로 강제(빈 값 = 부재로 취급, 폴백 시험)
 
-설계 원칙 (fbot-state.py·fbot-taskmgr.py·fbot-manual-review.py 승계)
+설계 원칙 (fbot-state.py·fbot-lead.py·fbot-manual-review.py 승계)
   * 표준 라이브러리만 사용(무의존). policy.yml 은 평탄 키라 정규식으로 읽는다.
   * 판정 단일 지점 재사용 — hub on/off = hooks/hub-scope.sh `hub_effective`,
     수면 = hooks/sleep-state.sh `sleep_is_active`, 리터럴 치환 = prj1 fpm-sanitize.sh.
@@ -68,7 +68,13 @@ HOME = os.path.expanduser("~")
 # 경로 계약 (Issue450) — env 가 정식 설정. 미설정 시 제품 중립 기본(prj5 미클론 머신 대응).
 AOA_DIR = os.environ.get("AOA_MEMORY_DIR") or os.path.join(HOME, ".claude", "data", "aoa")
 REGISTRY_DB = os.path.join(AOA_DIR, "registry.db")
+# prj3#Issue626 — 정책 수치 정본은 prj3. 데이터는 prj5 유지라 경로가 갈린다.
+#   aoa_dir 우선(테스트 픽스처 존중) → 없으면 prj3.
 POLICY_YML = os.path.join(AOA_DIR, "policy.yml")
+if not os.path.exists(POLICY_YML):
+    _P3 = os.path.join(HOME, ".claude", "data", "aoa", "policy.yml")
+    if os.path.exists(_P3):
+        POLICY_YML = _P3
 MQ_DIR = os.environ.get("AOA_MQ_DIR") or os.path.join(AOA_DIR, "mq")
 MQ_DIGEST_SH = os.path.join(HOME, ".claude", "mcp", "aoa-mq", "aoa-mq-digest.sh")
 FPM_SANITIZE_SH = os.path.join(HOME, "_git", "___pm", "scripts", "fpm-sanitize.sh")
@@ -81,7 +87,7 @@ FALLBACK_HTM_DIR = os.path.join(HOME, ".claude", "_doc_work", "htm")
 
 # ── 상수 (계약 고정값) ────────────────────────────────────────────────────────
 
-BOT_ID = "fbot-exec"            # 기록 귀속 주체 (F4 — 계약 §조직: 중역핀봇 전역 1개)
+EXEC_ROLE = "chief"              # 기록 귀속 주체의 **직능**. 개체 id 는 대장에서 해소한다 (Issue528)
 JOB_KIND = "fbot_report"        # registry.job 보고 기록 kind
 JOB_STORE = "fbot"
 DISCORD_CHANNEL = "discord"
@@ -92,8 +98,8 @@ ISSUE_SUMMARY_LEN = 24          # 이슈 제목 축약 길이 — 번호 + 한 �
 JOB_RECENT_SECS = 24 * 3600     # job 원장 요약 창
 
 ROLE_KO = {
-    "exec": "중역", "hr": "인사", "taskmgr": "작업", "design": "설계",
-    "planner": "기획자", "qa": "QA", "research": "리서치",
+    "chief": "총괄", "hr": "인사", "lead": "팀장", "design": "설계",
+    "planner": "기획", "qa": "QA", "research": "조사",
 }
 STATE_KO = {
     "checkin": "출근중", "working": "작업중", "waiting_input": "수신대기",
@@ -223,7 +229,39 @@ def connect() -> sqlite3.Connection:
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA busy_timeout=5000")
+    # Issue527 — FK(job.owner_id→bot.bot_id)는 **연결마다** 켜야 강제된다. 여기가
+    #   job 원장에 쓰는 지점이므로, 꺼진 채로 들어오면 대장에 없는 id 로 다시 쌓인다.
+    con.execute("PRAGMA foreign_keys=ON")
     return con
+
+
+def resolve_bot_id(con) -> str:
+    """기록 귀속 **개체** id 를 `bot` 대장에서 해소한다 (Issue528).
+
+    이전에는 ``BOT_ID = "fbot-exec"`` 상수였다. 그것은 **직능(role) id 이지 개체가 아니다** —
+    계약([`fbot-arch.md`](../_doc_arch/fbot-arch.md) §조직 "명명된 개체")은 머신마다 개체명을
+    다르게 두라고 정한다(jm4 = ``fbot-chief-narae`` · fg1 = ``fbot-exec-mireu``). 상수를 쓰면
+    기록이 대장에 없는 문자열로 귀속돼 **조회가 조용히 빈다** — 실제로 18건이 그렇게 쌓였다.
+
+    ⚠️ 개체명을 하드코딩하지 않는다. ``fbot-chief-narae`` 로 못박으면 fg1 에 mireu 가 생기는
+    순간 같은 갈림이 되풀이된다. 대장의 ``role='chief'`` 을 조회하면 *"총괄핀봇 전역 1개"*
+    계약이 곧 유일성 보장이 되고, 머신마다 그 머신의 개체가 답이 된다.
+
+    fail-loud — 0건·복수건은 **조용히 폴백하지 않는다**. 폴백하면 다시 대장에 없는 id 로
+    기록이 쌓이고, 그것이 바로 Issue528 이 고친 실패다.
+    """
+    rows = [r["bot_id"] for r in con.execute(
+        "SELECT bot_id FROM bot WHERE role = ? ORDER BY bot_id", (EXEC_ROLE,)).fetchall()]
+    if len(rows) == 1:
+        return rows[0]
+    if not rows:
+        raise FbotError(
+            f"총괄핀봇 개체가 대장에 없다 (role='{EXEC_ROLE}', DB: {REGISTRY_DB}) — "
+            "fbot-state.py register 로 이 머신의 개체를 먼저 등재하라. "
+            "역할 id 로 폴백하지 않는다(Issue528: 그것이 고아 기록의 원인이었다)")
+    raise FbotError(
+        f"총괄핀봇 개체가 {len(rows)}건이다 ({', '.join(rows)}) — 계약 §조직 '전역 1개' 위반. "
+        "어느 쪽에 귀속할지 코드가 임의로 못 정한다. 대장을 먼저 정리하라")
 
 
 def month_key(now: float | None = None) -> str:
@@ -371,7 +409,7 @@ def hub_links() -> list:
 
 def build_daily(reg: dict, mq: dict, warnings: list) -> str:
     now = datetime.now()
-    lines = [f"# 중역핀봇 일일 보고 — {now:%Y-%m-%d} ({now:%H:%M})", ""]
+    lines = [f"# 총괄핀봇 일일 보고 — {now:%Y-%m-%d} ({now:%H:%M})", ""]
     lines += [f"## 봇 현황 — 총 {len(reg['bots'])} · 활성 {reg['active']}", ""]
     if reg["bots"]:
         lines += ["| 호칭 | 종류 | 상태 | 현재 작업 |", "| :--- | :--- | :--- | :--- |"]
@@ -405,7 +443,7 @@ def build_daily(reg: dict, mq: dict, warnings: list) -> str:
 
 def build_now(reg: dict, mq: dict, warnings: list) -> str:
     now = datetime.now()
-    lines = [f"# 중역핀봇 현황 — {now:%Y-%m-%d %H:%M}", ""]
+    lines = [f"# 총괄핀봇 현황 — {now:%Y-%m-%d %H:%M}", ""]
     lines.append("* 봇 %d (활성 %d / 퇴근 %d) · 활성 배분 %d · 대기 큐 %d(도래 %d)" % (
         len(reg["bots"]), reg["active"], reg["by_state"].get("checkout", 0),
         reg["active_dispatch"], mq["pending"], mq["due"]))
@@ -547,7 +585,7 @@ def render_hub(body: str, cwd: str, mode: str) -> tuple[bool, str]:
     path = os.path.join(out_dir, f"hub_htm_{ts}_a_fbot-{mode}-report.md")
     fm = ("---\n"
           f"name: fbot-{mode}-report\n"
-          f"description: \"중역핀봇 {mode} 보고 — Discord 단 불가로 hub 렌더 폴백\"\n"
+          f"description: \"총괄핀봇 {mode} 보고 — Discord 단 불가로 hub 렌더 폴백\"\n"
           f"date: {datetime.now():%Y.%m.%d}\n"
           "---\n\n")
     with open(path, "w", encoding="utf-8") as fh:
@@ -563,7 +601,7 @@ def write_file_report(body: str) -> tuple[bool, str]:
         if new:
             fh.write("---\n"
                      f"name: fbot-report-{datetime.now():%Y.%m.%d}\n"
-                     "description: \"중역핀봇 보고 — 파일 보고 단독(폴백 사다리 3단)\"\n"
+                     "description: \"총괄핀봇 보고 — 파일 보고 단독(폴백 사다리 3단)\"\n"
                      f"date: {datetime.now():%Y.%m.%d}\n"
                      "---\n\n")
         else:
@@ -616,7 +654,8 @@ def route(body: str, *, mode: str, target: str, dry_run: bool, cwd: str) -> dict
 
 # ── 작업 기록 (F4) ───────────────────────────────────────────────────────────
 
-def record_job(con, *, mode: str, result: dict, dry_run: bool, target_set: bool, body: str) -> str:
+def record_job(con, *, bot_id: str, mode: str, result: dict, dry_run: bool,
+               target_set: bool, body: str) -> str:
     now = int(time.time())
     job_id = f"fbotrep-{now}-{os.urandom(4).hex()}"
     payload = {"mode": mode, "dry_run": dry_run, "target_set": target_set,
@@ -628,7 +667,7 @@ def record_job(con, *, mode: str, result: dict, dry_run: bool, target_set: bool,
         "INSERT INTO job (id, store, kind, status, payload, result, attempts,"
         " owner, lease_until, blocked_since, created_at) VALUES (?,?,?,?,?,?,?,?,NULL,NULL,?)",
         (job_id, JOB_STORE, JOB_KIND, "done", json.dumps(payload, ensure_ascii=False),
-         json.dumps(res, ensure_ascii=False), 1, BOT_ID, now))
+         json.dumps(res, ensure_ascii=False), 1, bot_id, now))
     return job_id
 
 
@@ -639,6 +678,9 @@ def _run(mode: str, args) -> int:
     warnings: list = []
     con = connect()
     try:
+        # Issue528 — 기록 귀속 주체는 상수가 아니라 대장에서 해소한다. 조립 전에 확정해
+        # 두어야 발신까지 끝낸 뒤 기록 단계에서 터지는 일이 없다(fail-loud 를 앞으로 당김).
+        bot_id = resolve_bot_id(con)
         reg = collect_registry(con)
         mq = collect_mq(warnings)
         raw = build_daily(reg, mq, warnings) if mode == "daily" else build_now(reg, mq, warnings)
@@ -661,8 +703,8 @@ def _run(mode: str, args) -> int:
 
         job_id = None
         if not args.no_record:
-            job_id = record_job(con, mode=mode, result=result, dry_run=args.dry_run,
-                                target_set=bool(target), body=body)
+            job_id = record_job(con, bot_id=bot_id, mode=mode, result=result,
+                                dry_run=args.dry_run, target_set=bool(target), body=body)
     finally:
         con.close()
 
@@ -671,7 +713,7 @@ def _run(mode: str, args) -> int:
         "ok": True, "mode": mode, "rung": result["rung"], "channel": result["channel"],
         "dry_run": args.dry_run, "target_set": bool(target),
         "transitions": result["transitions"], "detail": result["detail"],
-        "job_id": job_id, "bot_id": BOT_ID, "kind": JOB_KIND,
+        "job_id": job_id, "bot_id": bot_id, "kind": JOB_KIND,
     }, ensure_ascii=False, indent=2))
     return 0
 
@@ -686,8 +728,8 @@ def cmd_now(args) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="fbot-exec-report.py",
-        description="중역핀봇 보고 — daily/온디맨드 조립 → sanitize → 폴백 사다리 3단 발신")
+        prog="fbot-chief-report.py",
+        description="총괄핀봇 보고 — daily/온디맨드 조립 → sanitize → 폴백 사다리 3단 발신")
     sub = p.add_subparsers(dest="cmd", required=True)
     for name, fn, helptxt in (
         ("daily", cmd_daily, "일일 보고 — registry+mq digest+job 원장 조합 후 발신"),

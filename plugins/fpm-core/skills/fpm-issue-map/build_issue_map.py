@@ -53,7 +53,8 @@ CLASS_DEFS = """    classDef done fill:#d8ecd8,stroke:#5a9a5a,color:#1a1a1a
     classDef held fill:#ededed,stroke:#9a9a9a,color:#5a5a5a,stroke-dasharray:5 4
     classDef ext fill:#fdf0dc,stroke:#c08a3e,color:#1a1a1a,stroke-dasharray:5 4
     classDef extdone fill:#e4f0e0,stroke:#6f9a5a,color:#1a1a1a,stroke-dasharray:5 4
-    classDef extunk fill:#eeeeee,stroke:#9a9a9a,color:#5a5a5a,stroke-dasharray:2 3"""
+    classDef extunk fill:#eeeeee,stroke:#9a9a9a,color:#5a5a5a,stroke-dasharray:2 3
+    classDef iso fill:#f5f5f7,stroke:#c8c8d0,color:#8c8c96"""
 
 EDGE_GO = "#2f8a2f"     # 선행 완료 → 착수 가능
 EDGE_BLOCK = "#c0392b"  # 선행 미완료 → 차단
@@ -180,7 +181,8 @@ def _match_section(head: str):
     return None
 
 
-def parse_issue_md(path: Path, warn: list | None = None, lenient: bool = False):
+def parse_issue_md(path: Path, warn: list | None = None, lenient: bool = False,
+                   quiet: bool = False):
     """Issue.md → {id: {...}} 순서 보존 dict.
 
     warn 을 주면 `* depends:` 규약 위반을 (kind, 이슈ID, 원문토큰) 으로 수집한다 (Issue343).
@@ -287,7 +289,9 @@ def parse_issue_md(path: Path, warn: list | None = None, lenient: bool = False):
                 iss["depends"].append(parent)
     # Issue390 — **조용히 버리지 않는다.** 정규화로도 못 맞춘 섹션에 이슈 헤더가 있었으면
     #   그 개수를 알린다. 종전에는 총계에서 빠진 채 맵이 정상처럼 그려졌다(m2slide 실측).
-    if unknown_hits:
+    #   quiet 는 아카이브 보충(Issue606) 전용 — 아카이브의 섹션 관례는 활성 Issue.md 와
+    #   다르고 사용자가 고칠 대상도 아니라서, 그 경로에서만 침묵한다.
+    if unknown_hits and not quiet:
         for head, n in unknown_hits.items():
             sys.stderr.write(
                 "⚠️ 모르는 섹션 '# %s' 안의 이슈 %d건을 건너뛴다 — 맵에 안 나온다\n"
@@ -504,6 +508,45 @@ def node_line(iss):
     return f'    {iss["id"]}["{label}"]'
 
 
+def merge_archived_deps(issues, root):
+    """활성 이슈가 `depends` 로 가리키는데 활성 `Issue.md` 에 없는 선행을 아카이브에서 보충.
+
+    Issue368 은 아카이브 병합을 **타 prj 조회 경로**(`CrossResolver.issues_of`)에만 넣었다.
+    자기 프로젝트 파싱은 활성 `Issue.md` 만 읽으므로, 아카이브를 운영하는 repo 에서는
+    활성 이슈의 `depends` 가 허공을 가리켜 **간선이 통째로 사라진다**
+    (prj3 실측 1건 — 후행은 활성에 남고 선행만 `_doc_work/issue_OLD.md` 로 이동해 소실).
+
+    전량 병합이 아니라 **참조된 선행만** 끌어온다 — 표·집계를 아카이브로 부풀리지 않는다.
+    같은 파일을 가리키는 대소문자 후보는 `resolve()` 로 1회만 읽는다.
+    """
+    missing = {d for i in issues.values() for d in i["depends"] if d not in issues}
+    if not missing:
+        return set()
+    pulled, seen = set(), set()
+    for rel in CrossResolver.ARCHIVES:
+        if not missing:
+            break
+        a = root / rel
+        if not a.exists():
+            continue
+        try:                               # 대소문자만 다른 같은 파일 (case-insensitive FS).
+            st = a.stat()                  #   resolve() 는 입력 대소문자를 보존해 못 잡는다
+            key = (st.st_dev, st.st_ino)   #   — inode 로 봐야 1회만 읽는다
+        except OSError:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        # 아카이브의 섹션 관례(`# 📦 … 아카이브`)는 활성 Issue.md 와 다르다 — 여기서 나오는
+        # 미지 섹션 경고는 사용자가 고칠 것이 아니므로 삼킨다(warn 미전달 + 전용 sink).
+        for iid, iss in parse_issue_md(a, lenient=True, quiet=True).items():
+            if iid in missing:
+                issues[iid] = iss
+                pulled.add(iid)
+                missing.discard(iid)
+    return pulled
+
+
 def settled(issues):
     """정리 완료 = 자신도 완료 + 후행도 전부 완료(또는 후행 없음).
 
@@ -572,7 +615,8 @@ def click_target(path):
     return repo_github_issues_url(str(path))
 
 
-def build_graph_mmd(issues, stage_map, hidden=frozenset(), resolver=None):
+def build_graph_mmd(issues, stage_map, hidden=frozenset(), resolver=None,
+                    isolated=frozenset()):
     lines = ["flowchart TD"]
     visible = {k: v for k, v in issues.items() if k not in hidden}
     grouped = set()
@@ -648,8 +692,13 @@ def build_graph_mmd(issues, stage_map, hidden=frozenset(), resolver=None):
     lines.extend(edges)
     lines.append("")
     lines.append(CLASS_DEFS)
+    # Issue606: 고립 노드(다른 잔여와 `depends` 로 안 엮인 이슈)는 그래프에서 빼지 않고
+    #   흐린 class 로 남긴다 — 엮인 것과 독립인 것을 한 화면에서 구분하기 위함.
     for iid, iss in visible.items():
-        lines.append(f'    class {iid} {"held" if iss["ghost"] else SECTIONS[iss["section"]][1]}')
+        cls = ("held" if iss["ghost"]
+               else "iso" if iid in isolated
+               else SECTIONS[iss["section"]][1])
+        lines.append(f'    class {iid} {cls}')
     for nid, (_, done, ok, _path) in ext_nodes.items():
         lines.append(f'    class {nid} {"extdone" if done else ("ext" if ok else "extunk")}')
     if clicks:
@@ -839,19 +888,19 @@ def build_cross_section(issues, resolver, cycles):
 
 def build_html(issues, svg_graph, svg_critical, preserved_notes, root: Path,
                hidden=frozenset(), isolated=frozenset(), has_graph=True,
-               resolver=None, cycles=()):
+               resolver=None, cycles=(), has_edges=True):
     def graph_cell(iid):                                   # Issue247: 3값 표기
         if iid in hidden:
             return "정리 완료"
         if iid in isolated:
-            return "미연결"
+            return "미연결(흐림)"                          # Issue606: 그래프에 흐리게 존치
         return "표시"
 
     # Issue250: 표에는 '그래프 연동분 ∪ 미완료 전량'만 남긴다.
     # 그래프와 무관한 과거 완료 이슈를 매번 수백 행씩 다시 그릴 이유가 없다.
     # Issue259: 유령(보류·취소 선행)은 그래프에만 남기고 표·집계에서는 뺀다.
     active = {k: v for k, v in issues.items() if not v["ghost"]}
-    in_graph = {k for k in issues if k not in hidden and k not in isolated}
+    in_graph = {k for k in issues if k not in hidden}   # Issue606: isolated 도 그래프에 존치
     listed = [i for i in active.values()
               if not i["done"] or i["id"] in in_graph]
     dropped = len(active) - len(listed)
@@ -890,14 +939,10 @@ def build_html(issues, svg_graph, svg_critical, preserved_notes, root: Path,
 
     # ── 조건부 섹션 (Issue247) ───────────────────────────────────────────
     # edge 가 하나도 없으면 의존 관계도·임계 경로는 보여줄 것이 없으므로 통째 생략.
-    graph_section = f"""<h2>전체 의존 관계</h2>
-<!-- ISSUE-MAP:GRAPH:START -->
-<figure>
-{svg_graph}
-<figcaption>노드 색은 <code>Issue.md</code> 섹션(완료 · 중요 · 일반 · 선택), 화살표 색은 선행 이슈 완료 여부로 결정됩니다. 그래프에는 <strong>서로 이어진 이슈만</strong> 그려집니다 &mdash; 자신도 후행도 모두 완료된 이슈, 그리고 <code>depends</code> 연결이 없는 이슈는 아래 표로 빠집니다. <strong>보류 · 취소 이슈는 맵에서 제외</strong>되며, 활성 이슈가 선행으로 걸고 있는 경우에만 회색 점선 노드로 남습니다.</figcaption>
-</figure>
-<!-- ISSUE-MAP:GRAPH:END -->
-
+    # Issue606: 관계도는 **노드 기준**, 임계 경로는 **간선 기준**으로 갈랐다.
+    #   간선 0 이라고 관계도를 통째 생략하면 잔여 이슈가 있어도 hub 아이콘이 사라진다
+    #   (server.py `_issue_map_has_graph` 는 이 블록 안의 `<svg` 유무로 판정한다).
+    critical_section = f"""
 <h2>임계 경로</h2>
 <!-- ISSUE-MAP:CRITICAL:START -->
 <figure>
@@ -905,11 +950,26 @@ def build_html(issues, svg_graph, svg_critical, preserved_notes, root: Path,
 <figcaption>미완료 이슈 중 의존 사슬이 가장 긴 경로. 중간 하나가 막히면 뒤 전체가 정지합니다.</figcaption>
 </figure>
 <!-- ISSUE-MAP:CRITICAL:END -->
-""" if has_graph else """<!-- ISSUE-MAP:GRAPH:START -->
-<blockquote><p><code>depends</code> 로 이어진 이슈가 없어 의존 관계도·임계 경로를 생략했습니다. 아래 &ldquo;진행 전 이슈&rdquo; 목록이 남은 작업 전부입니다.</p></blockquote>
+""" if has_edges else """
+<h2>임계 경로</h2>
+<!-- ISSUE-MAP:CRITICAL:START -->
+<blockquote><p><code>depends</code> 로 이어진 이슈가 없어 임계 경로를 생략했습니다 &mdash; 남은 이슈가 서로 독립이라 순서 제약이 없습니다.</p></blockquote>
+<!-- ISSUE-MAP:CRITICAL:END -->
+"""
+    graph_section = f"""<h2>전체 의존 관계</h2>
+<!-- ISSUE-MAP:GRAPH:START -->
+<figure>
+{svg_graph}
+<figcaption>노드 색은 <code>Issue.md</code> 섹션(완료 · 중요 · 일반 · 선택), 화살표 색은 선행 이슈 완료 여부로 결정됩니다. <strong>다른 잔여 이슈와 <code>depends</code> 로 엮이지 않은 독립 이슈는 흐린 회색</strong>으로 그려집니다 &mdash; 그래프에서 빠지지는 않습니다. 자신도 후행도 모두 완료된 이슈만 표로 빠집니다. <strong>보류 · 취소 이슈는 맵에서 제외</strong>되며, 활성 이슈가 선행으로 걸고 있는 경우에만 회색 점선 노드로 남습니다.</figcaption>
+</figure>
+<!-- ISSUE-MAP:GRAPH:END -->
+{critical_section}""" if has_graph else """<!-- ISSUE-MAP:GRAPH:START -->
+<blockquote><p>남은 이슈가 없어 의존 관계도·임계 경로를 생략했습니다.</p></blockquote>
 <!-- ISSUE-MAP:GRAPH:END -->
 """
 
+    # Issue606: 흐리게라도 그래프에 있으므로 '진행 전 이슈' 는 독립 이슈의 **평문 목록**
+    #   역할만 남는다 (상태·섹션을 표로 훑는 용도). 그래프 부재 시에는 전량이 여기 온다.
     pending = [i for i in active.values()
                if not i["done"] and (i["id"] in isolated or not has_graph)]
     pending_rows = "\n".join(
@@ -1154,7 +1214,7 @@ def emit_json(issues, resolver, root: Path) -> None:
     """--json: 파싱·판정 결과를 기계 소비용 JSON 으로 stdout 출력 (Issue436_3).
 
     htm 미생성·mmdc 미호출 — 빠르고 무의존. 판정은 blocking_of(status_text 와
-    동일 지점) 재사용만 한다 — 소비처(fbot-taskmgr)가 착수 가능을 재판정하지 않는다.
+    동일 지점) 재사용만 한다 — 소비처(fbot-lead)가 착수 가능을 재판정하지 않는다.
     경고류는 전부 stderr 로 나가므로 stdout 은 항상 순수 JSON 1건이다.
     """
     out_issues = []
@@ -1240,6 +1300,7 @@ def main():
     issues = parse_issue_md(issue_md, warn=dep_warn)
     if not issues:
         sys.exit("❌ 이슈 파싱 결과 0건 — Issue.md 형식 확인 필요")
+    pulled = merge_archived_deps(issues, root)   # Issue606: 아카이브로 옮겨진 선행 보충
     ghosts = split_excluded(issues)         # ⏸️ 보류 · 🚫 취소 제외 (Issue259)
     stage_map = load_stage_map(root)
 
@@ -1259,12 +1320,14 @@ def main():
         return
 
     hidden = frozenset() if args.all else settled(issues)
-    # Issue247: 연결된 노드만 그래프. --all 은 진단용 탈출구라 고립 노드도 남긴다.
+    # Issue606: 고립 노드를 그래프에서 **빼지 않는다** — 흐린 class 로 남긴다.
+    #   구 동작(Issue247)은 간선 0 이면 그래프를 통째로 생략했고, 그 결과
+    #   잔여 이슈가 있는 프로젝트에서도 hub 이슈맵 아이콘이 사라졌다.
     linked = linked_ids(issues, hidden)
-    isolated = (frozenset() if args.all
-                else frozenset(k for k in issues if k not in hidden and k not in linked))
-    graph_hidden = hidden | isolated
-    has_graph = bool(linked)
+    isolated = frozenset(k for k in issues if k not in hidden and k not in linked)
+    graph_hidden = hidden
+    has_graph = bool(set(issues) - graph_hidden)   # 노드가 하나라도 있으면 렌더
+    has_edges = bool(linked)                       # 임계 경로는 간선이 있어야 의미
 
     if args.check:
         for i in issues.values():
@@ -1273,7 +1336,7 @@ def main():
             elif i["id"] in hidden:
                 mark = " [그래프 제외: 정리 완료]"
             elif i["id"] in isolated:
-                mark = " [그래프 제외: 미연결 → 진행 전 이슈]"
+                mark = " [그래프: 미연결 → 흐림 표시]"
             else:
                 mark = ""
             ext = [f"{r}#{d}" for r, d in i["ext"]]
@@ -1286,30 +1349,49 @@ def main():
               f" / 타 prj 선행 {sum(len(i['ext']) for i in issues.values())}건"
               + (f" / 보류·취소 유령 {len(ghosts)}건" if ghosts else ""))
         print("임계 경로:", " → ".join(longest_chain(issues)) or "없음")
+        if not has_edges:
+            print("ℹ️ depends 연결 0건 — 임계 경로만 생략, 관계도는 흐린 노드로 렌더")
         if not has_graph:
-            print("⚠️ depends 연결 0건 — 의존 관계도·임계 경로 생략, 진행 전 이슈 목록만 렌더")
+            print("⚠️ 남은 노드 0건 — 관계도 생략")
         print()
         print_deadlock_report(issues, resolver, cycles)
         print_dep_warnings(dep_warn)
         return
 
+    # Issue606(A): 잔여 이슈가 하나도 없으면 볼 것이 없다 — 맵을 만들지 않고
+    #   이미 있던 산출물은 지운다. hub 아이콘은 파일 존재로 판정하므로 함께 사라진다.
+    #   `--all` 은 진단용 탈출구라 이 게이트를 우회한다.
+    out = root / args.out
+    remaining = [i for i in issues.values() if not i["done"] and not i["ghost"]]
+    if not remaining and not args.all:
+        if out.exists():
+            out.unlink()
+            print(f"🧹 {out} 제거 — 잔여 이슈 0건 (전량 완료). 재생성은 `--all`")
+        else:
+            print("ℹ️ 잔여 이슈 0건 (전량 완료) — 맵을 생성하지 않았습니다. 전량 표시는 `--all`")
+        print_dep_warnings(dep_warn)
+        return
+
     svg_graph = svg_crit = ""
-    if has_graph:                      # edge 0 이면 mmdc 를 아예 타지 않는다
+    if has_graph:                      # 노드 0 이면 mmdc 를 아예 타지 않는다
         with tempfile.TemporaryDirectory() as td:
             wd = Path(td)
             svg_graph = render_svg(
-                build_graph_mmd(issues, stage_map, graph_hidden, resolver), wd, "graph")
-            svg_crit = render_svg(build_critical_mmd(issues), wd, "critical")
+                build_graph_mmd(issues, stage_map, graph_hidden, resolver, isolated),
+                wd, "graph")
+            svg_crit = (render_svg(build_critical_mmd(issues), wd, "critical")
+                        if has_edges else "")
 
-    out = root / args.out
     html_text = build_html(issues, svg_graph, svg_crit, extract_notes(out), root,
-                           hidden, isolated, has_graph, resolver, cycles)
+                           hidden, isolated, has_graph, resolver, cycles, has_edges)
     out.write_text(html_text)
     shown = len(issues) - len(graph_hidden)
     n_ext = sum(len(i["ext"]) for i in issues.values())
     print(f"✅ {out} 생성 ({out.stat().st_size / 1024:.1f} KB, 이슈 {len(issues) - len(ghosts)}건"
-          + (f", 그래프 {shown}건 표시" if has_graph else ", 그래프 생략(depends 연결 0건)")
-          + (f" / 미연결 {len(isolated)}건은 진행 전 이슈 목록" if isolated else "")
+          + (f", 그래프 {shown}건 표시" if has_graph else ", 그래프 생략(남은 노드 0건)")
+          + (f" / 미연결 {len(isolated)}건 흐림" if isolated else "")
+          + ("" if has_edges else " / 간선 0건 → 임계 경로 생략")
+          + (f" / 아카이브 선행 {len(pulled)}건 보충" if pulled else "")
           + (f" / 정리 완료 {len(hidden)}건 숨김" if hidden else "")
           + (f" / 보류·취소 유령 {len(ghosts)}건" if ghosts else "")
           + (f" / 타 prj 선행 {n_ext}건" if n_ext else "") + ")")

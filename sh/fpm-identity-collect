@@ -1,0 +1,387 @@
+#!/usr/bin/env python3
+"""fpm-identity-collect — 전 프로젝트 L1 아이덴티티 수집 → Identity.md 생성 (Issue472).
+
+각 프로젝트 CLAUDE.md 의 frontmatter L1 필드 9종을 모아 한 표로 만든다.
+값의 소유는 각 프로젝트, 스키마 정본은 prj6 `_doc_arch/project-identity-scheme.md`,
+집계 생성물만 여기(prj1)에 산다 — 생성기와 생성물이 같은 repo 여야 하기 때문이다.
+
+  실행: fpm-identity-collect            → $FPM_BASE/Identity.md + Identity_map.htm 재생성
+        fpm-identity-collect --check    → 쓰지 않고 미기재 통계만 출력
+        fpm-identity-collect --md-only  → Identity.md 만 (카드뷰 skip)
+
+⚠️ 알림을 만들지 않는다 (prj6 architect-identity.md 조항 6).
+   `⚠️ 미기재`·`🌅 시한 경과` 는 표 안의 문자열일 뿐이며 훅·스케줄로 내보내지 않는다.
+   비어 있음 자체가 신호이고, 사람이 볼 때 보인다.
+
+SSOT: $FPM_BASE/Projects.md (id·경로·이모지·표시명) + 각 프로젝트 CLAUDE.md (L1 필드)
+"""
+import datetime
+import importlib.util
+import os
+import re
+import sys
+from importlib.machinery import SourceFileLoader
+
+PM_ROOT     = os.environ.get('FPM_BASE') or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROJECTS_MD = os.path.join(PM_ROOT, 'Projects.md')
+OUT_MD      = os.path.join(PM_ROOT, 'Identity.md')
+OUT_HTM     = os.path.join(PM_ROOT, 'Identity_map.htm')
+SYNC_PY     = os.path.join(PM_ROOT, 'sh', 'fpm-projects-sync')
+
+# L1 필드 9종 — 스키마 정본은 prj6 _doc_arch/project-identity-scheme.md
+REQUIRED = ['identity', 'not', 'goal_parent', 'lifetime', 'outcome', 'status']
+OPTIONAL = ['identity_origin', 'deadline']
+LIFETIMES = {'finite', 'perpetual'}
+STATUSES  = {'active', 'maintenance', 'dormant', 'archived'}
+
+MISSING   = '⚠️ 미기재'
+NO_CLAUDE = '⚠️ CLAUDE.md 없음'
+NO_DIR    = '⚠️ 경로 없음'
+
+
+def load_sync_module():
+    """Projects.md 파서를 fpm-projects-sync 에서 빌려 쓴다 — 표 파서를 두 벌 두지 않는다."""
+    spec = importlib.util.spec_from_loader('fps', SourceFileLoader('fps', SYNC_PY))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def parse_frontmatter(text):
+    """--- 로 감싼 YAML 앞머리에서 최상위 key: value 만 뽑는다(중첩·리스트 미지원, L1 은 평면이다)."""
+    if not text.startswith('---'):
+        return {}
+    end = text.find('\n---', 3)
+    if end == -1:
+        return {}
+    out = {}
+    for line in text[3:end].split('\n'):
+        if not line or line[0] in ' \t#-':
+            continue
+        if ':' not in line:
+            continue
+        k, raw = line.split(':', 1)
+        k, v = k.strip(), raw.strip()
+        if not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', k):
+            continue
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in '"\'':
+            v = v[1:-1]
+        else:
+            # YAML 인라인 주석: 공백 뒤 '#'. 템플릿이 빈 필드에 안내 주석을 달아 두므로
+            # 이걸 안 자르면 "미기재"가 주석 문장으로 채워져 보인다(= 미기재 신호가 죽는다).
+            # 따옴표로 감싼 값은 대상이 아니다 — 색상 코드(#fff) 같은 정당한 '#' 를 지킨다.
+            v = re.split(r"\s+#", raw, maxsplit=1)[0].strip()
+        out[k] = v
+    return out
+
+
+def tree_nodes(content):
+    """Projects.md '# Project Map' 의 그룹 노드명 집합 — goal_parent 대조용.
+
+    번호로 시작하는 줄(`- 15. 🚀 fSnippet`)은 프로젝트 항목이므로 노드가 아니다.
+    """
+    nodes = set()
+    in_map = False
+    for line in content.split('\n'):
+        if line.startswith('# '):
+            in_map = line.strip() == '# Project Map'
+            continue
+        if not in_map:
+            continue
+        if line.startswith('### '):
+            nodes.add(line[4:].strip())
+            continue
+        m = re.match(r'^\s*-\s+(.+?)\s*$', line)
+        if not m:
+            continue
+        item = m.group(1)
+        if re.match(r'^[0-9]+[a-z]?[0-9]*\.', item):   # `15. 🚀 fSnippet`
+            continue
+        item = item.split(':')[0].strip().strip('"')
+        item = re.sub(r'^Goal\s*$', '', item).strip()
+        if item and not item.startswith('('):
+            nodes.add(item)
+    return nodes
+
+
+def expand(path):
+    return os.path.expanduser(path) if path.startswith('~') else path
+
+
+def cell(v):
+    """표 셀 이스케이프 — 파이프는 표를 깨고, 줄바꿈은 L1 에 있으면 안 된다."""
+    return (v or '').replace('|', '\\|').replace('\n', ' ').strip()
+
+
+def collect():
+    content = open(PROJECTS_MD, encoding='utf-8').read()
+    rows = load_sync_module().parse_table(content)
+    nodes = tree_nodes(content)
+
+    out = []
+    for r in rows:
+        rec = dict(r, fields={}, note='')
+        d = expand(r['path'])
+        cm = os.path.join(d, 'CLAUDE.md')
+        if not os.path.isdir(d):
+            rec['note'] = NO_DIR
+        elif not os.path.isfile(cm):
+            rec['note'] = NO_CLAUDE
+        else:
+            try:
+                rec['fields'] = parse_frontmatter(open(cm, encoding='utf-8').read())
+            except (OSError, UnicodeDecodeError) as e:
+                rec['note'] = f'⚠️ 읽기 실패 ({e.__class__.__name__})'
+        out.append(rec)
+    return out, nodes
+
+
+def field(rec, key, nodes=None):
+    """표에 넣을 값 1칸 — 없으면 미기재, 값 집합을 벗어나면 그 사실을 함께 보인다."""
+    if rec['note']:
+        return rec['note'] if key == 'identity' else '—'
+    v = rec['fields'].get(key, '').strip()
+    if not v:
+        return MISSING
+    if key == 'lifetime' and v not in LIFETIMES:
+        return f'{cell(v)} ⚠️ 값 아님'
+    if key == 'status' and v not in STATUSES:
+        return f'{cell(v)} ⚠️ 값 아님'
+    if key == 'goal_parent' and nodes and v not in nodes:
+        return f'{cell(v)} ⚠️ 트리 불일치'
+    return cell(v)
+
+
+def sunset_flag(rec, today):
+    """🌅 = 시한이 지난 유한형. 표시일 뿐 발의가 아니다 (조항 5·6)."""
+    f = rec['fields']
+    dl = f.get('deadline', '').strip()
+    if not dl or f.get('lifetime', '') != 'finite':
+        return ''
+    m = re.match(r'^(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})$', dl)
+    if not m:
+        return ''
+    try:
+        d = datetime.date(*(int(x) for x in m.groups()))
+    except ValueError:
+        return ''
+    return ' 🌅' if d < today else ''
+
+
+def render(recs, nodes):
+    today = datetime.date.today()
+    ts = today.strftime('%Y.%m.%d')
+    filled = [r for r in recs if r['fields'].get('identity')]
+
+    L = [
+        '---',
+        'title: Identity',
+        'description: 전 프로젝트 L1 아이덴티티 집계 — 정체성·경계·수명·기대 성과 한눈에 보기 (생성물)',
+        f'date: {ts}',
+        '---',
+        '',
+        '> ⚠️ **생성물 — 직접 편집하지 마십시오.** `sh/fpm-identity-collect` 가 각 프로젝트 '
+        '[CLAUDE.md](CLAUDE.md) frontmatter 를 모아 재생성합니다. 값을 고치려면 **그 프로젝트의 '
+        'CLAUDE.md** 를 고치십시오.',
+        '>',
+        '> * 스키마 정본: prj6 `_doc_arch/project-identity-scheme.md` · 체계 전체: [Issue472](Issue.md)',
+        f'> * 재생성: `sh/fpm-identity-collect` (또는 `fpm-projects-sync` [4/4]) · 생성 {ts}',
+        '',
+        '# 집계',
+        '',
+        f'* 기재 **{len(filled)}/{len(recs)}** — `⚠️ 미기재` 는 오류가 아니라 **아직 정하지 않았다는 신호**입니다',
+        '* `🌅` = 시한이 지난 유한형. **표시일 뿐 일몰 발의가 아닙니다** — 발의는 prj6 `8.sunset/`, 집행은 사람',
+        '',
+        '| id | 프로젝트 | 정체성 | 아닌 것 | 수명 | 기대 성과 | 시한 | 목적 | 상태 |',
+        '| :-- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |',
+    ]
+
+    for r in recs:
+        name = f"{r['emoji']} {r['name']}".strip()
+        dl = field(r, 'deadline') if r['fields'].get('deadline') else ('—' if r['note'] else MISSING)
+        L.append('| {} | {} | {} | {} | {} | {} | {} | {} | {} |'.format(
+            r['id'], cell(name),
+            field(r, 'identity'), field(r, 'not'),
+            field(r, 'lifetime') + sunset_flag(r, today),
+            field(r, 'outcome'), dl,
+            field(r, 'goal_parent', nodes), field(r, 'status'),
+        ))
+
+    drifted = [r for r in recs if r['fields'].get('identity_origin')]
+    L += ['', '# 목적이 갈린 프로젝트', '']
+    if drifted:
+        L.append('처음 목적과 지금 하는 일이 다른 것들입니다. **둘 다 사실이고 둘 다 필요합니다** — '
+                 '갈아 끼운 흔적을 지우면 다음에 또 갈아 끼울 때 판단 근거가 없습니다.')
+        L += ['', '| id | 프로젝트 | 최초 목적 | 지금 |', '| :-- | :--- | :--- | :--- |']
+        for r in drifted:
+            L.append('| {} | {} | {} | {} |'.format(
+                r['id'], cell(f"{r['emoji']} {r['name']}".strip()),
+                field(r, 'identity_origin'), field(r, 'identity')))
+    else:
+        L.append('없음 — `identity_origin` 을 적은 프로젝트가 아직 없습니다.')
+
+    miss = [r for r in recs if not r['note'] and not r['fields'].get('identity')]
+    noc  = [r for r in recs if r['note']]
+    L += ['', '# 미기재 현황', '']
+    L.append(f'* CLAUDE.md 는 있으나 L1 이 비어 있음: **{len(miss)}** — '
+             + (', '.join(f"prj{r['id']}" for r in miss) if miss else '없음'))
+    L.append(f'* CLAUDE.md·경로 자체가 없음: **{len(noc)}** — '
+             + (', '.join(f"prj{r['id']}({r['note'].replace('⚠️ ','')})" for r in noc) if noc else '없음'))
+    L.append('')
+    L.append('> 이 목록은 [Projects.md](Projects.md) 목적 트리의 `미할당` 과 같은 성격입니다 — '
+             '알림을 보내지 않고 **비어 있음 자체를 신호로** 둡니다.')
+    L.append('')
+    return '\n'.join(L)
+
+
+
+# ── 카드뷰 (Issue472 · 조항 6 의 "볼 때 보이는 표면") ────────────────────
+# mermaid 를 쓰지 않으므로 hub 런타임 주입에 의존하지 않는다 — file:// 로도 열린다.
+# Projects_map.htm 이 hub 를 요구하는 것과 다른 점이며, 의존을 줄이는 쪽이 맞다.
+
+CSS = """
+:root{--bg:#faf9f7;--fg:#1f2328;--dim:#6b7280;--card:#fff;--line:#e5e7eb;
+      --warn:#b45309;--warnbg:#fef3c7;--ok:#166534;--okbg:#dcfce7;--sun:#9a3412}
+@media (prefers-color-scheme:dark){
+  :root{--bg:#15181c;--fg:#e6e8ea;--dim:#9aa3ad;--card:#1d2126;--line:#2c3238;
+        --warn:#fbbf24;--warnbg:#3a2f12;--ok:#86efac;--okbg:#14311f;--sun:#fb923c}}
+*{box-sizing:border-box}
+body{margin:0;padding:24px;background:var(--bg);color:var(--fg);
+     font:14px/1.6 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",sans-serif}
+h1{font-size:20px;margin:0 0 4px}
+.sub{color:var(--dim);font-size:13px;margin-bottom:20px}
+.sub code{background:var(--card);border:1px solid var(--line);border-radius:4px;padding:1px 5px}
+h2{font-size:15px;margin:28px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+h2 .n{color:var(--dim);font-weight:400;font-size:13px}
+.grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(310px,1fr))}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:13px 15px}
+.card.empty{opacity:.5}
+.hd{display:flex;align-items:baseline;gap:7px;margin-bottom:9px}
+.hd .em{font-size:16px}
+.hd .nm{font-weight:600}
+.hd .id{color:var(--dim);font-size:12px;margin-left:auto}
+.idt{margin-bottom:8px}
+.not{color:var(--dim);font-size:13px;margin-bottom:8px}
+.not::before{content:"⊘ ";color:var(--warn)}
+.out{font-size:13px;margin-bottom:9px}
+.out::before{content:"→ ";color:var(--dim)}
+.org{font-size:12px;color:var(--dim);border-left:2px solid var(--line);
+     padding-left:8px;margin:8px 0}
+.tags{display:flex;flex-wrap:wrap;gap:5px;font-size:11.5px}
+.tag{border:1px solid var(--line);border-radius:999px;padding:1px 8px;color:var(--dim)}
+.tag.perp{background:var(--okbg);color:var(--ok);border-color:transparent}
+.tag.fin{background:var(--warnbg);color:var(--warn);border-color:transparent}
+.tag.sun{background:transparent;color:var(--sun);border-color:var(--sun)}
+.miss{color:var(--warn);font-style:italic}
+footer{margin-top:32px;padding-top:14px;border-top:1px solid var(--line);
+       color:var(--dim);font-size:12.5px}
+footer b{color:var(--fg)}
+"""
+
+
+def esc(v):
+    return (v or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+
+def card_html(rec, nodes, today):
+    f = rec['fields']
+    idt = f.get('identity', '').strip()
+    empty = not idt
+    body = [f'''<div class="card{" empty" if empty else ""}">''']
+    body.append('<div class="hd"><span class="em">{}</span><span class="nm">{}</span>'
+                '<span class="id">prj{}</span></div>'.format(
+                    esc(rec['emoji']), esc(rec['name']), esc(rec['id'])))
+
+    if rec['note']:
+        body.append(f'<div class="idt miss">{esc(rec["note"])}</div>')
+    elif empty:
+        body.append(f'<div class="idt miss">{MISSING}</div>')
+        if rec.get('desc'):
+            body.append(f'<div class="not" style="opacity:.7">Projects.md: {esc(rec["desc"])}</div>')
+    else:
+        body.append(f'<div class="idt">{esc(idt)}</div>')
+        if f.get('not'):
+            body.append(f'<div class="not">{esc(f["not"])}</div>')
+        if f.get('identity_origin'):
+            body.append('<div class="org">처음엔 — {}</div>'.format(esc(f['identity_origin'])))
+        if f.get('outcome'):
+            body.append(f'<div class="out">{esc(f["outcome"])}</div>')
+
+    tags = []
+    lt = f.get('lifetime', '')
+    if lt == 'perpetual':
+        tags.append('<span class="tag perp">영속형</span>')
+    elif lt == 'finite':
+        dl = f.get('deadline', '')
+        sun = sunset_flag(rec, today)
+        tags.append('<span class="tag fin">유한형{}</span>'.format(f' · {esc(dl)}' if dl else ''))
+        if sun:
+            tags.append('<span class="tag sun">🌅 시한 경과</span>')
+    st = f.get('status', '')
+    if st and st != 'active':
+        tags.append(f'<span class="tag">{esc(st)}</span>')
+    if tags:
+        body.append('<div class="tags">' + ''.join(tags) + '</div>')
+    body.append('</div>')
+    return ''.join(body)
+
+
+def render_htm(recs, nodes):
+    """목적 부모별 그룹의 카드 그리드. 알림 없음 — 볼 때 보이는 표면일 뿐이다(조항 6)."""
+    today = datetime.date.today()
+    ts = today.strftime('%Y.%m.%d')
+    filled = sum(1 for r in recs if r['fields'].get('identity'))
+
+    groups = {}
+    for r in recs:
+        g = r['fields'].get('goal_parent', '').strip() or '미할당'
+        if g not in nodes and g != '미할당':
+            g = f'{g} ⚠️'
+        groups.setdefault(g, []).append(r)
+
+    def gkey(name):
+        return (1 if name.startswith('미할당') else 0, name)
+
+    H = ['<!doctype html><html lang="ko"><head><meta charset="utf-8">',
+         '<meta name="viewport" content="width=device-width,initial-scale=1">',
+         '<title>Identity Map</title><style>', CSS, '</style></head><body>',
+         '<h1>🎯 프로젝트 아이덴티티</h1>',
+         '<div class="sub">기재 <b>{}/{}</b> · 생성 {} · 재생성 <code>sh/fpm-identity-collect</code>'
+         ' — 값은 각 프로젝트 <code>CLAUDE.md</code> frontmatter 가 소유합니다</div>'.format(
+             filled, len(recs), ts)]
+
+    for g in sorted(groups, key=gkey):
+        rs = groups[g]
+        n = sum(1 for r in rs if r['fields'].get('identity'))
+        H.append(f'<h2>{esc(g)} <span class="n">{n}/{len(rs)}</span></h2><div class="grid">')
+        H += [card_html(r, nodes, today) for r in rs]
+        H.append('</div>')
+
+    H.append('<footer>⚠️ <b>미기재는 오류가 아닙니다</b> — 아직 정하지 않았다는 신호입니다. '
+             '<b>🌅 는 표시일 뿐 일몰 발의가 아닙니다</b> — 발의는 prj6 <code>8.sunset/</code>, '
+             '집행은 사람입니다(조항 5·6). 이 페이지는 알림을 보내지 않습니다.</footer>')
+    H.append('</body></html>')
+    return '\n'.join(H)
+
+
+def main():
+    check = '--check' in sys.argv[1:]
+    recs, nodes = collect()
+    text = render(recs, nodes)
+    filled = sum(1 for r in recs if r['fields'].get('identity'))
+    if check:
+        print(f'[identity] 기재 {filled}/{len(recs)} — 미기재 {len(recs) - filled} (쓰지 않음)')
+        return 0
+    with open(OUT_MD, 'w', encoding='utf-8') as f:
+        f.write(text)
+    made = 'Identity.md'
+    if '--md-only' not in sys.argv[1:]:
+        with open(OUT_HTM, 'w', encoding='utf-8') as f:
+            f.write(render_htm(recs, nodes))
+        made += ' + Identity_map.htm'
+    print(f'[4/4] {made} 생성 — 기재 {filled}/{len(recs)}')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

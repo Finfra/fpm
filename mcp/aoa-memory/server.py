@@ -32,6 +32,7 @@ import store as S  # noqa: E402
 
 KV_LIMIT = 100          # 설계 초기값 — 실측 후 재산정 대상
 SEARCH_LIMIT = 20
+DISCOVER_TTL_MS = 60000  # prj1#Issue484 — server/discover·tools/list 캐시 수명. prj20 cd8972f 와 동일 값
 
 TOOLS = [
     {
@@ -484,12 +485,23 @@ def main():
         except Exception:
             continue
         method, rid = req.get("method"), req.get("id")
-        if method == "initialize":
+        if method == "server/discover":
+            # prj1#Issue484 — MCP 2026-07-28 무상태 코어(SEP-2575). 핸드셰이크 없이 지원 버전을 광고한다.
+            # 이 서버는 원래부터 요청 간 세션 변수가 없다(모듈 전역은 TOOLS·HANDLERS·상수뿐).
+            # 따라서 이 분기는 "무상태로 바꾸는" 것이 아니라 이미 무상태인 사실을 프로토콜 표면에 선언하는 것이다.
+            reply(rid, {"ttlMs": DISCOVER_TTL_MS,
+                        "cacheScope": "private",
+                        "supportedVersions": ["2026-07-28"],
+                        "capabilities": {"tools": {"listChanged": False}}})
+        elif method == "initialize":
+            # 삭제하지 않는다 — server/discover 를 모르는 구 클라이언트의 유일한 진입점이다.
             reply(rid, {"protocolVersion": "2024-11-05",
                         "capabilities": {"tools": {}},
                         "serverInfo": {"name": "aoa-memory", "version": "0.1.0"}})
         elif method == "tools/list":
-            reply(rid, {"tools": TOOLS})
+            # prj1#Issue484 — 캐시 힌트(SEP-2549). TOOLS 는 도구 8종 약 4KB(2026-09-06 실측)로,
+            # 세션마다 반복 전송되던 이 블록을 건너뛴다. 두 서버 중에서는 큰 쪽이지만 절감 자체는 작다.
+            reply(rid, {"ttlMs": DISCOVER_TTL_MS, "cacheScope": "private", "tools": TOOLS})
         elif method == "tools/call":
             p = req.get("params") or {}
             fn = HANDLERS.get(p.get("name"))
@@ -500,7 +512,8 @@ def main():
                 text = fn(p.get("arguments") or {})
             except Exception as e:      # fail-soft — 서버가 죽으면 세션의 도구가 통째로 끊긴다
                 text = "❌ 실행 오류: %s" % e
-            reply(rid, {"content": [{"type": "text", "text": text}]})
+            # prj1#Issue484 — resultType 은 2026-07-28 필수 필드. 이 서버는 부분 응답을 만들지 않으므로 항상 complete.
+            reply(rid, {"content": [{"type": "text", "text": text}], "resultType": "complete"})
         elif rid is not None:
             reply(rid, error={"code": -32601, "message": "unknown method: %s" % method})
 

@@ -13,7 +13,7 @@ cases:
       s="$REPO_DIR/scripts/fpm-bundle-sync.sh"
       [ -x "$s" ] || { echo "skip(저작 머신 전용)"; exit 0; }
       "$s" --check 2>&1 | grep -q "표류 없음" && echo ok || echo "DRIFT"
-    expect: nonempty
+    expect: contains:ok
 
   - id: integrity-manifest
     desc: 설치본 무결성 매니페스트가 존재한다
@@ -25,6 +25,46 @@ cases:
       f="$REPO_DIR/plugins/fpm-core/.fpm-integrity.json"
       [ -f "$f" ] && echo ok || echo "skip(번들 미보유)"
     expect: nonempty
+
+  - id: mirror-integrity-post-sanitize
+    desc: 미러 무결성 매니페스트가 sanitize **이후** 트리에서 재생성되도록 배선돼 있다
+    why: |
+      Issue459 — 매니페스트를 정본 바이트로만 만들던 시절, forward 는 미러에
+      sanitize **치환본**을 넣었다. 그래서 미러를 clone·설치한 소비자가 sh/check.sh 를
+      돌리면 치환 대상 파일이 전건 불일치로 잡혔다(2026-09-01 실측: changed 8 +
+      removed 1 → 무결성 FAIL). **상시 FAIL 은 진짜 변조를 묻는다** — 게이트가
+      존재만 하고 아무것도 지키지 못하는 상태였다.
+      순서가 전부인 결함이라 순서를 검사한다. do_forward 안에서
+        git add -A  <  AUTOBUMP 블록  <  미러 매니페스트 재생성  <  sync 커밋
+      이 셋 중 하나라도 앞뒤가 바뀌면(또는 재생성이 사라지면) 같은 결함이 재발한다.
+      런타임 실측은 `bash sh/gen-integrity-manifest.sh --check --bundle <미러>/plugins/fpm-core`.
+    run: |
+      REPO_DIR="$REPO_DIR" python3 - <<'PYEOF'
+      import io, os, re, sys
+      src = io.open(os.path.join(os.environ["REPO_DIR"], "scripts/fpm-sync.sh"),
+                    encoding="utf-8").read()
+      m = re.search(r'^do_forward\(\) \{$(.*?)^\}$', src, re.M | re.S)
+      if not m:
+          print("NO-DO-FORWARD"); sys.exit(0)
+      body = m.group(1)
+      def at(pat):
+          h = re.search(pat, body)
+          return h.start() if h else -1
+      add   = at(r'git -C "\$DST" add -A')
+      bump  = at(r'AUTOBUMP:-0')
+      regen = at(r'gen-integrity-manifest\.sh[^\n]*\\?\n?[^\n]*--bundle "\$DST/plugins/fpm-core"')
+      cmt   = at(r'git -C "\$DST" commit -q -m "Sync:')
+      if regen < 0:
+          print("MISSING-MIRROR-REGEN"); sys.exit(0)
+      order = [("add-A", add), ("autobump", bump), ("regen", regen), ("commit", cmt)]
+      bad = [n for (n, i) in order if i < 0]
+      if bad:
+          print("ANCHOR-LOST:" + ",".join(bad)); sys.exit(0)
+      idx = [i for _, i in order]
+      print("ok" if idx == sorted(idx) else "ORDER-BROKEN:" +
+            ",".join(n for n, _ in sorted(order, key=lambda t: t[1])))
+      PYEOF
+    expect: contains:ok
 
   - id: aoa-policy-template-tracked
     desc: aoa 정책 템플릿이 git 에 **추적**된다
@@ -42,7 +82,7 @@ cases:
   - id: aoa-policy-template-complete
     desc: 템플릿이 fail-loud 소비처가 요구하는 정책 키를 전부 갖는다
     why: |
-      Issue447 — hooks/fbot-hr-gate.py·fbot-taskmgr.py 는 키가 없으면 **죽는다**
+      Issue447 — hooks/fbot-hr-gate.py·fbot-lead.py 는 키가 없으면 **죽는다**
       (fail-soft 인 aoa-memory 계열과 다르다). 실제로 미러본 템플릿에 수명주기
       4키(prj3#Issue481 로 나중에 추가)가 빠져 있었다 — 파일은 있는데 게이트가
       죽는, 존재 검사로는 안 잡히는 결손이다.
@@ -53,7 +93,7 @@ cases:
       root = os.environ["REPO_DIR"]
       keys = set()
       for f in ("plugins/fpm-core/hooks/fbot-hr-gate.py",
-                "plugins/fpm-core/hooks/fbot-taskmgr.py"):
+                "plugins/fpm-core/hooks/fbot-lead.py"):
           p = os.path.join(root, f)
           if not os.path.exists(p):
               continue
@@ -122,7 +162,7 @@ cases:
       t="$REPO_DIR/services/hub/test_i18n_parity.py"
       [ -f "$t" ] || { echo "skip(테스트 미보유)"; exit 0; }
       python3 "$t" 2>&1 | grep -qE "0 failed" && echo ok || echo FAIL
-    expect: nonempty
+    expect: contains:ok
 
   - id: tagcheck-hook
     desc: Issue 태그 정합 hook 이 살아 있다
@@ -146,4 +186,268 @@ cases:
       [ -f "$pj" ] || { echo "skip(번들 미보유)"; exit 0; }
       pv=$(grep -m1 -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "$pj" | sed 's/.*"\([0-9][^"]*\)"/\1/')
       [ "$v" = "$pv" ] && echo ok || echo "MISMATCH: VERSION=$v plugin=$pv"
+    expect: contains:ok
+
+  - id: hub-single-source
+    desc: hub 실체가 하나다 — services/hub 는 번들을 가리키는 심볼릭 링크
+    why: |
+      Issue465 — `services/hub/`(실행)와 `plugins/fpm-core/services/hub/`(배포 정본)이
+      **같은 39개 파일 두 벌**로 존재했고 `fpm-bundle-sync.sh` 의 rsync 로만 일치가
+      유지됐다. 번들 쪽만 고치면 다음 sync 가 그 수정을 **덮어 없앤다** — 실패가
+      조용하다. 실체를 하나로 줄여 갈라질 자리 자체를 없앤 것이라, 검사할 것은
+      "링크가 실디렉토리로 되돌아갔는가" 하나다(되돌아가는 순간 2원화가 부활한다).
+
+      방향이 번들 쪽인 이유도 검사에 포함한다: `sh/gen-integrity-manifest.sh` 의
+      walk 는 `os.walk`(followlinks 기본 False)에 `os.path.islink` skip 이고, write
+      모드 tracked 필터는 `git ls-files`(링크를 **한 엔트리** mode 120000 으로 본다)를
+      읽는다. 번들을 링크로 만들면 hub 파일이 매니페스트에서 통째로 빠지고 prj20
+      vendor(`rsync -a`)는 번들 밖을 가리키는 링크를 복사해 플러그인이 깨진다.
+    run: |
+      cd "$REPO_DIR" || exit 0
+      want="../plugins/fpm-core/services/hub"
+      [ -L services/hub ] || { echo "NOT-A-SYMLINK(2원화 부활)"; exit 0; }
+      [ "$(readlink services/hub)" = "$want" ] || { echo "WRONG-TARGET:$(readlink services/hub)"; exit 0; }
+      [ -f plugins/fpm-core/services/hub/server.py ] || { echo "DANGLING(유일 실체 부재)"; exit 0; }
+      # 번들 안에는 심볼릭 링크가 없어야 한다 — 있으면 매니페스트가 그 파일을 못 본다
+      n=$(find plugins/fpm-core -type l | wc -l | tr -d ' ')
+      [ "$n" = "0" ] || { echo "BUNDLE-HAS-SYMLINK:$n"; exit 0; }
+      echo ok
+    expect: contains:ok
+
+  - id: hub-symlink-materialized-for-mirror
+    desc: 미러 반출 시 services/hub 심볼릭 링크를 **실파일**로 펴고, 그것을 sanitize 한다
+    why: |
+      Issue465 — git 은 링크를 링크로 저장(mode 120000)하고 `git archive | tar -x`
+      도 `rsync -a` 도 그대로 보존한다. 아무것도 안 하면 **미러에 링크가 그대로
+      나간다**. Windows 소비자는 심볼릭 링크를 못 받는다(windows-port-design W2 =
+      실측 FAIL — `ln -s` 가 사본 디렉토리를 만들고 `Too many levels of symbolic
+      links`, 개발자 모드 레지스트리 키 부재). 링크가 나가면 sh/install.sh 가 안내하는
+      `cd <repo> && python3 services/hub/server.py` 가 통째로 깨진다.
+
+      순서도 함께 본다. 전개가 **sanitize 뒤**로 밀리면 미러 top-level 사본에만
+      내부 호스트명이 남아 배송 트리별 바이트가 갈린다 — Issue459 와 같은 계열의
+      결함을 새로 만드는 셈이다. 그래서 `exclude 적용 < 전개 < sanitize` 를 검사한다.
+    run: |
+      py=python3; command -v python3 >/dev/null 2>&1 || py=python
+      REPO_DIR="$REPO_DIR" "$py" - <<'PYEOF'
+      import io, os, re, sys
+      p = os.path.join(os.environ["REPO_DIR"], "scripts/fpm-sync.sh")
+      if not os.path.exists(p):
+          print("skip(저작 머신 전용)"); sys.exit(0)
+      src = io.open(p, encoding="utf-8").read()
+      m = re.search(r'^do_forward\(\) \{$(.*?)^\}$', src, re.M | re.S)
+      if not m:
+          print("NO-DO-FORWARD"); sys.exit(0)
+      body = m.group(1)
+      def at(pat):
+          h = re.search(pat, body)
+          return h.start() if h else -1
+      excl  = at(r'rsync -a "\$\{EXCLUDES\[@\]\}" "\$TMP"/ "\$TMPX"/')
+      mat   = at(r'\[ -L "\$TMP/services/hub" \]')
+      sani  = at(r'"\$HERE/fpm-sanitize\.sh" "\$TMP"')
+      if mat < 0:
+          print("MISSING-MATERIALIZE"); sys.exit(0)
+      order = [("exclude", excl), ("materialize", mat), ("sanitize", sani)]
+      bad = [n for (n, i) in order if i < 0]
+      if bad:
+          print("ANCHOR-LOST:" + ",".join(bad)); sys.exit(0)
+      idx = [i for _, i in order]
+      print("ok" if idx == sorted(idx) else "ORDER-BROKEN:" +
+            ",".join(n for n, _ in sorted(order, key=lambda t: t[1])))
+      PYEOF
+    expect: contains:ok
+
+  - id: g2-src-branch-guard
+    desc: forward 가 SRC 브랜치를 판정하고, dry-run 종료점이 게이트 뒤·rsync 앞에 있다
+    why: |
+      Issue478_1 — `do_deploy` 는 main·hotfix/* 만 허용했지만 `forward_preflight` 에는
+      SRC 브랜치 판정이 **아예 없었다**(guard_dst_branch 는 미러 쪽이다). post-commit
+      hook 이 매 커밋 forward 를 돌리므로 `release/0.8.3` 체크아웃 상태의 커밋이
+      그대로 공개 미러에 rsync·push 됐다 — 규약 위반이 아니라 **이미 일어나던 동작**이다.
+      집행 등급 enforce 인데 사라져도 조용하므로(미러가 그냥 갱신될 뿐이다) 배선을 검사한다.
+
+      순서가 요점이다. dry-run 종료점이 sanitize·스캔보다 **앞**으로 밀리면 dry-run 이
+      아니라 그냥 skip 이 되어 "안정화 기간에도 검증은 돈다" 는 설계 목적이 사라지고,
+      `rsync --delete` **뒤**로 밀리면 이미 미러를 덮은 뒤라 게이트가 아무것도 막지 못한다.
+      그래서 do_forward 안에서
+        sanitize  <  MIRROR_WRITE 종료점  <  rsync --delete
+      를 검사한다. 설계: _doc_arch/fpm-release-gate.md "G2 — 반출 게이트"
+    run: |
+      py=python3; command -v python3 >/dev/null 2>&1 || py=python
+      REPO_DIR="$REPO_DIR" "$py" - <<'PYEOF'
+      import io, os, re, sys
+      p = os.path.join(os.environ["REPO_DIR"], "scripts/fpm-sync.sh")
+      if not os.path.exists(p):
+          print("skip(저작 머신 전용)"); sys.exit(0)
+      src = io.open(p, encoding="utf-8").read()
+      if not re.search(r'^guard_src_branch\(\) \{', src, re.M):
+          print("MISSING-GUARD-FUNC"); sys.exit(0)
+      pf = re.search(r'^forward_preflight\(\) \{(.*?)^\}$', src, re.M | re.S)
+      if not pf or "guard_src_branch" not in pf.group(1):
+          print("NOT-WIRED-IN-PREFLIGHT"); sys.exit(0)
+      m = re.search(r'^do_forward\(\) \{$(.*?)^\}$', src, re.M | re.S)
+      if not m:
+          print("NO-DO-FORWARD"); sys.exit(0)
+      body = m.group(1)
+      def at(pat):
+          h = re.search(pat, body)
+          return h.start() if h else -1
+      sani  = at(r'"\$HERE/fpm-sanitize\.sh" "\$TMP"')
+      stop  = at(r'\$\{MIRROR_WRITE:-1\}')
+      rsy   = at(r'rsync -c -a --delete')
+      if stop < 0:
+          print("MISSING-DRYRUN-STOP"); sys.exit(0)
+      order = [("sanitize", sani), ("dryrun-stop", stop), ("rsync", rsy)]
+      bad = [n for (n, i) in order if i < 0]
+      if bad:
+          print("ANCHOR-LOST:" + ",".join(bad)); sys.exit(0)
+      idx = [i for _, i in order]
+      print("ok" if idx == sorted(idx) else "ORDER-BROKEN:" +
+            ",".join(n for n, _ in sorted(order, key=lambda t: t[1])))
+      PYEOF
+    expect: contains:ok
+
+  - id: bump-behind-all-gates
+    desc: deploy 가 bump **앞에서** forward 전체를 dry-run 으로 돌린다
+    why: |
+      Issue417 잔여 → Issue478_4 해소. 종전 선검사는 `forward_preflight`(6게이트)까지만
+      돌았고, `do_forward` 안에만 있는 게이트 — sanitize·secret-scan(내용 시크릿)·
+      dir-gate(미등록 top-level) — 는 **여전히 bump 뒤**였다. 거기서 걸리면
+      "버전만 오르고 배포는 안 된 커밋" 이 남고, 재시도마다 번호를 먹는다.
+      실측 피해(2026-08-30): 한 번의 deploy minor 에 0.7.4 → 0.8.0 → 0.8.1 → 0.8.2.
+
+      순서가 전부인 결함이라 순서를 검사한다. do_deploy 안에서
+        FPM_FORWARD_DRYRUN 선검사  <  write_version_files(bump)  <  do_forward(실반출)
+      선검사가 사라지거나 bump 뒤로 밀리면 같은 결함이 그대로 재발한다.
+      런타임 실측은 격리 클론에서 미등록 top-level 디렉토리를 심고 `deploy patch --no-push`
+      → VERSION·HEAD 불변으로 중단되는지 보는 것이다.
+    run: |
+      py=python3; command -v python3 >/dev/null 2>&1 || py=python
+      REPO_DIR="$REPO_DIR" "$py" - <<'PYEOF'
+      import io, os, re, sys
+      p = os.path.join(os.environ["REPO_DIR"], "scripts/fpm-sync.sh")
+      if not os.path.exists(p):
+          print("skip(저작 머신 전용)"); sys.exit(0)
+      src = io.open(p, encoding="utf-8").read()
+      m = re.search(r'^do_deploy\(\) \{$(.*?)^\}$', src, re.M | re.S)
+      if not m:
+          print("NO-DO-DEPLOY"); sys.exit(0)
+      body = m.group(1)
+      def at(pat):
+          h = re.search(pat, body)
+          return h.start() if h else -1
+      dry  = at(r'FPM_FORWARD_DRYRUN=1 do_forward')
+      bump = at(r'write_version_files "\$NEW"')
+      fwd  = at(r'\n    do_forward\b')
+      if dry < 0:
+          print("MISSING-DRYRUN-PRECHECK"); sys.exit(0)
+      order = [("dryrun", dry), ("bump", bump), ("forward", fwd)]
+      bad = [n for (n, i) in order if i < 0]
+      if bad:
+          print("ANCHOR-LOST:" + ",".join(bad)); sys.exit(0)
+      idx = [i for _, i in order]
+      print("ok" if idx == sorted(idx) else "ORDER-BROKEN:" +
+            ",".join(n for n, _ in sorted(order, key=lambda t: t[1])))
+      PYEOF
+    expect: contains:ok
+
+  - id: integrity-regen-wired
+    desc: 무결성 매니페스트 재생성이 번들 변경 지점에 배선돼 있다 (Issue479)
+    why: |
+      종전 재생성 지점은 **배포 경로뿐**이었다(publish-scar.sh · fpm-sync.sh
+      do_deploy/do_forward). 그래서 *번들만 고치고 커밋하는 경로* 가 매니페스트를
+      stale 로 남겼고, 저작 머신 `sh/check.sh` 는 2026-09-01 이래 **상시 FAIL** 이었다.
+      아무도 몰랐던 이유는 release-check.sh 호출처가 0건이었기 때문이다(Issue478 결손2)
+      — 게이트를 배선한 첫 실행이 곧바로 이것을 물었다. 상시 FAIL 은 진짜 변조를 묻는다.
+
+      배선이 사라져도 **조용한** 결함이다(매니페스트가 그냥 낡을 뿐, 아무 신호가 없다).
+      그래서 결과가 아니라 배선 자체를 검사한다. 3축:
+        ① gen-integrity-manifest.sh 의 TRACKED 가 write/check **대칭** —
+           비대칭이면 write 가 제외한 미추적 산출물(vscode-ext/*.vsix)을 check 가 훑어
+           재생성 직후에도 ADDED 로 FAIL 한다. 자기검사가 원리적으로 불가능해진다
+        ② fpm-bundle-sync.sh 말미에 재생성 배선 — 정상 경로(라이브→번들 동기)를 덮는다
+        ③ scripts/install-precommit-integrity.sh 존재 — 손으로 번들을 고치는 경로를 막는다
+    run: |
+      py=python3; command -v python3 >/dev/null 2>&1 || py=python
+      REPO_DIR="$REPO_DIR" "$py" - <<'PYEOF'
+      import io, os, re, sys
+      root = os.environ["REPO_DIR"]
+      gen = os.path.join(root, "sh/gen-integrity-manifest.sh")
+      if not os.path.exists(gen):
+          print("skip(저작 머신 전용)"); sys.exit(0)
+      bad = []
+      src = io.open(gen, encoding="utf-8").read()
+      # ① write 전용 분기가 되살아나면 비대칭 재발
+      if re.search(r"TRACKED\s*=\s*tracked_set\(\)\s*if\s*mode", src):
+          bad.append("ASYMMETRIC-TRACKED")
+      elif not re.search(r"^TRACKED\s*=\s*tracked_set\(\)\s*$", src, re.M):
+          bad.append("TRACKED-ANCHOR-LOST")
+      # ② 번들 변경 지점 재생성
+      bs = os.path.join(root, "scripts/fpm-bundle-sync.sh")
+      bsrc = io.open(bs, encoding="utf-8").read() if os.path.exists(bs) else ""
+      if "gen-integrity-manifest.sh" not in bsrc:
+          bad.append("BUNDLE-SYNC-NOT-WIRED")
+      # ③ 커밋 시점 게이트
+      if not os.path.exists(os.path.join(root, "scripts/install-precommit-integrity.sh")):
+          bad.append("NO-PRECOMMIT-INSTALLER")
+      print("ok" if not bad else ":".join(bad))
+      PYEOF
+    expect: contains:ok
+
+  - id: gate-verdict-not-vacuous
+    desc: 게이트 판정이 공허하지 않다 — 상시 통과·샌드박스 오염·exclude 오탐 3축 (Issue480,Issue482,Issue483)
+    why: |
+      **통과하는 게이트가 통과시키지 않는 것을 확인한다.** 셋 다 "게이트가 있는데 아무것도
+      막지 못하는" 형태였고, 되돌아가도 **조용하다** — 화면에는 초록색 PASS 가 그대로 뜬다.
+
+      ① 상시 통과 (Issue482): `bundle-in-sync`·`i18n-parity` 는 `echo ok || echo DRIFT` 라
+         양쪽 분기 모두 비지 않은 값을 낸다. `expect: nonempty` 로는 **절대 실패하지 않는다**.
+         실측 — 번들이 실제로 표류한 상태에서 PASS 였고, 같은 `--check` 를 forward 게이트가
+         부르자 곧바로 중단됐다. 판정을 `contains:ok` 로 좁히려면 러너가 skip 을 1급으로
+         인식해야 한다(그전엔 nonempty 가 사실상의 skip 통과 수단이었다).
+      ② 샌드박스 오염 (Issue483): `release-check.sh` 의 `sb()` 가 HOME 만 격리해서
+         uninstall 백업이 `FPM_BACKUP_DIR` 기본값을 타고 **실 저장소**로 나갔다.
+         게이트를 돌릴 때마다 미추적 폴더가 하나씩 늘었다(실측 10건 누적).
+      ③ exclude 오탐 (Issue480): sanitize 가 exclude 적용 **앞**에서 도는데 P3 가드는
+         *"$ROOT 는 exclude 가 이미 빠진 스냅샷"* 을 전제했다. 미러에 나가지도 않을 파일을
+         보고 죽어 forward 가 통째로 막혔다. 판정 대상을 미러 반출 집합으로 좁혀야 한다.
+    run: |
+      py=python3; command -v python3 >/dev/null 2>&1 || py=python
+      REPO_DIR="$REPO_DIR" TDD_DIR="$TDD_DIR" "$py" - <<'PYEOF'
+      import io, os, re, sys
+      root = os.environ["REPO_DIR"]
+      tdd  = os.environ.get("TDD_DIR") or os.path.join(root, "tdd")
+      bad = []
+      # ① 상시 통과 — 지목된 두 케이스는 nonempty 로 돌아가면 안 된다
+      dep = os.path.join(tdd, "cases/deploy.yml")
+      if os.path.exists(dep):
+          src = io.open(dep, encoding="utf-8").read()
+          for cid in ("bundle-in-sync", "i18n-parity"):
+              m = re.search(r"- id: %s\b(.*?)(?=\n  - id: |\Z)" % re.escape(cid), src, re.S)
+              if not m:
+                  bad.append("CASE-LOST:" + cid)
+              elif "expect: nonempty" in m.group(1):
+                  bad.append("VACUOUS:" + cid)
+      # ①-b 러너의 skip 인식 — 없으면 위 두 케이스가 소비자 머신에서 거짓 FAIL 이 된다
+      runner = os.path.join(tdd, "run-tdd.sh")
+      rsrc = io.open(runner, encoding="utf-8").read() if os.path.exists(runner) else ""
+      if "skipflag" not in rsrc:
+          bad.append("NO-SKIP-RECOGNITION")
+      # ② 샌드박스 백업 격리
+      rc = os.path.join(root, "sh/release-check.sh")
+      if os.path.exists(rc):
+          csrc = io.open(rc, encoding="utf-8").read()
+          m = re.search(r"^\s*sb\(\)\s*\{.*$", csrc, re.M)
+          if not m:
+              bad.append("NO-SB-FN")
+          elif "FPM_BACKUP_DIR" not in m.group(0):
+              bad.append("SANDBOX-LEAKS-BACKUP")
+      # ③ sanitize 판정 대상이 미러 반출 집합으로 좁혀져 있다
+      san = os.path.join(root, "scripts/fpm-sanitize.sh")
+      if os.path.exists(san):
+          ssrc = io.open(san, encoding="utf-8").read()
+          if "_MIRROR_LIST" not in ssrc or "comm -12" not in ssrc:
+              bad.append("SANITIZE-NOT-SCOPED")
+      print("ok" if not bad else ":".join(bad))
+      PYEOF
     expect: contains:ok

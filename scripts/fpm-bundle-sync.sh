@@ -11,8 +11,11 @@
 #      fpm-hub-server.md·vscode-ext/ 등 배포 전용 자산). rsync --delete 금지.
 #   3. 개인 환경 파일은 반입하지 않는다 (data/hub_setting.yml 등). 공개 안전장치는
 #      forward 스냅샷 단계(fpm-guard/fpm-sanitize)가 담당하나, 여기서도 최소 반입 원칙을 지킨다.
-#   4. server.py 만 옮기고 의존(i18n.py·assets/)을 빠뜨리면 플러그인이 import 에서 죽는다 →
-#      services/hub 는 파일 단위가 아니라 디렉토리 전체를 동기한다.
+#   4. **services/hub 는 더 이상 동기 대상이 아니다** (Issue465, 2026-09-01). 번들이 유일
+#      실체이고 라이브 `services/hub` 는 그것을 가리키는 상대 심볼릭 링크다 — 복사할 사본이
+#      없으니 갈라질 수도 없다. 여기서는 링크 구조만 fail-loud 로 확인한다.
+#      (종전: server.py 만 옮기고 의존 i18n.py·assets/ 를 빠뜨리면 import 에서 죽으므로
+#       디렉토리 전체를 rsync 했다. 단일 실체가 되면서 그 위험 자체가 사라졌다.)
 #   5. 목적지는 번들만이 아니다 (prj3#Issue436_3, fbot 2배관) — SCAR 는 plugins/fpm-core 로,
 #      MCP 서버 코드는 repo top-level `mcp/<유닛>/` 로 간다. 후자는 **하위 디렉토리 고정**이며
 #      기존 `mcp/server.py`(fpm MCP)를 덮거나 지우지 않는다.
@@ -59,14 +62,32 @@ sync_dir_by_name() {  # $1=번들 디렉토리 $2=라이브 디렉토리
   done
 }
 
-# --- 1. services/hub — 디렉토리 전체 (의존 파일 누락 방지) ---
+# --- 1. services/hub — **동기 대상이 아니다. 실체가 하나뿐이다** (Issue465) ---
+#   종전엔 라이브 `services/hub/` 를 번들로 rsync 해 **두 벌**을 유지했고, 한쪽만 고치면
+#   조용히 갈라졌다(특히 번들만 고친 경우 — 다음 sync 가 그 수정을 덮어 없앤다).
+#   지금은 번들이 유일 실체이고 `services/hub` 는 그것을 가리키는 **상대 심볼릭 링크**다.
+#   복사할 것이 없으므로 여기서는 **구조가 유지되는지**만 본다 — 링크가 실디렉토리로
+#   되돌아가는 순간 2원화가 부활하기 때문이다.
+#   ⚠️ 왜 반대 방향(번들이 링크)이 아닌가: `sh/gen-integrity-manifest.sh` 의 walk 는
+#      `os.walk`(followlinks 기본 False) + `os.path.islink` skip 이고, write 모드 tracked
+#      필터는 `git ls-files` 를 읽는다. git 은 링크를 **한 엔트리**(mode 120000)로 저장하므로
+#      번들을 링크로 만들면 hub 39개 파일이 매니페스트에서 통째로 빠지고, prj20 vendor
+#      (`rsync -a`)는 번들 밖을 가리키는 링크를 그대로 복사해 **플러그인이 깨진다**.
+#   ⚠️ 미러(fpm)에는 링크가 아니라 **실파일**이 나간다 — `scripts/fpm-sync.sh` do_forward 가
+#      sanitize 직전에 편다. Windows 소비자는 심볼릭 링크를 못 받는다
+#      (_doc_arch/windows-port-design.md W2 = 실측 FAIL).
+#   설계 SSOT: _doc_arch/fpm-sync-deploy.md "hub 실체 단일화"
 RSYNC_EX=(--exclude='__pycache__/' --exclude='.pytest_cache/' --exclude='.vscode/' --exclude='.DS_Store')
-if [ "$CHECK" -eq 1 ]; then
-  n=$(rsync -an --itemize-changes "${RSYNC_EX[@]}" "$REPO/services/hub/" "$BUNDLE/services/hub/" | grep -c '^[>c]')
-  [ "$n" -gt 0 ] && { drift=$((drift + n)); say "DRIFT services/hub ($n 파일)"; }
-else
-  n=$(rsync -a --itemize-changes "${RSYNC_EX[@]}" "$REPO/services/hub/" "$BUNDLE/services/hub/" | grep -c '^[>c]')
-  [ "$n" -gt 0 ] && { changed=$((changed + n)); say "services/hub $n 파일 갱신"; }
+HUB_LINK="$REPO/services/hub"
+HUB_LINK_WANT="../plugins/fpm-core/services/hub"
+if [ ! -L "$HUB_LINK" ] || [ "$(readlink "$HUB_LINK")" != "$HUB_LINK_WANT" ]; then
+  say "🚨 services/hub 가 '$HUB_LINK_WANT' 심볼릭 링크가 아니다 — hub 2원화 부활"
+  say "   조치: rm -rf services/hub && ln -s $HUB_LINK_WANT services/hub"
+  exit 1
+fi
+if [ ! -f "$BUNDLE/services/hub/server.py" ]; then
+  say "🚨 유일 실체 $BUNDLE/services/hub/server.py 부재 — 링크가 허공을 가리킨다"
+  exit 1
 fi
 
 # --- 2. hooks / commands / agents — 이름 일치분만 ---
@@ -74,6 +95,7 @@ fi
 #   파일명이 같아 아래 이름 일치 스윕이 그대로 수집한다 — 별도 매핑을 두지 않는다.
 #   신규 fbot 훅을 추가할 때는 번들에 1회 수동 seed 해야 이 스윕의 사정권에 들어온다(원칙: 신규 편입은 수동).
 sync_dir_by_name "$BUNDLE/hooks"    "$GLOBAL/hooks"
+sync_dir_by_name "$BUNDLE/hooks/lib" "$GLOBAL/hooks/lib"   # prj3#Issue545 — 번들 훅이 source 하는 라이브러리
 sync_dir_by_name "$BUNDLE/commands" "$GLOBAL/commands"
 sync_dir_by_name "$BUNDLE/agents"   "$GLOBAL/agents"
 
@@ -101,8 +123,8 @@ sync_skill fpm-issue-map "$GLOBAL/skills/issue-map"
 #   `fbot-` 자체가 이미 독립 네임스페이스라 fpm- 접두가 중복이고, SKILL.md 본문이
 #   `~/.claude/skills/fbot-icon/scripts/fbot-icon-gen.py` 를 문자열로 참조해 이름을 바꾸면 문서가 거짓이 된다.
 sync_skill fbot-icon "$GLOBAL/skills/fbot-icon"
-#   fbot-recruit 도 같은 예외 계열 — 번들명 = 라이브명 (prj3#Issue480, 위 fbot-icon 근거 동일)
-sync_skill fbot-recruit "$GLOBAL/skills/fbot-recruit"
+#   fbot-scout 도 같은 예외 계열 — 번들명 = 라이브명 (prj3#Issue480, 위 fbot-icon 근거 동일)
+sync_skill fbot-scout "$GLOBAL/skills/fbot-scout"
 
 # --- 4. 런타임 데이터 (i18n catalog + 설치 템플릿) ---
 #   locales 부재 시 hub UI 가 번역 키 그대로 노출되고 test_i18n_parity 가 깨진다.
@@ -152,6 +174,31 @@ if [ "$CHECK" -eq 0 ]; then
   for f in "$BUNDLE"/hooks/*.sh "$BUNDLE"/hooks/*.py "$BUNDLE"/agents/*.sh; do
     [ -f "$f" ] && [ ! -x "$f" ] && chmod +x "$f"
   done
+fi
+
+# --- 7. 무결성 매니페스트 재생성 (Issue479) ---
+#   왜 여기인가: 종전 재생성 지점은 **배포 경로뿐**이었다(publish-scar.sh · fpm-sync.sh
+#   do_deploy/do_forward). 그래서 *번들만 고치고 커밋하는 경로* 가 매니페스트를 stale 로
+#   남겼고, `sh/check.sh` 는 2026-09-01 이래 상시 FAIL 이었는데 **아무도 몰랐다**
+#   (release-check.sh 호출처가 0건이라 - prj1#Issue478 결손2). 재생성을 *배포* 가 아니라
+#   **번들이 바뀌는 지점** 에 붙여 재발을 없앤다.
+#
+#   drift 가 있을 때만 쓴다 — 무조건 write 하면 mcp/ 만 바뀐 실행(매니페스트 대상 밖)에서도
+#   generated_at·git_sha 가 갱신되어 의미 없는 diff 가 커밋에 섞인다.
+#   `changed` 와 무관하게 항상 검사한다 — 손으로 번들을 고친 뒤 sync 를 돌린 경우
+#   (changed=0 인데 매니페스트는 stale)가 정확히 이 이슈의 재발 경로다.
+GEN="$REPO/sh/gen-integrity-manifest.sh"
+if [ -f "$GEN" ]; then
+  if bash "$GEN" --check >/dev/null 2>&1; then
+    :   # 일치 — 할 일 없음
+  elif [ "$CHECK" -eq 1 ]; then
+    drift=$((drift + 1)); say "DRIFT plugins/fpm-core/.fpm-integrity.json (매니페스트 미갱신)"
+  elif bash "$GEN" >/dev/null 2>&1; then
+    changed=$((changed + 1)); say "무결성 매니페스트 재생성"
+  else
+    say "⚠️ 무결성 매니페스트 재생성 실패 — 'bash sh/gen-integrity-manifest.sh' 로 원인 확인"
+    exit 1
+  fi
 fi
 
 # --- 결과 ---

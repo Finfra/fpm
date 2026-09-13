@@ -101,6 +101,15 @@ manual_review_gate() {
   fi
   log "tick worker — manual-review (주 1회)"
   if "$PY" "$HOOKS_DIR/fbot-manual-review.py" review; then
+    # prj3#Issue518 (2026-09-03) — `review` 만 부르면 draft 가 고립된다.
+    #   F5 루프는 review → propose → ACK → apply 4단인데 자동 경로가 1단뿐이었다.
+    #   실측: draft 5건이 2026-08-31 생성 후 3일간 mq 컨펌 0건·job 레코드 0건.
+    #   `propose` 는 mq `[컨펌]` 등록만 하고 정본을 건드리지 않는다(write_canonical 은
+    #   ACK 레코드를 인자로 요구) — 자동화해도 "정본 자동 수정 금지" 계약은 불변이다.
+    #   draft 0건이면 정상 no-op(rc=0) 이라 별도 분기가 필요 없다.
+    if ! "$PY" "$HOOKS_DIR/fbot-manual-review.py" propose; then
+      log "⚠️ manual-review propose 실패 rc=$? — draft 는 남는다(다음 tick 재시도)"
+    fi
     printf '%s\n' "$day" > "$MANUAL_REVIEW_MARKER"
   else
     mrc=$?
@@ -109,8 +118,8 @@ manual_review_gate() {
   return 0
 }
 
-# ── 중역핀봇 daily report 게이트 (Issue438 ②) ──────────────────────────────
-# 왜 tick 편입인가 — `fbot-exec-report.py daily` 는 구현돼 있는데 launchd·cron 어디에도
+# ── 총괄핀봇 daily report 게이트 (Issue438 ②) ──────────────────────────────
+# 왜 tick 편입인가 — `fbot-chief-report.py daily` 는 구현돼 있는데 launchd·cron 어디에도
 #   안 걸려 있어 **자동 보고가 실제로는 0회**였다(Issue438 실측). 별도 launchd 를 더
 #   만들지 않고 이미 도는 worker tick 에 1일 1회 게이트로 얹는다 — 위 매뉴얼 개정 루프
 #   (주 1회)와 같은 패턴이다. 마커에 날짜를 남겨 같은 날 재실행을 막는다.
@@ -127,7 +136,7 @@ daily_report_gate() {
     return 0
   fi
   log "tick worker — daily-report (1일 1회)"
-  if "$PY" "$HOOKS_DIR/fbot-exec-report.py" daily; then
+  if "$PY" "$HOOKS_DIR/fbot-chief-report.py" daily; then
     mkdir -p "$(dirname "$DAILY_REPORT_MARKER")"
     printf '%s\n' "$day" > "$DAILY_REPORT_MARKER"
   else
@@ -188,6 +197,69 @@ remote_report_pull_gate() {
   return 0
 }
 
+# ── prj3#Issue538 s6: 머신 간 봇 메시지 회수 ────────────────────────────
+# 보고 회수(위)와 **같은 방향**이다 — 원격이 밀지 않고 이쪽이 당긴다. 미는 쪽에
+#   수집자의 경로·권한 지식을 요구하면 결합이 커진다(Issue468 근거 계승).
+# ⚠️ 보고와 달리 **매 tick** 돈다. 보고는 하루 1건이지만 봇 메시지는 요청이라
+#   하루 지연이 곧 조직 정지다(실측 종단 ≈15분 = tick 주기의 절반).
+# 원본은 상대 머신에서 지운다 — 보고와 반대다. 보고는 그 머신의 이력이지만
+#   메시지는 **한 번 배달되면 끝**이고, 남겨두면 다음 tick 이 또 접수한다.
+# prj3#Issue538: 유휴 팀 아카이브 — 팀장핀봇을 휴직시키면 그 팀이 조직도에서 빠진다.
+#   ⚠️ 조직 선언 파일은 건드리지 않는다. 아카이브 대상은 **개체**이지 선언이 아니다.
+org_sweep_gate() {
+  [ -f "$HOME/.claude/hooks/fbot-org.py" ] || return 0      # ← 무비용 가드
+  local out n
+  out="$(python3 "$HOME/.claude/hooks/fbot-org.py" sweep --apply 2>/dev/null || true)"
+  n="$(printf '%s' "$out" | python3 -c 'import json,sys;print(len(json.load(sys.stdin).get("applied") or []))' 2>/dev/null || echo 0)"
+  [ "${n:-0}" -gt 0 ] && log "org-sweep — PM $n 명 휴직(팀 아카이브)"
+  return 0
+}
+
+OUTBOX_ROOT="$HOME/.claude/data/fbot/outbox"
+# prj3#Issue552 — 매니저 인박스 방치 에스컬레이션 (소비 경로 ②tick).
+#   매니저가 출근하지 않으면 요청은 영원히 안 읽힌다 — 임계(기본 30분, FBOT_INBOX_ESCALATE_MIN)
+#   초과 open 요청을 aoa-mq alert 로 사람에게 묶음 1회 올린다. 요청을 대신 처리하지 않는다.
+#   재알림 방지는 payload.escalated_at (fbot-inbox.py 단일 지점) — 큐 파일을 뒤지지 않는다.
+inbox_escalate_gate() {
+  [ -f "$HOME/.claude/hooks/fbot-inbox.py" ] || return 0     # ← 무비용 가드
+  local out n
+  out="$(python3 "$HOME/.claude/hooks/fbot-inbox.py" escalate --apply 2>/dev/null || true)"
+  n="$(printf '%s' "$out" | python3 -c 'import json,sys;print(len(json.load(sys.stdin).get("alerted") or []))' 2>/dev/null || echo 0)"
+  [ "${n:-0}" -gt 0 ] && log "inbox-escalate — 매니저 미응답 요청 $n 건 alert"
+  return 0
+}
+
+remote_msg_pull_gate() {
+  [ -f "$REMOTE_HOSTS_FILE" ] || return 0          # ← 무비용 가드(보고 회수와 동일)
+  local host me n=0 names f base
+  me="${FBOT_MACHINE:-$(hostname -s)}"
+  while IFS= read -r host; do
+    host="${host%%#*}"; host="$(printf '%s' "$host" | tr -d '[:space:]')"
+    [ -n "$host" ] || continue
+    # 상대 머신의 outbox 에서 **나에게 온 것만** 당긴다
+    names="$(ssh -o ConnectTimeout=8 -o BatchMode=yes "$host" \
+             "ls -1 ~/.claude/data/fbot/outbox/$me/*.json 2>/dev/null" 2>/dev/null || true)"
+    [ -n "$names" ] || continue
+    mkdir -p "$OUTBOX_ROOT/$me" 2>/dev/null || true
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      base="$(basename "$f")"
+      [ -f "$OUTBOX_ROOT/$me/$base" ] && continue
+      if scp -q -o ConnectTimeout=8 -o BatchMode=yes "$host:$f" "$OUTBOX_ROOT/$me/$base" 2>/dev/null; then
+        ssh -o ConnectTimeout=8 -o BatchMode=yes "$host" "rm -f '$f'" 2>/dev/null || true
+        n=$((n+1))
+      fi
+    done <<< "$names"
+  done < "$REMOTE_HOSTS_FILE"
+  [ "$n" -gt 0 ] && log "remote-msg-pull — $n 건 회수"
+  # 접수는 로컬 처리다 — 당겨온 것 + 이전에 남은 것을 함께 소화한다
+  if [ -x "$HOME/.claude/hooks/fbot-outbox.py" ] || [ -f "$HOME/.claude/hooks/fbot-outbox.py" ]; then
+    python3 "$HOME/.claude/hooks/fbot-outbox.py" consume --apply >/dev/null 2>&1 \
+      || log "remote-msg-consume 실패(다음 tick 재시도)"
+  fi
+  return 0
+}
+
 case "$unit" in
   worker)
     # 생산자 → 소비자. enqueue 실패 시에도 run 은 시도한다(이전 주기 잔여 잡 소비)
@@ -202,14 +274,23 @@ case "$unit" in
     #   watch 가 아니라 sweep 을 건다 — sweep 은 완료만 판정·통지하고 에스컬레이션은 하지
     #   않는다. 무인 주기에 얹기에 부작용이 가장 작은 단위다.
     log "tick worker — dispatch sweep"
-    "$PY" "$HOOKS_DIR/fbot-taskmgr.py" sweep >/dev/null || {
+    "$PY" "$HOOKS_DIR/fbot-lead.py" sweep >/dev/null || {
       src=$?; log "⚠️ sweep 실패 rc=$src — tick 계속(fail-soft)"; }
     # maint: 매뉴얼 개정 루프 (계약 §매뉴얼 체계 — 산출은 draft 까지, 정본 반영은 사람 승인 후)
     manual_review_gate
-    # maint: 중역핀봇 daily report (Issue438 ② — 1일 1회)
+    # maint: 총괄핀봇 daily report (Issue438 ② — 1일 1회)
     # Issue468 — 원격 보고 회수는 daily report **앞**에 둔다. 그래야 오늘 보고가
     #   회수분까지 반영한 상태로 만들어진다. 순서를 뒤집으면 하루 늦게 반영된다.
     remote_report_pull_gate
+    # prj3#Issue538 s6 — 봇 메시지 회수·접수. 보고 회수와 달리 **매 tick** 돈다:
+    #   보고는 하루 1건이지만 메시지는 요청이라 하루 지연이 곧 조직 정지다.
+    remote_msg_pull_gate
+    # prj3#Issue538 — 유휴 팀장핀봇 휴직(팀 아카이브). 배분이 오면 되돌아오므로
+    #   판정이 조금 공격적이어도 손실이 없다. reap 뒤에 두어 상태가 정리된 뒤 판정한다.
+    org_sweep_gate
+    # prj3#Issue552 — 매니저 인박스 방치분 에스컬레이션. 메시지 회수(remote_msg_pull) 뒤에 두어
+    #   방금 도착한 원격 요청은 임계를 새로 세기 시작한다.
+    inbox_escalate_gate
     daily_report_gate
     ;;
   ingest)

@@ -70,7 +70,7 @@ def build_fixture(tmp):
             # 활성 3종 — 정렬은 working → checkin → waiting_input 순이어야 한다.
             ("b-wait", "대기봇", "qa", "waiting_input", "수습",
              None, "#111111", 12, "", None, now + 600, now),
-            ("b-work", "작업봇", "exec", "working", "정식",
+            ("b-work", "작업봇", "chief", "working", "정식",
              "data/fbot/icons/exec.svg", "#872EC6", None, "이슈 처리", None, now + 600, now),
             ("b-in", "출근봇", "hr", "checkin", "정식", None, "", None, "", None, now - 10, now),
             # 퇴근 — 활성이 아니므로 카드에서 빠지되 total 에는 잡힌다.
@@ -329,7 +329,7 @@ def main():
             "INSERT INTO bot VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [
                 # 지시자는 **퇴근** 상태다 — 활성 봇만으로 호칭 맵을 만들면 여기서 깨진다.
-                ("b-boss", "나래(중역)", "exec", "checkout", "정식",
+                ("b-boss", "나래(총괄)", "chief", "checkout", "정식",
                  None, "", None, "", None, None, now, "pm:w.0", "sid-boss"),
                 ("b-kid", "리서치 워커", "research", "working", "수습",
                  None, "", 3, "조사", "b-boss", now + 600, now, None, "sid-kid"),
@@ -342,7 +342,7 @@ def main():
         server.FBOT_AOA_DIR = aoa
         server.FBOT_ROOT = tmp
         by = {b["bot_id"]: b for b in server._collect_bots()["bots"]}
-        check("지시자 호칭 resolve (ID 원문 아님)", by["b-kid"]["parent_title"] == "나래(중역)")
+        check("지시자 호칭 resolve (ID 원문 아님)", by["b-kid"]["parent_title"] == "나래(총괄)")
         check("지시자가 퇴근해도 호칭이 남는다", by["b-kid"]["parent_bot_id"] == "b-boss")
         check("session_id 편입", by["b-kid"]["session_id"] == "sid-kid")
         check("tmux_target 없으면 빈 값(NULL 을 문자열로 오염시키지 않는다)",
@@ -374,6 +374,63 @@ def main():
             lp = os.path.join(os.path.dirname(os.path.dirname(hub_dir)),
                               "data", "locales", f"{loc}.json")
             check(f"{key} 번역 존재({loc})", key in open(lp, encoding="utf-8").read())
+
+    # 16) prj3#Issue611 — 이름 개편(Issue610) 이전 원장의 옛 부모 id. 해소가 빠지면
+    #     **전원이 자기 자신의 루트**가 되어 조직이 화면에서 사라진다(실측 2026-09-10:
+    #     봇 25명 → 그룹 25개, 전부 멤버1·활성0). 저장은 원본이므로 판정에서 푼다.
+    with tempfile.TemporaryDirectory() as tmp:
+        aoa = os.path.join(tmp, "aoa")
+        os.makedirs(aoa)
+        now = int(time.time())
+        con = sqlite3.connect(os.path.join(aoa, "registry.db"))
+        con.executescript(SCHEMA)
+        con.executemany(
+            "INSERT INTO bot VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                # 현 id 로 존재하는 부모. 원장의 자식들은 **옛 id** 로 이 봇을 가리킨다.
+                ("fbot-lead", "팀장핀봇", "lead", "checkout", "정식",
+                 None, "", None, "", None, None, now),
+                ("fbot-lead-pm", "pm 팀장핀봇", "lead", "checkout", "정식",
+                 None, "", 1, "", "fbot-taskmgr", None, now),
+                ("fbot-research-s4", "조사 워커", "research", "working", "수습",
+                 None, "", 3, "조사", "fbot-taskmgr", now + 600, now),
+                # 진짜로 부모가 사라진 봇 — 해소를 넣어도 자기 루트로 남아야 한다.
+                ("fbot-orphan", "고아", "qa", "working", "수습",
+                 None, "", None, "", "fbot-nobody", now + 600, now),
+            ])
+        con.commit()
+        con.close()
+        server.FBOT_AOA_DIR = aoa
+        server.FBOT_ROOT = tmp
+        r = server._collect_bots()
+        rmap = {m["bot_id"]: m["root"] for m in r["bots_roster"]}
+        check("옛 부모 id 가 현 루트로 해소된다(자식 → fbot-lead)",
+              rmap["fbot-lead-pm"] == "fbot-lead" and rmap["fbot-research-s4"] == "fbot-lead")
+        check("현 루트는 자기 자신", rmap["fbot-lead"] == "fbot-lead")
+        check("진짜 고아는 자기 루트로 남는다", rmap["fbot-orphan"] == "fbot-orphan")
+        check("그룹 수가 봇 수만큼 폭발하지 않는다(4봇 → 2그룹)",
+              len(set(rmap.values())) == 2)
+        by = {b["bot_id"]: b for b in r["bots"]}
+        check("카드의 지시자도 현 id 로 해소",
+              by["fbot-research-s4"]["parent_bot_id"] == "fbot-lead")
+        check("해소된 지시자 호칭이 붙는다",
+              by["fbot-research-s4"]["parent_title"] == "팀장핀봇")
+        # 조직도도 같은 사실을 말해야 한다 — 채용 엣지가 조용히 0건이 되면 계층이 소실된다.
+        nodes = {n["bot_id"]: n for n in server._fbot_org_data()["nodes"]}
+        check("조직도 채용 엣지도 해소된다",
+              nodes["fbot-research-s4"]["parent"] == "fbot-lead")
+        check("조직도의 고아는 부모 없음", nodes["fbot-orphan"]["parent"] == "")
+
+    # 16-b) prj3#Issue611(사용자 지시 2026-09-10) — 활성 0 그룹은 그리지 않는다.
+    #       팀장핀봇은 프로젝트마다 상주해 20명을 넘고 전원 퇴근이 정상이라, 그대로
+    #       그리면 홈이 조직 명부가 된다. 판정은 클라이언트에 있어 소스에서 박제한다.
+    check("활성 0 그룹 미렌더 배선", "if (!act) return '';" in src)
+    #       ⚠️ Issue400 의 하한선 — 유휴 요약 1줄과 미설치 판정은 살아 있어야 한다.
+    #       이 둘이 죽으면 "fbot 사망" 과 "봇 유휴" 가 화면에서 같아진다.
+    check("유휴 요약 1줄은 유지(전원 퇴근을 감추지 않는다)",
+          "renderBotsIdle" in src and "bot-idle" in src)
+    check("섹션 통째 숨김은 미설치(total 0) 한 경우뿐",
+          "if (!total) { sec.style.display = 'none';" in src)
 
     # 11) badge 위젯 icon 스킴 가드 — data:/http(s) 만 <img> 로 렌더한다.
     #     문자열 존재만 보면 가드가 뒤집혀도 통과하므로, JS 소스에서 정규식을 **뽑아

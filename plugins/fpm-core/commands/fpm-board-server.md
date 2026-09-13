@@ -39,37 +39,33 @@ date: 2026-05-19
 
 ## start
 
-이미 실행 중이면 PID 안내 후 종료. 새로 띄울 경우:
+> ⚠️ **제어 층은 launchd 하나다** (prj3#Issue537, 2026.09.05). 종전 `nohup python3 …` 은 **launchd 를 모르고** 띄워, 이미 `KeepAlive=true` 로 관리되는 프로세스와 port 9876 을 다투었다. 기동·정지 모두 `launchctl` 로만 한다.
 
 ```bash
-# prj3#Issue497: AOA_MEMORY_DIR 없이 뜨면 핀봇이 통째로 안 보인다("핀봇이 아직 없습니다") —
-#   셸 env 우선, 없으면 settings.local.json env 절에서 해소(값을 문서에 복제하지 않는다)
-[ -z "${AOA_MEMORY_DIR:-}" ] && AOA_MEMORY_DIR="$(python3 -c 'import json,os;p=os.path.expanduser("~/.claude/settings.local.json");d=json.load(open(p)) if os.path.exists(p) else {};print(d.get("env",{}).get("AOA_MEMORY_DIR",""))' 2>/dev/null)"
-[ -n "${AOA_MEMORY_DIR:-}" ] && export AOA_MEMORY_DIR
-# prj3#Issue499 규칙: /tmp 리터럴 금지(Windows 셸↔python 분열) — 같은 계산식으로 해소
-TMPNS=$(python3 -c 'import os,tempfile;print(os.path.join(os.environ.get("FPM_TMP_ROOT") or ("/tmp" if os.name=="posix" else tempfile.gettempdir()),"___pm"))')
-mkdir -p "$TMPNS/claude-htm-server"
-nohup python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/_git/___pm}/services/hub/server.py" \
-  >"$TMPNS/claude-htm-server/stdout.log" 2>&1 &
-sleep 1
+PLIST="$HOME/Library/LaunchAgents/kr.finfra.htm-server.plist"
+[ -f "$PLIST" ] || { echo "❌ plist 부재: $PLIST"; echo "   launchd 등재 없이는 기동하지 않는다 — plist 를 먼저 배치할 것"; exit 1; }
+launchctl bootstrap gui/$UID "$PLIST" 2>/dev/null \
+  || launchctl kickstart -k gui/$UID/kr.finfra.htm-server   # 이미 로드면 재시작
+sleep 2
 curl -s http://127.0.0.1:9876/healthz
 ```
 
-성공 시: healthz JSON 출력 + PID 안내. 실패 시: `$TMPNS/claude-htm-server/server.log` 참조.
+* **env 해소 로직이 사라진 이유**: `AOA_MEMORY_DIR`(prj3#Issue497)은 plist 의 `EnvironmentVariables` 가 이미 소유한다. 셸에서 다시 계산하면 두 경로가 갈려 registry.db 가 둘이 된다
+* `bootstrap` 은 **비멱등**이다 — 이미 로드된 상태면 `rc=5 Input/output error`(실측). 그래서 `||` 로 `kickstart -k` 에 넘긴다
+* 성공 시 healthz JSON 이 출력된다. 실패 시 `/tmp/htm-server.log`·`/tmp/htm-server.err.log` 참조 (plist 의 `StandardOutPath`)
 
-port override: `HTM_SERVER_PORT=NNNN /board-server start`
+port override 는 plist 의 `EnvironmentVariables` 에 `HTM_SERVER_PORT` 를 넣는다 — 셸 env 로는 launchd 프로세스에 전달되지 않는다.
 
 ## stop
 
 ```bash
-PID=$(cat /tmp/___pm/claude-htm-server/pid 2>/dev/null)
-if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
-  kill "$PID"
-  echo "board-server stopped (pid=$PID)"
-else
-  echo "board-server not running"
-fi
+launchctl bootout gui/$UID/kr.finfra.htm-server 2>/dev/null
+echo "board-server stopped (unloaded) — 다시 켜기: /board-server start"
 ```
+
+* **`kill` 을 쓰지 않는 이유**: plist 가 `KeepAlive=true` 라 프로세스를 죽이면 `ThrottleInterval=10` 초 뒤 launchd 가 되살린다. 종전 pid 파일 `kill` 방식으로는 **hub 를 끌 수 없었다**
+* `bootout` 은 **멱등**이다 — 이미 언로드된 상태에 재실행해도 `rc=0`(2026.09.05 실측). `bootstrap` 이 비멱등인 것과 **비대칭**이므로 대칭을 가정하지 말 것
+* 언로드는 KeepAlive 자체를 걷어내므로 15초 후에도 부활하지 않는다. 단 **재부팅하면 `RunAtLoad=true` 로 다시 올라온다**
 
 ## status
 

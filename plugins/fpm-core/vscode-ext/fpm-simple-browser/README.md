@@ -18,7 +18,12 @@ VSCode 내장 `simpleBrowser.show` 명령은 외부에서 직접 호출할 수 �
 2. 서버가 `open "vscode://finfra.fpm-simple-browser/open?url=<htm-doc URL>"` 실행
 3. 본 확장의 `handleUri` 가 `url` 추출 → `simpleBrowser.show` 실행 → 패널 표시
 
-URL 은 `127.0.0.1` / `localhost` / `host-1.local` 호스트만 허용(외부 임의 URL 차단).
+URL 허용 판정 (Issue471):
+
+* **정적** — `127.0.0.1` · `localhost` · `::1` (로컬 hub)
+* **동적** — hub `/healthz` 의 `advertise_host` 1개. 원격(Tailscale MagicDNS) 주소는 **여기서 만들지 않고 hub 에 물어서 받는다**(fpm 아이덴티티 조항 1과 같은 원칙). 60초 캐시, 조회 실패 시 정적 목록만 — 완화하지 않는다
+* 판정은 정규식이 아니라 **URL 파서**로 한다 — `http://127.0.0.1@evil.com/` 같은 userinfo 우회를 원천 차단하고, `http`/`https` 외 스킴은 거부
+* 종전 하드코딩 `host-1.local` 은 제거했다. hub 실행 경로가 그 주소로 링크를 만들지 않고(실측 0건), 머신 이름을 코드에 박는 것은 **설치 위치 무관성**에도 어긋난다
 
 ## 설치
 

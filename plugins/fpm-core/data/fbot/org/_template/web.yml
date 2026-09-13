@@ -1,0 +1,27 @@
+# 조직 템플릿 — web (prj3#Issue538)
+#
+# general + 리서치·크리에이티브. 웹은 산출이 외부에 노출되므로 조사(선례·경쟁)와
+# 시각 산출물의 비중이 높다.
+depts:
+  - id: dev
+    label: 개발부서
+    seats:
+      - { id: dev-architect-1, role: architect, reports_to: ops-taskmgr-1 }
+      - { id: dev-planner-1,   role: planner, reports_to: ops-taskmgr-1 }
+  - id: review
+    label: 리뷰부서
+    seats:
+      - { id: rev-qa-1,         role: qa, reports_to: ops-taskmgr-1 }
+      - { id: rev-crosscheck-1, role: crosscheck, reports_to: ops-taskmgr-1 }
+  - id: research
+    label: 리서치부서
+    seats:
+      - { id: rsc-research-1, role: research, reports_to: ops-taskmgr-1 }
+  - id: creative
+    label: 크리에이티브부서
+    seats:
+      - { id: crt-igmaker-1, role: igmaker, reports_to: ops-taskmgr-1 }
+  - id: ops
+    label: 운영부서
+    seats:
+      - { id: ops-taskmgr-1, role: taskmgr, reports_to: hq/hq-taskmgr-1 }

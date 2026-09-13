@@ -2,7 +2,7 @@
 # fbot-bootstrap.sh — aoa 데이터 루트 최초 생성 (prj3#Issue451 ②·멱등)
 #
 # 왜 필요한가 (2026-08-26 fg1 실측):
-#   fbot 진입점(fbot-state.py·fbot-taskmgr.py·fbot-hr-gate.py)은 registry.db·policy.yml 이
+#   fbot 진입점(fbot-state.py·fbot-lead.py·fbot-hr-gate.py)은 registry.db·policy.yml 이
 #   없으면 fail-loud 로 죽는다. 그 자체는 옳은 설계지만 — **아무도 그 둘을 만들지 않았다.**
 #   개발 머신에는 prj5 작업 산출물로 우연히 존재했을 뿐이라, 소비자는 설치를 끝내고도
 #   진입점 전부가 rc!=0 인 상태를 받는다. "설치는 됐는데 안 된다" 는 무신호 실패다.

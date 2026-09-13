@@ -1,0 +1,70 @@
+# G3 병합 게이트 — release/{X.Y} → main 전이 (Issue478_2)
+#
+# 이 파일은 **기본 실행에 포함되지 않는다.** run-tdd.sh 의 기본 경로는
+# core → <platform> → deploy 이며, 여기는 `--only release` 로만 들어온다.
+# 스테이지 3·4(샌드박스 설치·미러 dry-run)가 분 단위라 매 커밋 돌릴 것이 아니고,
+# 도는 시점이 **병합 전 한 번**이라는 것 자체가 이 게이트의 정의이기 때문이다.
+#
+# 호출:  bash tdd/run-tdd.sh --only release
+# 설계:  _doc_arch/fpm-release-gate.md "G3 — 병합 게이트"
+# 절차:  _doc_arch/fpm-gitflow.md "출고" — 이 명령이 첫 줄이다
+
+cases:
+  - id: release-check
+    desc: 5스테이지 통합 검증(sh/release-check.sh) 전건 PASS
+    why: |
+      Issue478 결손2 — `sh/release-check.sh` 는 5스테이지 통합 게이트로 **구현이
+      끝나 있었는데 호출처가 0건**이었다. 전수 grep 결과 자기 자신과 설계 문서뿐.
+      사람이 기억해야만 도는 게이트는 돌지 않는다 — 실제로 release 라인 3개
+      (0.8.0·0.8.1·0.8.3)를 운용하는 동안 한 번도 실행되지 않았다.
+
+      신설 자산을 스크립트가 아니라 **케이스 하나**로 둔 이유: 러너·판정·결과
+      경로(tdd/run-tdd.sh · expect · tdd/results/)가 이미 표준화돼 있어 여기 얹으면
+      새 규약이 생기지 않는다. 게이트를 늘리는 것이 아니라 **배선**만 하는 것이다.
+
+      ⚠️ 이 케이스가 PASS 하면 sh/release-check.sh 가
+      `scripts/fpm-deploy-record.sh --gate release` 로 통과 기록을 남기고,
+      출고(G4 = do_deploy 진입부)가 그 기록을 읽어 재확인한다. 기록이 없으면
+      G4 가 막는다 — "돌았다" 를 사람의 기억이 아니라 파일이 답하게 하는 것이 요점이다.
+    run: |
+      s="$REPO_DIR/sh/release-check.sh"
+      [ -f "$s" ] || { echo "skip(저작 머신 전용)"; exit 0; }
+      out="$(bash "$s" --quiet 2>&1)"; rc=$?
+      if [ "$rc" -eq 0 ]; then
+        echo ok
+      else
+        printf 'RELEASE-CHECK-FAIL: %s\n' \
+          "$(printf '%s' "$out" | grep -E 'FAIL' | head -3 | tr '\n' ' ')"
+      fi
+    expect: contains:ok
+
+  - id: g3-record-wired
+    desc: 통과 시 G3 기록이 남도록 배선돼 있다
+    why: |
+      Issue478_2 — G4 가 "G3 통과" 를 확인하려면 기록이 있어야 한다. 기록 배선이
+      사라지면 **게이트는 계속 돌지만 출고가 그것을 못 본다** — 조용히 결손2 상태로
+      돌아간다(게이트가 존재만 하고 아무것도 지키지 못하는 형태).
+      배선이 조건부라는 것까지 검사한다: `--no-sandbox` 부분 실행은 기록하지 않아야
+      한다. 스테이지 3·4 를 건너뛴 실행을 전체 통과로 기록하면 그 순간 게이트가
+      무력해진다(prj3#Issue452 와 같은 계열 — 상시 통과는 진짜 실패를 묻는다).
+    run: |
+      py=python3; command -v python3 >/dev/null 2>&1 || py=python
+      REPO_DIR="$REPO_DIR" "$py" - <<'PYEOF'
+      import io, os, re, sys
+      root = os.environ["REPO_DIR"]
+      rc = os.path.join(root, "sh/release-check.sh")
+      if not os.path.exists(rc):
+          print("skip(저작 머신 전용)"); sys.exit(0)
+      s = io.open(rc, encoding="utf-8").read()
+      if "--gate release" not in s:
+          print("MISSING-RECORD-CALL"); sys.exit(0)
+      # 기록 호출은 SANDBOX=1 조건 안에 있어야 한다
+      m = re.search(r'if \[ "\$SANDBOX" -eq 1 \][^\n]*\n[^\n]*--gate release', s)
+      if not m:
+          print("RECORD-NOT-GUARDED-BY-SANDBOX"); sys.exit(0)
+      rec = os.path.join(root, "scripts/fpm-deploy-record.sh")
+      if not os.path.exists(rec) or "--gate)" not in io.open(rec, encoding="utf-8").read():
+          print("RECORDER-MISSING-GATE-MODE"); sys.exit(0)
+      print("ok")
+      PYEOF
+    expect: contains:ok

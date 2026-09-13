@@ -1,0 +1,20 @@
+# 본사 조직 — 상비 4종 (prj3#Issue538)
+#
+# 게이트 3종(exec·hr·recruit)은 **전역 단일**이다. 보고 창구가 갈리면 "단일 보고" 목적이
+# 무너지고, 인사·리크루팅은 게이트 SSOT 라 복수화가 곧 판정 분열이다(fbot-arch §조직).
+# 그래서 본사는 프로젝트 조직도에 뜨지 않고 `?tab=org` 전체 뷰에서만 보인다.
+#
+# ⚠️ 여기서 "전역"은 **prj 축**이다. 머신이 갈리면 개체도 갈린다(나래@jm4 / 미르@fg1).
+prj: null
+title: 본사
+machine: jm4
+depts:
+  - id: hq
+    label: 본사
+    seats:
+      # reports_to = 선언 보고선 (prj3#Issue550). `/` 없으면 같은 조직 안의 자리,
+      #   있으면 절대 주소(`{scope}/{seat}`)다. 중역이 루트이므로 exec 에는 없다.
+      - { id: hq-exec-1,     role: exec }
+      - { id: hq-hr-1,       role: hr,      reports_to: hq-exec-1 }
+      - { id: hq-recruit-1,  role: recruit, reports_to: hq-exec-1 }
+      - { id: hq-taskmgr-1,  role: taskmgr, reports_to: hq-exec-1 }

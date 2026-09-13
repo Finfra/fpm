@@ -3,9 +3,10 @@
 
 Q1=수동 단일 명령 진입점. Projects.md 편집 후 `fpm-projects-sync` 1회 실행.
 3단계:
-  [1/3] projects/<id> 경로 인덱스 재생성 (cdf 계열용)
-  [2/3] 각 프로젝트 .vscode/settings.json 배경색(peacock) + window.title 이모지 반영
-  [3/3] sh/update-iterm-bg 호출 (iterm-bg alias 재생성)
+  [1/4] projects/<id> 경로 인덱스 재생성 (cdf 계열용)
+  [2/4] 각 프로젝트 .vscode/settings.json 배경색(peacock) + window.title 이모지 반영
+  [3/4] sh/update-iterm-bg 호출 (iterm-bg alias 재생성)
+  [4/4] sh/fpm-identity-collect 호출 (Identity.md 아이덴티티 집계 재생성 — Issue472)
 
 SSOT: $FPM_BASE/Projects.md 의 "📋 프로젝트" 표 (id / 경로 / 이모지 / color).
 설치 위치 무관 동작: FPM_BASE(env) 우선, 없으면 본 스크립트 위치(sh/의 상위)로 self-detect.
@@ -20,6 +21,7 @@ PM_ROOT      = os.environ.get('FPM_BASE') or os.path.dirname(os.path.dirname(os.
 PROJECTS_MD  = os.path.join(PM_ROOT, 'Projects.md')
 PROJECTS_DIR = os.path.join(PM_ROOT, 'projects')
 UPDATE_ITERM = os.path.join(PM_ROOT, 'sh', 'update-iterm-bg')
+IDENTITY_COL = os.path.join(PM_ROOT, 'sh', 'fpm-identity-collect')
 
 # 프로젝트 id 정본 패턴 (Issue303): 정수 | 정수+소문자 | 정수+소문자+정수
 #   9 / 9a / 9a1 — 접미는 "9 의 하위 프로젝트" 소속만 나타냄.
@@ -57,6 +59,9 @@ def parse_table(content):
             idx['path']  = next((i for i, c in enumerate(cols) if c == '경로'), None)
             idx['emoji'] = next((i for i, c in enumerate(cols) if '이모지' in c), None)
             idx['color'] = next(i for i, c in enumerate(cols) if 'color' in c.lower())
+            # Issue472 — 아이덴티티 수집기가 표시명·설명을 함께 쓴다(없으면 빈 문자열).
+            idx['name']  = next((i for i, c in enumerate(cols) if '프로젝트명' in c), None)
+            idx['desc']  = next((i for i, c in enumerate(cols) if c == '설명'), None)
             in_table = True
             continue
 
@@ -67,8 +72,11 @@ def parse_table(content):
             path  = cols[idx['path']].strip('`')  if idx['path']  is not None and idx['path']  < len(cols) else ''
             emoji = cols[idx['emoji']]            if idx['emoji'] is not None and idx['emoji'] < len(cols) else ''
             color = cols[idx['color']]            if idx['color'] < len(cols) else ''
+            name  = cols[idx['name']]             if idx.get('name')  is not None and idx['name']  < len(cols) else ''
+            desc  = cols[idx['desc']]             if idx.get('desc')  is not None and idx['desc']  < len(cols) else ''
             # id 는 문자열로 보존 — 접미 id(9a)는 int 로 못 담고, 파일명이 곧 id 다.
-            rows.append({'id': pid, 'path': path, 'emoji': emoji, 'color': color})
+            rows.append({'id': pid, 'path': path, 'emoji': emoji, 'color': color,
+                         'name': name, 'desc': desc})
 
     return sorted(rows, key=lambda r: pid_sort_key(r['id']))
 
@@ -87,7 +95,7 @@ def readable_fg(hexcolor):
 
 
 def gen_projects(rows):
-    """[1/3] projects/<id> 인덱스 파일 재생성 (기존 숫자 파일만 제거 후 재작성)."""
+    """[1/4] projects/<id> 인덱스 파일 재생성 (기존 숫자 파일만 제거 후 재작성)."""
     os.makedirs(PROJECTS_DIR, exist_ok=True)
 
     # 가드 (Issue319): projects/<pid> 는 반드시 "경로 한 줄" 파일이어야 함.
@@ -121,7 +129,7 @@ def gen_projects(rows):
         with open(os.path.join(PROJECTS_DIR, r['id']), 'w') as fh:
             fh.write(r['path'] + '\n')
         n += 1
-    print(f'[1/3] projects/ 인덱스 {n}개 재생성')
+    print(f'[1/4] projects/ 인덱스 {n}개 재생성')
 
 
 EDITOR_YML = os.path.join(PM_ROOT, 'data', 'editor.yml')
@@ -167,7 +175,7 @@ def _load_json_lenient(path):
 
 
 def reconcile_from_editors(rows, content):
-    """[0/3] 역방향 동기 — .vscode/settings.json 이 Projects.md 보다 최신이면 그 색을 SSOT 로 되받는다.
+    """[0/4] 역방향 동기 — .vscode/settings.json 이 Projects.md 보다 최신이면 그 색을 SSOT 로 되받는다.
 
     통상 방향은 Projects.md → 에디터 설정이다. 그러나 사용자가 VSCode 에서 peacock 으로 색을
     직접 고르면 최신 의도는 settings.json 쪽에 있고, 그대로 forward sync 를 돌리면 그 선택이
@@ -259,13 +267,13 @@ def write_zed(real, base, fg, emoji):
 
 
 def update_editors(rows):
-    """[2/3] 각 프로젝트의 에디터 설정 파일에 배경색(+VSCode 는 이모지) 반영 (다른 키 보존).
+    """[2/4] 각 프로젝트의 에디터 설정 파일에 배경색(+VSCode 는 이모지) 반영 (다른 키 보존).
 
     대상 에디터는 data/editor.yml 의 color_sync·enabled_editors 가 결정 (Issue327).
     """
     editors = target_editors()
     if not editors:
-        print('[2/3] color_sync: off — 에디터 색 동기 skip')
+        print('[2/4] color_sync: off — 에디터 색 동기 skip')
         return
     touched = skipped = missing = 0
     zed_touched = zed_skipped = 0
@@ -341,16 +349,27 @@ def update_editors(rows):
         parts.append(f'.vscode {touched}개(파싱skip {skipped})')
     if do_zed:
         parts.append(f'.zed {zed_touched}개(파싱skip {zed_skipped})')
-    print(f"[2/3] 에디터 설정 갱신 — {' / '.join(parts)} (디렉토리 없음 {missing})")
+    print(f"[2/4] 에디터 설정 갱신 — {' / '.join(parts)} (디렉토리 없음 {missing})")
 
 
 def run_iterm():
-    """[3/3] iterm-bg alias 재생성 위임."""
+    """[3/4] iterm-bg alias 재생성 위임."""
     if os.access(UPDATE_ITERM, os.X_OK):
         subprocess.run([sys.executable, UPDATE_ITERM], check=False)
-        print('[3/3] iterm-bg alias 재생성 (sh/update-iterm-bg)')
+        print('[3/4] iterm-bg alias 재생성 (sh/update-iterm-bg)')
     else:
-        print(f'[3/3] skip — {UPDATE_ITERM} 실행 불가')
+        print(f'[3/4] skip — {UPDATE_ITERM} 실행 불가')
+
+
+def run_identity():
+    """[4/4] Identity.md 아이덴티티 집계 재생성 위임 (Issue472).
+
+    각 프로젝트 CLAUDE.md frontmatter 를 읽기만 한다 — 타 repo 에 쓰지 않는다.
+    """
+    if os.access(IDENTITY_COL, os.X_OK):
+        subprocess.run([sys.executable, IDENTITY_COL], check=False)
+    else:
+        print(f'[4/4] skip — {IDENTITY_COL} 실행 불가')
 
 
 def main():
@@ -365,14 +384,14 @@ def main():
         print('Error: Projects.md 테이블 파싱 실패 (id/color 헤더 확인)', file=sys.stderr)
         sys.exit(1)
 
-    # [0/3] 역방향 동기 — 에디터 설정이 더 최신이면 그 색을 SSOT 로 되받은 뒤 forward 진행.
+    # [0/4] 역방향 동기 — 에디터 설정이 더 최신이면 그 색을 SSOT 로 되받은 뒤 forward 진행.
     if not (index_only or no_reverse):
         new_content, changes = reconcile_from_editors(rows, content)
         if changes:
             with open(PROJECTS_MD, 'w', encoding='utf-8') as f:
                 f.write(new_content)
             for cid, old, new in changes:
-                print(f'[0/3] 역방향 반영 — prj{cid}: {old} → {new} (.vscode/settings.json 이 더 최신)')
+                print(f'[0/4] 역방향 반영 — prj{cid}: {old} → {new} (.vscode/settings.json 이 더 최신)')
             content = new_content
             rows = parse_table(content)
 
@@ -385,6 +404,7 @@ def main():
 
     update_editors(rows)
     run_iterm()
+    run_identity()
     print(f'✅ fpm-projects-sync 완료 — {len(rows)}개 프로젝트')
 
 

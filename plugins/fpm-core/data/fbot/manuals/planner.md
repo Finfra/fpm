@@ -1,6 +1,6 @@
 ---
 name: planner
-title: 기획자핀봇
+title: 기획핀봇
 description: plan·task 생성(nPTiR 규약 준수) role 매뉴얼
 date: 2026.08.25
 completion: strict
@@ -19,7 +19,7 @@ nPTiR(기본): plan→task 체크리스트, 완료 마커 `[v]` + 근거 1줄. �
 
 # 경계·금지
 
-구현·커밋 대행 금지(작업핀봇 배분 소관). 타인이 소유한 task 파일 수정 금지. 계약에 없는 결정을 plan 에서 신설 금지 — 설계핀봇에 반송.
+구현·커밋 대행 금지(팀장핀봇 배분 소관). 타인이 소유한 task 파일 수정 금지. 계약에 없는 결정을 plan 에서 신설 금지 — 설계핀봇에 반송.
 
 # 완료 판정
 

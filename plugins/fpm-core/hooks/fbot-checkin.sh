@@ -136,6 +136,30 @@ $manual"
 $kv
 \`\`\`"
 
+# --- 매니저 인박스 (prj3#Issue552 — 소비 경로 ①출근) --------------------------
+# 결속 없이 쌓인 요청(N:1)을 출근 시점에 한 번 보여준다. 매니저가 아니면 pending 이 빈
+#   목록을 돌려주므로 role 분기를 여기 복제하지 않는다(판정 단일 지점 = fbot-inbox.py).
+# 결속 중 도착분은 fbot-inbox-nudge.sh(UserPromptSubmit) 가, 미출근 방치분은 tick 이 맡는다.
+INBOX_PY="$_HOOKS_SELF/fbot-inbox.py"
+inbox=""
+[ -f "$INBOX_PY" ] && inbox="$(python3 "$INBOX_PY" pending --bot-id "$FBOT_ID" 2>/dev/null \
+  | python3 -c '
+import json,sys
+try: r=json.load(sys.stdin)
+except Exception: sys.exit(0)
+for it in r.get("items") or []:
+    src=it.get("from") or it.get("from_session") or "?"
+    prj=f" prj{it[\"prj\"]}" if it.get("prj") else ""
+    print(f"- `{it[\"id\"]}` ← {src}{prj} [{it.get(\"kind\") or \"ask\"}]: {(it.get(\"body\") or \"\").strip()[:200]}")
+' 2>/dev/null)"
+[ -n "$inbox" ] && ctx="$ctx
+
+## 인박스 — 미처리 요청 (매니저 창구, 결속과 무관)
+
+$inbox
+
+받을지·거절할지·바로 끝낼지를 \`python3 ~/.claude/hooks/fbot-inbox.py reply --id <id> --status accepted|rejected|done --body '<응답>'\` 로 답한다. 부하에게 배분할 일이면 \`fbot-lead.py dispatch --by $FBOT_ID\`."
+
 out=$(CTX="$ctx" jq -n --arg ev SessionStart \
   '{hookSpecificOutput:{hookEventName:$ev, additionalContext:env.CTX}}' 2>/dev/null)
 # jq 부재·인코딩 실패 시에도 출근 사실을 잃지 않는다(fail-soft — 평문도 컨텍스트로 읽힌다)
