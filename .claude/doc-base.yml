@@ -1,5 +1,7 @@
 # doc-base.yml — `_doc_base/` git 추적 선언 (Issue477)
 #   판정 SSOT: _doc_arch/gitignore-policy.md "# `_doc_base/` 예외 — 명시 선언 규칙"
 #   검사: sh/doc-base-check.sh
-tracking: allow
-reason: "remote origin 없는 로컬 전용 repo — 유출 경로가 없고, 추적이 유일한 버전 이력이다"
+#   ⚠️ 이 선언은 **이 repo 고유 판단**이라 prj1 에서 동기되지 않는다 —
+#      prj1#Issue512 로 publishable-policy.yml exclude[] 에 올렸다. 직접 관리할 것.
+tracking: deny
+reason: "공개 origin(github.com/Finfra/fpm)을 가진 미러 — 유출 경로가 실재한다. `_doc_base/` 는 프로젝트 종속 원천자료라 공개 대상이 아니며 .gitignore:10 이 이를 집행한다"
