@@ -178,7 +178,7 @@ source_sha: 9e65985f17eae2611490348afc3c0dfefc532b4c3b0ac666ff37be02afbab0ca
 * depends: Issue223, Issue237, Issue250
 
 ## Issue461: 공개 마켓 repo 는 sanitize 미적용 — 미러와 위생 정책 비대칭 + 유물 태그 ✅
-* 목적: 미러(prj7)는 sanitize 를 거치는데 마켓 repo(prj20)로 가는 `do_publish` 는 **정본을 무치환 rsync** 한다. 공개 repo 에 내부 호스트명이 그대로 게시되는 상태
+* 목적: 미러(prj8)는 sanitize 를 거치는데 마켓 repo(prj20)로 가는 `do_publish` 는 **정본을 무치환 rsync** 한다. 공개 repo 에 내부 호스트명이 그대로 게시되는 상태
 * 구현 명세:
     - 위생 정책을 어느 쪽으로 통일할지 **먼저 결정** — ⓐ 마켓도 sanitize 적용 vs ⓑ 내부 호스트명을 공개 허용으로 명문화
     - 유물 태그 삭제는 **사용자 승인 필수**(원격 ref 파괴 — `input-interpretation-rules` 예외 아님)
@@ -214,7 +214,7 @@ source_sha: 9e65985f17eae2611490348afc3c0dfefc532b4c3b0ac666ff37be02afbab0ca
 * 구현 명세: 해당 sed 호출에 `LC_ALL=C` 접두(또는 파싱을 python 으로) + host 재실측으로 WARN 0 확인
 
 ## Issue441: `INSTALL.md` 가 prj1 ↔ 미러로 갈라졌다 — 미러 쪽이 더 최신이다 ✅
-* 목적: host 설치 테스트 중 `INSTALL.md` 의 요구사항 절을 보강하려다 발견했다. **미러(prj7)에는 있고 prj1 에는 없는 내용**이 있다 — SSOT 가 하위 사본보다 낡았다
+* 목적: host 설치 테스트 중 `INSTALL.md` 의 요구사항 절을 보강하려다 발견했다. **미러(prj8)에는 있고 prj1 에는 없는 내용**이 있다 — SSOT 가 하위 사본보다 낡았다
 * 구현 명세:
     - ⓐ 두 판본을 **대조**해 미러에만 있는 개선을 prj1 으로 역류시킨다 (i18n 짝 `INSTALL_ko.md` 동반)
     - ⓑ 역류 후 sync 로 재배포해 **양쪽이 같은 내용**임을 확인한다
@@ -232,7 +232,7 @@ source_sha: 9e65985f17eae2611490348afc3c0dfefc532b4c3b0ac666ff37be02afbab0ca
     - ⓔ 폼 구조에 과하게 기대지 않는다 — 폼 HTML 은 Claude 생성이라 class 가 어긋날 수 있다. `legend` 가 있는 `fieldset` 이면 붙인다
 
 ## Issue449: aoa 정책 템플릿이 정본·미러 두 벌로 갈라진다 — 동기 수단도 검사도 없다 ✅
-* 목적: Issue447 처리 중 실측으로 드러났다. `data/aoa/policy.default.yml` 이 **정본(prj1)과 미러(prj7) 양쪽에 각각 존재**하는데, `publishable-policy.yml` 의 `exclude[]` 에 `data/aoa/` 가 있어 forward 가 이 파일을 전송하지 않는다. 즉 **한쪽을 고쳐도 다른 쪽은 영원히 모른다**
+* 목적: Issue447 처리 중 실측으로 드러났다. `data/aoa/policy.default.yml` 이 **정본(prj1)과 미러(prj8) 양쪽에 각각 존재**하는데, `publishable-policy.yml` 의 `exclude[]` 에 `data/aoa/` 가 있어 forward 가 이 파일을 전송하지 않는다. 즉 **한쪽을 고쳐도 다른 쪽은 영원히 모른다**
 * depends: Issue447
 * 구현 명세:
     - ⓐ 세 안 중 택일 — ① 템플릿을 `data/aoa/` **밖**으로 옮긴다(`data/template/` 등. 런타임 디렉토리와 배포 자산을 분리 — 뿌리 제거) ② `exclude[]` 를 `data/aoa/` → 런타임 산출물 개별 항목으로 좁힌다(신규 산출물 자동 노출 갭 발생) ③ 정책 스키마에 `!` 재포함을 도입해 rsync `--include` 로 변환(엔진 변경 — `_commit_is_exclude_only` 등 다른 소비처 영향 검토 필요)
@@ -344,7 +344,7 @@ source_sha: 9e65985f17eae2611490348afc3c0dfefc532b4c3b0ac666ff37be02afbab0ca
     - ⓑ `fpm.sh` 의 **source rc 를 계약으로 고정** — 말미에 명시적 성공을 둔다. 부트스트랩의 rc 가 "마지막 선택 파일의 존재 여부" 에 좌우되면 안 된다. ⓐ 만으로는 `source fpm.sh && …` 를 쓰는 다른 소비자가 같은 함정에 빠진다
 
 ## Issue421: 미러에 릴리스 브랜치를 두면 F5-0 가드와 충돌한다 ✅
-* 목적: prj7 미러를 `release/0.8.0` 으로 체크아웃한 상태에서 `forward` 를 돌리면 **F5-0 가드가 차단**한다(*"미러 상주 브랜치는 main 하나다"*). 릴리스 라인을 6곳에 맞추라는 운영 요구와, 미러를 단일 브랜치로 묶는 가드가 **서로를 배제**한다. 이번(Issue420)에는 두 브랜치가 같은 커밋이라 `main` 전환 → forward → `release/*` 를 main 으로 이동해 넘겼지만, **수동 3단계를 매번 반복**해야 하고 잊으면 미러 브랜치가 갈라진다
+* 목적: prj8 미러를 `release/0.8.0` 으로 체크아웃한 상태에서 `forward` 를 돌리면 **F5-0 가드가 차단**한다(*"미러 상주 브랜치는 main 하나다"*). 릴리스 라인을 6곳에 맞추라는 운영 요구와, 미러를 단일 브랜치로 묶는 가드가 **서로를 배제**한다. 이번(Issue420)에는 두 브랜치가 같은 커밋이라 `main` 전환 → forward → `release/*` 를 main 으로 이동해 넘겼지만, **수동 3단계를 매번 반복**해야 하고 잊으면 미러 브랜치가 갈라진다
 * 구현 명세:
     - ① **판정 먼저** — ⓐ 미러는 `main` 만 두고 릴리스 라인은 **정본·prj3 에만** 두는가, ⓑ 미러도 `release/*` 를 갖되 F5-0 이 `main` + `release/*` 를 함께 허용하는가
     - ② ⓐ 채택 시 — [`fpm-gitflow.md`](_doc_arch/fpm-gitflow.md) R1~R4 에 *"미러는 릴리스 라인을 갖지 않는다"* 를 명문화하고, 미러의 `release/*` 를 정리

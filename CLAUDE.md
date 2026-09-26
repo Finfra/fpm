@@ -37,7 +37,7 @@ A Project Management repository. It manages the paths of projects under `~/_git/
     - `fpm_aliases_iterm-bg.sh` - **auto-generated** (gitignored). Produced by `update-iterm-bg`, loaded by `fpm_aliases.sh`.
     - `fpm-projects-sync` - **unified driver**: applies `Projects.md` → `projects/` index + each `.vscode` background color (peacock) / emoji + iterm-bg aliases in one batch (a single manual command, `$FPM_BASE`-based)
     - `update-iterm-bg` - regenerates `Projects.md` color → `$FPM_BASE/sh/fpm_aliases_iterm-bg.sh` aliases (driver step [3/3]. Previously it only generated `~/.zsh_aliases_iterm-bg.sh` without loading it → moved inside the install folder so `fpm_aliases.sh` sources it).
-* `README.md` - **fpm public-mirror only** product introduction document. It is not kept in the ___pm body (to avoid conflicts) — `publishable-policy.yml` `exclude[]` protects the fpm copy from forward `--delete` and also blocks reverse absorption. Edit the README in fpm (prj7).
+* `README.md` - **fpm public-mirror only** product introduction document. It is not kept in the ___pm body (to avoid conflicts) — `publishable-policy.yml` `exclude[]` protects the fpm copy from forward `--delete` and also blocks reverse absorption. Edit the README in fpm (prj8).
 
 # Project Domain Mapping
 

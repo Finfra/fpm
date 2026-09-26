@@ -151,7 +151,7 @@ The domain symbol `{d}` (`w`|`m`|`c`|`e`) is a placeholder. A `g`-domain project
 
 # ___pm / fpm
 
-A pair of PM-tool projects. `___pm` (prj1) = development source SSOT; `fpm` (prj7, `~/_git/__all/fpm`) = public marketplace distribution. The `fpm-sync` skill/agent synchronizes ___pm ↔ fpm (default forward, with reverse rollback · deploy · policy integrated — Issue158). `scripts/fpm-sync.sh <forward|deploy|reverse|policy>` is the single dispatcher; the privacy guard is a deterministic sh helper.
+A pair of PM-tool projects. `___pm` (prj1) = development source SSOT; `fpm` (prj8, `~/_git/__all/fpm`) = public marketplace distribution. The `fpm-sync` skill/agent synchronizes ___pm ↔ fpm (default forward, with reverse rollback · deploy · policy integrated — Issue158). `scripts/fpm-sync.sh <forward|deploy|reverse|policy>` is the single dispatcher; the privacy guard is a deterministic sh helper.
 
 ## ___pm local SCAR (g domain — local entry → delegates to global `-g`)
 
@@ -193,7 +193,7 @@ A pair of PM-tool projects. `___pm` (prj1) = development source SSOT; `fpm` (prj
 ### rules
 * graphify-rules · issue-rules
 
-## fpm — marketplace distribution (prj7, `~/_git/__all/fpm`)
+## fpm — marketplace distribution (prj8, `~/_git/__all/fpm`)
 
 The public distribution that bundle-installs the global `~/.claude` hub/dashboard + pm/cdf SCAR as a Claude Code plugin.
 

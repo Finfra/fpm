@@ -1,12 +1,12 @@
 ---
 name: fpm-sync
-description: ___pm(prj1) ↔ fpm(prj7, ~/_git/__all/fpm) 동기화 에이전트. 기본은 ___pm→fpm 단방향 복사·커밋. "fpm 동기화/반영/업데이트" 요청 시 forward, "fpm 역방향/되돌리기/fpm→pm 반영/upstream 흡수" 요청 시 사용자 동의 후 reverse 적용(fpm 버전이 앞설 때만 흡수, --force 로 우회).
+description: ___pm(prj1) ↔ fpm(prj8, ~/_git/__all/fpm) 동기화 에이전트. 기본은 ___pm→fpm 단방향 복사·커밋. "fpm 동기화/반영/업데이트" 요청 시 forward, "fpm 역방향/되돌리기/fpm→pm 반영/upstream 흡수" 요청 시 사용자 동의 후 reverse 적용(fpm 버전이 앞설 때만 흡수, --force 로 우회).
 tools: Read, Bash, Grep, Glob
 ---
 
 # fpm-sync 에이전트
 
-비공개 원본 `___pm`(prj1, `~/_git/___pm`)에서 **공개 가능한(tracked) 파일만** 공개판 `fpm`(prj7, `~/_git/__all/fpm`)으로 단방향 복사하고 커밋한다.
+비공개 원본 `___pm`(prj1, `~/_git/___pm`)에서 **공개 가능한(tracked) 파일만** 공개판 `fpm`(prj8, `~/_git/__all/fpm`)으로 단방향 복사하고 커밋한다.
 
 ## 불변식 (절대 위반 금지)
 
@@ -40,7 +40,7 @@ git -C ~/_git/__all/fpm push   # origin 설정된 경우
 
 ## 역방향 동기화 / upstream 흡수 (fpm → ___pm, 동의 필수)
 
-fpm(prj7)·fg1·기타 서버·GitHub bare 에서 검증된 변경을 ___pm 으로 흡수할 때 사용. 검증 결과가 fpm 버전을 먼저 올린 뒤 ___pm 에 반영되는 흐름(목적: ___pm 업데이트 시 fpm 충돌 최소화). 또는 fpm 직접 수정분을 되돌릴 때. **반드시 dry-run → 사용자 동의 → apply** 순서. 자동화·hook 없음(수동 전용).
+fpm(prj8)·fg1·기타 서버·GitHub bare 에서 검증된 변경을 ___pm 으로 흡수할 때 사용. 검증 결과가 fpm 버전을 먼저 올린 뒤 ___pm 에 반영되는 흐름(목적: ___pm 업데이트 시 fpm 충돌 최소화). 또는 fpm 직접 수정분을 되돌릴 때. **반드시 dry-run → 사용자 동의 → apply** 순서. 자동화·hook 없음(수동 전용).
 
 ### 버전 게이트 (Issue174)
 * 기본은 **fpm VERSION > ___pm VERSION 일 때만** 흡수(version-ahead gate). 미앞섬(동일/___pm 더 높음)이면 `fpm 미앞섬 — 흡수 불필요` no-op 종료.

@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 # bootstrap.sh — fpm 원격 원라인 설치 진입점 (Issue224 T1)
 #
-# ⚠️ 글로벌 SCAR 변경 가드 (Issue46): 본 스크립트는 공개 미러(prj7) 동기 페이로드.
+# ⚠️ 글로벌 SCAR 변경 가드 (Issue46): 본 스크립트는 공개 미러(prj8) 동기 페이로드.
 #   cwd ≠ ~/.claude 면 즉시 수정 금지 → ~/.claude/Issue.md 이슈 등록 후 처리.
 #   설계 SSOT: ~/_git/___pm/_doc_arch/fpm-competitive-benchmark.md (강화 로드맵 Phase0 T1).
 #   절차: ~/.claude/rules/global-scar-change-rules.md

@@ -155,7 +155,7 @@ date: 2026-04-18
 
 # ___pm / fpm
 
-PM 도구 프로젝트 쌍. `___pm`(prj1) = 개발 원본 SSOT, `fpm`(prj7, `~/_git/__all/fpm`) = 공개 마켓플레이스 배포판. `fpm-sync` 스킬·agent 로 ___pm ↔ fpm 동기화(기본 forward, 역방향 reverse·배포 deploy·정책 policy 통합 — Issue158). `scripts/fpm-sync.sh <forward|deploy|reverse|policy>` 단일 dispatcher, 개인정보 가드는 결정성 sh 헬퍼.
+PM 도구 프로젝트 쌍. `___pm`(prj1) = 개발 원본 SSOT, `fpm`(prj8, `~/_git/__all/fpm`) = 공개 마켓플레이스 배포판. `fpm-sync` 스킬·agent 로 ___pm ↔ fpm 동기화(기본 forward, 역방향 reverse·배포 deploy·정책 policy 통합 — Issue158). `scripts/fpm-sync.sh <forward|deploy|reverse|policy>` 단일 dispatcher, 개인정보 가드는 결정성 sh 헬퍼.
 
 ## ___pm 로컬 SCAR (g 도메인 — 로컬 진입 → 글로벌 `-g` 위임)
 
@@ -197,7 +197,7 @@ PM 도구 프로젝트 쌍. `___pm`(prj1) = 개발 원본 SSOT, `fpm`(prj7, `~/_
 ### rules
 * graphify-rules · issue-rules
 
-## fpm — 마켓플레이스 배포판 (prj7, `~/_git/__all/fpm`)
+## fpm — 마켓플레이스 배포판 (prj8, `~/_git/__all/fpm`)
 
 글로벌 `~/.claude` 의 hub/dashboard + pm/cdf SCAR 를 Claude Code 플러그인으로 번들 설치하는 공개판.
 

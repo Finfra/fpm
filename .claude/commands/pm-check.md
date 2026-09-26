@@ -86,7 +86,7 @@ done
 ```
 
 * **제외 정책**: `all` 검사 시 `SKIP="0 7 25 26"` 는 자동 제외. 명시 번호(`/pm-check 7`)는 제외 무시 —
-  사용자가 콕 집으면 의도로 간주해 생성. home(prj0)·publish 미러(prj7/25/26)는 nPTiR 워크스페이스가
+  사용자가 콕 집으면 의도로 간주해 생성. home(prj0)·publish 미러(prj8/25/26)는 nPTiR 워크스페이스가
   아니므로 htm 폴더를 만들지 않는다 (미러는 `_doc_work` 추가 시 공개 미러로 새어나갈 위험).
   prj2(Obsidian 볼트)도 같은 이유로 SKIP — hub 렌더 대상이 아님 (Issue289).
 
