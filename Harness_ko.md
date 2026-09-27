@@ -212,7 +212,7 @@ PM 도구 프로젝트 쌍. `___pm`(prj1) = 개발 원본 SSOT, `fpm`(prj8, `~/_
     - forward(기본·hook 자동) / deploy(버전 bump+tag+push) / reverse(되돌리기, 동의 후 `--apply`) / policy(공개 정책 편집)
     - 결정성 헬퍼: `fpm-policy-lib.sh`(파서) · `fpm-guard.sh`(개인정보 abort) · `fpm-sanitize.sh`(치환)
     - 구 `fpm-deploy.sh`·`publishable` 스킬 → deprecated shim (Issue158)
-* 라이선스: 듀얼 (개인 무료 / 기업 유료) — `COMMERCIAL_ko.md`
+* 라이선스: Apache-2.0 (상업 사용 포함 무료) + 상표 정책 `TRADEMARK.md` · 유료 지원 `COMMERCIAL_ko.md` — v0.8.3 까지는 PolyForm NC
 
 # fCapture
 ## main

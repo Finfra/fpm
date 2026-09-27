@@ -16,7 +16,7 @@ date: 2026-06-06
 
 > 💡 fPm의 핵심 아이디어는 **ACP** 입니다 — 자세한 설명: [ACP란?](https://finfra.kr/jg/2026/07/06/acp/)
 
-> 듀얼 라이선스: 개인·비영리 무료 / 기업 유료. [LICENSE](LICENSE) · [COMMERCIAL_ko.md](COMMERCIAL_ko.md)
+> Apache-2.0 오픈소스 — 상업적 사용 포함 누구나 무료. [LICENSE](LICENSE) · [상표 정책](TRADEMARK.md)
 
 ## 빠른 시작
 
@@ -215,8 +215,17 @@ fpm 과 같이 만들어 같이 쓰는 도구입니다.
 | :-- | :--- | :--- | :--- |
 | <img src="img/fcapture-icon.png" alt="fCapture" width="40"> | [fCapture](https://finfra.kr/product/fCapture/kr/index.html) | macOS 스크린 캡처 CLI — 화면·윈도우·영역을 JSON 설정이나 CLI 옵션으로 캡처하고, 같은 동작을 Claude Code 에 MCP 로 노출합니다 | `brew install finfra/tap/fcapture` |
 
-두 도구는 라이선스 모델도 같습니다 — 비상업 사용 무료, 상업 사용은 별도 라이선스.
+두 도구 모두 Apache-2.0 오픈소스입니다. fCapture 의 공식 Homebrew 빌드에는 배포본 약관(조직당 동시 설치 250 카피까지 무료)이 추가로 붙습니다 — 해당 저장소 참고.
 
 ## 라이선스
 
-[PolyForm Noncommercial 1.0.0](LICENSE) — 개인·비영리 무료. 기업·상업적 사용은 [상용 라이선스](COMMERCIAL_ko.md) 필요.
+[Apache License 2.0](LICENSE) — 상업적 사용·사내 업무 사용을 포함해 누구나 무료.
+
+| 문서 | 내용 |
+| :--- | :--- |
+| [LICENSE](LICENSE) · [LICENSE_ko.md](LICENSE_ko.md) | Apache-2.0 원문(구속력) · 한글 참고 번역 |
+| [NOTICE](NOTICE) | 재배포 시 보존해야 하는 고지 (Apache-2.0 제4조 (d)) |
+| [TRADEMARK.md](TRADEMARK.md) | 이름 "fpm"·아이콘·"Powered by finfra.kr" 사용 범위 — 포크는 이름을 바꿔야 함 |
+| [COMMERCIAL_ko.md](COMMERCIAL_ko.md) | 유료 지원·컨설팅 안내 (라이선스 구매 불필요) |
+
+> **v0.8.3 까지** 배포된 버전은 PolyForm Noncommercial License 1.0.0 으로 배포되었고 그 사본은 해당 라이선스를 유지합니다. 이후 버전은 Apache-2.0 입니다.

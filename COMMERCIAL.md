@@ -1,40 +1,36 @@
 ---
 name: COMMERCIAL
-description: fpm commercial (enterprise) license guide
-date: 2026-06-06
+description: fpm commercial use guide — Apache-2.0 open source (free for companies too) + paid support/consulting
+date: 2026.09.27
 ---
 
 > 🌐 **English** | [한국어](COMMERCIAL_ko.md)
 
 # License Summary
 
-fpm is distributed under a **dual license**.
+fpm is open source under the **[Apache License 2.0](LICENSE)**. Everyone — individuals, companies,
+nonprofits — may use, modify, and redistribute it free of charge, **including commercial and
+internal business use**. No commercial license is required.
 
-| User                                                          | License                                 | Cost              |
-| :----------------------------------------------------------- | :-------------------------------------- | :---------------- |
-| Individuals · hobby · study · nonprofit/education/public bodies | [PolyForm Noncommercial 1.0.0](LICENSE) | Free              |
-| Companies · commercial use (incl. internal business use)     | Commercial license                      | Paid (contact us) |
+| What                                          | Governed by                     | Cost |
+| :-------------------------------------------- | :------------------------------ | :--- |
+| Source code (use · modify · redistribute)     | [Apache-2.0](LICENSE)           | Free |
+| The name "fpm", its icon, "Powered by finfra.kr" | [Trademark Policy](TRADEMARK.md) | Free within the policy — a modified fork must be renamed |
+| Versions up to and including v0.8.3           | PolyForm Noncommercial 1.0.0 (as distributed at the time) | — |
 
-# Free Use (Noncommercial)
+fpm ships no official binaries, so there are no separate distribution terms.
 
-The following may be used for free without a separate agreement.
+# Paid Support & Consulting
 
-* Individual study, experiment, and hobby projects
-* Use by nonprofits, educational institutions, and public research, safety, health, environmental, or government organizations
-* Private use with no intended commercial application
+The commercial offering is **services, not a license**:
 
-# Paid Use (Commercial)
-
-The following require a **commercial license**.
-
-* Internal business use within a for-profit company
-* Integration into a product or service that generates revenue
-* Use in producing commercial deliverables such as consulting or outsourcing work
+* Adoption consulting — setting up fpm / hub / SCAR workflows for a team
+* Priority support and custom feature development
+* Training for multi-session Claude Code operation
 
 ## Contact
 
 * Email: finfra@gmail.com
 * Profile: https://finfra.kr/nowage
-* License scope and pricing are negotiated based on usage scale (number of seats / purpose)
 
-> This document is a license policy guide; legal effect is governed by the full [LICENSE](LICENSE) text and any separately executed commercial agreement.
+> This document is a guide; the legal terms are the full [LICENSE](LICENSE) text and [TRADEMARK.md](TRADEMARK.md).

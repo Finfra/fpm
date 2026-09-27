@@ -208,7 +208,7 @@ The public distribution that bundle-installs the global `~/.claude` hub/dashboar
     - forward (default · hook-automatic) / deploy (version bump+tag+push) / reverse (rollback, `--apply` after consent) / policy (edit publication policy)
     - deterministic helpers: `fpm-policy-lib.sh` (parser) · `fpm-guard.sh` (privacy abort) · `fpm-sanitize.sh` (substitution)
     - legacy `fpm-deploy.sh` · `publishable` skill → deprecated shim (Issue158)
-* license: dual (free for individuals / paid for enterprises) — `COMMERCIAL.md`
+* license: Apache-2.0 (free incl. commercial) + trademark policy `TRADEMARK.md` · paid support `COMMERCIAL.md` — v0.8.3 and earlier: PolyForm NC
 
 # fCapture
 ## main

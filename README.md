@@ -16,7 +16,7 @@ A set of zsh functions for fast number-indexed access to project directories (`c
 
 > 💡 The core idea behind fpm is **ACP** — read more here: [What is ACP?](https://finfra.kr/jg/2026/07/06/acp-en/)
 
-> Dual license: free for personal/non-commercial use / paid for enterprises. [LICENSE](LICENSE) · [Commercial License](COMMERCIAL.md)
+> Open source under Apache-2.0 — free for everyone, including commercial use. [LICENSE](LICENSE) · [Trademark](TRADEMARK.md)
 
 ## Quick Start
 
@@ -215,8 +215,17 @@ Tools we build and use alongside fpm.
 | :-- | :--- | :--- | :--- |
 | <img src="img/fcapture-icon.png" alt="fCapture" width="40"> | [fCapture](https://finfra.kr/product/fCapture/en/index.html) | macOS screen capture CLI — captures screens, windows, and regions from JSON presets or CLI flags, and exposes the same actions to Claude Code over MCP | `brew install finfra/tap/fcapture` |
 
-Both tools share the same license model: free for noncommercial use, commercial licensed separately.
+Both tools are open source under Apache-2.0. fCapture's official Homebrew builds additionally carry distribution terms (free up to 250 concurrent installs per organization) — see its repository.
 
 ## License
 
-[PolyForm Noncommercial 1.0.0](LICENSE) — free for personal/non-commercial use. Enterprise/commercial use requires a [commercial license](COMMERCIAL.md).
+[Apache License 2.0](LICENSE) — free for everyone, including commercial and internal business use.
+
+| Document | Covers |
+| :--- | :--- |
+| [LICENSE](LICENSE) · [LICENSE_ko.md](LICENSE_ko.md) | Apache-2.0 full text (binding) · Korean reference translation |
+| [NOTICE](NOTICE) | Attribution notice to keep when redistributing (Apache-2.0 §4(d)) |
+| [TRADEMARK.md](TRADEMARK.md) | Use of the name "fpm", its icon and "Powered by finfra.kr" — forks must be renamed |
+| [COMMERCIAL.md](COMMERCIAL.md) | Paid support & consulting (no license purchase needed) |
+
+> Versions up to and including **v0.8.3** were distributed under the PolyForm Noncommercial License 1.0.0; those copies keep that license. Later versions are Apache-2.0.
