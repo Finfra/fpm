@@ -464,12 +464,12 @@ flowchart TD
 * **⚠️ 라벨 선두 markdown 마커 금지 (Issue204/Issue242 — 인라인 필수)**: 노드·subgraph·edge 라벨이 `숫자.` · `- ` · `* ` · `+ ` · `# ` 로 시작하면 mermaid 11+ 이 markdown list/heading 으로 오파싱 → 라벨 자리에 `Unsupported markdown: list` 렌더됨. 넘버링은 **마침표 없는 형식**(`1단계 ·` / `1)` / `단계1:`) 사용
     - ❌ `P1["1. AI 프로젝트화"]` · `subgraph S1["2. 조합"]` · `N1["- 항목"]`
     - ✅ `P1["1단계 · AI 프로젝트화"]` · `subgraph S1["2) 조합"]` · `N1["항목"]`
-    - hub 자동 렌더는 `mermaid-diagram` 스킬을 호출하지 않아 룰이 컨텍스트에 없음 → 링크 참조로 불충분(Issue242 재발 근거). 본 인라인 규칙이 렌더 경로의 1차 가드
+    - hub 자동 렌더는 `ig-mermaid` 스킬을 호출하지 않아 룰이 컨텍스트에 없음 → 링크 참조로 불충분(Issue242 재발 근거). 본 인라인 규칙이 렌더 경로의 1차 가드
 * **⚠️ timeline period 에 콜론 금지 (Issue529 — 인라인 필수)**: `timeline` 에서 `:` 는 period↔event 구분자라, 줄 첫 칸에 시각(`HH:MM`)을 쓰면 다이어그램 **전체가 `Syntax error in text` 로 렌더 실패**(부분 깨짐이 아니라 통째로 죽음)
     - ❌ `00:23:24 : 부팅` · `00:37~00:41 : 실측`
     - ✅ `00.23.24 : 부팅` · `00시23분 : 부팅` · `2026-09-04 : 00:23 부팅`(구분자 뒤 event 의 콜론은 안전)
     - 재발 실측: hub 렌더 문서 2건(2026-08-12·2026-09-04)이 같은 형태로 깨져 있었음. 렌더 경로가 스킬을 호출하지 않는 것이 원인이라 8-2 와 같은 이유로 인라인 필요
-* mermaid 문법·다이어그램 유형 선택 기준은 [`~/.claude/skills/mermaid-diagram/mermaid-rules.md`](../skills/mermaid-diagram/mermaid-rules.md) 참조
+* mermaid 문법·다이어그램 유형 선택 기준은 [`~/.claude/skills/ig-mermaid/mermaid-rules.md`](../skills/ig-mermaid/mermaid-rules.md) 참조
 * 노드 라벨 한국어 허용. 특수문자(`()`, `[]`, `:`, `"` 등) 포함 시 라벨을 `"..."` 로 감쌈
 * 다이어그램 1개당 노드 **3~12개 권장**. 초과 시 다이어그램을 의미 단위로 분할
 * 한 본문에 다이어그램 여러 개 허용 — 프로세스 1개 + 구조 1개 식으로 섹션별 배치

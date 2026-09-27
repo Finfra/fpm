@@ -21,7 +21,7 @@ name: CLAUDE
 
 # 파일 생성
 
-* Markdown: `rules/md-rules.md` / Mermaid: `skills/mermaid-diagram/mermaid-rules.md` (스킬 실행 시 로드)
+* Markdown: `rules/md-rules.md` / Mermaid: `skills/ig-mermaid/mermaid-rules.md` (스킬 실행 시 로드)
 * 네이밍: `rules/naming-rules.md` (`.agent/` 폴더 사용 금지)
 
 ## nPTiR (상세: `rules/nptir-rules.md`)
