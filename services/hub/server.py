@@ -2354,7 +2354,7 @@ PROJECTS_MAP_BUILDER = ".claude/skills/projects-map/build_projects_map.py"
 # Issue472: 아이덴티티 카드뷰(`Identity_map.htm`) — 각 프로젝트 CLAUDE.md frontmatter 의
 #   L1 필드를 `sh/fpm-identity-collect` 가 렌더한 산출물. projects-map 과 같은 등급
 #   (___pm 루트 1개 고정·클라이언트 입력면 0)이라 게이트도 같다.
-#   ⚠️ 이 페이지는 알림을 보내지 않는다 — 상태를 노출할 뿐이다(prj6 architect-identity 조항 6).
+#   ⚠️ 이 페이지는 알림을 보내지 않는다 — 상태를 노출할 뿐이다(prj6 oracle-identity 조항 6).
 IDENTITY_MAP_NAME = "Identity_map.htm"
 IDENTITY_BUILDER = "sh/fpm-identity-collect"
 _IDENTITY_TTL = 30.0             # CLAUDE.md 50개 stat 결과 캐시 수명(초)
@@ -12514,7 +12514,7 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         클라이언트 입력면이 0 이며 traversal 게이트가 성립하지 않는다.
 
         ⚠️ **알림을 보내지 않는다** — 미기재·시한 경과는 페이지 안에서만 보인다
-        (prj6 `architect-identity.md` 조항 6: *"트리거를 만들지 않는다. 상태를 노출한다"*).
+        (prj6 `oracle-identity.md` 조항 6: *"트리거를 만들지 않는다. 상태를 노출한다"*).
         """
         path = os.path.join(REPO_ROOT, IDENTITY_MAP_NAME)
         self._rebuild_identity_if_stale(path)

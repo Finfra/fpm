@@ -9,7 +9,7 @@
         fpm-identity-collect --check    → 쓰지 않고 미기재 통계만 출력
         fpm-identity-collect --md-only  → Identity.md 만 (카드뷰 skip)
 
-⚠️ 알림을 만들지 않는다 (prj6 architect-identity.md 조항 6).
+⚠️ 알림을 만들지 않는다 (prj6 oracle-identity.md 조항 6).
    `⚠️ 미기재`·`🌅 시한 경과` 는 표 안의 문자열일 뿐이며 훅·스케줄로 내보내지 않는다.
    비어 있음 자체가 신호이고, 사람이 볼 때 보인다.
 

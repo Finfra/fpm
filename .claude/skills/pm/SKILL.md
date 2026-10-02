@@ -128,7 +128,7 @@ ___pm/
 
 ## L1 아이덴티티 기재 (Issue472 — 조항 3 필수)
 
-**아이덴티티 없이 프로젝트를 만들지 않는다.** prj6 [architect-identity.md](~/_git/___architect/_doc_arch/architect-identity.md) 조항 3 이 2026-09-03 재개정되며 아이덴티티가 **필수**로, 청사진이 **선택**으로 바뀌었다. 스키마 정본은 prj6 [project-identity-scheme.md](~/_git/___architect/_doc_arch/project-identity-scheme.md).
+**아이덴티티 없이 프로젝트를 만들지 않는다.** prj6 [oracle-identity.md](~/_git/___oracle/_doc_arch/oracle-identity.md) 조항 3 이 2026-09-03 재개정되며 아이덴티티가 **필수**로, 청사진이 **선택**으로 바뀌었다. 스키마 정본은 prj6 [project-identity-scheme.md](~/_git/___oracle/_doc_arch/project-identity-scheme.md).
 
 ### 두 경로 — prj6 는 관문이 아니다
 
