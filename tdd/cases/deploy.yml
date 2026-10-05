@@ -45,11 +45,8 @@ cases:
     run: |
       REPO_DIR="$REPO_DIR" python3 - <<'PYEOF'
       import io, os, re, sys
-      p = os.path.join(os.environ["REPO_DIR"], "scripts/fpm-sync.sh")
-      if not os.path.exists(p):
-          # Issue604: 미러(공개 clone)엔 fpm-sync.sh 가 반출되지 않는다 — 3 OS P1 에서 FAIL 오탐
-          print("skip(저작 머신 전용)"); sys.exit(0)
-      src = io.open(p, encoding="utf-8").read()
+      src = io.open(os.path.join(os.environ["REPO_DIR"], "scripts/fpm-sync.sh"),
+                    encoding="utf-8").read()
       m = re.search(r'^do_forward\(\) \{$(.*?)^\}$', src, re.M | re.S)
       if not m:
           print("NO-DO-FORWARD"); sys.exit(0)
@@ -64,48 +61,6 @@ cases:
       if regen < 0:
           print("MISSING-MIRROR-REGEN"); sys.exit(0)
       order = [("add-A", add), ("autobump", bump), ("regen", regen), ("commit", cmt)]
-      bad = [n for (n, i) in order if i < 0]
-      if bad:
-          print("ANCHOR-LOST:" + ",".join(bad)); sys.exit(0)
-      idx = [i for _, i in order]
-      print("ok" if idx == sorted(idx) else "ORDER-BROKEN:" +
-            ",".join(n for n, _ in sorted(order, key=lambda t: t[1])))
-      PYEOF
-    expect: contains:ok
-
-  - id: market-integrity-post-sanitize
-    desc: 마켓(prj20) 무결성 매니페스트가 sanitize·vendor **이후** 트리에서 재생성되도록 배선돼 있다
-    why: |
-      Issue605 — 소비자는 prj20 마켓에서 fpm-core 를 받는다. do_publish 는 매니페스트를
-      vendor **앞**(Issue413 ①, 정본 바이트)에 만들고 그 뒤 staging 을 sanitize(Issue461)해
-      vendor 했다. 그래서 sanitize 가 바꾼 8파일이 jma·fg1·jpc1 3/3 에서 «변조/구버전» 으로
-      잡혔다(2026-10-05 v0.8.4 실측). mirror-integrity-post-sanitize(Issue459)의 두 번째
-      배송 트리 판이다. 순서가 전부라 순서를 검사한다. do_publish 안에서
-        sanitize  <  vendor rsync  <  git add fpm-core  <  매니페스트 재생성(--bundle "$vdst")  <  prj20 커밋
-      런타임 실측은 `bash sh/gen-integrity-manifest.sh --check --bundle <prj20>/fpm-core`.
-    run: |
-      REPO_DIR="$REPO_DIR" python3 - <<'PYEOF'
-      import io, os, re, sys
-      p = os.path.join(os.environ["REPO_DIR"], "scripts/fpm-sync.sh")
-      if not os.path.exists(p):
-          # Issue604: 미러(공개 clone)엔 fpm-sync.sh 가 반출되지 않는다 — 3 OS P1 에서 FAIL 오탐
-          print("skip(저작 머신 전용)"); sys.exit(0)
-      src = io.open(p, encoding="utf-8").read()
-      m = re.search(r'^do_publish\(\) \{$(.*?)^\}$', src, re.M | re.S)
-      if not m:
-          print("NO-DO-PUBLISH"); sys.exit(0)
-      body = m.group(1)
-      def at(pat):
-          h = re.search(pat, body)
-          return h.start() if h else -1
-      sanit  = at(r'"\$HERE/fpm-sanitize\.sh" "\$vstg"')
-      vendor = at(r'"\$vstg/" "\$vdst/"')
-      add    = at(r'git -C "\$MKT20_DIR" add "\$MKT20_REL" fpm-core')
-      regen  = at(r'gen-integrity-manifest\.sh[^\n]*\\?\n?[^\n]*--bundle "\$vdst"')
-      cmt    = at(r'git -C "\$MKT20_DIR" commit -q')
-      if regen < 0:
-          print("MISSING-MARKET-REGEN"); sys.exit(0)
-      order = [("sanitize", sanit), ("vendor", vendor), ("add", add), ("regen", regen), ("commit", cmt)]
       bad = [n for (n, i) in order if i < 0]
       if bad:
           print("ANCHOR-LOST:" + ",".join(bad)); sys.exit(0)
@@ -269,9 +224,6 @@ cases:
       vendor(`rsync -a`)는 번들 밖을 가리키는 링크를 복사해 플러그인이 깨진다.
     run: |
       cd "$REPO_DIR" || exit 0
-      # Issue604: 미러는 반출 시 이 링크를 실파일로 편다(hub-symlink-materialized-for-mirror)
-      #   — 미러 clone(3 OS P1)에선 NOT-A-SYMLINK 가 설계대로라 저작 트리에서만 판정한다
-      [ -f scripts/fpm-sync.sh ] || { echo "skip(저작 머신 전용 — 미러는 실파일)"; exit 0; }
       want="../plugins/fpm-core/services/hub"
       [ -L services/hub ] || { echo "NOT-A-SYMLINK(2원화 부활)"; exit 0; }
       [ "$(readlink services/hub)" = "$want" ] || { echo "WRONG-TARGET:$(readlink services/hub)"; exit 0; }

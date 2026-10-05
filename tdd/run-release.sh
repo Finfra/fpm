@@ -9,8 +9,7 @@
 #
 # 사용: bash tdd/run-release.sh [--version <출고 버전>] [--commit <후보>] [--manual <id>=<결과>[:근거]]...
 #                               [--only id,id] [--timeout 초] [--no-record]
-#   --version  출고할 버전 — 증거 폴더 키. 생략하면 deploy 기본(auto)과 같은 계산(scripts/fpm-sync.sh next-version):
-#              미출고 라인 버전이면 VERSION 그대로, 출고된 VERSION 이면 다음 patch (Issue601)
+#   --version  출고할 버전 — 증거 폴더 키. 생략하면 deploy patch 와 같은 규칙(scripts/fpm-sync.sh next-version)
 #              ⚠️ deploy 를 minor·major·X.Y.Z 로 할 거면 같은 값을 준다 — R2 는 출고 버전 폴더에서 증거를 찾는다
 #   --commit   후보 커밋 (기본 HEAD — release/{X.Y} 브랜치 HEAD 에서 부르는 것이 R1 이다)
 #   --manual   수동 행 결과 ex) --manual "hub-ui-signoff=pass:_doc_work/z_done/report/b2_0.8.4.md"
@@ -43,9 +42,9 @@ MAIN="${FPM_RELEASE_MAIN_REPO:-$REPO_DIR}"
 
 # ── 2. 출고 버전 ──
 if [ -z "$VER" ]; then
-    VER="$(FPM_SRC="$REPO_DIR" bash "$REPO_DIR/scripts/fpm-sync.sh" next-version 2>/dev/null)" || VER=""
+    VER="$(FPM_SRC="$REPO_DIR" bash "$REPO_DIR/scripts/fpm-sync.sh" next-version patch 2>/dev/null)" || VER=""
     [ -n "$VER" ] || { echo "❌ 출고 버전을 정하지 못했다 — --version <X.Y.Z> 로 지정" >&2; exit 2; }
-    echo "ℹ️ --version 생략 → deploy 기본(auto) 계산으로 v$VER (다른 버전으로 출고할 거면 --version 지정)"
+    echo "ℹ️ --version 생략 → deploy patch 규칙으로 v$VER (다른 버전으로 출고할 거면 --version 지정)"
 fi
 [[ "$VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "❌ --version 은 X.Y.Z (got '$VER')" >&2; exit 2; }
 

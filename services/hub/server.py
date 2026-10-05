@@ -4395,7 +4395,7 @@ async function copySid(sid,why){
 }
 async function openClaimed(btn){
   const sid=btn.dataset.sid, cwd=btn.dataset.cwd, view=btn.dataset.view;
-  if(view){ openView(view,"세션 트랜스크립트"); return; }   // Issue595: headless → 트랜스크립트 뷰 (Issue602: 셸 탭)
+  if(view){ window.open(view,"_blank"); return; }   // Issue595: headless → 트랜스크립트 뷰
   if(!cwd) return copySid(sid,"hub 에 등록되지 않은 세션");
   try{
     const r=await fetch("/open-session",{method:"POST",headers:{"Content-Type":"application/json"},
@@ -4410,22 +4410,12 @@ async function openClaimed(btn){
 // Issue565: 본문은 표에서 개행까지 뭉개진 산문이다 — 누르면 같은 항목을 `..show` 와 같은 md-doc 셸
 //   (`/mq-doc`)로 구조화해 연다. 진행 3종 줄은 감싸지 않는다(그 안의 세션 버튼·링크가 따로 눌려야 한다).
 function mqDocUrl(id){ return "/mq-doc?id="+encodeURIComponent(id); }
-// Issue602: 이 페이지가 hub 셸(/hub-shell, render_tab_mode: hub-internal)에 실려 있으면 새 화면은
-//   부모 셸의 내부 탭으로 연다 — 셸의 fpm-open-tab 계약(hub 홈 fpmOpenInShell 과 같은 메시지).
-//   단독 열람(최상위)이면 종전처럼 새 탭. ⚠️ `window.open(…,"_blank")` 를 직접 부르지 말고 이걸 거친다.
-function openView(url,title){
-  if(window.top!==window.self){
-    try{ window.parent.postMessage({type:"fpm-open-tab",view_url:url,title:title||"aoa-mq",content_type:"response"},"*"); return; }
-    catch(e){ /* 셸 미응답 → 새 탭 */ }
-  }
-  window.open(url,"_blank");
-}
 //   ⚠️ 텍스트를 끌어 선택하던 중이면 넘어가지 않는다 — 본문 일부를 복사하려던 손을 가로채지 않는다.
 function mqDocClick(ev,el){
   if(ev&&ev.target&&ev.target.closest&&ev.target.closest("a,button")) return;
   const sel=window.getSelection?String(window.getSelection()):"";
   if(sel.trim()) return;
-  openView(mqDocUrl(el.dataset.id),"📮 "+el.dataset.id);   // Issue602: 셸 임베드면 내부 탭
+  window.open(mqDocUrl(el.dataset.id),"_blank");
 }
 function msgCell(x){
   return `<div class="mbody" data-id="${esc(x.id)}" onclick="mqDocClick(event,this)" title="클릭 → 문서로 보기">${esc(x.message||"")}</div>`
@@ -5115,21 +5105,10 @@ function mqMenuOpen(btn){
     const act=b.dataset.act; schMenuClose();
     if(act==="id") copyText(id,"mq ID");
     else if(act==="msg") copyText(String(x.message||""),"내용");
-    else if(act==="doc") openView(mqDocUrl(id),"📮 "+id);   // Issue602
+    else if(act==="doc") window.open(mqDocUrl(id),"_blank");
     else if(act==="link") copyText(new URL(mqDocUrl(id),location.href).href,"문서 링크");
   };
 }
-// Issue602-click
-// 렌더된 same-origin `a[target=_blank]`(문서·결과·로그 링크)도 임베드 시 셸 탭으로. 외부 origin·수정키 클릭은 브라우저 몫.
-document.addEventListener("click",function(ev){
-  if(window.top===window.self||ev.defaultPrevented||ev.button||ev.metaKey||ev.ctrlKey||ev.shiftKey||ev.altKey) return;
-  const a=ev.target&&ev.target.closest&&ev.target.closest('a[target="_blank"]'); if(!a) return;
-  let u; try{ u=new URL(a.getAttribute("href")||"",window.location.href); }catch(e){ return; }
-  if(u.origin!==window.location.origin) return;
-  ev.preventDefault();
-  openView(u.pathname+u.search+u.hash,(a.textContent||"").trim()||a.getAttribute("title")||"");
-});
-// /Issue602-click
 document.addEventListener("mousedown",e=>{
   const m=document.getElementById("sch-menu"); if(!m||m.hidden) return;
   if(e.target.closest("#sch-menu,.sid-copy")) return;
@@ -5953,8 +5932,7 @@ def _collect_bots() -> dict:
             #   다른 하드웨어고 일도 다르며 봇을 공유하지 않는다). 이 섹션이 보여주는 것은
             #   전조직이 아니라 **이 머신**뿐인데 화면에는 그 한정이 없어 전조직으로 읽혔다.
             #   원격 봇이 일하는 중에도 여기 0 이 뜨는 것은 버그가 아니라 범위다 — 그걸 적는다.
-            #   Issue606: os.uname 은 Windows Python 에 없다 — /boards 가 매번 죽어 홈이 Loading 에 멈췄다
-            "bots_scope": (platform.node() or socket.gethostname()).split(".")[0]}
+            "bots_scope": os.uname().nodename.split(".")[0]}
 
 
 def _fbot_roster(rows, last_seen=None) -> list:
@@ -18794,11 +18772,9 @@ section.sec-collapsed .htm-bar-right { display: none; }
     <div class="sub" id="hub-important">{T:common.loading}</div>
   </div>
   <div class="header-actions">
-    <!-- Issue420: aoa-mq 전용 페이지. 헤더 **맨 왼쪽** 배치(사용자 지정).
-         Issue602: 형제 👥 fBot·🗺️ Map 과 같은 fpmOpenInShell 라우팅 — hub-internal(셸 임베드)이면
-         내부 탭, 비임베드 /hub 면 종전 새 탭. 종전엔 target=_blank 고정이라 셸에서도 OS 탭으로 샜다. -->
+    <!-- Issue420: aoa-mq 전용 페이지. 헤더 **맨 왼쪽** 배치(사용자 지정). 링크로 두는 이유는
+         새 탭 개방이 hub 셸의 탭 정책과 얽히지 않게 하기 위함 — 목록/처리는 독립 화면이 낫다. -->
     <a class="btn-project-list" id="btn-mq" href="/mq" target="_blank" rel="noopener"
-       data-title="📮 aoa-mq" onclick="return fpmOpenInShell(event,this)"
        title="aoa-mq 예약 큐 — 필터·정렬·처리">📮 Aoa-mq</a>
     <!-- prj1#Issue448: 핀봇 조직도 헤더 진입점. 이모지는 프로젝트 Map(🗺️)과 분리 —
          조직도는 👥(구성원 은유, 2026-09-01 사용자 선택). fbot-map 계열 전부 👥 통일 -->

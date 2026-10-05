@@ -8,8 +8,7 @@
 #   ④ 개발 재생목록(1행 dev-playlist-green)에 외부 대기 행이 있으면 그 행은 partial (rc 3)
 #   ⑤ 같은 실행 안에서 같은 명령은 한 번만 돈다(1행 안의 release-check 를 2행이 재사용)
 #   ⑥ 수동 행은 --manual <id>=pass:<근거> 로만 pass 가 되고, 실패 행은 fail + 마지막 출력 줄을 비고에 남긴다
-#   ⑦ --version 미지정이면 deploy 기본(auto)과 같은 계산(scripts/fpm-sync.sh next-version)으로 출고 버전을 정한다
-#      — 태그 없는 fixture VERSION 은 미출고 라인 버전이라 그대로(v0.0.1) (Issue601)
+#   ⑦ --version 미지정이면 deploy patch 와 같은 규칙(scripts/fpm-sync.sh next-version)으로 출고 버전을 정한다
 #
 # 격리: 임시 git repo + 임시 projects 인덱스. 검사 대상은 실물 복사.
 # 실행: bash scripts/test_release_driver.sh
@@ -76,7 +75,6 @@ P3="$SB/prj3"; mkdir -p "$P3"; git -C "$P3" init -q -b main
 git -C "$P3" -c user.name=t -c user.email=t@t commit -q --allow-empty -m p3
 mkdir -p "$SB/projects"; echo "$P3" > "$SB/projects/3"
 export PM_PROJECTS_DIR="$SB/projects"
-export FPM_DST="$SB/no-mirror"   # 출고 여부 판정(version_released)이 실물 미러 태그를 보지 않게 격리 (Issue601)
 unset FPM_RELEASE_CANDIDATE FPM_RELEASE_MAIN_REPO FPM_RELEASE_GATE_STATE FPM_RELEASE_EVIDENCE_DIR FPM_PLAYLIST_MEMO
 
 # 공유 작업트리를 더럽힌다
@@ -101,8 +99,8 @@ export COUNT_FILE="$SB/count"; : > "$COUNT_FILE"
 WT_BEFORE="$(git -C "$R" worktree list --porcelain)"
 out="$(cd "$R" && bash tdd/run-release.sh 2>&1)"; rc=$?
 check "건너뛴 행 있음 → 드라이버 rc 3" "$rc" "3"
-EV="$R/_doc_work/_release/v0.0.1/release-test_0.0.1.md"
-if [ -f "$EV" ]; then ok "--version 생략 → 미출고 라인 버전 v0.0.1 증거"; else fail "v0.0.1 증거 없음 (out: $(printf '%s' "$out" | tail -5))"; fi
+EV="$R/_doc_work/_release/v0.0.2/release-test_0.0.2.md"
+if [ -f "$EV" ]; then ok "--version 생략 → 다음 patch v0.0.2 증거"; else fail "v0.0.2 증거 없음 (out: $(printf '%s' "$out" | tail -5))"; fi
 check "증거 dirty: no (스스로 격리)" "$(fmv "$EV" dirty)" "no"
 check "증거 commit = 후보" "$(fmv "$EV" commit)" "$C1"
 check "증거 result: partial" "$(fmv "$EV" result)" "partial"

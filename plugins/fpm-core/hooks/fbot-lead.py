@@ -803,11 +803,6 @@ def issue_completed_in(cwd, issue):
     return _issue_completion().issue_completed_in(cwd, issue)
 
 
-def issue_done_unmarked(cwd, issue):
-    """완료 섹션에 있는데 완료 표기 누락인가 — True/False/None(판독 불가). 판정은 lib 한 곳 (prj3#Issue968)."""
-    return _issue_completion().issue_done_unmarked(cwd, issue)
-
-
 def __getattr__(name):   # PEP 562 — `lead.ISSUE_HASH_RE` 도 지연 적재로 내보낸다
     if name == "ISSUE_HASH_RE":
         return _issue_completion().ISSUE_HASH_RE
@@ -1100,15 +1095,8 @@ def detect_closures(con: sqlite3.Connection, exclude=()) -> list:
     이미 `blocked(unconfirmed)` 인 배분은 재평가해 증적이 생겼을 때만 completed 로 낸다(여기서는 다시 내지 않는다 — 실패한 통지의 재시도는 sweep `unnotified_unconfirmed` 몫).
     `exclude` = 판정에서 뺄 배분 id — 명시 `cancel` 의 대상(취소 직전 sweep 이 그것을 먼저 닫지 않게, Issue929 ③).
       계보 구조(부모 보류·다음 배분 창)에는 남긴다 — 취소가 확정되기 전 부모를 먼저 닫지 않는다.
-    prj3#Issue968 — 판정 불가 배분도 unconfirmed 로 낸다(침묵 잔류 금지): ② 워커 퇴근 + 배분 뒤 증거 세션 0 + 유예 경과
-      ① 이슈가 완료 섹션에 있으나 완료 표기 누락(Issue944 — 판정 regex 는 그대로, 감지·통지만). 유예는 출근 유예(Issue814)를 재사용하며
-      정책 판독은 회차당 1회다(키·파일 부재 시 기본값 폴백 — sweep 이 죽지 않게).
     """
     found = []
-    try:
-        grace_s = int(load_policy().get(CHECKIN_GRACE_KEY) or CHECKIN_GRACE_DEFAULT_MIN) * 60
-    except Exception:
-        grace_s = CHECKIN_GRACE_DEFAULT_MIN * 60
     # 🔴 배분↔세션 1:1 (prj3#Issue751_7) — «배분 이후 가장 최근 세션» 은 배분이 하나일 때만 맞다. 같은 봇에
     #   연속 배분 T1·T2 가 있으면 T2 의 세션 하나가 T1 까지 닫았다(Issue753 실측 fbotjob-1790552419).
     #   배분을 생성 순으로 돌며 ① 이미 다른 배분이 가져간 세션은 빼고 ② 같은 워커의 **다음 배분 생성 전까지**
@@ -1139,35 +1127,14 @@ def detect_closures(con: sqlite3.Connection, exclude=()) -> list:
     while True:
         holding = parents_with_live_children(active, closing)
         before = len(found)
-        _detect_pass(con, active, claimed, holding, handled, closing, found, unconf_claim, grace_s)
+        _detect_pass(con, active, claimed, holding, handled, closing, found, unconf_claim)
         if len(found) == before:
             break
     return found
 
 
-def _detect_pass(con, active, claimed, holding, handled, closing, found, unconf_claim,
-                 grace_s=CHECKIN_GRACE_DEFAULT_MIN * 60):
-    """`detect_closures` 의 한 회차 — 판정 본문(아래 주석은 그대로 계약이다).
-
-    prj3#Issue968 — 판정 불가를 침묵 잔류시키지 않는다. 이 함수가 unconfirmed 판정의 단일 지점이다:
-      ② 증거 세션 0(rows 0) + 유예 경과 · ① 이슈 배분이 완료 섹션에 있으나 표기 누락 → `verdict: unconfirmed`.
-      ident_kind 없는 구 기록·사후 기록은 종전 판정 그대로(소급 추정 금지). 겹치면 ①(더 구체적) 사유.
-    """
-    def _unconf(job, pl, wid, row, why):
-        uc = _unconfirmed()
-        if row is not None:
-            claimed.add(row["id"])
-        handled.add(job["id"])
-        if job["status"] == "blocked" and pl.get("blocked_by") == uc:
-            return   # 이미 미확인 — 재방출 금지(멱등). 실패한 통지의 재시도는 sweep 몫(`unnotified_unconfirmed`)
-        found.append({
-            "verdict": uc, "job_id": job["id"], "from_status": job["status"],
-            "issue": pl.get("issue"), "role": pl.get("role"), "owner": job.get("owner"),
-            "worker_bot_id": wid, "session_job_id": row["id"] if row is not None else None,
-            "completed_at": row["created_at"] if row is not None else None,
-            "reason": why,
-        })
-
+def _detect_pass(con, active, claimed, holding, handled, closing, found, unconf_claim):
+    """`detect_closures` 의 한 회차 — 판정 본문(아래 주석은 그대로 계약이다)."""
     for i, job in enumerate(active):
         if job["id"] in handled:
             continue
@@ -1201,26 +1168,6 @@ def _detect_pass(con, active, claimed, holding, handled, closing, found, unconf_
         if row is None and rows and (job["payload"] or {}).get("ident_kind") == "issue":
             row = rows[-1]   # 이슈 배분 — 아래 이슈 완료 대조가 독립 증거다(한 세션이 이슈 둘을 끝낼 수 있다)
         if row is None:
-            # prj3#Issue968 ② — 증거 세션 0: 배분 뒤 몸체가 뜨지 않은 채 워커만 퇴근. 유예(출근 유예 재사용)가 지나면 상향
-            pl = job["payload"]
-            kind = pl.get("ident_kind")
-            if rows or kind not in ("topic", "issue") or time.time() - since < grace_s:
-                continue
-            if job["status"] != "open":
-                continue   # 침묵하던 것은 open 뿐이다 — blocked(worker_died·quota·에스컬레이션)는 이미 드러났고 사유·재배분 명령을 덮지 않는다
-            if pl.get("spawn_pending"):
-                continue   # prj3#Issue904 기동 대기 — tick `spawn --pending` 은 open 만 띄운다. 막히면 watch `spawn_pending` 적체가 드러낸다
-            if con.execute("SELECT 1 FROM job WHERE kind = ? AND owner = ? AND created_at >= ? LIMIT 1",
-                           (SESSION_JOB_KIND, wid, since)).fetchone():
-                continue   # 몸체는 떴다(done 아닌 세션 — 쿼터·API 오류 종료 등). watch quota·재시도 경로 몫(prj3#Issue743)
-            why = "증거 세션 없음 — 배분 뒤 몸체 미기동"
-            if kind == "issue":
-                canon = _canon_issue(pl.get("issue") or "")
-                if issue_completed_in(pl.get("cwd"), canon) is True:
-                    continue   # 이슈 완료가 독립 증거 — 종전대로
-                if issue_done_unmarked(pl.get("cwd"), canon) is True:
-                    why = "완료 섹션이나 완료 표기 누락 — Issue944"   # ① 우선(더 구체적)
-            _unconf(job, pl, wid, None, why)
             continue
         # 🔴 배분 단위 확인 (prj3#Issue644 ⑥ — 2026-09-19 거짓 완료 실발생 대응)
         #   위 판정은 **세션 단위**다. 한 워커가 배분 3건을 물고 있으면 세션 done 기록
@@ -1239,15 +1186,22 @@ def _detect_pass(con, active, claimed, holding, handled, closing, found, unconf_
             canon = _canon_issue(pl.get("issue") or "")
             verdict = issue_completed_in(pl.get("cwd"), canon)
             if verdict is not True:
-                # prj3#Issue968 ① — 완료 섹션에 있는데 표기 누락이면 영구 open 대신 상향(판정은 그대로, 통지만)
-                if issue_done_unmarked(pl.get("cwd"), canon) is True:
-                    _unconf(job, pl, wid, row, "완료 섹션이나 완료 표기 누락 — Issue944")
                 continue
             evidence = {"kind": "issue", "issue": canon}
         elif pl.get("ident_kind") == "topic":
             evidence, why = topic_evidence(con, job, since, closing)
             if evidence is None:
-                _unconf(job, pl, wid, row, why)   # 이미 미확인이면 증적이 올 때까지 둔다(멱등)
+                uc = _unconfirmed()
+                claimed.add(row["id"])
+                handled.add(job["id"])
+                if job["status"] == "blocked" and pl.get("blocked_by") == uc:
+                    continue   # 이미 미확인 — 증적이 올 때까지 둔다. 실패한 통지의 재시도는 sweep 몫(`unnotified_unconfirmed`)
+                found.append({
+                    "verdict": uc, "job_id": job["id"], "from_status": job["status"],
+                    "issue": pl.get("issue"), "role": pl.get("role"), "owner": job.get("owner"),
+                    "worker_bot_id": wid, "session_job_id": row["id"], "completed_at": row["created_at"],
+                    "reason": why,
+                })
                 continue
         claimed.add(row["id"])
         handled.add(job["id"])
