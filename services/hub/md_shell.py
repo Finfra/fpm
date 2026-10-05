@@ -17,20 +17,25 @@ Claude 는 `.md` 저장까지만 담당하고, 표장(chrome)은 이 모듈이 �
   서버 셸/shim 이 아닌 주입 스크립트는 nonce 부재로 실행 불가(2중 방어).
 * CDN 실패 시 graceful degradation — 원문 md 를 <pre> 평문 노출(fail-soft).
 
-mermaid 는 server.py `MERMAID_RUNTIME`(Issue244 pinned UMD·luminance 테마) 과
-동일 계약을 클라이언트 렌더 시점에 적용한다 — 코드펜스 ```mermaid → 렌더 후
-`<pre class="mermaid">` 승격 + 명시 `mermaid.run()` (startOnLoad race 없음).
-핀 버전을 올릴 때는 server.py MERMAID_RUNTIME 과 **함께** 올릴 것.
+mermaid 는 이 모듈의 `CDN_MERMAID`·`MERMAID_JS` 가 **단일 출처**다(Issue569) —
+server.py `MERMAID_RUNTIME`(htm 경로)도 이 둘로 조립한다. 코드펜스 ```mermaid →
+렌더 후 `<pre class="mermaid">` 승격 + `hubMermaid.run()`(파싱 선검사·라벨 보정·
+원문 폴백, startOnLoad race 없음). 버전은 여기 한 곳에서만 올린다.
 """
 import html
 import json
 import re
 import secrets
 
-# 핀 고정 CDN (server.py MERMAID_RUNTIME 의 mermaid@11 과 보조 맞춤)
+# 핀 고정 CDN — mermaid 는 server.py MERMAID_RUNTIME 도 이 값을 쓴다(Issue569 단일 출처)
 CDN_MARKED = "https://cdn.jsdelivr.net/npm/marked@12.0.2/lib/marked.umd.min.js"
 CDN_PURIFY = "https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"
-CDN_MERMAID = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"
+# Issue569: 정확 버전으로 고정한다. 종전 `mermaid@11` 은 부동 major 태그라 jsDelivr 가
+#   조용히 최신 11.x 를 내려줬고, 11.6.0 의 edge-ID 문법(`e1@-->`)이 라벨 속 `x@` 를
+#   가로채 멀쩡하던 다이어그램이 통째로 오류 박스가 됐다(10.9.1·11.4.1 OK / 11.6.0+ ERR
+#   실측). 11.17.2 = 고정 시점 서빙본이라 오늘 동작 변화는 없다. 올릴 때는
+#   test_mermaid_heal_issue569.js 와 실 브라우저 대조를 함께 돌린다.
+CDN_MERMAID = "https://cdn.jsdelivr.net/npm/mermaid@11.17.2/dist/mermaid.min.js"
 CDN_HLJS = "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/highlight.min.js"
 CDN_HLJS_CSS = "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/styles/github.min.css"
 CDN_HLJS_CSS_DARK = "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/styles/github-dark.min.css"
@@ -133,6 +138,190 @@ hr { border: none; border-top: 1px solid #d8dee4; margin: 1.6em 0; }
 }
 """
 
+# Issue569: hub mermaid 안전 렌더 — md 셸(RENDER_JS)과 htm 런타임(server.MERMAID_RUNTIME)이
+#   **같은 한 벌**을 싣는다. 전역 window.hubMermaid = {quoteLabels, plan, run}.
+#   저작 원문을 mermaid.run() 에 그대로 넘기면 라벨 글자 하나로 다이어그램 전체가
+#   «Syntax error» 박스가 된다(prj3#Issue183·733, 본 이슈 — 세 번째). 그래서 파싱을 먼저 보고
+#     ① 통과 → 원문 그대로 렌더 (유효한 다이어그램은 절대 건드리지 않는다)
+#     ② 실패 → flowchart/graph 의 따옴표 없는 라벨을 "…" 로 감싼 보정본이 파싱되면 그것으로
+#     ③ 그래도 실패 → 오류 박스 대신 원문 코드블록 + 오류 첫 줄
+#   판정은 테스트가 파서 대역으로 돌릴 수 있게 DOM 과 분리한 순수 함수(plan)다.
+#   ⚠️ 인라인 JS 0줄이 설계인 sh/fpm-htm-mermaid-normalize.py(file://·VSCode preview)는
+#   이 보정을 실을 수 없다 — 서빙 경로(md 셸·htm)만 덮는다.
+MERMAID_JS = r"""
+(function () {
+  'use strict';
+  if (window.hubMermaid) return;
+
+  // 여는 괄호 → 닫는 괄호. 긴 것부터 맞춰야 `((원))` 이 `(` 로 잘려 모양이 바뀌지 않는다
+  var SHAPES = [['(((', ')))'], ['((', '))'], ['([', '])'], ['[[', ']]'], ['[(', ')]'],
+    ['{{', '}}'], ['[', ']'], ['(', ')'], ['{', '}']];
+  var ID = /^[A-Za-z0-9_]+/;
+  // 라벨이 아닌 값(색·URL·클래스명)을 싣는 줄은 보정하지 않는다
+  var SKIP_LINE = /^(%%|classDef\b|class\b|style\b|linkStyle\b|click\b)/;
+
+  function isFlowchart(src) {
+    var lines = src.split('\n');
+    for (var i = 0; i < lines.length; i++) {
+      var t = lines[i].trim();
+      if (!t || t.indexOf('%%') === 0) continue;
+      return /^(flowchart|graph)\b/.test(t);
+    }
+    return false;
+  }
+
+  // 한 줄에서 따옴표 없는 노드 라벨 `ID<열기>…<닫기>` 와 edge 라벨 `|…|` 를 "…" 로 감싼다.
+  // 이미 따옴표인 구간은 통째로 건너뛰고, 라벨 안에 " 가 있으면(감쌀 수 없음) 그대로 둔다
+  function quoteLine(line) {
+    var out = '', i = 0, n = line.length;
+    while (i < n) {
+      var c = line.charAt(i);
+      if (c === '"') {
+        var q = line.indexOf('"', i + 1);
+        if (q < 0) return out + line.slice(i);
+        out += line.slice(i, q + 1); i = q + 1; continue;
+      }
+      if (c === '|') {
+        var p = line.indexOf('|', i + 1);
+        var lab = p > i ? line.slice(i + 1, p) : '';
+        if (lab.trim() && lab.indexOf('"') < 0) { out += '|"' + lab + '"|'; i = p + 1; continue; }
+        out += c; i++; continue;
+      }
+      var m = ID.exec(line.slice(i));
+      // 앞 글자가 ID 문자·@ 면 노드 ID 의 시작이 아니다 (`e1@-->` 의 e1 등)
+      if (m && !/[A-Za-z0-9_@]/.test(line.charAt(i - 1))) {
+        var end = i + m[0].length, sh = null;
+        for (var k = 0; k < SHAPES.length; k++) {
+          if (line.substr(end, SHAPES[k][0].length) === SHAPES[k][0]) { sh = SHAPES[k]; break; }
+        }
+        var from = sh ? end + sh[0].length : -1;
+        var to = sh && line.charAt(from) !== '"' ? line.indexOf(sh[1], from) : -1;
+        var label = to > from ? line.slice(from, to) : '';
+        if (label.trim() && label.indexOf('"') < 0) {
+          out += line.slice(i, from) + '"' + label + '"' + sh[1];
+          i = to + sh[1].length; continue;
+        }
+        out += m[0]; i = end; continue;
+      }
+      out += c; i++;
+    }
+    return out;
+  }
+
+  function quoteLabels(src) {
+    if (!isFlowchart(src)) return src;
+    return src.split('\n').map(function (line) {
+      return SKIP_LINE.test(line.trim()) ? line : quoteLine(line);
+    }).join('\n');
+  }
+
+  function firstLine(e) {
+    return String((e && e.message) || e || 'parse error').split('\n')[0];
+  }
+
+  // 파서 결과를 «오류 첫 줄 | null» 로 정규화 — 동기 throw·reject·false(suppressErrors) 모두
+  function tryParse(parse, text) {
+    try {
+      return Promise.resolve(parse(text)).then(function (r) {
+        return r === false ? 'parse error' : null;
+      }, firstLine);
+    } catch (e) { return Promise.resolve(firstLine(e)); }
+  }
+
+  // 판정 — keep(원문) · heal(보정본) · fallback(원문 표시 + err)
+  function plan(src, parse) {
+    return tryParse(parse, src).then(function (err) {
+      if (!err) return { mode: 'keep', text: src };
+      var healed = quoteLabels(src);
+      if (healed === src) return { mode: 'fallback', text: src, err: err };
+      return tryParse(parse, healed).then(function (err2) {
+        return err2 ? { mode: 'fallback', text: src, err: err } : { mode: 'heal', text: healed };
+      });
+    });
+  }
+
+  function dedent(s) {
+    var lines = s.replace(/^\n+/, '').split('\n'), min = null;
+    lines.forEach(function (l) {
+      if (!l.trim()) return;
+      var w = /^[ \t]*/.exec(l)[0].length;
+      if (min === null || w < min) min = w;
+    });
+    if (min) lines = lines.map(function (l) { return l.slice(min); });
+    return lines.join('\n').trim();
+  }
+
+  // mermaid.run 이 읽는 것과 같은 원문 — innerHTML 의 엔티티를 풀되 <br> 은 글자로 남긴다
+  function srcOf(el) {
+    var ta = document.createElement('textarea');
+    ta.innerHTML = el.innerHTML.replace(/<br\s*\/?>/gi, '&lt;br/&gt;');
+    return dedent(ta.value);
+  }
+
+  function showSource(el, text, err) {
+    var box = document.createElement('div');
+    box.className = 'mermaid-fallback';
+    var note = document.createElement('div');
+    note.className = 'mermaid-fallback-note';
+    note.style.cssText = 'font-size:.82rem;color:#bf8700;margin:.3rem 0';
+    note.textContent = '⚠ mermaid 구문 오류 — 원문을 표시합니다 · ' + err;
+    var pre = document.createElement('pre');
+    var code = document.createElement('code');
+    code.textContent = text;
+    pre.appendChild(code);
+    box.appendChild(note);
+    box.appendChild(pre);
+    el.replaceWith(box);
+  }
+
+  // Issue245: 테마는 OS prefers-color-scheme 가 아니라 실제 페이지 배경 luminance 로
+  function darkBg() {
+    try {
+      var c = getComputedStyle(document.body).backgroundColor || '';
+      var m = c.match(/[0-9.]+/g);
+      if (!m) return false;
+      if (m.length > 3 && parseFloat(m[3]) === 0) return false;
+      return (0.299 * +m[0] + 0.587 * +m[1] + 0.114 * +m[2]) < 128;
+    } catch (e) { return false; }
+  }
+
+  function runOnce(root) {
+    var mm = window.mermaid;
+    if (!mm) return;
+    try {
+      mm.initialize({ startOnLoad: false, theme: darkBg() ? 'dark' : 'neutral' });
+    } catch (e) { console.error('mermaid initialize failed', e); }
+    // 노드는 호출 시점에 한 번만 잡는다 — 라이브 뷰는 블록마다 run() 을 부른다
+    var nodes = [].filter.call((root || document).querySelectorAll('.mermaid'), function (el) {
+      return !el.hasAttribute('data-processed') && !el.hasAttribute('data-hub-mmd');
+    });
+    if (!nodes.length) return;
+    nodes.forEach(function (el) { el.setAttribute('data-hub-mmd', '1'); });
+    if (typeof mm.parse !== 'function') return mm.run({ nodes: nodes });
+    return Promise.all(nodes.map(function (el) {
+      return plan(srcOf(el), function (t) { return mm.parse(t); }).then(function (r) {
+        if (r.mode === 'fallback') { showSource(el, r.text, r.err); return null; }
+        if (r.mode === 'heal') { el.textContent = r.text; el.setAttribute('data-hub-mmd', 'healed'); }
+        return el;
+      });
+    })).then(function (els) {
+      var ok = els.filter(Boolean);
+      if (ok.length) return mm.run({ nodes: ok });
+    });
+  }
+
+  // 호출을 직렬화한다 — 겹친 run 이 같은 노드를 두 번 그리거나 id 가 부딪히지 않게
+  var chain = Promise.resolve();
+  function run(root) {
+    chain = chain.then(function () { return runOnce(root); })
+      .catch(function (e) { console.error('mermaid run failed', e); });
+    return chain;
+  }
+
+  window.hubMermaid = { quoteLabels: quoteLabels, plan: plan, run: run };
+})();
+"""
+
 # md → DOM 렌더 파이프라인. 전역 window.hubRenderMd(el, mdText, docAbs) 1개 노출 —
 # M1 아카이브 셸은 1회 호출, M2 라이브 셸은 완결 블록 append 시마다 호출한다.
 RENDER_JS = """
@@ -183,26 +372,6 @@ RENDER_JS = """
     return found;
   }
 
-  // MERMAID_RUNTIME(Issue244·245) 과 동일 계약 — luminance 테마 + 명시 run()
-  function darkBg() {
-    try {
-      var c = getComputedStyle(document.body).backgroundColor || '';
-      var m = c.match(/[0-9.]+/g);
-      if (!m) return false;
-      if (m.length > 3 && parseFloat(m[3]) === 0) return false;
-      return (0.299 * +m[0] + 0.587 * +m[1] + 0.114 * +m[2]) < 128;
-    } catch (e) { return false; }
-  }
-
-  function runMermaid() {
-    if (!window.mermaid) return;
-    try {
-      window.mermaid.initialize({ startOnLoad: false, theme: darkBg() ? 'dark' : 'neutral' });
-      window.mermaid.run();
-    } catch (e) { console.error('mermaid run failed', e);
-    }
-  }
-
   window.hubRenderMd = function (el, mdText, docAbs) {
     // graceful degradation — CDN 실패 시 원문 평문 노출 (fail-soft)
     if (!window.marked || !window.DOMPurify) {
@@ -227,7 +396,8 @@ RENDER_JS = """
         try { window.hljs.highlightElement(b); } catch (e) { /* no-op */ }
       });
     }
-    if (hasMermaid) runMermaid();
+    // 공용 MERMAID_JS(Issue569) — 파싱 선검사·라벨 보정·원문 폴백
+    if (hasMermaid && window.hubMermaid) window.hubMermaid.run();
   };
 })();
 """
@@ -235,9 +405,38 @@ RENDER_JS = """
 # 정규식은 파이썬 상수가 단일 출처 — 테스트가 같은 값을 `re` 로 직접 검증한다
 # (JS 리터럴에 하드코딩하면 테스트와 실제 주입값이 갈릴 수 있다).
 RENDER_JS = RENDER_JS.replace("__ALLOWED_URI_REGEXP__", ALLOWED_URI_REGEXP)
+# 같은 <script nonce> 안에서 hubRenderMd 보다 먼저 정의되게 앞에 붙인다
+RENDER_JS = MERMAID_JS + RENDER_JS
 
 
-def render_header(title: str, proj_cwd: str, proj_label: str, sid: str = "") -> str:
+# Issue542: 세션 버튼 에디터 메타 — 아이콘(/editor-icon/<ed>.png)이 404 면 emoji 로 폴백
+_EDITOR_META = {"vscode": ("VSCode", "\U0001F19A"), "zed": ("Zed", "\U0001F169")}
+
+# Issue542: 헤더 클릭 바인딩. md/라이브 셸 CSP 는 `script-src 'nonce-…'` 라 인라인 onclick·
+#   onerror 가 **차단**된다(종전 🆚 세션·📁 배지가 무동작이던 원인) → nonce 스크립트로 붙인다.
+#   ⚠️ 본문에 `<` 를 쓰지 말 것 — 테스트가 `<script nonce>…open-session` 한 덩어리로 찾는다.
+HEADER_JS = """(function(){
+var h=document.querySelector('header');if(!h)return;
+function post(u,b){return fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},
+body:JSON.stringify(b)}).then(function(r){return r.json().then(function(j){
+if(!r.ok)throw new Error(j.error||('HTTP '+r.status));return j;});});}
+var pb=h.querySelector('.proj-badge[data-cwd]');
+if(pb)pb.addEventListener('click',function(e){e.preventDefault();
+post('/open-project',{cwd:pb.dataset.cwd}).then(function(j){if(j.uri)window.location.href=j.uri;})
+.catch(function(err){alert('프로젝트 열기 실패: '+err.message);});});
+var sl=h.querySelector('.sess-link[data-sid]');if(!sl)return;
+var ico=sl.querySelector('img.sess-ico');
+function fb(){if(ico&&ico.parentNode){ico.replaceWith(document.createTextNode(ico.dataset.fallback||''));ico=null;}}
+if(ico){ico.addEventListener('error',fb);if(ico.complete&&ico.naturalWidth===0)fb();}
+sl.addEventListener('click',function(e){e.preventDefault();
+post('/open-session',{cwd:sl.dataset.cwd,sid:sl.dataset.sid}).then(function(j){
+if(j.uri){if(j.folder_uri){try{window.open(j.folder_uri);}catch(_){}}window.location.href=j.uri;}})
+.catch(function(err){alert('세션 이동 실패: '+err.message);});});
+})();"""
+
+
+def render_header(title: str, proj_cwd: str, proj_label: str, sid: str = "",
+                  editor: str = "vscode", can_open: bool = True) -> str:
     """canonical hub 헤더 마크업 (`_synthesize_hub_header` 와 동일 구조·클래스).
 
     htm 경로는 저작 문서에 헤더가 없을 때 서버가 첫 `<h1>` 을 승격해 합성하지만,
@@ -245,27 +444,27 @@ def render_header(title: str, proj_cwd: str, proj_label: str, sid: str = "") -> 
     셸이 헤더를 직접 갖는다. 클래스는 shim 계약(`.header-actions`·`.hub-link`·
     `.sess-link`·`.close-btn`)을 그대로 지켜 COPY_LINK/SID_COPY/HUB_LINK/CLOSE
     shim 이 htm 문서와 동일하게 동작한다. CSS 는 서버가 `HUB_HEADER_CSS` 를 주입.
+
+    Issue542: 세션 버튼은 `editor`·`can_open`(서버 `_session_open_mode` 판정)으로 갈린다 —
+    열 수 있으면 [아이콘 열기], 없으면(zed·terminal) [아이콘]만이고 클릭은 앱 포커스.
+    클릭 동작은 인라인 핸들러가 아니라 `HEADER_JS`(nonce)가 `data-*` 를 읽어 붙인다.
     """
     label = html.escape(proj_label or "project")
     cwd_esc = html.escape(proj_cwd or "")
-    onclick = (
-        "event.preventDefault();fetch('/open-project',{method:'POST',"
-        "headers:{'Content-Type':'application/json'},"
-        "body:JSON.stringify({cwd:'" + cwd_esc + "'})})"
-        ".then(function(r){return r.json();}).then(function(j){if(j&&j.error)"
-        "alert('VSCode 열기 실패: '+j.error);})"
-        ".catch(function(){alert('hub 서버 미응답 — VSCode 열기 실패');});"
-    )
     sess = ""
     if sid:
-        # 🆚 세션 버튼 — onclick 의 sid:'…' 은 SID_COPY_SHIM 이 📋 버튼을 만들 때 읽는 계약
         sid_esc = html.escape(sid)
+        ed = editor if editor in _EDITOR_META else "vscode"
+        ed_name, ed_emoji = _EDITOR_META[ed]
+        tip = (f"{ed_name} 에서 이 세션 열기" if can_open
+               else f"{ed_name} 앱으로 이동 (세션 직접 열기 미지원)")
+        text = " 열기" if can_open else ""
         sess = (
-            '    <a class="sess-link" href="#" title="이 문서를 만든 세션 열기" '
-            "onclick=\"event.preventDefault();fetch('/open-session',{method:'POST',"
-            "headers:{'Content-Type':'application/json'},"
-            "body:JSON.stringify({sid:'" + sid_esc + "'})}).catch(function(){});\">"
-            "\U0001F19A 세션</a>\n"
+            f'    <a class="sess-link" href="#" title="{tip}" data-sid="{sid_esc}" '
+            f'data-cwd="{cwd_esc}" data-editor="{ed}" data-open="{1 if can_open else 0}">'
+            f'<img class="sess-ico" src="/editor-icon/{ed}.png" alt="{ed_name}" '
+            f'data-fallback="{ed_emoji}" style="height:1.1em;vertical-align:-0.2em;">'
+            f"{text}</a>\n"
         )
     return (
         "<header>\n"
@@ -273,8 +472,8 @@ def render_header(title: str, proj_cwd: str, proj_label: str, sid: str = "") -> 
         '<img src="/fpm-icon.png" alt="Hub" style="height:1.2em;vertical-align:-0.25em;"></a>\n'
         f"  <h1>{html.escape(title or 'hub md doc')}</h1>\n"
         '  <nav class="header-actions">\n'
-        f'    <a class="proj-badge" href="#" title="클릭 → VSCode 로 {label} 열기" '
-        f'onclick="{onclick}">\U0001F4C1 {label}</a>\n'
+        f'    <a class="proj-badge" href="#" title="클릭 → 에디터로 {label} 열기" '
+        f'data-cwd="{cwd_esc}">\U0001F4C1 {label}</a>\n'
         f"{sess}"
         '    <button type="button" class="close-btn" title="이 문서 탭 닫기" '
         'onclick="window.close()">✕</button>\n'
@@ -306,6 +505,15 @@ LIVE_CSS = """
   padding: .1rem .6rem; margin: .15rem .3rem .15rem 0; }
 .pending { color: #57606a; white-space: pre-wrap; opacity: .75;
   border-left: 3px solid #d8dee4; padding-left: .7rem; margin: .5rem 0; }
+.unit { margin: .5rem 0; }
+.unit-head { cursor: pointer; user-select: none; font-size: .82rem; color: #57606a;
+  display: flex; gap: .45rem; align-items: center; }
+.unit-head::before { content: "▾"; width: .8rem; flex: 0 0 auto; }
+.unit.folded > .unit-head::before { content: "▸"; }
+.unit.folded > .unit-body { display: none; }
+.unit.log > .unit-body { border-left: 2px solid #d8dee4; padding-left: .7rem; }
+.doc-inline { border-left: 3px solid #0969da; padding: .2rem 0 .2rem .9rem; margin: .7rem 0; }
+.doc-inline .doc-link { font-size: .82rem; color: #0969da; text-decoration: none; }
 #form-slot { margin: .8rem 0 0; }
 .form-card { border: 2px solid #bf8700; border-radius: 10px; overflow: hidden;
   background: #fff8e5; }
@@ -323,6 +531,8 @@ LIVE_CSS = """
   .turn.latest { border-color: #539bf5; }
   .act { background: #2a313a; color: #adbac7; }
   .pending { border-color: #333b45; color: #8b949e; }
+  .doc-inline { border-color: #539bf5; } .doc-inline .doc-link { color: #539bf5; }
+  .unit-head { color: #8b949e; } .unit.log > .unit-body { border-color: #333b45; }
 }
 """
 
@@ -357,7 +567,16 @@ LIVE_JS = """
     stat.textContent = text;
   }
 
-  function newTurn(question) {
+  function fmtTs(ts) {
+    // 블록이 실어 온 원본 시각(JSONL timestamp)이 1순위다. 현재 시각으로 찍으면
+    // 재동기화 때 과거 블록이 전부 같은 초로 보여, 시각이 서로 다른 기록이
+    // «방금 한꺼번에 쏟아진 중복» 으로 읽힌다.
+    var d = ts ? new Date(ts) : null;
+    if (!d || isNaN(d.getTime())) d = new Date();
+    return d.toLocaleTimeString();
+  }
+
+  function newTurn(question, ts) {
     [].forEach.call(root.querySelectorAll('.turn'), function (t) {
       t.classList.remove('latest');
       t.classList.add('folded');
@@ -371,27 +590,55 @@ LIVE_JS = """
     q.textContent = question || '(진행 중)';
     var n = document.createElement('span');
     n.className = 'n';
-    n.textContent = new Date().toLocaleTimeString();
+    n.textContent = fmtTs(ts);
     head.appendChild(q); head.appendChild(n);
     head.addEventListener('click', function () { d.classList.toggle('folded'); });
     var body = document.createElement('div');
     body.className = 'turn-body';
     d.appendChild(head); d.appendChild(body);
-    // 신착 상단 (inbox 정렬) — 사람이 스크롤로 따라가지 않는다
-    root.insertBefore(d, root.firstChild);
+    root.appendChild(d);
     curTurn = body;
     return body;
   }
 
-  function body() { return curTurn || newTurn(''); }
+  function body(ts) { return curTurn || newTurn('', ts); }
+
+  function unit(tb, cls, folded) {
+    var u = document.createElement('div');
+    u.className = 'unit ' + cls + (folded ? ' folded' : '');
+    var h = document.createElement('div');
+    h.className = 'unit-head';
+    var c = document.createElement('div');
+    c.className = 'unit-body';
+    h.addEventListener('click', function (e) {
+      if (e.target && e.target.tagName === 'A') return;
+      u.classList.toggle('folded');
+    });
+    u.appendChild(h); u.appendChild(c);
+    tb.appendChild(u);
+    return {u: u, h: h, c: c};
+  }
+
+  // 텍스트·도구 칩이 이어지는 구간을 로그 단위 하나로 묶는다. 문서가 나온 턴에서는 접힌 채 시작한다
+  function logBody(ts) {
+    var tb = body(ts);
+    if (!tb._log) {
+      tb._log = unit(tb, 'log', !!tb._hasDoc);
+      tb._log.n = 0;
+    }
+    tb._log.n += 1;
+    tb._log.h.textContent = '로그 · ' + tb._log.n;
+    return tb._log.c;
+  }
 
   function applyBlock(b) {
-    if (b.kind === 'turn') { newTurn(b.text); return; }
+    if (b.kind === 'turn') { newTurn(b.text, b.ts); return; }
+    if (b.kind === 'doc') { applyDoc(b); return; }
     if (b.kind === 'activity') {
       var a = document.createElement('span');
       a.className = 'act';
       a.textContent = '\\u26a1 ' + b.text;
-      body().appendChild(a);
+      logBody(b.ts).appendChild(a);
       // 활동 칩도 DOM 을 늘린다 — 도구 호출이 많은 턴에서는 텍스트 블록보다
       // 이쪽이 훨씬 자주 오므로 여기서도 열화를 본다(텍스트에서만 보면 늦게 잡힌다)
       checkDegrade(0);
@@ -399,10 +646,61 @@ LIVE_JS = """
     }
     // 완결 블록만 도착하므로 append 렌더 (매 poll 전체 재파싱 금지)
     var holder = document.createElement('div');
-    body().appendChild(holder);
+    logBody(b.ts).appendChild(holder);
     var t0 = (window.performance && performance.now) ? performance.now() : 0;
     window.hubRenderMd(holder, b.text, '');
     if (t0) checkDegrade(performance.now() - t0);
+  }
+
+  // 세션이 만든 hub 문서 — 새 탭 대신 이 창 안에 펼친다
+  function applyDoc(b) {
+    var tb = body(b.ts);
+    // 문서가 이 턴의 본문이다 — 앞선 로그 단위는 접고, 뒤에 오는 로그도 접힌 채 시작한다
+    tb._hasDoc = true;
+    tb._log = null;
+    [].forEach.call(tb.querySelectorAll('.unit.log'), function (u) { u.classList.add('folded'); });
+    var d = unit(tb, 'doc doc-inline', false);
+    var link = document.createElement('a');
+    link.className = 'doc-link';
+    link.href = '/md-doc?path=' + encodeURIComponent(b.text);
+    link.target = '_blank';
+    link.textContent = '\\ud83d\\udcc4 ' + b.text.split('/').pop();
+    d.h.appendChild(link);
+    var holder = document.createElement('div');
+    d.c.appendChild(holder);
+    // Write 기록은 파일이 실제로 써지기 전에 도착할 수 있다 — 짧게 몇 번 다시 묻는다
+    var tries = 0;
+    function load() {
+      tries += 1;
+      fetch(CFG.docRaw + encodeURIComponent(b.text), { cache: 'no-store' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .catch(function () { return null; })
+        .then(function (j) {
+          if (j && typeof j.md === 'string') { show(j); return; }
+          if (tries < 6) { setTimeout(load, 1500); return; }
+          holder.textContent = '(문서를 불러오지 못함 — 위 링크로 열기)';
+        });
+    }
+    function show(j) {
+      var md = j.md.replace(/^---\\r?\\n[\\s\\S]*?\\r?\\n---\\r?\\n/, '');
+      var stick = atBottom();
+      var t0 = (window.performance && performance.now) ? performance.now() : 0;
+      window.hubRenderMd(holder, md, j.path || b.text);
+      if (t0) checkDegrade(performance.now() - t0);
+      if (stick) toBottom();
+    }
+    load();
+  }
+
+  // 시간순(아래가 최신)이므로, 사용자가 맨 아래를 보고 있을 때만 새 내용을 따라간다
+  function atBottom() {
+    var de = document.documentElement;
+    if (!de) return false;
+    return (window.innerHeight + window.scrollY) >= de.scrollHeight - 120;
+  }
+  function toBottom() {
+    var de = document.documentElement;
+    if (de && window.scrollTo) window.scrollTo(0, de.scrollHeight);
   }
 
   function reset() {
@@ -465,7 +763,9 @@ LIVE_JS = """
       errCount = 0;
       if (j) {
         epoch = j.epoch || epoch;
+        var stick = since === 0 || atBottom();
         (j.blocks || []).forEach(applyBlock);
+        if (stick && (j.blocks || []).length) toBottom();
         since = j.max_seq || since;
         applyForm(j.pending_form || null);
         setStatus('on', j.pending_form ? '응답 대기'
@@ -519,6 +819,10 @@ LIVE_JS = """
   document.addEventListener('visibilitychange', function () {
     if (!document.hidden && !degraded) poll();
   });
+  // 창이 닫히면 서버에 알린다 — 다음 문서가 이 창을 믿고 탭을 건너뛰지 않게
+  window.addEventListener('pagehide', function () {
+    try { navigator.sendBeacon(CFG.bye, ''); } catch (e) {}
+  });
   setStatus('on', '연결 중');
   poll();
 })();
@@ -527,18 +831,22 @@ LIVE_JS = """
 
 def render_live_shell(title: str, proj_cwd: str, proj_label: str, sid: str,
                       cwd_hash: str, token: str, nonce: str,
-                      display: str = "auto", degrade: dict = None) -> bytes:
+                      display: str = "auto", degrade: dict = None,
+                      editor: str = "vscode", can_open: bool = True) -> bytes:
     """Issue353_2 M2-c: 라이브 뷰 셸 — 아카이브 셸과 **동일한 CSS·렌더 파이프라인**.
 
     `SHELL_CSS` 와 `RENDER_JS`(`window.hubRenderMd`)를 그대로 재사용하고 라이브 전용
     CSS·폴러만 덧댄다. 셸을 2벌로 만들면 스타일 드리프트가 서버 안에서 재발한다.
     """
     t = html.escape(title or "라이브 세션")
-    header = render_header(title, proj_cwd, proj_label, sid)
+    header = render_header(title, proj_cwd, proj_label, sid, editor, can_open)
     degrade = degrade or {}
     cfg = json.dumps({
         "mail": f"/s/{cwd_hash}/{sid}/mail?token={token}",
         "degradeReport": f"/s/{cwd_hash}/{sid}/degrade?token={token}",
+        # Issue532: 인라인 문서 원문(/md-doc 화이트리스트 동일) · 닫힘 beacon
+        "docRaw": "/md-doc?raw=1&path=",
+        "bye": f"/s/{cwd_hash}/{sid}/bye?token={token}",
         "sid": sid,
         "display": display,
         "degrade": {
@@ -568,6 +876,7 @@ def render_live_shell(title: str, proj_cwd: str, proj_label: str, sid: str,
 <script src="{CDN_HLJS}"></script>
 <script src="{CDN_MERMAID}"></script>
 <script nonce="{nonce}">{RENDER_JS}</script>
+<script nonce="{nonce}">{HEADER_JS}</script>
 <script nonce="{nonce}">{LIVE_JS}</script>
 </body>
 </html>"""
@@ -575,7 +884,8 @@ def render_live_shell(title: str, proj_cwd: str, proj_label: str, sid: str,
 
 
 def render_md_shell(md_text: str, title: str, doc_abs: str, nonce: str,
-                    proj_cwd: str = "", proj_label: str = "") -> bytes:
+                    proj_cwd: str = "", proj_label: str = "",
+                    editor: str = "vscode", can_open: bool = True) -> bytes:
     """md 아카이브 문서용 완성 셸 HTML.
 
     md 원문은 JSON 문자열(`<` 이스케이프)로만 실린다 — serve 시점 마크업 불가침.
@@ -589,7 +899,7 @@ def render_md_shell(md_text: str, title: str, doc_abs: str, nonce: str,
     md_json = md_json.replace("<", "\\u003c")
     t = html.escape(title)
     doc_json = json.dumps(doc_abs).replace("<", "\\u003c")
-    header = render_header(title, proj_cwd, proj_label, meta.get("sid", ""))
+    header = render_header(title, proj_cwd, proj_label, meta.get("sid", ""), editor, can_open)
     page = f"""<!doctype html>
 <html lang="ko">
 <head>
@@ -610,6 +920,7 @@ def render_md_shell(md_text: str, title: str, doc_abs: str, nonce: str,
 <script src="{CDN_HLJS}"></script>
 <script src="{CDN_MERMAID}"></script>
 <script nonce="{nonce}">{RENDER_JS}</script>
+<script nonce="{nonce}">{HEADER_JS}</script>
 <script nonce="{nonce}">
 (function () {{
   var md = JSON.parse(document.getElementById('md-src').textContent);

@@ -5,6 +5,9 @@
 
 watch:
   - "services/hub/*.py"
+  # Issue569: services/hub 는 plugins/fpm-core/services/hub 로 가는 심볼릭 링크다. 편집은
+  #   실경로로 들어오므로 위 glob 만으로는 매치되지 않아 재시작이 조용히 no-op 이었다(실측)
+  - "plugins/fpm-core/services/hub/*.py"
 
 # 기존 hub-py-restart.sh 의 kill+respawn 로직을 그대로 이식 (STATE_DIR=/tmp/___pm/claude-htm-server, PID_FILE=.../pid)
 restart_cmd: "PID=$(cat /tmp/___pm/claude-htm-server/pid 2>/dev/null); [ -n \"$PID\" ] && kill \"$PID\" 2>/dev/null; sleep 1; nohup python3 $HOME/_git/___pm/services/hub/server.py >/tmp/___pm/claude-htm-server/stdout.log 2>&1 &"

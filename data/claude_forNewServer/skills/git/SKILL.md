@@ -60,4 +60,5 @@ sh ~/.claude/skills/git/scripts/git_wrapper.sh auto "메시지 내용"
 - **Push**:
     - `Issue.md`에 기록된 마지막 checkpoint(Commit Hash)가 현재 HEAD와 일치하는지 확인.
     - 일치하지 않으면 경고 메시지 출력 (강제 푸시 옵션 없음, 사용자가 직접 해결 권장).
+    - **출고 push**(main·태그 = 배포 트리거)이고 repo 에 `tdd/release.md` 가 있으면 `python3 ~/.claude/sh/release-test-audit.py recheck --repo .` rc 0 을 먼저 확인(`r2: warn` 인 repo 는 경고만, Issue741) — [`release-test-rules`](../../_doc_arch/rules-ondemand/release-test-rules.md) R2 (Issue715). 백업·브랜치 공유 push 는 해당 없음
     - 검증 통과 시 `git push` 실행.

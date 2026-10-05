@@ -3,8 +3,9 @@
 
 규약: 도형은 role 소유(동형), 색은 개체(bot_id → 팔레트 슬롯) 유도. 표준 lib 만.
 카탈로그 형식(사람 편집): `{role}: shape=<도형> base=<#hex> label=<한글> tags=<t1|t2>`
-                          `[origin=<출처>] [origin_seen=<epoch>] [status=archived] [manager=true]`
-  origin (prj3#Issue589) = agent:N | skill:N | plugin:M/N | web:URL | native, 복수는 `|`.
+                          `[origin=<출처>] [origin_seen=<epoch>] [kind=tool] [status=archived] [manager=true]`
+  origin (prj3#Issue589) (prj3#Issue833) = agent:N | skill:N | plugin:M/N | command:N | hook:N | web:URL | native, 복수는 `|`.
+  kind (prj3#Issue636) = tool(도구 래핑 — 배분 0 이 정상) | 부재=bot(기본).
 """
 import argparse, hashlib, json, os, re, sqlite3, sys
 
@@ -15,23 +16,33 @@ CATALOG = os.path.join(ICON_DIR, "catalog.yml")
 
 DEFAULT_CATALOG = """\
 # fbot 아이콘 카탈로그 — 사람 편집 가능.
-# 형식: {role}: shape=<도형> base=<#hex> label=<한글> tags=<t1|t2> [origin=<출처>] [origin_seen=<epoch>] [status=archived] [manager=true]
-# 도형 어휘: star shield hexagon triangle grid check magnifier magnet frame speech venn tag
-# origin (prj3#Issue589): agent:N | skill:N | plugin:M/N | web:URL | native — 복수는 '|'.
+# 형식: {role}: shape=<도형> base=<#hex> label=<한글> tags=<t1|t2> [origin=<출처>] [origin_seen=<epoch>] [kind=tool] [status=archived] [manager=true] [nonexec=true]
+# nonexec (prj3#Issue757): 일을 하지 않고 시키기만 하는 관리직(총괄·팀장) — 배분 채널(지휘 지시문)·쓰기 가드·
+#   환기·인박스 발신 제한의 판정 단일 지점(fbot-org.is_nonexec). manager(명령 수신 — hr 포함)와 다른 축이다.
+# 도형 어휘: star shield hexagon triangle grid check magnifier magnet frame speech venn tag compass wrench broom
+# origin (prj3#Issue589) (prj3#Issue833): agent:N | skill:N | plugin:M/N | command:N | hook:N | web:URL | native — 복수는 '|'.
 #   ⚠️ 값에 공백·따옴표 불가(파서가 split() 기준). 쓰기는 훅 경유만 — 직접 Edit 금지.
 #   origin_seen = drift 판정 기준선(원본을 본 시각). 매뉴얼 mtime 을 기준선으로 쓰지 않는다.
-chief: shape=star base=#B8860B label=총괄핀봇 tags=보고|승인 manager=true origin=native
+# kind (prj3#Issue636): tool = «도구 래핑» 재분류 — 봇 계층 배분을 기대하지 않는다(배분 0 이
+#   정상). 부재 = bot(기본). 기입은 fbot-scout.py set-kind. 엔트리 삭제 금지 — 지우면 같은
+#   승격이 반복된다. 배분 자체는 막지 않는다(lead dispatch --role R 은 그대로 산다).
+chief: shape=star base=#B8860B label=총괄핀봇 tags=보고|승인 manager=true nonexec=true origin=native
 hr: shape=shield base=#2E6E4E label=인사핀봇 tags=채용|게이트 manager=true origin=native
-lead: shape=hexagon base=#3A5FA0 label=팀장핀봇 tags=배분|모니터링 manager=true origin=native
+lead: shape=hexagon base=#3A5FA0 label=팀장핀봇 tags=배분|모니터링 manager=true nonexec=true origin=native
 architect: shape=triangle base=#7A4FA0 label=설계핀봇 tags=설계|점검 origin=native
 planner: shape=grid base=#A0623A label=기획핀봇 tags=plan|task origin=native
 qa: shape=check base=#3A8A8A label=QA핀봇 tags=검증|판정 origin=native
 research: shape=magnifier base=#6E6E3A label=조사핀봇 tags=조사|선례 origin=native
 scout: shape=magnet base=#8A3A5F label=발굴핀봇 tags=직능|발굴 origin=native
-graphic: shape=frame base=#5F8A3A label=도해핀봇 tags=변환|개선 origin=agent:ig-maker
-consult: shape=speech base=#3A6E8A label=자문핀봇 tags=선례|큐레이션 origin=agent:consultant-m
-crosscheck: shape=venn base=#A03A3A label=교차검증핀봇 tags=2차의견|외부LLM origin=skill:agy-diff-reviewer|skill:agy-file-processor|skill:agy-image-describer|skill:agy-scrapper
+graphic: shape=frame base=#5F8A3A label=도해핀봇 tags=변환|개선 origin=agent:ig-maker|skill:ig-maker kind=tool
+consult: shape=speech base=#3A6E8A label=자문핀봇 tags=선례|큐레이션 origin=agent:consultant-m kind=tool
+crosscheck: shape=venn base=#A03A3A label=교차검증핀봇 tags=2차의견|외부LLM origin=skill:agy-diff-reviewer|skill:agy-file-processor|skill:agy-image-describer|skill:agy-scrapper kind=tool
 release: shape=tag base=#8A5A2B label=배포핀봇 tags=배포|릴리즈 origin=native
+advisor: shape=compass base=#3A3A8A label=외부자문핀봇 tags=외부검토|codex origin=skill:codex-arch-reviewer|agent:codex-diff-reviewer|agent:codex-arch-checker|agent:codex-plan-checker|agent:codex-test-auditor|agent:codex-completion-auditor|agent:agy-visual-qa
+contractor: shape=wrench base=#5A3A2A label=외부컨설턴트핀봇 tags=외부작업|patch origin=skill:codex-worker|agent:codex-patcher|agent:codex-migrator
+fileops: shape=broom base=#7A5A6E label=파일작업핀봇 tags=정리|삭제 origin=skill:claude-project-retension|skill:doc-work-archive|skill:proj-refactor
+developer: shape=brackets base=#2A3A3A label=개발핀봇 tags=구현|fix origin=skill:dev-g|skill:tdd-workflow
+manual: shape=book base=#3D2B4F label=매뉴얼핀봇 tags=매뉴얼|개정 origin=native
 """
 
 # 도형: 128x128 viewBox 중앙, 흰색 — role 동형의 실체
@@ -69,6 +80,42 @@ SHAPES = {
     "venn": '<g fill="none" stroke="#fff" stroke-width="7"><circle cx="50" cy="64" r="28"/>'
             '<circle cx="78" cy="64" r="28"/></g>'
             '<path fill="#fff" d="M64 40 A28 28 0 0 1 64 88 A28 28 0 0 1 64 40 Z"/>',
+    # compass — 외부자문핀봇 (prj3#Issue678). 어휘 12종이 전부 사용 중이라 확장(magnet 선례).
+    #   나침반 테두리 + 마름모 바늘 — "바깥에서 방향을 짚어 준다". 바늘 북쪽 절반만 채워
+    #   방향성을 드러낸다(남쪽은 윤곽).
+    "compass": '<g fill="none" stroke="#fff" stroke-width="8"><circle cx="64" cy="64" r="38"/></g>'
+               '<polygon fill="#fff" points="64,34 75,64 53,64"/>'
+               '<polygon fill="none" stroke="#fff" stroke-width="5" stroke-linejoin="round" '
+               'points="53,64 75,64 64,94"/>',
+    # wrench — 외부컨설턴트핀봇 (prj3#Issue678). 스패너 — "직접 손대 고쳐서 납품한다".
+    #   턱(원 + 위쪽 홈, evenodd 로 뚫음)과 손잡이를 세운 뒤 45° 회전.
+    "wrench": '<g transform="rotate(45 64 64)"><path fill="#fff" fill-rule="evenodd" '
+              'd="M44 40 a20 20 0 1 0 40 0 a20 20 0 1 0 -40 0 Z M57 18 h14 v22 h-14 Z"/>'
+              '<rect fill="#fff" x="56" y="54" width="16" height="52" rx="6"/></g>',
+    # broom — 파일작업핀봇 (prj3#Issue758). 어휘 14종이 전부 사용 중이라 확장(magnet 선례).
+    #   빗자루 — "정리·치움". 자루·묶음띠·솔머리를 세워 그린 뒤 35° 회전. 묶음띠와 솔머리
+    #   사이 3px 틈이 배경색으로 비쳐 띠가 구분된다. 솔은 둥근 끝 선 5가닥.
+    "broom": '<g transform="rotate(35 64 64)"><g fill="#fff">'
+             '<rect x="59" y="18" width="10" height="46" rx="5"/>'
+             '<rect x="48" y="62" width="32" height="8" rx="3"/>'
+             '<polygon points="50,73 78,73 86,88 42,88"/></g>'
+             '<g stroke="#fff" stroke-width="6" stroke-linecap="round">'
+             '<line x1="45" y1="86" x2="37" y2="104"/><line x1="55" y1="86" x2="51" y2="104"/>'
+             '<line x1="64" y1="86" x2="64" y2="104"/><line x1="73" y1="86" x2="77" y2="104"/>'
+             '<line x1="83" y1="86" x2="91" y2="104"/></g></g>',
+    # brackets — 개발핀봇 (prj3#Issue757 T2). 어휘 15종이 전부 사용 중이라 확장(broom 선례).
+    #   코드 괄호 `< / >` — "명세된 변경의 집행". wrench(외부 작업)·grid(기획)와 겹치지 않게
+    #   선 도형으로 그린다. 발굴핀봇 제안 원안 그대로.
+    "brackets": '<g stroke="#fff" stroke-width="11" fill="none" stroke-linecap="round" '
+                'stroke-linejoin="round"><polyline points="46,42 26,64 46,86"/>'
+                '<polyline points="82,42 102,64 82,86"/><line x1="70" y1="34" x2="58" y2="94"/></g>',
+    # book — 매뉴얼핀봇 (prj3#Issue757 T12). 어휘 16종이 전부 사용 중이라 확장(brackets 선례).
+    #   펼친 책 — "매뉴얼 본문". 양쪽 쪽에 글줄 3개씩을 evenodd 구멍으로 뚫고 책등은 8px 틈으로 둔다.
+    #   발굴핀봇 제안 원안 그대로(원 중심에서 최대 51.9 — r=60 안).
+    "book": '<path fill="#fff" fill-rule="evenodd" d="M60 38 C50 31 38 29 24 31 V91 C38 89 50 91 60 98 Z '
+            'M32 48 h20 v4 h-20 Z M32 60 h20 v4 h-20 Z M32 72 h20 v4 h-20 Z '
+            'M68 38 C78 31 90 29 104 31 V91 C90 89 78 91 68 98 Z '
+            'M76 48 h20 v4 h-20 Z M76 60 h20 v4 h-20 Z M76 72 h20 v4 h-20 Z"/>',
 }
 
 
@@ -252,7 +299,7 @@ def cmd_gen(a):
 #   카탈로그는 평탄 kv 라 공백이 곧 필드 구분, 개행이 곧 행 구분이다 — 값에 둘 중
 #   하나만 들어가도 파일 구조가 바뀐다. 값싼 자리는 쓰기 직전 여기다.
 _RESERVED_KEYS = ("shape=", "base=", "label=", "tags=", "origin=", "origin_seen=",
-                  "status=", "manager=")
+                  "status=", "manager=", "kind=")
 
 
 def _safe_field(name, value):
@@ -424,7 +471,8 @@ def main():
     r.add_argument("--label", required=True)
     r.add_argument("--tags", default="")
     r.add_argument("--origin", default="",
-                   help="재료 출처 — agent:N|skill:N|plugin:M/N|web:URL|native (prj3#Issue589)")
+                   help="재료 출처 — agent:N|skill:N|plugin:M/N|command:N|hook:N|web:URL|native "
+                        "(prj3#Issue589, prj3#Issue833)")
     a = p.parse_args()
     if a.cmd == "check-default":
         # prj3#Issue568 — yml 이 SSOT, DEFAULT 는 yml 부재 시 부트스트랩 전용. 두 벌이 갈리면 fail-loud.

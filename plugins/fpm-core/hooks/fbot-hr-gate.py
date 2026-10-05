@@ -17,12 +17,20 @@ CLI (계약 그대로)
     status
           이번 달 예산 소진·동시 상주 수·limit 출력.
 
+종료코드 계약 (prj3#Issue930) — 호출자는 «거부» 와 «게이트 호출 불능» 을 이 숫자로 가른다
+    0  허가·성공
+    1  거부 — 판정 ①~⑤ 거부 · 입력이 가리키는 대상 부재(미등록 봇·미등록 parent) · parent 순환
+    2  사용법 오류 — argparse(인자 누락·형식 오류·알 수 없는 서브커맨드) · CLI 인자 조합 위반
+    3  내부 오류 — 판정 불능(DB 오류·레지스트리·policy·카탈로그 로드 실패·하위 호출 실패·예기치 못한 예외).
+       허가가 아니다 — 호출자는 차단한다. 일시 DB 잠금은 읽기 전용 명령(check·status)만 1회 재시도한 뒤 3
+    `Reject` 의 첫 인자(판정 번호 ①~⑤)는 종료코드가 아니다 — 종료코드는 `Reject.rc` 가 지닌다(기본 1).
+    ⚠️ 종전에는 미등록·순환·DB 오류가 argparse 와 같은 2 라 `~/.bin/fpm-do` 가 거부를 «호출 불능» 으로 읽고 통과시켰다.
+
 설계 원칙 (fbot-state.py 승계)
 * 표준 라이브러리만 사용(무의존). policy.yml·catalog.yml 은 평탄 키라 정규식으로 읽는다.
 * fail-loud: 거부는 `판정 ③ 거부: <사유>` 형식(판정 번호+사유) + exit 1. silent fail 금지.
-* 예산 차감은 BEGIN IMMEDIATE 안에서 상한 재검증 후 증분(다중 프로세스 동시 hire 경쟁 대비).
-* 예산 원장: registry.kv ns=`fbot:budget` key=YYYY-MM — 신규 월 키 생성이 곧 리셋(리셋 잡 없음).
-* 상한 수치는 aoa policy.yml `fbot_*` 3키가 SSOT — 하드코딩 금지.
+* 채용 원장: registry.kv ns=`fbot:budget` key=YYYY-MM — 월별 채용 **집계**(차단 아님, prj3#Issue697).
+* 상한 수치는 aoa policy.yml `fbot_*` 2키(깊이·동시 상주)가 SSOT — 하드코딩 금지.
 * `AOA_MEMORY_DIR` env 존중(fbot-state.py 와 동일 방식).
 """
 
@@ -43,8 +51,12 @@ DEFAULT_AOA_DIR = os.path.join(os.path.expanduser("~"), ".claude", "data", "aoa"
 CATALOG_PATH = os.environ.get("FBOT_CATALOG") or os.path.join(
     os.path.expanduser("~"), ".claude", "data", "fbot", "icons", "catalog.yml")
 
-# policy.yml 필수 키 3종 (T1 편입분) — 로드 실패 시 판정 ② fail-loud
-POLICY_KEYS = ("fbot_spawn_depth_limit", "fbot_concurrent_limit", "fbot_spawn_budget_monthly")
+# policy.yml 필수 키 2종 — 로드 실패 시 판정 ② fail-loud
+# prj3#Issue697 — 월 채용 상한(`fbot_spawn_budget_monthly`)은 제거했다. 정상 몰림만 막았고
+#   (9/19 30 소진 → 45 상향, 9월 41/45), 운영 hire 호출자는 `fbot-lead dispatch` 하나라 채용은
+#   이미 배분 패턴 가드(Issue696 — 속도·이슈 반복·연속 실패) 뒤에 있다. 공급측 폭주 억제는
+#   ④ 깊이 ⑤ 동시 상주가 그대로 맡는다. 판정 번호 ③ 은 비워 둔다(번호 재배치는 로그 해석을 깬다).
+POLICY_KEYS = ("fbot_spawn_depth_limit", "fbot_concurrent_limit")
 
 # 수명주기 판정 키 (prj3#Issue481) — 배치(hire) 판정과 **축이 다르므로 따로 로드**한다.
 #   같은 튜플에 넣으면 키 하나가 없을 때 배치까지 죽는다(가용성 축 분리).
@@ -70,16 +82,31 @@ ICON_GEN = os.path.join(os.path.expanduser("~"), ".claude", "skills", "fbot-icon
                         "scripts", "fbot-icon-gen.py")
 
 
+# 종료코드 계약 (prj3#Issue930) — 모듈 docstring «종료코드 계약» 이 정본 서술
+RC_OK = 0
+RC_DENY = 1       # 거부 — 호출자는 사유를 사람에게 보인다
+RC_USAGE = 2      # 사용법 오류 — argparse 가 쓰는 값과 같다(호출 계약이 깨졌다는 뜻)
+RC_INTERNAL = 3   # 내부 오류 — 판정 불능. 허가가 아니다
+
+RETRY_WAIT = 0.3  # 일시 DB 잠금 재시도 전 대기(초) — 읽기 전용 명령만 1회 재시도한다
+
+
 class FbotError(Exception):
-    """fail-loud 용 — 판정 이전 단계의 인프라·입력 오류."""
+    """fail-loud 용 — 판정 이전 단계의 인프라 오류. 종료코드 3(내부 오류)."""
 
 
 class Reject(Exception):
-    """게이트 거부 — 판정 번호 + 사유. exit 1."""
+    """게이트 판정 실패 — 판정 번호 + 사유. 종료코드는 `rc`(기본 1 거부).
 
-    def __init__(self, n: int, reason: str):
+    ⚠️ 첫 인자 `n` 은 판정 번호(① 레지스트리 ② policy ④ 깊이 ⑤ 동시 상주)이지 종료코드가 아니다.
+    판정 불능(policy 로드 실패·하위 호출 실패)은 거부가 아니라 내부 오류라 `rc=RC_INTERNAL`,
+    CLI 인자 조합 위반은 `rc=RC_USAGE` 로 명시한다(prj3#Issue930).
+    """
+
+    def __init__(self, n: int, reason: str, rc: int = RC_DENY):
         self.n = n
         self.reason = reason
+        self.rc = rc
         super().__init__(f"판정 {CIRCLED[n]} 거부: {reason}")
 
 
@@ -107,13 +134,16 @@ def load_policy(keys=POLICY_KEYS) -> dict:
     #   ⓐ `aoa_dir()` 에 있으면 그것 — **테스트가 픽스처에 쓴 policy 를 계속 읽는다**
     #   ⓑ 없으면 prj3. 운영에서는 prj5 사본을 걷었으므로 여기로 온다
     #   순서를 뒤집으면 테스트가 운영 policy 를 읽어 픽스처가 무력해진다.
+    #   ⓒ prj3#Issue696 — 그것도 없으면 배포 기본값 `policy_org.yml`. aoa_dir 쪽은 찾지 않는다.
     path = os.path.join(aoa_dir(), "policy.yml")
     if not os.path.exists(path):
-        _p3 = os.path.join(os.path.expanduser("~"), ".claude", "data", "aoa", "policy.yml")
-        if os.path.exists(_p3):
-            path = _p3
+        for _name in ("policy.yml", "policy_org.yml"):
+            _p3 = os.path.join(os.path.expanduser("~"), ".claude", "data", "aoa", _name)
+            if os.path.exists(_p3):
+                path = _p3
+                break
     if not os.path.exists(path):
-        raise Reject(2, f"policy 로드 실패 — 파일 없음: {path}")
+        raise Reject(2, f"policy 로드 실패 — 파일 없음: {path}", rc=RC_INTERNAL)
     pol = {}
     with open(path, encoding="utf-8") as fh:
         for line in fh:
@@ -122,10 +152,10 @@ def load_policy(keys=POLICY_KEYS) -> dict:
                 pol[m.group(1)] = int(m.group(2))
     missing = [k for k in keys if k not in pol]
     if missing:
-        raise Reject(2, f"policy 로드 실패 — {path} 에 키 부재: {', '.join(missing)}")
+        raise Reject(2, f"policy 로드 실패 — {path} 에 키 부재: {', '.join(missing)}", rc=RC_INTERNAL)
     bad = [k for k in keys if pol[k] <= 0]
     if bad:
-        raise Reject(2, f"policy 값 불량(양수 아님): {', '.join(f'{k}={pol[k]}' for k in bad)}")
+        raise Reject(2, f"policy 값 불량(양수 아님): {', '.join(f'{k}={pol[k]}' for k in bad)}", rc=RC_INTERNAL)
     return pol
 
 
@@ -202,11 +232,21 @@ def load_catalog() -> dict:
 
 # ── DB ──────────────────────────────────────────────────────────────────────
 
+def _busy_ms():
+    """잠금 대기(ms) 주입 — `FBOT_HR_GATE_BUSY_MS`. **테스트 전용**(진짜 잠금을 수십 ms 로 재현). 미설정·불량이면 None → 기본값."""
+    try:
+        v = int(os.environ.get("FBOT_HR_GATE_BUSY_MS", ""))
+    except ValueError:
+        return None
+    return v if v >= 0 else None
+
+
 def connect() -> sqlite3.Connection:
-    con = sqlite3.connect(registry_path(), timeout=10, isolation_level=None)
+    busy = _busy_ms()
+    con = sqlite3.connect(registry_path(), timeout=10 if busy is None else busy / 1000, isolation_level=None)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA journal_mode=WAL")
-    con.execute("PRAGMA busy_timeout=5000")
+    con.execute("PRAGMA busy_timeout=%d" % (5000 if busy is None else busy))
     con.execute("PRAGMA foreign_keys=ON")
     return con
 
@@ -226,7 +266,8 @@ def chain_depth(con: sqlite3.Connection, parent_id: str | None, limit: int) -> t
     """신규 스폰의 깊이 = parent 체인 길이 + 1. 부모 없음(root) = 1.
 
     체인 역추적은 limit+2 스텝에서 중단(순환 방어 — 초과분은 어차피 거부).
-    미등록 parent 는 fail-loud — 유령 부모를 조상으로 인정하지 않는다.
+    미등록 parent·parent 순환은 **거부**(판정 ④, 종료코드 1) — 유령 부모를 조상으로 인정하지 않는다.
+    종전엔 FbotError(종료코드 2)라 argparse 오류와 구분되지 않아 호출자가 fail-open 했다(prj3#Issue930).
     """
     chain = []
     cur = parent_id
@@ -235,9 +276,9 @@ def chain_depth(con: sqlite3.Connection, parent_id: str | None, limit: int) -> t
             "SELECT bot_id, parent_bot_id FROM bot WHERE bot_id = ?", (cur,)
         ).fetchone()
         if row is None:
-            raise FbotError(f"미등록 parent 봇: {cur} — 체인 역추적 불가")
+            raise Reject(4, f"미등록 parent 봇: {cur} — 체인 역추적 불가")
         if cur in chain:
-            raise FbotError(f"parent 체인 순환 감지: {' → '.join(chain + [cur])}")
+            raise Reject(4, f"parent 체인 순환 감지: {' → '.join(chain + [cur])}")
         chain.append(cur)
         if len(chain) > limit + 1:  # 이미 상한 초과 확정 — 더 걸을 이유 없음
             break
@@ -245,9 +286,21 @@ def chain_depth(con: sqlite3.Connection, parent_id: str | None, limit: int) -> t
     return len(chain) + 1, chain
 
 
+BODY_KIND = "fbot_body"   # fbot-state.py BODY_KIND — 관리직 몸체 원장(prj3#Issue757 T15)
+
+
 def active_count(con: sqlite3.Connection) -> int:
-    """동시 상주 = state != checkout 인 봇 수 (계약 판정 ⑤)."""
-    return con.execute("SELECT COUNT(*) AS c FROM bot WHERE state != 'checkout'").fetchone()["c"]
+    """동시 상주 = **몸체 수** (계약 판정 ⑤ · prj3#Issue757 T15 ③ — 설계 fbot-arch §다중성 «몸체 원장»).
+
+    활성 봇(state != checkout) 1개 = 몸체 1 이 기본이고, 관리직이 살아 있는 몸체를 여럿 가지면 그 초과분을 더한다.
+    몸체 원장을 쓰지 않는 워커·스위치 꺼짐에서는 종전 «활성 봇 수» 와 같다."""
+    now = int(time.time())
+    return con.execute(
+        "SELECT (SELECT COUNT(*) FROM bot WHERE state != 'checkout')"
+        " + COALESCE((SELECT SUM(n - 1) FROM (SELECT COUNT(*) AS n FROM job j JOIN bot b ON b.bot_id = j.owner"
+        "   WHERE j.kind = ? AND j.status = 'open' AND (j.lease_until IS NULL OR j.lease_until > ?)"
+        "     AND b.state != 'checkout' GROUP BY j.owner)), 0) AS c",
+        (BODY_KIND, now)).fetchone()["c"]
 
 
 def ensure_bot_icon(bot_id: str, role: str) -> tuple:
@@ -280,11 +333,21 @@ def emit(obj) -> None:
 
 # ── 판정 ④⑤ 공통 (hire·check 공용 — 판정 로직 중복 구현 금지) ──────────────
 
-def judge_depth(con, parent_id, pol) -> int:
+def depth_reject(con, who, reason: str):
+    """스폰 깊이 거부 — 원장 이벤트 `hr-reject` 1건 + Reject(4). 깊이 거부의 단일 기록 지점 (prj3#Issue905).
+    기록 실패는 조용히 넘어간다(record_event 계약) — 거부 자체는 그대로 난다."""
+    st = _state_mod()
+    if st is not None:
+        st.record_event(con, who or "-", "hr-reject", f"depth · {reason}")
+    raise Reject(4, reason)
+
+
+def judge_depth(con, parent_id, pol, who=None) -> int:
     limit = pol["fbot_spawn_depth_limit"]
     depth, chain = chain_depth(con, parent_id, limit)
     if depth > limit:
-        raise Reject(4, f"스폰 깊이 초과 — 깊이 {depth} > 상한 {limit} (체인: {' → '.join(reversed(chain))} → 신규)")
+        depth_reject(con, who or parent_id,
+                     f"스폰 깊이 초과 — 깊이 {depth} > 상한 {limit} (체인: {' → '.join(reversed(chain))} → 신규)")
     return depth
 
 
@@ -292,14 +355,30 @@ def judge_concurrent(con, pol) -> int:
     limit = pol["fbot_concurrent_limit"]
     n = active_count(con)
     if n >= limit:
-        raise Reject(5, f"동시 상주 초과 — 활성(state != checkout) 봇 {n}개 ≥ 상한 {limit}")
+        raise Reject(5, f"동시 상주 초과 — 활성 몸체(활성 봇 + 관리직 추가 몸체) {n}개 ≥ 상한 {limit}")
     return n
+
+
+def validate_hire_bot_id(bot_id: str) -> str:
+    """Issue834 — 채용 id 가 매뉴얼 파생 색인의 project_id 이름공간을 침범하지 않게 한다."""
+    import importlib.util
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fbot-manual-review.py")
+    spec = importlib.util.spec_from_file_location("_fbot_manual_review_for_hr", path)
+    mod = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(mod)
+    except Exception as e:
+        raise FbotError(f"매뉴얼 색인 예약어 로드 실패: {e}")
+    if bot_id == mod.INDEX_PROJECT_ID:
+        raise Reject(1, f"채용 bot_id 예약어 충돌: {bot_id!r} — 매뉴얼 색인 project_id 이름공간")
+    return bot_id
 
 
 # ── 서브커맨드 ──────────────────────────────────────────────────────────────
 
 def cmd_hire(args) -> int:
     """채용 — 판정 5종 계약 순서. 전부 통과 → 예산 원자 차감 → fbot-state.py register."""
+    validate_hire_bot_id(args.bot_id)
     con = connect()
     try:
         # ① 레지스트리 조회 — 중복 bot_id 거부 + role 카탈로그 검증
@@ -313,12 +392,8 @@ def cmd_hire(args) -> int:
         # ② policy 판정 — 값 로드 실패 시 fail-loud
         pol = load_policy()
 
-        # ③ 예산 — 상한 도달 시 거부 (차감은 ④⑤ 통과 확정 후 원자적)
+        # ③ (prj3#Issue697 제거) 월 채용 상한 — 번호만 비워 둔다
         month = month_key()
-        budget_limit = pol["fbot_spawn_budget_monthly"]
-        spent = budget_spent(con, month)
-        if spent >= budget_limit:
-            raise Reject(3, f"월 스폰 예산 소진 — {month} 사용 {spent}건 ≥ 상한 {budget_limit}건")
 
         # ④ 스폰 깊이 — parent_bot_id 체인 역추적 ≤ limit
         depth = judge_depth(con, args.parent, pol)
@@ -326,13 +401,10 @@ def cmd_hire(args) -> int:
         # ⑤ 동시 상주 — state != checkout 봇 수 < limit
         actives = judge_concurrent(con, pol)
 
-        # ── 전 판정 통과 → 예산 차감 (BEGIN IMMEDIATE 재검증 — 동시 hire 경쟁 대비) ──
+        # ── 전 판정 통과 → 월 채용 집계 증분 (차단 아님 — prj3#Issue697) ──
         now = int(time.time())
         con.execute("BEGIN IMMEDIATE")
         try:
-            spent = budget_spent(con, month)
-            if spent >= budget_limit:
-                raise Reject(3, f"월 스폰 예산 소진(차감 시점 재검증) — {month} 사용 {spent}건 ≥ 상한 {budget_limit}건")
             con.execute(
                 "INSERT INTO kv (ns, key, value, expires_at, updated_at, updated_by)"
                 " VALUES (?,?,?,NULL,?,'fbot-hr-gate')"
@@ -368,6 +440,9 @@ def cmd_hire(args) -> int:
         reg_cmd += ["--tmux-target", args.tmux_target]
     if getattr(args, "session_id", None):
         reg_cmd += ["--session-id", args.session_id]
+    if getattr(args, "state", None):
+        # prj3#Issue796 — 몸체 없는 채용(총괄 staffing 생성)은 cold 로 적는다. 판정은 여기, 등록은 register (중복 구현 금지)
+        reg_cmd += ["--state", args.state]
     proc = subprocess.run(reg_cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         # register 실패 → 차감분 환불 후 fail-loud (예산 유령 차감 금지)
@@ -391,7 +466,7 @@ def cmd_hire(args) -> int:
         "ok": True, "action": "hire", "verdict": "허가",
         "bot_id": args.bot_id, "role": args.role, "depth": depth,
         "active_before": actives,
-        "budget": {"ns": BUDGET_NS, "month": month, "spent": spent_after, "limit": budget_limit},
+        "budget": {"ns": BUDGET_NS, "month": month, "spent": spent_after, "blocking": False},
         "bot": bot,
     }
     if not icon_rel:
@@ -399,8 +474,42 @@ def cmd_hire(args) -> int:
         #   색 dot 으로만 뜨는 이유를 나중에 추적할 수 있어야 한다.
         out["warning"] = ("아이콘 생성 실패 — 개체 아이콘 없이 등록됨"
                           f" (생성기: {ICON_GEN}). hub 는 role 아이콘·색 dot 으로 폴백한다")
+    if args.role == "lead" and args.prj is not None:
+        out["seat"] = _bind_lead_seat(args.bot_id, args.prj)
     emit(out)
     return 0
+
+
+def _bind_lead_seat(bot_id: str, prj: int) -> dict:
+    """prj3#Issue689 — 채용한 팀장을 그 prj 의 **빈 lead 자리**에 앉힌다.
+
+    채용이 자리를 안 채워 `fbot-lead-cg`(2026-09-24)가 `prj=7`·`seat_id=NULL` 로 남았고,
+    그 결과 상비 보호(자리 요구)에서 빠지고 보드에서도 사라졌다. 자리 판정·기록은
+    `fbot-org.py bind` 가 소유하므로 여기서는 부르기만 한다. 실패해도 채용은 유효하다
+    (fail-soft) — 대신 결과에 남겨 `check-pm` 의 `unseated` 와 함께 추적되게 한다.
+    """
+    import importlib.util
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fbot-org.py")
+    try:
+        spec = importlib.util.spec_from_file_location("fbot_org", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        got = mod.resolve(prj)
+        seats = [s for s in (got.get("seats") or []) if s.get("role") == "lead"]
+        if not seats:
+            return {"ok": False, "error": f"prj{prj} 조직 선언에 lead 자리 없음"}
+        con = connect()
+        try:
+            taken = {r[0] for r in con.execute(
+                "SELECT seat_id FROM bot WHERE seat_id IS NOT NULL AND bot_id != ?", (bot_id,))}
+        finally:
+            con.close()
+        free = [s for s in seats if s["addr"] not in taken]
+        if not free:
+            return {"ok": False, "error": f"prj{prj} lead 자리 전부 점유 — 수동 bind 필요"}
+        return mod.bind(bot_id, free[0]["addr"], prj=prj, apply=True)
+    except Exception as e:                       # 채용을 되돌리지 않는다 — 기록만 남긴다
+        return {"ok": False, "error": f"자리 결속 실패: {e}"}
 
 
 def move_career(bot_id: str, to: str, reason: str) -> None:
@@ -414,7 +523,7 @@ def move_career(bot_id: str, to: str, reason: str) -> None:
         capture_output=True, text=True,
     )
     if r.returncode != 0:
-        raise Reject(2, f"career 전이 실패({bot_id} → {to}): {(r.stderr or r.stdout).strip()}")
+        raise Reject(2, f"career 전이 실패({bot_id} → {to}): {(r.stderr or r.stdout).strip()}", rc=RC_INTERNAL)
 
 
 def lifecycle_candidates(con, pol, now, mode):
@@ -427,11 +536,20 @@ def lifecycle_candidates(con, pol, now, mode):
        후보에서 빼는 것이고 거기는 전이 자체를 막는 것이라 역할이 다르다.
     """
     out = []
+    # prj3#Issue887 — 상비 판정은 `fbot-state.is_core_bot` 단일 지점이다. 사본을 두면 한쪽만 갱신돼 갈라진다
+    #   (Issue614 ⓑ 본사 축이 여기만 빠져 본사 팀장이 휴직·해고 후보로 잡혔다).
+    #   적재 실패 시에만 아래 폴백(ⓐ·ⓑ 모두 반영한 사본)으로 떨어진다 — 후보 스캔은 HR 을 멈추지 않는다.
+    _sm = _state_mod()
+
+    def _is_core(b) -> bool:
+        if _sm is not None:
+            return bool(_sm.is_core_bot(b))
+        if b["role"] == "lead":
+            return bool(b["seat_id"]) and (b["prj"] is not None or b["parent_bot_id"] is None)
+        return b["role"] in CORE_ROLES and b["parent_bot_id"] is None
+
     for bot in con.execute("SELECT * FROM bot ORDER BY created_at").fetchall():
-        # prj3#Issue609 — 판정은 `fbot-state.is_core_bot` 과 **같은 규칙**이어야 한다(갈리면 한쪽만 보호한다).
-        #   PM(lead)은 채용으로 생겨 parent 가 있으므로, 표지는 parent 가 아니라 **조직 자리**다.
-        _core = ((bot["prj"] is not None and bool(bot["seat_id"])) if bot["role"] == "lead"
-                 else (bot["role"] in CORE_ROLES and bot["parent_bot_id"] is None))
+        _core = _is_core(bot)
         if _core:
             continue  # 계약 §조직 — 상비봇 영구 제외
         if bot["career"] == "terminated":
@@ -466,6 +584,46 @@ def lifecycle_candidates(con, pol, now, mode):
     return out
 
 
+def _state_mod():
+    """fbot-state.py 모듈 적재 — 판정 함수 재사용용. 실패는 None(호출처가 종전 경로로 떨어진다)."""
+    try:
+        import importlib.util as _il
+        sp = _il.spec_from_file_location("fbot_state_v", STATE_PY)
+        mod = _il.module_from_spec(sp); sp.loader.exec_module(mod)
+        return mod
+    except Exception:
+        return None
+
+
+def _bind_verdict(row) -> str:
+    """fbot-state.py `bind_occupancy_verdict` 재사용 (prj3#Issue734) — 판정을 복제하면 두 벌이 되어 갈라진다.
+    wake 는 결속 세션을 들고 오지 않으므로 incoming_sid 는 빈 값이다. 로드 실패는 `unknown`(종전 경로)."""
+    mod = _state_mod()
+    try:
+        return mod.bind_occupancy_verdict(row, "")[0] if mod else "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _body_add_verdict(con, row, flow) -> bool:
+    """prj3#Issue757 T15 ③ — 살아 있는 관리직에 **새 흐름**이면 거절 대신 몸체 추가(상한 안).
+
+    판정은 fbot-state 단일 지점 — 스위치(`multibody_enabled`) · 관리직(`_is_nonexec`, 적재 실패는 False) ·
+    흐름 잠금·상한(`body_admit`, 결속과 같은 함수). 흐름이 없거나 판정 재료가 없으면 False(종전 «활동 중» 거절)."""
+    if not flow:
+        return False
+    mod = _state_mod()
+    if mod is None:
+        return False
+    try:
+        if not (mod.multibody_enabled() and mod._is_nonexec(row["role"], on_error=False)):
+            return False
+        mod.body_admit(con, row, flow, int(time.time()))
+    except mod.FbotError as e:
+        raise Reject(1, f"몸체 추가 불가: {e}")
+    return True
+
+
 def cmd_wake(args) -> int:
     """`hire` 의 형제 (prj3#Issue498 ⓐ) — 있는 개체를 깨운다.
 
@@ -476,14 +634,44 @@ def cmd_wake(args) -> int:
     """
     pol = load_policy()
     con = connect()
+    body_add = False
     try:
         row = con.execute("SELECT * FROM bot WHERE bot_id = ?", (args.bot,)).fetchone()
         if row is None:
             raise Reject(1, f"미등록 봇: {args.bot} — 없는 개체는 wake 가 아니라 hire 다")
         if row["career"] == "terminated":
             raise Reject(1, f"해고된 봇: {args.bot} — 종결 상태는 깨우지 않는다(재채용은 hire)")
+        # prj3#Issue839 ① — 정직(suspended)은 인사 판정의 결과라 기상이 풀지 않는다. 정직은 career 사영에
+        #   대응값이 없어(grade 로 보인다) career 만 보면 휴직 복귀와 같은 «허가» 로 흘러간다 — 재직 축을 본다.
+        #   reap 보다 앞에서 거절한다(거절할 개체의 잔류 몸체를 건드리지 않는다). 해제는 `employment --to employed`
+        if "employment" in row.keys() and row["employment"] == "suspended":
+            raise Reject(1, f"정직 중인 봇: {args.bot} — wake 는 정직을 풀지 않는다"
+                            "(인사 판정 해제: fbot-state.py employment --to employed)")
         if row["state"] != "checkout":
-            raise Reject(1, f"이미 활동 중: {args.bot} (state={row['state']}) — wake 불요, SendMessage 로 직접")
+            # prj3#Issue734 — 생사 판정은 bind 와 **같은 함수**(`bind_occupancy_verdict`)가 한다. 종전엔
+            #   reap 의 idle 유예(2h) 뒤에 숨어, bind 가 `dead` 로 보는 몸체(lease 만료·입력 대기)를 wake 는
+            #   «활동 중» 으로 거절했다(2026-09-27 나래 실측 — 인박스 3건 방치). dead 면 reap 에 --force 를 준다.
+            verdict = _bind_verdict(row)
+            # prj3#Issue699_5 — 원장이 «활동 중» 이어도 몸체가 이미 죽었을 수 있다(SessionEnd 누락).
+            #   그때 거절만 하면 reap 유예가 끝날 때까지 교착한다(2026-09-26 실측 — 나래 수동 checkout).
+            #   사망 판정은 reap 한 곳이 소유한다 — 여기서 새로 판정하지 않고 그 봇만 reap 시켜 본다.
+            r = subprocess.run([sys.executable, STATE_PY, "reap", "--apply", "--bot-id", args.bot]
+                               + (["--force"] if verdict == "dead" else []),
+                               capture_output=True, text=True)
+            try:
+                rp = json.loads(r.stdout or "")
+            except ValueError:
+                rp = None
+            if r.returncode != 0 or not isinstance(rp, dict):
+                # 잔류 판정을 못 한 것이지 «활동 중» 을 확인한 것이 아니다 — 원인을 가리지 않는다
+                raise Reject(2, f"잔류 판정 실패(reap rc={r.returncode}): "
+                                f"{((r.stderr or r.stdout) or '').strip()[:300]}", rc=RC_INTERNAL)
+            if args.bot not in (rp.get("reaped") or []):
+                body_add = _body_add_verdict(con, row, getattr(args, "flow", None))
+                if not body_add:
+                    raise Reject(1, f"이미 활동 중: {args.bot} (state={row['state']} · 점유 판정 {verdict}) — wake 불요, "
+                                    "SendMessage 로 직접(매니저면 인박스 넛지가 본다)")
+            row = con.execute("SELECT * FROM bot WHERE bot_id = ?", (args.bot,)).fetchone()
         judge_concurrent(con, pol)   # ⑤ 동시 상주 상한 — hire 와 같은 판정 재사용
     finally:
         con.close()
@@ -494,12 +682,19 @@ def cmd_wake(args) -> int:
                             "--to", "active", "--reason", "wake 재출근 자동 복귀 (Issue498)"],
                            capture_output=True, text=True)
         if r.returncode != 0:
-            raise Reject(2, f"휴직 복귀 실패: {(r.stderr or r.stdout).strip()}")
+            raise Reject(2, f"휴직 복귀 실패: {(r.stderr or r.stdout).strip()}", rc=RC_INTERNAL)
         revived = True
-    emit({"ok": True, "action": "wake", "verdict": "허가", "bot_id": args.bot,
-          "career_revived": revived,
-          "next": "세션 기동은 호출자 몫(fpm-do/Agent — dispatch 와 동일 계약). "
-                  "기동되면 SessionStart 훅이 checkin 을 기록한다"})
+    out = {"ok": True, "action": "wake", "verdict": "허가", "bot_id": args.bot,
+           "career_revived": revived,
+           "next": "세션 기동은 호출자 몫(fpm-do/Agent — dispatch 와 동일 계약). "
+                   "기동되면 SessionStart 훅이 checkin 을 기록한다"}
+    if getattr(args, "flow", None):
+        out["flow"] = args.flow
+    if body_add:
+        # prj3#Issue757 T15 ③ — 몸체는 새 세션이 `bind --flow` 로 결속할 때 생긴다(여기는 판정만 — 기동은 호출자)
+        out.update({"body_add": True,
+                    "next": f"관리직 몸체 추가 — 호출자가 env FBOT_FLOW={args.flow} 로 새 세션을 기동한다(checkin 이 합류)"})
+    emit(out)
     return 0
 
 
@@ -518,7 +713,7 @@ def cmd_promote(args) -> int:
               "next": "집행은 --apply --bot-id ID (자동 승격 금지 — s2 확정 '사람 승인 1회')"})
         return 0
     if not args.bot_id:
-        raise Reject(2, "--apply 는 --bot-id 를 함께 요구한다 — 일괄 승격은 승인 게이트를 무력화한다")
+        raise Reject(2, "--apply 는 --bot-id 를 함께 요구한다 — 일괄 승격은 승인 게이트를 무력화한다", rc=RC_USAGE)
     if args.bot_id not in [c["bot_id"] for c in cands]:
         raise Reject(1, f"승격 요건 미충족·대상 아님: {args.bot_id}")
     move_career(args.bot_id, "active", args.reason or "승격 요건 충족(사람 승인)")
@@ -568,7 +763,7 @@ def cmd_fire(args) -> int:
               "next": "집행은 --apply --bot-id ID --reason '사유' (되돌릴 수 없다 — 사람 승인 필수)"})
         return 0
     if not args.bot_id or not args.reason:
-        raise Reject(2, "--apply 는 --bot-id 와 --reason 을 함께 요구한다 (비가역 전이)")
+        raise Reject(2, "--apply 는 --bot-id 와 --reason 을 함께 요구한다 (비가역 전이)", rc=RC_USAGE)
     if args.bot_id not in [c["bot_id"] for c in cands]:
         raise Reject(1, f"해고 후보 아님: {args.bot_id} — 휴직 상태 + 유휴 임계 경과만 대상이다")
     move_career(args.bot_id, "terminated", args.reason)
@@ -578,32 +773,44 @@ def cmd_fire(args) -> int:
 
 
 def cmd_check(args) -> int:
-    """일반 위임(비봇) 게이트 — 판정 ④ 깊이 + ⑤ 동시 상주만. 등록·차감 없음."""
+    """일반 위임(비봇) 게이트 — 판정 ④ 깊이 + ⑤ 동시 상주만. 등록·차감 없음.
+
+    prj3#Issue842 — 호출 프로세스의 `FBOT_ID` 가 `--parent` 와 같으면 **그 봇 자신의 몸체 기동**이다
+    (fpm-do 계약: FBOT_ID = 새 창이 결속할 봇). 새 자식이 아니므로 깊이 = 그 봇의 기존 체인 깊이.
+    종전엔 몸체를 봇의 자식(+1)으로 세어, 부모 있는 팀장이 낸 워커(깊이 3)가 몸체에서 4 로 거부됐다.
+    """
     parent = None if args.parent == "-" else args.parent
+    body = parent is not None and parent == os.environ.get("FBOT_ID")
     pol = load_policy()  # check 도 policy 로드 실패는 fail-loud (판정 ②와 동일 기준)
     con = connect()
     try:
-        depth = judge_depth(con, parent, pol)
+        if body:
+            row = con.execute("SELECT parent_bot_id FROM bot WHERE bot_id = ?", (parent,)).fetchone()
+            if row is None:
+                raise Reject(4, f"미등록 봇 몸체: {parent} — 체인 역추적 불가")
+            depth = judge_depth(con, row["parent_bot_id"], pol, who=parent)
+        else:
+            depth = judge_depth(con, parent, pol)
         # --depth: 레지스트리 밖 체인(fpm-do 일반 위임 PM_DO_DEPTH)의 깊이 신고값.
         # 레지스트리 역추적과 max 취합 — 어느 축이든 상한을 넘으면 거부 (판정 ④ 단일 지점).
         if args.depth is not None:
             limit = pol["fbot_spawn_depth_limit"]
             if args.depth > limit:
-                raise Reject(4, f"스폰 깊이 초과 — 신고 깊이 {args.depth} > 상한 {limit} (fpm-do 체인)")
+                depth_reject(con, parent, f"스폰 깊이 초과 — 신고 깊이 {args.depth} > 상한 {limit} (fpm-do 체인)")
             depth = max(depth, args.depth)
         actives = judge_concurrent(con, pol)
     finally:
         con.close()
     emit({
         "ok": True, "action": "check", "verdict": "허가", "kind": args.kind,
-        "parent": parent, "depth": depth, "depth_limit": pol["fbot_spawn_depth_limit"],
+        "parent": parent, "body": body, "depth": depth, "depth_limit": pol["fbot_spawn_depth_limit"],
         "active": actives, "concurrent_limit": pol["fbot_concurrent_limit"],
     })
     return 0
 
 
 def cmd_status(args) -> int:
-    """이번 달 예산 소진·동시 상주 수·limit 출력."""
+    """이번 달 채용 집계·동시 상주 수·limit 출력."""
     pol = load_policy()
     month = month_key()
     con = connect()
@@ -614,8 +821,8 @@ def cmd_status(args) -> int:
         con.close()
     emit({
         "ok": True, "action": "status", "month": month,
-        "budget": {"ns": BUDGET_NS, "spent": spent, "limit": pol["fbot_spawn_budget_monthly"],
-                   "remaining": max(pol["fbot_spawn_budget_monthly"] - spent, 0)},
+        # prj3#Issue697 — 월 채용은 집계만 한다(상한 없음)
+        "budget": {"ns": BUDGET_NS, "spent": spent, "blocking": False},
         "concurrent": {"active": actives, "limit": pol["fbot_concurrent_limit"]},
         "depth_limit": pol["fbot_spawn_depth_limit"],
     })
@@ -645,16 +852,21 @@ def build_parser() -> argparse.ArgumentParser:
     #   나중에 만들면 hire 시점엔 미상이다 — 그 경우 출근 훅이 채운다.
     sp.add_argument("--tmux-target", default=None, help="tmux 'session:window.pane' (모르면 생략)")
     sp.add_argument("--session-id", default=None, help="claude 세션 id (모르면 생략)")
+    sp.add_argument("--state", default=None, choices=("checkin", "checkout"),
+                    help="초기 state — 생략 시 register 기본(checkin) · 몸체 없는 채용(staffing 생성)은 checkout (prj3#Issue796)")
     sp.set_defaults(func=cmd_hire)
 
     sp = sub.add_parser("check", help="일반 위임(비봇) — 깊이·동시 상주만, 등록·차감 없음")
     sp.add_argument("--parent", required=True, help="부모 bot_id, 루트(부모 없음)는 '-'")
     sp.add_argument("--kind", default="delegate")
     sp.add_argument("--depth", type=int, default=None, help="레지스트리 밖 체인 깊이 신고값(fpm-do PM_DO_DEPTH) — 역추적과 max 취합")
-    sp.set_defaults(func=cmd_check)
+    # 읽기 전용(depth 거부 시 이벤트 1건만 기록) — 일시 DB 잠금을 1회 재시도한다. 부작용 있는 hire·wake 등은 재시도하지 않는다(Issue930)
+    sp.set_defaults(func=cmd_check, retry_transient=True)
 
     sp = sub.add_parser("wake", help="퇴근(cold) 봇 재기동 판정 — hire 의 형제, 상주 상한만 확인 (Issue498)")
     sp.add_argument("--bot", required=True)
+    sp.add_argument("--flow", default=None,
+                    help="지휘 흐름 키(배분·인박스 요청 id) — 살아 있는 관리직이면 몸체 추가 판정 (prj3#Issue757 T15 ③)")
     sp.set_defaults(func=cmd_wake)
 
     for name, helptext, fn in (
@@ -669,24 +881,46 @@ def build_parser() -> argparse.ArgumentParser:
         sp.set_defaults(func=fn)
 
     sp = sub.add_parser("status", help="이번 달 예산 소진·동시 상주·limit")
-    sp.set_defaults(func=cmd_status)
+    sp.set_defaults(func=cmd_status, retry_transient=True)
 
     return p
 
 
+def _transient_db_error(e: sqlite3.Error) -> bool:
+    """재시도할 가치가 있는 일시 오류 — 잠금·바쁨. 손상·스키마 오류는 다시 해도 같다."""
+    if not isinstance(e, sqlite3.OperationalError):
+        return False
+    msg = str(e).lower()
+    return "locked" in msg or "busy" in msg
+
+
 def main(argv=None) -> int:
-    args = build_parser().parse_args(argv)
-    try:
-        return args.func(args)
-    except Reject as e:
-        print(str(e), file=sys.stderr)
-        return 1
-    except FbotError as e:
-        print(f"❌ {e}", file=sys.stderr)
-        return 2
-    except sqlite3.Error as e:
-        print(f"❌ DB 오류: {e}", file=sys.stderr)
-        return 2
+    """종료코드 계약(모듈 docstring) — 거부 1 · 사용법 2(argparse) · 내부 오류 3. 허가는 0."""
+    args = build_parser().parse_args(argv)   # 사용법 오류는 argparse 가 2 로 끝낸다
+    retry_left = 1 if getattr(args, "retry_transient", False) else 0
+    retried = False
+    while True:
+        try:
+            return args.func(args)
+        except Reject as e:
+            print(str(e), file=sys.stderr)
+            return e.rc
+        except FbotError as e:
+            print(f"❌ {e}", file=sys.stderr)
+            return RC_INTERNAL
+        except sqlite3.Error as e:
+            if retry_left and _transient_db_error(e):
+                retry_left -= 1
+                retried = True
+                time.sleep(RETRY_WAIT)
+                continue
+            print(f"❌ DB 오류: {e}" + (" (일시 오류 — 재시도 1회 후에도)" if retried else ""), file=sys.stderr)
+            return RC_INTERNAL
+        except Exception as e:  # noqa: BLE001 — 예기치 못한 예외가 파이썬 기본 종료코드 1 로 «거부» 위장하지 않게 한다
+            import traceback
+            traceback.print_exc()
+            print(f"❌ 내부 오류: {type(e).__name__}: {e}", file=sys.stderr)
+            return RC_INTERNAL
 
 
 if __name__ == "__main__":

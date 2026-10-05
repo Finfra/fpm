@@ -8,7 +8,7 @@
 #   만들어지는 것은 `python.exe`·`py.exe` 뿐 — `python3` 는 끝까지 스텁으로 남는다.
 #
 #   그래서 판정 기준이 **존재가 아니라 실행**이어야 하고, 후보가 하나여서는 안 된다.
-#   설계 근거: _doc_arch/windows-port-design.md W4(python 이름)
+#   설계 근거: _doc_arch/windows-port.md W4(python 이름)
 #
 # 계약 (tdd/run-tdd.sh · tdd/cases/core.yml:python3-available 과 동일)
 #   후보 순서  $FBOT_PYTHON → python3 → python → py -3

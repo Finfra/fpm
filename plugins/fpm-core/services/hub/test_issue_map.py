@@ -245,9 +245,63 @@ try:
     check("등록 프로젝트 하위 폴더 cwd → 200 (prefix 매치)",
           r._status == 200 and b"ISSUE-MAP:GRAPH:START" in r.raw)
 
-    r = _get(PRJ_B)
-    check("등록 프로젝트 + 맵 부재 → 404",
-          r.json_responses and r.json_responses[0][0] == 404)
+    # --- Issue818 (prj3#Issue818): 맵 부재 = 캐시 미스이지 «열 수 없음» 이 아니다 ---
+    #   `Issue_map.htm` 은 gitignore 산출물이고 등록·종결 절차는 «존재 시만» 재생성한다 →
+    #   한 번도 수동 생성하지 않은 prj 는 영원히 404 였다(봇 카드 🗺 이슈맵이 막다른 길).
+    #   판정 단일 지점 `_issue_map_openable` = «등록 트리 안 Issue.md 의 루트» — 파일 존재는 재료가 아니다.
+    check("Issue818: 열 수 있음 — Issue.md 만 있는 등록 prj → 그 루트",
+          server._issue_map_openable(PRJ_B) == os.path.realpath(PRJ_B))
+    check("Issue818: 열 수 있음 — 하위 폴더 cwd → 프로젝트 루트",
+          server._issue_map_openable(os.path.join(PRJ_A, "sub", "deep")) == os.path.realpath(PRJ_A))
+    check("Issue818: 열 수 없음 — Issue.md 부재", server._issue_map_openable(PRJ_C) is None)
+    check("Issue818: 열 수 없음 — 등록 트리 밖", server._issue_map_openable(OUT) is None)
+
+    _BOOT_OK = os.path.join(TMP, "fake_builder_boot.py")
+    open(_BOOT_OK, "w").write(
+        "import os\nopen(os.path.join(os.getcwd(), %r), 'w').write("
+        "'<html><body><!-- ISSUE-MAP:GRAPH:START -->bootstrapped<!-- ISSUE-MAP:GRAPH:END -->"
+        "<tr id=\"issue-2\"></tr></body></html>')\n" % server.ISSUE_MAP_NAME)
+    _BOOT_BAD = os.path.join(TMP, "fake_builder_boot_fail.py")
+    open(_BOOT_BAD, "w").write("import sys\nsys.stderr.write('boom818\\n')\nsys.exit(3)\n")
+    _real_builder0 = server._issue_map_builder
+    try:
+        server._issue_map_builder = lambda: _BOOT_OK
+        r = _get(PRJ_B)
+        check("Issue818: 맵 부재 + Issue.md 존재 → 그 자리에서 생성해 200 HTML",
+              r._status == 200 and b"bootstrapped" in r.raw and b'id="issue-2"' in r.raw)
+        check("Issue818: 생성된 맵 파일이 디스크에 남는다(다음 요청은 캐시)",
+              os.path.isfile(os.path.join(PRJ_B, server.ISSUE_MAP_NAME)))
+        check("Issue818: 생성 직후 serve 에도 🔄 재생성 버튼",
+              b"map-rebuild" in r.raw)
+
+        PRJ_B2 = os.path.join(TMP, "prjB2")
+        os.makedirs(PRJ_B2)
+        open(os.path.join(PRJ_B2, "Issue.md"), "w").write(ISSUE_MD_DEPS)
+        with server.projects_lock:
+            server.projects["testB2"] = {"cwd": PRJ_B2, "name": "prjB2"}
+        server._issue_map_builder = lambda: _BOOT_BAD
+        r = _get(PRJ_B2)
+        check("Issue818: 생성 실패 → JSON 404 가 아니라 HTML 로 사유(rc·stderr) 노출",
+              not r.json_responses and r._status == 500
+              and (r.raw_headers.get("Content-Type") or "").startswith("text/html")
+              and b"rc=3" in r.raw and b"boom818" in r.raw)
+        check("Issue818: 실패 화면에 재시도 버튼(POST /issue-map/rebuild · 프로젝트 루트)",
+              b"/issue-map/rebuild" in r.raw and os.path.realpath(PRJ_B2).encode() in r.raw)
+        check("Issue818: 실패 시 맵 파일 미생성", not os.path.exists(os.path.join(PRJ_B2, server.ISSUE_MAP_NAME)))
+
+        server._issue_map_builder = lambda: None
+        r = _get(PRJ_B2)
+        check("Issue818: 생성기 부재 → HTML 500 + 사유",
+              r._status == 500 and "생성기".encode() in r.raw)
+
+        r = _get(PRJ_C)
+        check("Issue818: Issue.md 도 없으면 그때만 JSON 404 유지",
+              r.json_responses and r.json_responses[0][0] == 404)
+    finally:
+        server._issue_map_builder = _real_builder0
+        _bm = os.path.join(PRJ_B, server.ISSUE_MAP_NAME)
+        if os.path.exists(_bm):
+            os.remove(_bm)
 
     r = _get(PRJ_D)
     check("Issue284_1: depends 無(아이콘 미노출) 프로젝트도 직접 URL 은 200",
@@ -286,6 +340,86 @@ try:
     r = _get(os.path.join(PRJ_A, "..", "outside"))
     check("../ traversal 로 미등록 트리 접근 → 403",
           r.json_responses and r.json_responses[0][0] == 403)
+
+    # --- Issue503: 🔄 재생성 버튼 주입 + POST /issue-map/rebuild ---
+    r = _get(PRJ_A)
+    check("Issue503: serve 시점 🔄 버튼 주입 (생성기 수정 없이 기존 맵에도)",
+          b"map-rebuild" in r.raw and b"/issue-map/rebuild" in r.raw)
+    check("Issue503: 버튼이 싣는 cwd 는 **맵의 프로젝트 루트** (요청 cwd 아님)",
+          os.path.realpath(PRJ_A).encode() in r.raw)
+    r = _get(os.path.join(PRJ_A, "sub", "deep"))
+    check("Issue503: 하위 폴더 cwd 로 열어도 rebuild 대상은 루트로 고정",
+          (b"map-rebuild" in r.raw
+           and os.path.join(os.path.realpath(PRJ_A), "sub").encode() not in r.raw))
+
+    # stale 맵은 버튼이 스스로 그 사실을 말한다 — 흐림 표식만으로는 왜 눌러야 하는지 모른다
+    _STALE2 = os.path.join(TMP, "prjStale2")
+    os.makedirs(_STALE2, exist_ok=True)
+    open(os.path.join(_STALE2, "Issue.md"), "w").write(ISSUE_MD_DEPS)
+    _S2MAP = os.path.join(_STALE2, server.ISSUE_MAP_NAME)
+    open(_S2MAP, "w").write(_map_html(True))
+    os.utime(_S2MAP, (1, 1))
+    with server.projects_lock:
+        server.projects["testStale2"] = {"cwd": _STALE2, "name": "prjStale2"}
+    r = _get(_STALE2)
+    check("Issue503: stale 맵 → 버튼이 '갱신' 라벨 + 강조 배경",
+          "갱신".encode("unicode_escape") in r.raw and b"rgba(255,170,0,0.28)" in r.raw)
+
+    def _post(payload, ip="127.0.0.1"):
+        _clear_cache()
+        h = _FakeHandler()
+        h.client_address = (ip, 0)
+        h.path = "/issue-map/rebuild"
+        h._read_json_body = lambda *a, **k: (payload, None)
+        h._handle_issue_map_rebuild(urlparse("/issue-map/rebuild"))
+        return h
+
+    check("Issue503: cwd 누락 → 400",
+          _post({}).json_responses[0][0] == 400)
+    check("Issue503: 미등록 cwd → 403 (GET 과 같은 화이트리스트)",
+          _post({"cwd": OUT}).json_responses[0][0] == 403)
+    check("Issue503: Issue.md 없는 등록 프로젝트 → 404",
+          _post({"cwd": PRJ_C}).json_responses[0][0] == 404)
+    check("Issue503: 상향 탐색이 등록 트리 밖으로 → 403 (게이트 3 대칭)",
+          _post({"cwd": os.path.join(PRJ_A, "..", "outside")}).json_responses[0][0] == 403)
+
+    # 생성기는 가짜로 대체 — 검사 대상은 "게이트·실행·캐시 무효화" 이지 생성기 자체가 아니다
+    _FAKE_OK = os.path.join(TMP, "fake_builder.py")
+    open(_FAKE_OK, "w").write(
+        "import os\nopen(os.path.join(os.getcwd(), %r), 'w').write('<html>rebuilt</html>')\n"
+        % server.ISSUE_MAP_NAME)
+    _FAKE_BAD = os.path.join(TMP, "fake_builder_fail.py")
+    open(_FAKE_BAD, "w").write("import sys\nsys.stderr.write('boom\\n')\nsys.exit(3)\n")
+    _real_builder = server._issue_map_builder
+    try:
+        server._issue_map_builder = lambda: _FAKE_OK
+        before = open(MAP_A).read()
+        h = _post({"cwd": PRJ_A})
+        st, body = h.json_responses[0]
+        check("Issue503: 정상 재생성 → 200 + status=rebuilt",
+              st == 200 and body.get("status") == "rebuilt" and body.get("bytes", 0) > 0)
+        check("Issue503: 실제로 맵 파일이 다시 쓰였다",
+              open(MAP_A).read() == "<html>rebuilt</html>" and before != "<html>rebuilt</html>")
+
+        # 캐시 무효화 — 안 버리면 TTL 동안 "눌렀는데 그대로" 로 보인다
+        _clear_cache()
+        server._issue_map_path(os.path.join(PRJ_A, "sub", "deep"))   # 하위 폴더 키로 캐시 적재
+        server._issue_map_cache_drop(PRJ_A)
+        check("Issue503: cache_drop 이 루트 at-or-under 키를 전부 버린다",
+              not server._issue_map_cache)
+
+        server._issue_map_builder = lambda: _FAKE_BAD
+        st, body = _post({"cwd": PRJ_A}).json_responses[0]
+        check("Issue503: 생성기 실패 → 500 + 사유 노출 (조용히 200 삼키지 않음)",
+              st == 500 and "rc=3" in (body.get("error") or "") and "boom" in (body.get("error") or ""))
+
+        server._issue_map_builder = lambda: None
+        st, body = _post({"cwd": PRJ_A}).json_responses[0]
+        check("Issue503: 생성기 부재 → 500 (버튼이 '눌렀는데 그대로' 가 되지 않게)",
+              st == 500 and "생성기" in (body.get("error") or ""))
+    finally:
+        server._issue_map_builder = _real_builder
+        open(MAP_A, "w").write(_map_html(True))
 finally:
     with server.projects_lock:
         server.projects.clear()

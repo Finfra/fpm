@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# fbot-ups.sh — UserPromptSubmit 의 fbot 3종을 **한 프로세스**에 모은다 (prj3#Issue594)
+# fbot-ups.sh — UserPromptSubmit 의 fbot 5종을 **한 프로세스**에 모은다 (prj3#Issue594·Issue645)
 #
 # 왜 합치는가 (실측 근거):
 #   fbot-heartbeat 27ms · fbot-name-nudge 35ms · fbot-inbox-nudge 28ms — 각 비용의 대부분이
@@ -11,24 +11,31 @@
 #   heartbeat  — FBOT_ID 있거나 `sid-<SID>.id` 마커 있을 때만 (봇 세션)
 #   name-nudge — 마커 있으면 즉시 exit · FBOT_ID 있으면 exit (비봇 세션 전용)
 #   inbox-nudge— 마커 있어야 진행 (봇 세션)
-#   → 한 세션에서 실제로 일하는 것은 최대 2개다. 순서 의존도 없다(각자 독립 판정).
+#   chief-nudge — 마커 있어야 진행 (총괄 세션)
+#   evict-nudge — **인계 툼스톤이 있어야** 진행 (인계당한 세션 — 마커는 이미 지워진 뒤다, Issue645)
+#   → 한 세션에서 실제로 일하는 것은 최대 2~3개다. 순서 의존도 없다(각자 독립 판정).
+#   ⚠️ evict-nudge 만 게이트 축이 다르다(마커가 아니라 툼스톤) — 마커가 **사라진** 세션을
+#     겨냥하므로 마커 축과는 오히려 배타에 가깝고, 미발동 세션 비용은 glob 1회다.
 #
 # ⚠️ `( . script )` 로 **subshell source** 한다 — 자식들이 `exit 0` 로 끝내는데
 #    그대로 source 하면 이 래퍼까지 죽는다. subshell 이면 그 안에서만 끝난다.
 # ⚠️ stdin 은 자식마다 새로 먹인다. 단 dispatcher 경유 시 HOOK_INPUT_PARSED=1 이라
 #    재파싱은 일어나지 않는다(비용 0).
-# @wraps: fbot-heartbeat.sh fbot-name-nudge.sh fbot-inbox-nudge.sh fbot-chief-nudge.sh
+# @wraps: fbot-heartbeat.sh fbot-name-nudge.sh fbot-inbox-nudge.sh fbot-chief-nudge.sh fbot-evict-nudge.sh
 #   ↑ hook-counts.py 가 읽는 **명시 선언**이다. 이 줄이 없으면 감싸인 자식들이 orphan 으로
 #     오판된다(배선은 래퍼 하나뿐이므로 CHILDREN 파싱만으로는 안 보인다).
 
 set -uo pipefail
 
-_H="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
+# Issue714: 자기 위치는 파라미터 확장으로 — `dirname` fork+exec(2.8ms)를 매 프롬프트 쓰지 않는다
+_src="${BASH_SOURCE[0]:-$0}"
+case "$_src" in */*) _H="${_src%/*}" ;; *) _H="." ;; esac
+_H="$(cd "$_H" 2>/dev/null && pwd)"
 [ -n "$_H" ] || exit 0
 
-input="$(cat)"
+input="$(< /dev/stdin)"   # Issue714: bash 내장 읽기 — cat fork+exec 제거
 
-for _s in fbot-heartbeat fbot-name-nudge fbot-inbox-nudge fbot-chief-nudge; do
+for _s in fbot-heartbeat fbot-name-nudge fbot-inbox-nudge fbot-chief-nudge fbot-evict-nudge; do
   [ -f "$_H/$_s.sh" ] || continue          # 배관 미완 = 조용히 건너뜀 (fail-soft)
   printf '%s' "$input" | ( . "$_H/$_s.sh" ) || true   # 한 자식의 실패가 나머지를 막지 않는다
 done

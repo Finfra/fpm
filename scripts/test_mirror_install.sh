@@ -61,7 +61,8 @@ fi
 # [4] 미러 사본으로 샌드박스 install (A-4) ────────────────────────
 if [ -f "$TMP2/sh/install.sh" ]; then
     : > "$SBX/.zshrc"
-    if env HOME="$SBX" bash "$TMP2/sh/install.sh" --no-scar >/dev/null 2>&1; then
+    # Issue585: HOME 만 바꾸면 AOA_MEMORY_DIR 이 운영값으로 상속돼 bootstrap 이 운영 aoa 폴더에 쓴다 — 데이터 루트도 샌드박스로
+    if env HOME="$SBX" AOA_MEMORY_DIR="$SBX/.claude/data/aoa" AOA_MQ_DIR="$SBX/.claude/data/aoa/mq" bash "$TMP2/sh/install.sh" --no-scar >/dev/null 2>&1; then
         ok "공개본 install 성공(--no-scar)"
     else bad "공개본 install 실패"; fi
     # 핵심: install 이 org→real 복원 → 미러 data/hub_setting.yml 생성

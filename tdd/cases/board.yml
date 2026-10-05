@@ -1,0 +1,85 @@
+# board L2 — 시나리오 headless (Issue544 M2)
+#
+# 이 파일은 **기본 실행에 포함되지 않는다.** `--only board` 로만 들어온다.
+#   기본 경로(core → <platform> → deploy)는 «배포된 fpm 이 그 OS 에서 도는가» 를 소비자 머신에서
+#   보는 이식성 검사다. board 는 tmux·bash 4+ 전제의 기능 회귀라 성격이 다르고, supervisor 의
+#   주입당 고정 2초(Enter 유실 가드) 때문에 순차 80초 안팎이 걸린다(열린 질문 2·3 결정).
+#   빠른 확인은 `bash tdd/lib/board-cases.sh --all` — 케이스를 병렬로 돌려 30초 안팎이다.
+#
+# 호출:  bash tdd/run-tdd.sh --only board
+# 설계:  _doc_arch/board-scenario-kit.md "자동 검증 (TDD) — 3층 구조"
+# 격리:  tdd/lib/board-harness.sh — 전용 tmux 소켓·임시 루트·hub 스텁. 운영 값을 가리키면 abort.
+#        모든 케이스가 끝에서 무접촉(운영 tmux·sentinel·hub 등록부)을 음성 검증한다.
+# 판정:  시나리오는 fixture(tdd/fixtures/board/)이고, 테스트는 그 fixture 가 만드는 상태 전이를 단언한다.
+#        렌더는 dash.yaml 까지만 본다 — hub /dash JSON API 는 없다(열린 질문 5 → (b)).
+# red:   각 케이스는 해당 가드를 무력화한 변형본(BOARD_AGENTS_DIR)에서 FAIL 을 확인했다.
+
+cases:
+  - id: board-s1-complete
+    desc: 순수 모니터링 — 합성 worker 완주 → runner 가 status=done·progress 100 으로 마감
+    why: |
+      s1 대량 순차 파일 생성. runner 는 worker_pid 사망을 완료 신호로 쓴다 — 이 감지가 빠지면
+      완주한 보드가 영구 running 으로 남는다. red: 사망 감지 블록 제거본 FAIL 2
+    run: bash "$REPO_DIR/tdd/lib/board-cases.sh" board-s1-complete
+    expect: contains:ok:board-s1-complete
+
+  - id: board-s2-dag-order
+    desc: 큐 DAG — 선행 노드 done 전에 후행 노드가 시작되지 않는다(fan-out·fan-in)
+    why: |
+      s2 크로스 프로젝트 위임. supervisor promote 가 depends 를 보지 않으면 fan-in 노드가
+      선행 완료 전에 돈다. red: promote 가 depends 무시하는 변형본 FAIL 1
+    run: bash "$REPO_DIR/tdd/lib/board-cases.sh" board-s2-dag-order
+    expect: contains:ok:board-s2-dag-order
+
+  - id: board-s4-linear-queue
+    desc: 선형 큐(s4 6단계·s5 3단계 동시) — 선언 순서가 아니라 depends 순서 + 완주 후 레이아웃 유지
+    why: |
+      s4 nPTiR 파이프라인·s5 /goal 마일스톤. fixture 는 선언 순서를 일부러 섞었다 — 순서를
+      정하는 것은 depends 여야 한다. 완주 후 queue-runner 가 쓴 dash.yaml 이 레이아웃 규칙
+      (graph ≥2 · log full · table 2)을 지키는지도 본다(board-scenario-kit 교훈 1).
+      red: promote 가 depends 무시하는 변형본 FAIL 2
+    run: bash "$REPO_DIR/tdd/lib/board-cases.sh" board-s4-linear-queue
+    expect: contains:ok:board-s4-linear-queue
+
+  - id: board-s6-concurrency
+    desc: 병렬 큐 — 실동시 running 최대 = min(concurrency, prj 종수)
+    why: |
+      s6 Task 병렬 관리. 큐 모드는 prj 당 worker pane 1개라 concurrency 3 · prj 2종이면
+      실동시 상한은 2다(board-scenario-kit 교훈 2). red: concurrency 무시(room=1) 변형본 FAIL 1
+    run: bash "$REPO_DIR/tdd/lib/board-cases.sh" board-s6-concurrency
+    expect: contains:ok:board-s6-concurrency
+
+  - id: board-s7-heartbeat-alive
+    desc: infinite heartbeat(s7·s8) — N iter 후에도 done 아님, stop(TERM) 으로만 stopped
+    why: |
+      s7 주기 모니터링·s8 정기 스케줄. worker 없는 보드를 worker 사망으로 오판하면 첫 iter 후
+      heartbeat 가 파괴된다(prj3#Issue142). red: worker_pid 부재를 'None' 으로 읽는 변형본 FAIL 6
+    run: bash "$REPO_DIR/tdd/lib/board-cases.sh" board-s7-heartbeat-alive
+    expect: contains:ok:board-s7-heartbeat-alive
+
+  - id: board-sentinel-done
+    desc: sentinel DONE 기록 → 다음 iter 에 done 감지·rc/result 기록·소비한 파일 제거
+    why: |
+      완료 권위는 capture-pane 이 아니라 sentinel 파일이다(prj3#Issue100). sentinel 디렉토리가
+      격리 임시 루트 안에 생기는지도 본다. red: .done 무시 변형본 FAIL 4
+    run: bash "$REPO_DIR/tdd/lib/board-cases.sh" board-sentinel-done
+    expect: contains:ok:board-sentinel-done
+
+  - id: board-stuck-detect
+    desc: 상태 변화 0 이 STUCK_SECS(3초 주입) 지속 → stuck_since 기록·dash 배지 error+STUCK
+    why: |
+      영구 정지가 running 으로 위장되는 결함(prj3#Issue98). 시간 압축은 env 주입으로 한다 —
+      주입 경로(env > yml > 기본값)는 L1 board-policy-precedence 가 보증한다.
+      red: stuck 미기록 변형본 FAIL 2
+    run: bash "$REPO_DIR/tdd/lib/board-cases.sh" board-stuck-detect
+    expect: contains:ok:board-stuck-detect
+
+  - id: board-hub-json-widgets
+    desc: 렌더 비중 위젯(s3 tree·s8 table·s9 pie/chart) — runner 왕복 후 type·width 보존 + 레이아웃 규칙
+    why: |
+      순수 모니터링 보드는 authoring 한 레이아웃을 runner 가 매 iter 다시 쓴다 — 이 왕복에서
+      width 가 빠지면 1셀 graph 노드 겹침·table 줄바꿈 폭발이 난다(s2·s9 발견).
+      hub /dash JSON API 가 없어 dash.yaml 을 직접 단언한다(열린 질문 5 → (b)).
+      red: runner 가 width 를 떨구는 변형본 FAIL 7
+    run: bash "$REPO_DIR/tdd/lib/board-cases.sh" board-hub-json-widgets
+    expect: contains:ok:board-hub-json-widgets

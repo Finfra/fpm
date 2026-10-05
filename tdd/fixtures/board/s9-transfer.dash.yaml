@@ -1,0 +1,21 @@
+# s9 대용량 전송 + SVG 시계열 — pie·chart·table. chart value 는 JSON 문자열(hub 가 역직렬화)
+title: s9-transfer
+status: init
+widgets:
+- id: ratio
+  type: pie
+  title: 전송 비율
+  dynamic_eval: "echo 40"
+- id: files-chart
+  type: chart
+  title: 파일 갯수 추이
+  width: 2
+  dynamic_eval: "echo '{\"points\":[0,3,7,10],\"ymin\":0,\"ymax\":10,\"unit\":\"개\"}'"
+- id: files
+  type: table
+  title: 전송 목록
+  width: 2
+  columns: [파일, 크기, 상태]
+  rows:
+  - [a.bin, 1G, done]
+  - [b.bin, 2G, running]

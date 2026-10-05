@@ -217,10 +217,13 @@ cases:
       없으면 설치가 "성공" 하고 SCAR 만 통째로 빠진다.
       ⚠️ nvm 설치라면 hook·cron 에서 which 가 실패한다(prj3#Issue475) —
       관례 경로까지 훑는다.
+      Issue564 — 이 케이스가 자기만의 후보 목록을 들고 있다가 공식 설치 경로
+      `~/.local/bin` 을 빠뜨려 jma 네이티브 실측에서 MISSING 이었다(실물은 있었다).
+      그래서 실행체(install·check·update)와 **같은 해석기**를 부른다 — 케이스와
+      실행체의 판정이 다시 갈리지 않게.
     run: |
-      command -v claude >/dev/null && echo ok && exit 0
-      ls "$HOME"/.nvm/versions/node/*/bin/claude >/dev/null 2>&1 && echo ok && exit 0
-      ls /usr/bin/claude /usr/local/bin/claude >/dev/null 2>&1 && echo ok || echo "MISSING"
+      . "$REPO_DIR/sh/fpm-claude-bin.sh" && fpm_resolve_claude && echo ok && exit 0
+      echo "MISSING"
     expect: contains:ok
 
   - id: process-mgmt

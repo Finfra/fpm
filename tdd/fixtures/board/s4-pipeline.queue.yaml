@@ -1,0 +1,12 @@
+# s4 nPTiR 파이프라인 — 선형 6단계. **선언 순서를 일부러 섞었다** — 실행 순서는 선언이 아니라 depends 가 정해야 한다
+title: s4-pipeline
+state: running
+on_fail: halt
+concurrency: 1
+items:
+- {id: p4-task,   prj: 1, issue: 4, depends: [p3-plan],   status: blocked, attempts: 0, prompt: task}
+- {id: p1-needs,  prj: 1, issue: 1, depends: [],          status: ready,   attempts: 0, prompt: needs}
+- {id: p6-report, prj: 1, issue: 6, depends: [p5-verify], status: blocked, attempts: 0, prompt: report}
+- {id: p2-brief,  prj: 1, issue: 2, depends: [p1-needs],  status: blocked, attempts: 0, prompt: brief}
+- {id: p5-verify, prj: 1, issue: 5, depends: [p4-task],   status: blocked, attempts: 0, prompt: verify}
+- {id: p3-plan,   prj: 1, issue: 3, depends: [p2-brief],  status: blocked, attempts: 0, prompt: plan}

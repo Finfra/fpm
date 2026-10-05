@@ -12,6 +12,8 @@
 #   2. registry.db · learn.db        mcp/aoa-memory/store.py 의 DDL 로 생성 — DDL 복제 금지
 #   3. policy.yml                    data/template/aoa-policy.default.yml 기준. **비파괴**:
 #                                      부재 → 통째 복사 / 존재 → 없는 키만 덧붙임
+#   4. ~/.claude/data/decision-authority.yml  data/template/decision-authority.yml 기준. 부재일 때만
+#                                      복사(Issue566 — mq [컨펌] 게이트가 읽는 정책)
 #
 # 사용: bash sh/fbot-bootstrap.sh [--dry-run]
 #   env: AOA_MEMORY_DIR (데이터 루트) · FBOT_PYTHON (python3 절대경로)
@@ -82,15 +84,47 @@ sys.exit(0 if n else 1)
 fi
 
 # ── 3. policy.yml — 비파괴 병합 ──
+# Issue576 — prj3 정본이 있는 머신(개발 머신)에서는 운영 aoa 폴더에 사본을 만들지 않는다.
+#   fbot 로더는 «aoa 폴더 → ~/.claude/data/aoa/policy.yml(prj3 정본) → policy_org» 순이라, aoa 폴더가
+#   정본 폴더와 다른데 사본을 두면 그 사본이 정본을 **가린다**(2026-09-27 18:41 실측 — prj3 정책 개정이 운영에
+#   안 닿았다, prj3#Issue755·757). 소비자는 aoa 폴더 기본값이 곧 정본 자리라 아래 종전 경로를 탄다.
+#   이미 있는 사본은 건드리지 않는다(값을 되돌리면 안 된다) — 경고만 하고 제거는 사람 몫이다.
+POLICY_CANON="$HOME/.claude/data/aoa/policy.yml"
+_canon_dir="$(cd "$(dirname "$POLICY_CANON")" 2>/dev/null && pwd -P || true)"
+_aoa_real="$(cd "$AOA_DIR" 2>/dev/null && pwd -P || true)"
+SKIP_POLICY=0
+if [[ -f "$POLICY_CANON" && -n "$_canon_dir" && "$_canon_dir" != "$_aoa_real" ]]; then
+    SKIP_POLICY=1
+    info "policy.yml: prj3 정본 사용 — $POLICY_CANON (aoa 폴더에 사본을 만들지 않는다, Issue576)"
+    if [[ -f "$POLICY_DST" ]]; then
+        warn "⚠️ 그림자 사본 존재: $POLICY_DST — 로더가 정본 대신 이것을 읽는다. 제거 권장(값은 정본에서 관리)"
+    fi
+fi
+# Issue585 — HOME 만 바꾼 샌드박스가 상속한 AOA_MEMORY_DIR(운영 aoa 폴더)에 쓰는 경로.
+#   임시 HOME 에는 정본이 없어 위 판정이 «소비자» 로 떨어지고, 사본이 운영 폴더에 생겨 prj3 정본을 다시 가렸다
+#   (2026-09-28 22:41 실측 — 테스트의 install.sh → 여기). 판정: HOME 이 계정 홈과 다르고(= 누가 HOME 을 바꿨다)
+#   데이터 루트가 그 HOME 밖이면 «HOME 과 데이터 루트가 다른 머신 문맥» — policy 를 쓰지 않는다.
+#   계정 홈 그대로 HOME 밖 데이터 루트를 쓰는 사용자는 종전대로 만든다. 샌드박스에서 일부러 원하면 옵트인.
+_acct_home="$(eval echo "~$(id -un)" 2>/dev/null || true)"
+_acct_real="$(cd "$_acct_home" 2>/dev/null && pwd -P || true)"
+_home_real="$(cd "$HOME" 2>/dev/null && pwd -P || true)"
+if [[ "$SKIP_POLICY" -eq 0 && "${FBOT_BOOTSTRAP_EXTERNAL_POLICY:-0}" != 1 \
+      && -n "$_home_real" && -n "$_aoa_real" && "$_home_real" != "$_acct_real" \
+      && "$_aoa_real" != "$_home_real" && "$_aoa_real" != "$_home_real"/* ]]; then
+    SKIP_POLICY=1
+    warn "policy.yml: 건너뜀 — HOME($HOME)이 계정 홈과 다른데 데이터 루트($AOA_DIR)가 그 밖이다 (Issue585)"
+    warn "   샌드박스가 운영 폴더를 상속한 문맥으로 본다. 의도한 것이면 FBOT_BOOTSTRAP_EXTERNAL_POLICY=1 로 재실행"
+fi
 # 여기서야 템플릿이 필요하다. 부재는 여전히 실패지만 **스토어는 이미 만들어진 뒤**라,
 # 소비자는 "전부 실패" 가 아니라 "policy 만 남았다" 는 정확한 상태를 받는다.
-if [[ ! -f "$POLICY_SRC" ]]; then
+if [[ "$SKIP_POLICY" -eq 1 ]]; then
+    :
+elif [[ ! -f "$POLICY_SRC" ]]; then
     err "🚨 정책 템플릿 부재: $POLICY_SRC"
     err "   스토어(registry.db · learn.db)는 생성됐다 — 남은 것은 policy.yml 뿐이다"
     err "   조치: 저장소를 최신으로 갱신하라(git pull). 그래도 없으면 배포 누락이다"
     exit 1
-fi
-if [[ ! -f "$POLICY_DST" ]]; then
+elif [[ ! -f "$POLICY_DST" ]]; then
     cp "$POLICY_SRC" "$POLICY_DST"
     info "policy.yml 생성: $POLICY_DST (템플릿 복사 — 값은 자유롭게 편집)"
 else
@@ -122,6 +156,26 @@ PYEOF
     else
         info "policy.yml 이미 완비 — 변경 없음"
     fi
+fi
+
+# ── 4. decision-authority.yml — 결정 권한 정책 (Issue566, prj3#Issue756) ──
+# mq 등록 helper(mcp/aoa-mq/aoa-mq-enqueue.sh)가 `[컨펌]` 마다 읽는다. 부재면 helper 가 fail-loud
+# 로 거부해 소비자의 `[컨펌]` 이 전건 막힌다 — helper 는 배송하고 정책은 아무도 놓지 않던 자리다.
+# 위치 해석은 helper 와 **같은 식**이어야 한다(AOA_DECISION_POLICY > ~/.claude/data/…).
+# policy.yml 과 달리 키 병합은 하지 않는다: 이 파일은 평탄 키 2개뿐이고, 값(H 분류 목록) 자체가
+# 운영자의 방침이라 템플릿 값을 덧붙이면 그 방침을 몰래 넓히게 된다. 부재일 때만 놓는다.
+DECISION_SRC="$REPO_DIR/data/template/decision-authority.yml"
+DECISION_DST="${AOA_DECISION_POLICY:-$HOME/.claude/data/decision-authority.yml}"
+if [[ -f "$DECISION_DST" ]]; then
+    info "decision-authority.yml 이미 있음 — 변경 없음 ($DECISION_DST)"
+elif [[ ! -f "$DECISION_SRC" ]]; then
+    err "🚨 결정 권한 정책 템플릿 부재: $DECISION_SRC"
+    err "   이대로면 mq [컨펌] 등록이 전부 거부된다 — 저장소를 최신으로 갱신하라(git pull)"
+    exit 1
+else
+    mkdir -p "$(dirname "$DECISION_DST")"
+    cp "$DECISION_SRC" "$DECISION_DST"
+    info "decision-authority.yml 생성: $DECISION_DST (mq [컨펌] 등급 게이트용)"
 fi
 
 printf '\n✅ fbot 데이터 루트 준비 완료: %s\n' "$AOA_DIR"

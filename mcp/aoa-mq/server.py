@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""aoa-mq MCP 서버 — enqueue / list / ack (prj3 감사 F3-2, M2)
+"""aoa-mq MCP 서버 — enqueue / list / ack / progress (prj3 감사 F3-2, M2 · 진행 3종 Issue643 · 대기·사람 몫 Issue770)
 
 ⚠️ 글로벌 SCAR 변경 가드 (prj3 Issue46): 본 서버는 여러 프로젝트가 공유한다.
   설계 SSOT: ~/.claude/_doc_arch/aoa-mq.md
@@ -16,8 +16,16 @@
     prj5 에 node_modules·venv 를 새로 들이지 않는다.
   * **enqueue 는 기존 helper 를 호출한다** — 원자적 쓰기(.tmp→mv)·id 발급·스키마가
     aoa-mq-enqueue.sh 에 있다. 여기서 재구현하면 두 경로가 갈라진다(2원 구조 금지).
+  * **연기(snoozed)는 helper `--reschedule` 에 위임한다** (Issue770 원인 ⑤) — 종전엔 여기서 `now+N일` 을
+    직접 계산해 원래 시각이 사라지고 `status=snoozed` 로 남아 **tick 이 다시 보지 않는** 상태가 됐다
+    (tick 은 pending 만 due 로 올린다). tick 의 snooze 는 Issue63 에서 이미 위임으로 고쳐져 두 경로가
+    갈라져 있었다 — due_ts 를 바꾸는 경로를 하나로 모으면 시각 보존·status=pending 이 공짜로 따라온다.
   * **ack 만 직접 조작한다** — tick 의 finalize 는 대화형 폼 경로라 재사용할 수 없다.
     같은 상태 전이(queue → queue_done, status/acked 기록)를 원자적으로 수행한다.
+    ⚠️ **ack 는 handoff 스냅샷을 만들지 않는다** — handoff 는 *"응답은 받았으나 tick 이 실행할 수
+    없는 일"* 의 우편함이고, 세션이 직접 ack 한 건은 그 세션이 이미 처리한 것이다. 여기서
+    스냅샷을 만들면 적체 감시·stale 승격이 **끝난 일을 다시 일로 띄운다**. 결과 되짚기는
+    `queue_done/<id>.json` 의 `result`·`progress` 가 답한다 (Issue643).
 """
 
 import json
@@ -40,26 +48,35 @@ MQ = os.environ.get("AOA_MQ_DIR") or os.path.join(HOME, ".claude", "data", "aoa"
 QUEUE = os.path.join(MQ, "queue")
 QDONE = os.path.join(MQ, "queue_done")
 ENQUEUE = os.path.join(HERE, "aoa-mq-enqueue.sh")
+PROGRESS = os.path.join(HERE, "aoa-mq-progress.sh")   # 진행 3종 기록 단일 지점 (Issue643)
 
 TOOLS = [
     {
         "name": "aoa_mq_enqueue",
         "description": (
             "aoa-mq 큐에 메시지를 등록한다. 예약 리마인드(due)·완료 감시(watch)·즉시 알림(alert) 중 "
-            "하나를 반드시 지정한다. 사용자 컨펌이 필요한 결정은 message 앞에 '[컨펌]' 을 붙이고 due='+0d' 로 "
-            "등록하면 ACK 전까지 반복 질의된다."
+            "하나를 반드시 지정한다. 사람만 정할 수 있는 결정(H 등급 — 배포·스토어·공개·비용·계정·법무·브랜드·"
+            "파괴·보안·방침)은 message 머리에 '[컨펌] [H:<분류>]' 를 붙이고 due='+0d' 로 등록하면 ACK 전까지 "
+            "반복 질의된다. 태그 없는 [컨펌] 은 거부된다(rc 5) — H 가 아니면 mq 에 올리지 말고 결정한다"
+            "(C 총괄·L 팀장 전결, ~/.claude/_doc_arch/decision-authority.md). job 을 주면 due 시각에 선언된 스케줄 잡을 실행하고 "
+            "결과를 기록한다(message 생략 가능, kind=post 고정)."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "message": {"type": "string", "description": "메시지 본문"},
+                "message": {"type": "string", "description": "메시지 본문 (job 을 주면 생략 가능)"},
+                "job": {"type": "string", "description": "지목할 스케줄 잡 이름(schedule.sh 선언). due 와 함께"},
+                "job_arg": {"type": "string", "description": "잡의 {arg} 에 넘길 값"},
                 "due": {"type": "string", "description": "'+7d' 또는 ISO 날짜. 예약 리마인드"},
                 "watch": {"type": "string", "description": "fpm-board topic — 완료 감시"},
                 "alert": {"type": "boolean", "description": "true 면 즉시 통지(ACK 전까지 반복)"},
                 "kind": {"type": "string", "enum": ["pre", "post"], "description": "기본 pre"},
                 "source": {"type": "string", "description": "발신 표기. 생략 시 helper 가 자동 기입"},
+                "target": {"type": "string", "description": (
+                    "이 항목을 수행할 프로젝트 prj<N>(Issue770). 넛지 범위(그 prj 세션만 본문 주입)·기동 cwd 의 1순위 근거. "
+                    "생략하면 message 첫 prjN → source 프로젝트 순으로 판정한다")},
             },
-            "required": ["message"],
+            "required": [],
         },
     },
     {
@@ -77,17 +94,51 @@ TOOLS = [
         "name": "aoa_mq_ack",
         "description": (
             "큐 항목을 종결한다(ACK). confirmed=승인·처리됨, dismissed=폐기, snoozed=연기. "
-            "snoozed 는 due 를 미루고 큐에 남기며, 나머지는 queue_done 으로 이동한다."
+            "snoozed 는 종결이 아니다 — due 를 N일 미루고(원래 시각 보존) pending 으로 되돌린다(tick 과 같은 --reschedule 경로). "
+            "조건을 기다리는 것이면 snoozed 대신 aoa_mq_progress 의 wait_for 를 쓴다. 나머지는 queue_done 으로 이동한다."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "id": {"type": "string", "description": "큐 항목 id (list 로 확인)"},
                 "status": {"type": "string", "enum": ["confirmed", "dismissed", "snoozed"]},
-                "note": {"type": "string", "description": "처리 사유 1줄(선택)"},
+                "note": {"type": "string", "description": "처리 사유 1줄(선택). snoozed 면 progress 에 «연기(+Nd): 사유» 로 남는다"},
+                "result": {"type": "string", "description": (
+                    "무엇을 했는지 결과 요약·산출물 경로(선택이나 confirmed 면 사실상 필수). "
+                    "종결 후 되짚을 수 있는 유일한 기록이다 — 비우면 '했다' 만 남고 '무엇을' 이 사라진다"
+                )},
                 "snooze_days": {"type": "integer", "description": "snoozed 일 때 미룰 일수. 기본 1"},
             },
             "required": ["id", "status"],
+        },
+    },
+    {
+        "name": "aoa_mq_progress",
+        "description": (
+            "진행 중인 큐 항목에 **진행 상황을 남긴다**(Issue643). 사용자가 /mq 에서 [진행] 을 누른 뒤 "
+            "무슨 일이 일어나는지 볼 수 있는 유일한 경로다. progress 는 갱신형 1줄 메모이고, "
+            "**착수했으나 할 수 없는 경우의 사유도 여기 적는다** — 다음 사람이 같은 조사를 반복하지 않는다. "
+            "claimed_by 는 집은 주체 표식으로 잠금이 아니다(다른 주체가 적혀 있어도 착수를 막지 않는다). "
+            "Issue770: 사람의 결정·행동이 필요하면 산문으로 적고 턴을 끝내지 말고 needs_human 에 올린다"
+            "(decide:결정 / act:사람 행동). 외부 조건을 기다려야 하면 wait_for(+recheck)로 ⏳ 대기 전환한다 — "
+            "대기 항목은 적체 통지·자동 기동·세션 넛지에서 빠지고 recheck 시각에 다시 묻는다."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "큐 항목 id"},
+                "progress": {"type": "string", "description": "진행 메모 1줄(갱신형). 진행 불가 사유도 여기"},
+                "result": {"type": "string", "description": "결과 요약·산출물 경로. 종결 전에 남길 때만 — 종결과 함께면 aoa_mq_ack 의 result 를 쓴다"},
+                "claimed_by": {"type": "string", "description": "집은 주체(세션 sid·bot_id). 보통 세션 넛지가 자동 기록하므로 인계할 때만 지정"},
+                "force": {"type": "boolean", "description": "claimed_by 인계 — 이미 다른 주체가 적혀 있을 때만 필요"},
+                "wait_for": {"type": "string", "description": (
+                    "⏳ 대기 전환 — 풀려야 할 조건 1줄. 선행 mq 항목이면 'mq:<id>'(그 항목이 종결되면 자동 재개)")},
+                "recheck": {"type": "string", "description": "wait_for 의 재확인 시각: +Nd · +Nh · YYYY-MM-DD · ISO. 생략 시 3일 뒤"},
+                "resume": {"type": "boolean", "description": "대기 해제 — 대기 전 상태로 되돌린다"},
+                "needs_human": {"type": "string", "description": "🙋 사람 몫 1건 추가 — 'decide:<결정>' 또는 'act:<사람의 물리 행동>'"},
+                "needs_human_done": {"type": "string", "description": "사람 몫 1건 해소(항목 문자열 그대로) — 이력에 남는다"},
+            },
+            "required": ["id"],
         },
     },
 ]
@@ -119,7 +170,16 @@ def t_enqueue(a):
     # helper 재사용 — 원자적 쓰기·id 발급·스키마가 거기 있다(여기서 재구현하면 갈라진다)
     if not os.path.isfile(ENQUEUE):
         return f"❌ helper 없음: {ENQUEUE}"
-    cmd = ["bash", ENQUEUE, "--message", a["message"]]
+    # prj3#Issue691: «message 또는 job» 하나 이상 — 검증은 helper 가 한다(한 곳)
+    if not a.get("message") and not a.get("job"):
+        return "❌ message 또는 job 중 하나는 필수다"
+    cmd = ["bash", ENQUEUE]
+    if a.get("message"):
+        cmd += ["--message", a["message"]]
+    if a.get("job"):
+        cmd += ["--job", a["job"]]
+        if a.get("job_arg"):
+            cmd += ["--arg", a["job_arg"]]
     if a.get("due"):
         cmd += ["--due", a["due"]]
     elif a.get("watch"):
@@ -132,6 +192,8 @@ def t_enqueue(a):
         cmd += ["--kind", a["kind"]]
     if a.get("source"):
         cmd += ["--source", a["source"]]
+    if a.get("target"):                                  # Issue770 — 검증(형식·매핑)은 helper 가 한다
+        cmd += ["--target", a["target"]]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         return f"❌ enqueue 실패 (rc={r.returncode})\n{r.stderr.strip() or r.stdout.strip()}"
@@ -158,6 +220,23 @@ def t_list(a):
             f"due={(i.get('due_ts') or '-')[:16]} ask={i.get('ask_count',0)}{bot}\n"
             f"    {msg[:160]}"
         )
+        # 진행 3종 (Issue643) — **있는 항목만**. 부재가 정상이므로 "-" 로 채우지 않는다
+        # (마이그레이션 없이 기존 항목이 그대로 렌더돼야 한다).
+        if i.get("job"):                                  # prj3#Issue691 — 잡 지목 예약
+            lines.append(f"    · 잡: {i['job']}" + (f" ⟨{i['job_arg']}⟩" if i.get("job_arg") else ""))
+        for label, key in (("집은 주체", "claimed_by"), ("진행", "progress"), ("결과", "result")):
+            v = i.get(key)
+            if v:
+                lines.append(f"    · {label}: {str(v)[:160]}")
+        # Issue770 — 대상·승인·대기·사람 몫. 역시 **있는 항목만**
+        if i.get("target"):
+            lines.append(f"    · 대상: {i['target']}")
+        if i.get("approved_ts"):
+            lines.append(f"    · 착수 승인: {i.get('approved_by', '-')} {str(i['approved_ts'])[:16]}")
+        if i.get("wait_for"):
+            lines.append(f"    · ⏳ 대기: {str(i['wait_for'])[:160]} (재확인 {str(i.get('recheck_ts') or '-')[:16]})")
+        if i.get("needs_human"):
+            lines.append("    · 🙋 사람 몫: " + " / ".join(str(x) for x in i["needs_human"])[:300])
     return "\n".join(lines)
 
 
@@ -173,20 +252,54 @@ def t_ack(a):
 
     fn = target.pop("_file")
     src = os.path.join(QUEUE, fn)
+    qid_full = target.get("id") or fn[:-5]
+
+    if status == "snoozed":
+        # Issue770 원인 ⑤ — due_ts 를 바꾸는 경로는 helper --reschedule **하나**다(tick snooze 와 같은 결과:
+        #   status=pending · 원래 시각 보존 · tick 과 같은 락). 여기서 계산하면 두 경로가 다시 갈라진다.
+        if not os.path.isfile(ENQUEUE):
+            return f"❌ helper 없음: {ENQUEUE}"
+        days = int(a.get("snooze_days") or 1)
+        r = subprocess.run(["bash", ENQUEUE, "--reschedule", qid_full, "--due", f"+{days}d"],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            return f"❌ 연기 실패 (rc={r.returncode})\n{r.stderr.strip() or r.stdout.strip()}"
+        # 사유·결과는 버리지 않는다 — reschedule 은 due_ts 만 바꾸므로 진행 3종 단일 경로(helper)로 남긴다
+        extra = []
+        for sub, val in (("note", f"연기(+{days}d): {a['note']}" if a.get("note") else None),
+                         ("result", a.get("result"))):
+            if not val:
+                continue
+            pr = subprocess.run(["bash", PROGRESS, sub, qid_full, "--text", str(val)],
+                                capture_output=True, text=True)
+            if pr.returncode != 0:
+                extra.append(f"⚠️ {sub} 기록 실패: {pr.stderr.strip() or pr.stdout.strip()}")
+        new_due = "?"
+        try:
+            with open(src, encoding="utf-8") as f:
+                new_due = str(json.load(f).get("due_ts") or "?")
+        except Exception:
+            pass
+        return "\n".join([f"✅ {qid} → pending (due {new_due[:16]} 로 연기 · 원래 시각 보존)"] + extra)
+
     target["status"] = status
-    target["acked"] = status != "snoozed"
+    target["acked"] = True
     target["ack_ts"] = _now()
     if a.get("note"):
         target["ack_note"] = a["note"]
+    # 결과 기록 (Issue643) — helper 를 거치지 않고 **여기서** 쓴다.
+    #   ack 는 파일 전체를 한 번에 다시 쓰는 원자 연산이라, result 를 helper 로 따로 쓰면
+    #   두 번의 비원자 쓰기 사이에 tick 이 끼어들 수 있다. 같은 트랜잭션에 담는 쪽이 안전하다.
+    #   (종결과 무관하게 결과만 남길 때는 aoa_mq_progress → aoa-mq-progress.sh result 가 단일 지점)
+    if a.get("result"):
+        # 상한 400 **문자** + 절단 표식 — helper 의 oneline() 과 셈 단위·표식을 맞춘다
+        # (prj3#Issue651: 두 경로가 «같은 400» 을 다르게 세던 비대칭이 버그의 뿌리였다).
+        _r = " ".join(str(a["result"]).split())
+        target["result"] = (_r[:399] + "\u2026") if len(_r) > 400 else _r
+        target["result_ts"] = _now()
 
-    if status == "snoozed":
-        days = int(a.get("snooze_days") or 1)
-        target["due_ts"] = (datetime.datetime.now().astimezone()
-                            + datetime.timedelta(days=days)).isoformat()
-        dst = src            # 큐에 남긴다 — 연기이지 종결이 아니다
-    else:
-        os.makedirs(QDONE, exist_ok=True)
-        dst = os.path.join(QDONE, fn)
+    os.makedirs(QDONE, exist_ok=True)
+    dst = os.path.join(QDONE, fn)
 
     tmp = src + ".tmp"       # 원자적 쓰기 — 반쯤 쓰인 상태를 tick 이 읽으면 안 된다
     with open(tmp, "w", encoding="utf-8") as f:
@@ -194,10 +307,46 @@ def t_ack(a):
     os.replace(tmp, src)
     if dst != src:
         shutil.move(src, dst)
-    return f"✅ {qid} → {status}" + (f" (due {target['due_ts'][:16]} 로 연기)" if status == "snoozed" else "")
+    return f"✅ {qid} → {status}"
 
 
-HANDLERS = {"aoa_mq_enqueue": t_enqueue, "aoa_mq_list": t_list, "aoa_mq_ack": t_ack}
+def t_progress(a):
+    # helper 재사용 — 원자적 쓰기·락·필드 규약이 거기 있다. enqueue 와 같은 이유로
+    # 여기서 재구현하면 두 경로가 갈라진다(2원 구조 금지).
+    if not os.path.isfile(PROGRESS):
+        return f"❌ helper 없음: {PROGRESS}"
+    qid = a.get("id")
+    if not qid:
+        return "❌ id 필수"
+    keys = ("progress", "result", "claimed_by", "wait_for", "resume", "needs_human", "needs_human_done")
+    if not any(a.get(k) for k in keys):
+        # 조회는 aoa_mq_list 가 한다 — 여기서 show 로 갈라지면 "어느 쪽으로 보나" 가 또 생긴다
+        return "❌ " + "·".join(keys) + " 중 하나는 필수다(조회는 aoa_mq_list)"
+    out = []
+    # 순서: 표식·메모·결과 → 사람 몫 → 대기 전환/해제(상태를 바꾸는 것은 마지막)
+    steps = (
+        ("claim", a.get("claimed_by"), lambda v: ["--by", str(v)] + (["--force"] if a.get("force") else [])),
+        ("note", a.get("progress"), lambda v: ["--text", str(v)]),
+        ("result", a.get("result"), lambda v: ["--text", str(v)]),
+        ("need", a.get("needs_human"), lambda v: ["--text", str(v)]),
+        ("need-done", a.get("needs_human_done"), lambda v: ["--text", str(v)]),
+        ("resume", a.get("resume"), lambda v: ["--via", "mcp"]),
+        ("wait", a.get("wait_for"), lambda v: ["--for", str(v)] + (["--recheck", str(a["recheck"])] if a.get("recheck") else [])),
+    )
+    for sub, val, argf in steps:
+        if not val:
+            continue
+        r = subprocess.run(["bash", PROGRESS, sub, qid] + argf(val),
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            # fail-loud — 조용히 삼키면 "기록했다고 믿는데 비어 있는" 상태가 된다
+            return f"❌ {sub} 실패 (rc={r.returncode})\n{r.stderr.strip() or r.stdout.strip()}"
+        out.append(r.stdout.strip())
+    return "\n".join(out) or "변경 없음"
+
+
+HANDLERS = {"aoa_mq_enqueue": t_enqueue, "aoa_mq_list": t_list, "aoa_mq_ack": t_ack,
+            "aoa_mq_progress": t_progress}
 
 
 SESSION_TOUCH = os.path.join(MQ, ".last-session-touch")
@@ -227,6 +376,11 @@ def reply(rid, result=None, error=None):
     if error:
         m["error"] = error
     else:
+        # prj1#Issue600 — 2026-07-28 은 tools/list 를 포함한 모든 result 에 resultType 을 요구한다.
+        # 메서드별로 넣으면 한 곳이 빠진다(Issue484 가 tools/call 에만 넣어 «tools fetch failed») → 판정 단일 지점.
+        # 이 서버는 부분 응답을 만들지 않으므로 항상 complete.
+        if isinstance(result, dict):
+            result.setdefault("resultType", "complete")
         m["result"] = result
     sys.stdout.write(json.dumps(m, ensure_ascii=False) + "\n")
     sys.stdout.flush()

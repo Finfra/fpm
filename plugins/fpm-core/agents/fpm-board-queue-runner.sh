@@ -18,6 +18,8 @@
 #   INTERVAL_IDLE    전부 대기/완료 시 주기 초 (기본 15)
 #   SUPERVISOR_LOG   supervisor.log 경로 (log 위젯 tail 원본)
 #   WIN_NAME         tmux window 이름 (데이터 전달용)
+#   BOARD_POLICY     정책 파일 경로 (기본: $FPM_BASE/data/board_policy.yml)
+#   BOARD_HUB_URL    register-doc 대상 hub (기본: http://127.0.0.1:9876, 빈 문자열이면 등록 생략 — Issue727 격리)
 #
 # 동작:
 #   1) trap TERM/INT/HUP → status='stopped' 마킹 후 exit / USR1 → 즉시 refresh
@@ -42,6 +44,7 @@ INTERVAL_IDLE="${INTERVAL_IDLE:-$(_bp interval_idle_runner 15)}"
 : "${QUEUE_FILE:?QUEUE_FILE required}"
 : "${DATA_FILE:?DATA_FILE required}"
 SUPERVISOR_LOG="${SUPERVISOR_LOG:-}"
+BOARD_HUB_URL="${BOARD_HUB_URL-http://127.0.0.1:9876}"
 
 MY_PID=$$
 ORIG_PPID=$PPID   # 부모(tmux pane shell) PID — orphan 자가 종료용
@@ -246,15 +249,16 @@ trap refresh_signal USR1
 
 echo "[queue-runner] PID=$MY_PID start at $(date -Iseconds)"
 echo "[queue-runner] QUEUE_FILE=$QUEUE_FILE DATA_FILE=$DATA_FILE"
+echo "[queue-runner] interval_active=$INTERVAL_ACTIVE interval_idle=$INTERVAL_IDLE"
 
 # dash hub 등록 (Issue197): 기동 시 1회 register-doc POST — dash-registry 미등록 시
 # dashboard 가 hub 목록에 영구 미노출되는 사각 차단. DASH_CLEARED tombstone 해제(recover)
 # 의미 포함 (prj1#Issue254 서버측 auto-register 와 병행). 서버 down 시 무시 (fail-soft).
 # TOPIC env 없음 → DATA_FILE basename(<topic>.dash.yaml)에서 유도.
 DASH_TITLE=$(basename "$DATA_FILE" .dash.yaml)
-DASH_PAYLOAD=$(python3 -c "import json,sys; print(json.dumps({'type':'dash','path':sys.argv[1],'cwd':sys.argv[2],'title':sys.argv[3]}))" \
+[ -n "$BOARD_HUB_URL" ] && DASH_PAYLOAD=$(python3 -c "import json,sys; print(json.dumps({'type':'dash','path':sys.argv[1],'cwd':sys.argv[2],'title':sys.argv[3]}))" \
   "$DATA_FILE" "$PWD" "$DASH_TITLE" 2>/dev/null) && \
-  curl -s --max-time 3 -X POST http://127.0.0.1:9876/register-doc \
+  curl -s --max-time 3 -X POST "$BOARD_HUB_URL/register-doc" \
     -H 'Content-Type: application/json' -d "$DASH_PAYLOAD" >/dev/null 2>&1 || true
 
 ITER=0

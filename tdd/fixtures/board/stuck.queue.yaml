@@ -1,0 +1,7 @@
+# 공통 — stuck 판정. worker 가 busy 화면을 유지한 채 sentinel 을 쓰지 않는다(mode=hang)
+title: stuck
+state: running
+on_fail: continue
+concurrency: 1
+items:
+- {id: h1, prj: 1, issue: 0, depends: [], status: ready, attempts: 0, prompt: 'FAKE: mode=hang'}

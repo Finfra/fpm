@@ -18,7 +18,7 @@ Issue68 은 *"lazy 로 시작하고, 배치 지연이 실제 pain 으로 관측�
 승격 방식은 이 파일을 무한 루프로 바꾸는 것이 **아니라**, 매 tick 이 clean 프로세스로
 끝나는 launchd 주기 기동이다 — 그래서 아래 진입점은 코드 변경 없이 그대로 재사용된다.
 
-    kr.finfra.fbot-worker   30분 주기 → worker.py enqueue → worker.py run
+    kr.finfra.fbot-worker   30분 주기 → worker.py enqueue → worker.py run  (+ 1일 1회 gc --jobs --apply — Issue938)
     kr.finfra.fbot-ingest   15분 주기 → ingest_obs.py --quiet
 
 배관(plist + 래퍼 ~/.claude/hooks/fbot-tick.sh)은 **prj3 소유**이며, 이 파일에는
@@ -34,8 +34,10 @@ launchd 등재 로직이 없다. prj5 자립 진입점(`aoa-memory service insta
     python3 mcp/aoa-memory/worker.py enqueue        # 생산 — 소화 대상 구간을 잡으로 큐잉
     python3 mcp/aoa-memory/worker.py run            # 소비 — pending 전부 (1회 실행 후 종료)
     python3 mcp/aoa-memory/worker.py consolidate    # 큐 우회 직접 실행
-    python3 mcp/aoa-memory/worker.py gc             # 에이징 — 기본 dry-run
+    python3 mcp/aoa-memory/worker.py gc             # 에이징(관측 + 종결 job·통지 표식) — 기본 dry-run
     python3 mcp/aoa-memory/worker.py gc --apply     # 실제 삭제 (백업 후)
+    python3 mcp/aoa-memory/worker.py gc --jobs --apply   # 종결 job·통지 표식만 — 관측(learn.db)은 건드리지 않는다.
+                                                         # fbot-tick 이 1일 1회 건다(job 정리는 배치 kind 한정 — gc_jobs)
 
 ## 늦은 도착 유예가 왜 90일인가 (실측이 초안을 뒤집었다)
 
@@ -99,26 +101,179 @@ def month_bucket(ts):
     return "%04d-%02d" % (d.year, d.month), int(start.timestamp()), int(end.timestamp()) + 1
 
 
-def resolve_model(pol):
+def resolve_model(pol, backend="api"):
     """consolidation 에 쓸 모델 ID 를 **설정에서만** 가져온다.
+
+    backend="cli"(prj3#Issue852)면 별칭을 그대로 돌려준다 — `claude --model sonnet` 이 settings env 로 버전을 푼다.
+    api 는 Batch API 가 별칭을 받지 못하므로 아래에서 같은 env 로 직접 푼다.
 
     🔴 하드코딩 금지 (prj3#Issue415). 거기서 한 세대 전 Sonnet 의 날짜 붙은 ID 가 코드에 박힌 채
     세대가 지나 발견됐다. 모델 ID 는 코드보다 훨씬 빨리 낡으므로 **코드가 값을 알면 안 된다** —
     기본값조차 두지 않고, 없으면 fail-loud 로 멈춰 운영자가 그 시점의 현행 모델을 적게 한다.
     """
-    m = (os.environ.get("AOA_MEMORY_MODEL") or pol.get("consolidation_model") or "").strip()
+    m = (os.environ.get("AOA_MEMORY_MODEL") or pol.get("consolidation_model")
+         or pol.get("learn_consolidate_model") or "").strip()
     if not m:
         raise RuntimeError(
-            "consolidation 모델 ID 미지정 — policy.yml `consolidation_model` 또는 "
-            "환경변수 AOA_MEMORY_MODEL 에 **그 시점의 현행 모델**을 적을 것. "
+            "consolidation 모델 미지정 — policy.yml `learn_consolidate_model`(학습 3단 «정리» 티어 별칭, "
+            "prj3#Issue850) 또는 `consolidation_model`, 또는 환경변수 AOA_MEMORY_MODEL 에 적을 것. "
             "코드에 기본값을 두지 않는 것은 의도다(모델 ID 는 코드보다 빨리 낡는다)"
         )
+    # prj3#Issue850 — 정책에는 **별칭**(opus·sonnet·haiku)만 적는다(claude-model-rules «버전 고정»).
+    #   Batch API 는 별칭을 받지 않으므로 settings `env` ANTHROPIC_DEFAULT_<TIER>_MODEL 로 푼다 —
+    #   그 env 가 없으면 별칭을 그대로 보내 조용히 400 을 받지 않고 여기서 멈춘다.
+    alias = m.lower()
+    if alias in ("opus", "sonnet", "haiku"):
+        if backend == "cli":
+            return alias
+        env_name = "ANTHROPIC_DEFAULT_%s_MODEL" % alias.upper()
+        resolved = (os.environ.get(env_name) or "").strip()
+        if not resolved:
+            raise RuntimeError(
+                "consolidation 모델 별칭 '%s' 을 버전으로 풀 수 없다 — settings `env` %s 가 비어 있다. "
+                "별칭은 그 한 곳에서만 버전으로 풀린다(claude-model-rules «버전 고정»)" % (m, env_name))
+        return resolved
     return m
 
 
 def check_anthropic_key():
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise RuntimeError("ANTHROPIC_API_KEY 환경변수가 필요하다 (의존성 0 원칙으로 직접 HTTP 호출).")
+
+
+# --- llm 백엔드 cli (prj3#Issue852) ------------------------------------------------
+# 왜 cli 인가 — 사용자 결정 ⓓ(2026-10-02): API 키 없이 구독 인증(`claude -p`)으로 «정리 = sonnet»(Issue850)을 돌린다.
+#   대가는 Batch 할인 없음·주간 한도 소모·동기 호출. 그래서 **버킷당 1회**만 부른다 — 호출마다 시스템 프롬프트
+#   오버헤드(실측 ~56k 입력 토큰, 캐시)가 붙어 프로젝트별 호출은 그 배수를 낸다. `--bare` 는 구독 인증을 건너뛰어
+#   «Not logged in» 이라 쓸 수 없다(2026-10-02 실측).
+# 프롬프트는 stdin 으로 넘긴다(수십만 자 — ARG_MAX 회피). 응답은 JSON 배열 하나 — 파싱 실패는 실패다(stats 강등 금지).
+
+CLI_BACKENDS = ("api", "cli")
+
+
+def consolidation_backend(pol):
+    b = str(pol.get("consolidation_backend") or "api").strip().lower()
+    if b not in CLI_BACKENDS:
+        raise RuntimeError("consolidation_backend 는 %s 중 하나다: %r" % ("|".join(CLI_BACKENDS), b))
+    return b
+
+
+def check_claude_cli():
+    import shutil
+    if not shutil.which("claude"):
+        raise RuntimeError("`claude` CLI 를 PATH 에서 찾지 못했다 — consolidation_backend=cli 는 구독 인증 claude 가 전제다")
+
+
+def build_cli_prompt(projs, max_projects, chars_per_project):
+    """버킷 1회 호출 프롬프트. 행 많은 프로젝트 순으로 상한까지만 싣는다. 반환 (prompt, 포함 pid 목록)."""
+    picked = [(pid, p) for pid, p in projs.items() if p["rows"]]
+    picked.sort(key=lambda x: -len(x[1]["rows"]))
+    picked = picked[:max(1, int(max_projects))]
+    parts = ["아래는 여러 프로젝트의 이번 달 주요 관측 기록(도구 오류·의사결정 이벤트)이다. "
+             "프로젝트마다 이번 달의 주요 장애 해결 서사와 의사결정을 한국어로 3~6문장 요약하라.\n"
+             "출력은 **JSON 배열 하나만** — 설명·머리말 없이. 원소 형식: {\"project_id\": \"<id>\", \"summary\": \"<요약>\"}. "
+             "모든 project_id 를 빠짐없이 포함한다.\n"]
+    for pid, p in picked:
+        text = "\n".join(p["rows"])[:max(200, int(chars_per_project))]
+        parts.append("### project_id: %s (%s) — 총 관측 %d건 중 주요 신호 %d건\n%s\n"
+                     % (pid, p.get("name") or "-", p.get("count", 0), len(p["rows"]), text))
+    return "\n".join(parts), [pid for pid, _ in picked]
+
+
+def run_claude_cli(prompt, model, timeout, env=None):
+    """`claude -p --output-format json` 1회. 반환 (결과 텍스트, usage 토큰 합, is_error).
+    usage 는 입력+캐시 생성+캐시 읽기+출력의 합 — 과대 안전측(예산은 구독 한도 계기판이다)."""
+    import subprocess
+    e = dict(os.environ)
+    e.update({"ECC_SKIP_OBSERVE": "1", "ECC_HOOK_PROFILE": "minimal"})
+    if env:
+        e.update(env)
+    cmd = ["claude", "-p", "--model", model, "--max-turns", "1", "--output-format", "json"]
+    try:
+        p = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=int(timeout), env=e)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("claude CLI timeout %ss — consolidation_cli_timeout_secs 또는 프로젝트 상한을 조정할 것" % timeout)
+    out = (p.stdout or "").strip()
+    try:
+        d = json.loads(out) if out else {}
+    except ValueError:
+        d = {}
+    usage = d.get("usage") or {}
+    tokens = sum(int(usage.get(k) or 0) for k in
+                 ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"))
+    is_error = bool(d.get("is_error")) or p.returncode != 0 or not d
+    text = str(d.get("result") or "") if d else (p.stderr or out)[-500:]
+    return text, tokens, is_error
+
+
+def parse_cli_summaries(text, pids):
+    """응답 텍스트 → {pid: summary}. 코드 펜스 허용. 아는 pid 만 받고, 하나도 없으면 RuntimeError(파싱 실패)."""
+    s = (text or "").strip()
+    i, j = s.find("["), s.rfind("]")
+    if i < 0 or j <= i:
+        raise RuntimeError("LLM 응답 JSON 파싱 실패 — 배열이 없다: %r" % s[:160])
+    try:
+        arr = json.loads(s[i:j + 1])
+    except ValueError as e:
+        raise RuntimeError("LLM 응답 JSON 파싱 실패 — %s: %r" % (e, s[:160]))
+    out = {}
+    if isinstance(arr, list):
+        for it in arr:
+            if isinstance(it, dict) and it.get("project_id") in pids and str(it.get("summary") or "").strip():
+                out[it["project_id"]] = str(it["summary"]).strip()
+    if not out:
+        raise RuntimeError("LLM 응답 JSON 파싱 실패 — 아는 project_id 의 summary 가 0건: %r" % s[:160])
+    return out
+
+
+def llm_digest_header(bucket, backend):
+    return [
+        "---",
+        f"name: evolved_obs_{bucket}_llm",
+        f"description: {bucket} 관측 요약 (LLM) — aoa-memory consolidation 산출",
+        "metadata:",
+        "  source: consolidation",          # 🔴 재소화 차단 표식 — 지우지 말 것
+        f"  bucket: {bucket}",
+        "  generated_by: aoa-memory/worker.py",
+        "  strategy: llm",
+        f"  backend: {backend}",
+        "---",
+        "",
+        f"# {bucket} 관측 요약 (LLM)",
+        "",
+    ]
+
+
+def apply_llm_summaries(lc, bucket, summaries, projs_info, path, backend):
+    """요약 {pid: text} → instinct upsert(origin=consolidation) + 산출 파일. **주어진 learn 트랜잭션 안에서** 쓴다 — 커밋하지 않는다."""
+    lines = llm_digest_header(bucket, backend)
+    for pid, text in summaries.items():
+        pinfo = projs_info.get(pid, {})
+        lines.extend([f"## 프로젝트 `{pid}` ({pinfo.get('name') or '-'})", "", text, ""])
+        SV.upsert_instinct(lc, {
+            "project_id": pid,
+            "instinct_id": f"evolved_obs_{bucket}",
+            "title": f"{bucket} 관측 요약 (LLM) ({pinfo.get('name') or pid})",
+            "trigger": f"관측 집계(LLM) — 구간 {bucket}",
+            "domain": "observation", "scope": "project",
+            "origin": "consolidation",
+            "occurrences": pinfo.get("count", 0),
+            "body": text,
+            "source_path": path,
+        })
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def _extend_lease(rc, job, secs):
+    """동기 CLI 호출 동안 잡 lease 를 늘린다 — recover_expired 가 살아 있는 잡을 재큐잉하지 않게."""
+    if rc is None or not job:
+        return
+    rc.execute("BEGIN IMMEDIATE")
+    rc.execute("UPDATE job SET lease_until=? WHERE id=? AND owner=? AND status='running'",
+               (S.now() + int(secs) + 60, job["id"], job["owner"]))
+    rc.commit()
 
 def _anthropic_request(method, path, body=None):
     url = "https://api.anthropic.com" + path
@@ -309,7 +464,7 @@ def digest_bucket_llm_filter(c, start, end):
             p["rows"].append(json.dumps(body, ensure_ascii=False))
     return projs
 
-def do_consolidate(pol, emit_dir=None, verbose=True, rc=None):
+def do_consolidate(pol, emit_dir=None, verbose=True, rc=None, job=None):
     """소화 1회. **watermark 는 성공했을 때만 오른다** (B-2).
 
     ## 왜 '월 버킷' 이고 왜 watermark 위만 다시 도는가
@@ -325,9 +480,14 @@ def do_consolidate(pol, emit_dir=None, verbose=True, rc=None):
 
     strategy = str(pol.get("consolidation_strategy") or "stats")
     budget_limit = spent = 0
+    backend = "api"
     if strategy == "llm":
-        model = resolve_model(pol)
-        check_anthropic_key()
+        backend = consolidation_backend(pol)          # prj3#Issue852 — api(Batch) | cli(구독 claude -p)
+        model = resolve_model(pol, backend=backend)
+        if backend == "cli":
+            check_claude_cli()
+        else:
+            check_anthropic_key()
         if rc is None:
             # 예산 기록·배치 추적(payload 저장)이 registry 없이는 성립하지 않는다.
             # 조용히 stats 로 강등하지 않는다(silent-failure 금지) — 명세 1 의 순서 조항.
@@ -343,10 +503,14 @@ def do_consolidate(pol, emit_dir=None, verbose=True, rc=None):
                 "월 토큰 상한을 적을 것. 한도 없는 LLM 배치는 실행하지 않는다(Issue70 명세 1)")
         spent = S.budget_month_spent(rc, "llm")
         if spent >= budget_limit:
+            if backend == "cli":
+                # cli 는 5분 tick 마다 잡이 생긴다 — 월 상한 도달은 예정된 상태라 failed 로 쌓지 않고 done 으로 닫는다
+                return {"status": "budget_exhausted", "backend": backend,
+                        "msg": "예산 게이트: 이번 달 소진 %d ≥ 한도 %d — 다음 달 또는 한도 상향까지 대기" % (spent, budget_limit)}
             raise RuntimeError(
                 "예산 게이트: 이번 달 소진 %d ≥ 한도 %d — 배치 중단" % (spent, budget_limit))
         active = rc.execute("SELECT count(*) c FROM job WHERE kind='consolidation' AND status='pending_batch'").fetchone()["c"]
-        if active > 0:
+        if active > 0 and backend == "api":
             return {"status": "delayed", "msg": "이전 LLM 배치가 진행 중이라 다음 버킷을 미룸 (순차 소진)"}
 
     emit_dir = emit_dir or os.path.join(S.AOA_DIR, "consolidation")
@@ -377,6 +541,35 @@ def do_consolidate(pol, emit_dir=None, verbose=True, rc=None):
         c.execute("BEGIN IMMEDIATE")
         try:
             for b, st, en in buckets:
+                if strategy == "llm" and backend == "cli":
+                    # prj3#Issue852 — 버킷 1회 동기 호출. 실패는 예외 → 바깥 rollback(watermark 불변·instinct 0)
+                    projs = digest_bucket_llm_filter(c, st, en)
+                    if not any(p["rows"] for p in projs.values()):
+                        digested.append((b, en, 0))
+                        if en <= now - grace:
+                            new_wm = max(new_wm, en)
+                        continue
+                    prompt, pids = build_cli_prompt(projs, pol.get("consolidation_cli_max_projects", 10),
+                                                    pol.get("consolidation_cli_chars_per_project", 20000))
+                    estimated = len(prompt) // 4 + 2048 + int(pol.get("consolidation_cli_overhead_tokens", 60000) or 0)
+                    if spent + estimated > budget_limit:
+                        return {"status": "budget_exhausted", "backend": backend,
+                                "msg": "예산 게이트: 소진 %d + 예상 %d > 한도 %d — 호출 전 대기" % (spent, estimated, budget_limit)}
+                    timeout = int(pol.get("consolidation_cli_timeout_secs", 600) or 600)
+                    _extend_lease(rc, job, timeout)
+                    text, tokens, is_error = run_claude_cli(prompt, model, timeout)
+                    # 실사용 토큰은 성공·실패 무관하게 기록한다 — 쓴 것은 쓴 것이다(과대 안전측)
+                    rc.execute("BEGIN IMMEDIATE"); S.record_budget(rc, "llm", tokens or estimated, 1); rc.commit()
+                    if is_error:
+                        raise RuntimeError("claude CLI 호출 실패(backend=cli): %s" % (text or "")[-300:])
+                    summaries = parse_cli_summaries(text, pids)
+                    path = os.path.join(emit_dir, f"evolved_obs_{b}_llm.md")
+                    apply_llm_summaries(c, b, summaries, projs, path, backend)
+                    files.append(path)
+                    digested.append((b, en, sum(len(p["rows"]) for p in projs.values())))
+                    if en <= now - grace:
+                        new_wm = max(new_wm, en)
+                    continue
                 if strategy == "llm":
                     projs = digest_bucket_llm_filter(c, st, en)
                     requests = []
@@ -449,6 +642,8 @@ def do_consolidate(pol, emit_dir=None, verbose=True, rc=None):
 
     res = {"status": "ok", "buckets": digested, "files": files,
            "watermark_before": wm, "watermark_after": new_wm}
+    if strategy == "llm":
+        res["backend"] = backend
     if verbose:
         print("소화 버킷 %d개 · 산출 파일 %d개" % (len(digested), len(files)))
         for b, en, n in digested:
@@ -578,48 +773,17 @@ def check_pending_batches(rc, pol):
             emit_dir = os.path.join(S.AOA_DIR, "consolidation")
             os.makedirs(emit_dir, exist_ok=True)
             path = os.path.join(emit_dir, f"evolved_obs_{bucket}_llm.md")
-            
-            lines = [
-                "---",
-                f"name: evolved_obs_{bucket}_llm",
-                f"description: {bucket} 관측 요약 (LLM) — aoa-memory consolidation 산출",
-                "metadata:",
-                "  source: consolidation",
-                f"  bucket: {bucket}",
-                "  generated_by: aoa-memory/worker.py",
-                "  strategy: llm",
-                "---",
-                "",
-                f"# {bucket} 관측 요약 (LLM)",
-                ""
-            ]
-            
+
             with S.connect(S.LEARN_DB) as lc:
                 lc.execute("BEGIN IMMEDIATE")
                 try:
+                    # prj3#Issue852 — 파일·upsert 는 cli 백엔드와 같은 helper(apply_llm_summaries)로 쓴다
+                    summaries = {}
                     for req in results:
-                        pid = req["custom_id"]
-                        pinfo = payload.get("projs", {}).get(pid, {})
                         if req["result"]["type"] == "succeeded":
-                            text = req["result"]["message"]["content"][0]["text"]
-                            lines.extend([f"## 프로젝트 `{pid}` ({pinfo.get('name', '-')})", ""])
-                            lines.extend([text, ""])
-                            
-                            SV.upsert_instinct(lc, {
-                                "project_id": pid,
-                                "instinct_id": f"evolved_obs_{bucket}",
-                                "title": f"{bucket} 관측 요약 (LLM) ({pinfo.get('name', pid)})",
-                                "trigger": f"관측 집계(LLM) — 구간 {bucket}",
-                                "domain": "observation", "scope": "project",
-                                "origin": "consolidation",
-                                "occurrences": pinfo.get("count", 0),
-                                "body": text,
-                                "source_path": path,
-                            })
-                    
-                    with open(path, "w", encoding="utf-8") as f:
-                        f.write("\n".join(lines) + "\n")
-                    
+                            summaries[req["custom_id"]] = req["result"]["message"]["content"][0]["text"]
+                    apply_llm_summaries(lc, bucket, summaries, payload.get("projs", {}), path, "api")
+
                     en = payload.get("end_ts")
                     grace = int(pol.get("consolidation_grace_days", 90)) * 86400
                     wm = int(S.get_meta(lc, WATERMARK_KEY, "0"))
@@ -654,7 +818,7 @@ def run_jobs(pol, limit=50):
             print("▶️  %s (kind=%s)" % (job["id"], job["kind"]))
             try:
                 if job["kind"] == "consolidation":
-                    r = do_consolidate(pol, verbose=False, rc=rc)
+                    r = do_consolidate(pol, verbose=False, rc=rc, job=job)
                     if r.get("status") == "pending_batch":
                         rc.execute("BEGIN IMMEDIATE")
                         rc.execute(
@@ -681,7 +845,7 @@ def run_jobs(pol, limit=50):
 
 # --- 에이징 (B-3) ---------------------------------------------------------
 
-def gc(pol, apply=False):
+def gc_observations(pol, apply=False):
     """raw 관측 에이징. 🔴 **watermark 성공 게이트 뒤에만** 지운다.
 
     삭제 조건은 **셋 다** 만족해야 한다:
@@ -730,20 +894,68 @@ def gc(pol, apply=False):
         c.commit()
         report["deleted"] = n
 
-    # 종결 job 행도 같은 게이트 아래에서 정리한다(에이징 표 — watermark 와 무관한 축)
-    jkeep = int(pol.get("job_retention_days", 30))
+    return report
+
+
+def gc_jobs(pol, apply=False):
+    """종결 job 행·통지 표식 정리 (prj3#Issue938) — **관측 에이징(watermark 게이트)과 독립**이다.
+
+    종전에는 이 정리가 `gc_observations` 끝에 붙어 있었다. 그런데 그 함수는 ① watermark 0 이면 거부 반환 ② dry-run·적격
+    관측 0건이면 조기 반환 — 어느 쪽이든 **job 부분에 도달하지 못했다**. 주석은 «watermark 와 무관한 축» 이라 적혀 있었지만
+    코드는 그 게이트 뒤에 있었고, 그래서 정기 배선이 없던 것과 별개로 `gc --apply` 를 돌려도 job 은 안 지워졌다(2026-10-04
+    실측: 30일 경과 579건 잔존).
+
+    삭제 조건 — **전부** 만족해야 한다:
+      ① `kind IN store.BATCH_JOB_KINDS` — **허용 목록**이다. job 테이블은 worker 전용이 아니다: fbot 원장(`fbot_*`)은
+         **영구**(fbot-arch §로깅 규약 «행 삭제 금지» — 조직도·매뉴얼 루프의 관측 원천)이고 `sel_event` 는 selection.py 가
+         롤업 뒤에 지운다. 종전 쿼리는 kind 를 안 봐서 이 정리를 정기 배선하면 **원장이 30일 뒤부터 지워진다**
+         (30일 경과 579건 중 29건이 이미 fbot_session·fbot_report 였다)
+      ② `status IN ('done','failed')` — 진행 중(pending·running·pending_batch)은 아무리 오래돼도 지우지 않는다
+      ③ `created_at < now - job_retention_days`
+    함께 정리하는 kv — 옛 전달 표식(`ns=notify`, 퇴역 — 종전 notify.py 가 종결 행 전수에 남긴 것)·죽은 통지 구독
+    (`ns=notify-want` 중 만료됐거나 잡이 없는 것 — 이번에 지운 잡의 구독 포함).
+    삭제 전 registry 백업이 성공해야 한다(실패하면 예외 → 삭제 안 함). 지울 것이 없으면 백업도 만들지 않는다.
+    """
+    now = S.now()
+    kinds = tuple(S.BATCH_JOB_KINDS)
+    ph = ",".join("?" * len(kinds))
+    cutoff = now - int(pol.get("job_retention_days", 30)) * 86400
+    where = "status IN ('done','failed') AND kind IN (%s) AND created_at < ?" % ph
+    jargs = kinds + (cutoff,)
+    report = {}
     with S.connect(S.REGISTRY_DB) as rc:
-        jn = rc.execute(
-            "SELECT count(*) n FROM job WHERE status IN ('done','failed') AND created_at < ?",
-            (now - jkeep * 86400,),
+        jn = rc.execute("SELECT count(*) n FROM job WHERE " + where, jargs).fetchone()["n"]
+        legacy = rc.execute("SELECT count(*) n FROM kv WHERE ns=?", (S.LEGACY_NOTIFY_NS,)).fetchone()["n"]
+        # 죽은 구독 = 만료 · 잡 없음 · (이번에 지울) 적격 잡의 구독. expires_at NULL 은 만료가 아니다
+        dead = rc.execute(
+            "SELECT count(*) n FROM kv w WHERE w.ns=? AND (w.expires_at<=? "
+            "OR NOT EXISTS (SELECT 1 FROM job j WHERE j.id=w.key) "
+            "OR EXISTS (SELECT 1 FROM job j WHERE j.id=w.key AND j.status IN ('done','failed') "
+            "AND j.kind IN (%s) AND j.created_at<?))" % ph,
+            (S.NOTIFY_WANT_NS, now) + kinds + (cutoff,),
         ).fetchone()["n"]
         report["job_eligible"] = jn
-        if apply and jn:
-            rc.execute("BEGIN IMMEDIATE")
-            rc.execute("DELETE FROM job WHERE status IN ('done','failed') AND created_at < ?",
-                       (now - jkeep * 86400,))
-            rc.commit()
-            report["job_deleted"] = jn
+        report["kv_legacy_notify"] = legacy
+        report["kv_dead_want"] = dead
+        if not apply or not (jn or legacy or dead):
+            return report
+        report["job_backup"] = backup_db(S.REGISTRY_DB)   # 실패하면 예외 → 삭제 안 함
+        rc.execute("BEGIN IMMEDIATE")
+        report["job_deleted"] = rc.execute("DELETE FROM job WHERE " + where, jargs).rowcount
+        report["kv_legacy_deleted"] = rc.execute(
+            "DELETE FROM kv WHERE ns=?", (S.LEGACY_NOTIFY_NS,)).rowcount
+        report["kv_want_deleted"] = rc.execute(
+            "DELETE FROM kv WHERE ns=? AND (expires_at<=? "
+            "OR NOT EXISTS (SELECT 1 FROM job j WHERE j.id=kv.key))",
+            (S.NOTIFY_WANT_NS, now)).rowcount
+        rc.commit()
+    return report
+
+
+def gc(pol, apply=False):
+    """관측 에이징 + 종결 job 정리. 두 축은 독립이다 — 관측 쪽 거부·조기 반환이 job 쪽을 막지 않는다."""
+    report = gc_observations(pol, apply=apply)
+    report.update(gc_jobs(pol, apply=apply))
     return report
 
 
@@ -777,6 +989,8 @@ def main():
     ap = argparse.ArgumentParser(description="aoa-memory 잡 실행기 (1회 실행 후 종료 — 상주는 launchd 주기 기동이 준다)")
     ap.add_argument("cmd", choices=("status", "run", "consolidate", "gc", "enqueue"))
     ap.add_argument("--apply", action="store_true", help="gc: 실제 삭제 (기본은 dry-run)")
+    ap.add_argument("--jobs", action="store_true",
+                    help="gc: 종결 job·통지 표식만 정리(관측 에이징 제외 — learn.db 를 건드리지 않는다). 정기 tick 이 이것만 건다 (Issue938)")
     ap.add_argument("--emit-dir", help="consolidate: 산출 파일 디렉토리 (기본 data/aoa/consolidation)")
     args = ap.parse_args()
 
@@ -803,15 +1017,23 @@ def main():
             rc.commit()
         print("✅ enqueue %s — `worker.py run` 으로 소비" % jid)
     elif args.cmd == "gc":
-        r = gc(pol, apply=args.apply)
-        if r.get("refused"):
-            print("🛑 삭제 거부 — %s" % r["refused"])
-            return 0
-        print("watermark %d · 삭제 대상 %d행 · 시각 미상 보호 %d행"
-              % (r["watermark"], r["eligible"], r.get("protected_null", 0)))
-        print("종결 job 삭제 대상 %d행" % r.get("job_eligible", 0))
+        if args.jobs:
+            r = gc_jobs(pol, apply=args.apply)
+        else:
+            r = gc(pol, apply=args.apply)
+            if r.get("refused"):
+                print("🛑 삭제 거부 — %s" % r["refused"])     # 관측만 거부 — 아래 job 정리는 별개 축이라 계속한다
+            else:
+                print("watermark %d · 삭제 대상 %d행 · 시각 미상 보호 %d행"
+                      % (r["watermark"], r["eligible"], r.get("protected_null", 0)))
+        print("종결 job 삭제 대상 %d행 · 옛 전달 표식 %d행 · 죽은 통지 구독 %d행"
+              % (r.get("job_eligible", 0), r.get("kv_legacy_notify", 0), r.get("kv_dead_want", 0)))
         if args.apply:
-            print("🗑  삭제 %d행 (백업 %s)" % (r.get("deleted", 0), r.get("backup", "-")))
+            if not args.jobs and not r.get("refused"):
+                print("🗑  삭제 %d행 (백업 %s)" % (r.get("deleted", 0), r.get("backup", "-")))
+            print("🗑  job 삭제 %d행 · 옛 표식 %d행 · 구독 %d행 (백업 %s)"
+                  % (r.get("job_deleted", 0), r.get("kv_legacy_deleted", 0), r.get("kv_want_deleted", 0),
+                     r.get("job_backup", "-")))
         else:
             print("ℹ️ dry-run — 실제 삭제는 `--apply`")
     return 0

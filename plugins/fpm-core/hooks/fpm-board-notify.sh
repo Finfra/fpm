@@ -17,16 +17,21 @@
 
 input=$(cat)
 
-read -r FP CWD <<< "$(printf '%s' "$input" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    fp = d.get('tool_input', {}).get('file_path', '')
-    cwd = d.get('cwd', '')
-    print(fp, cwd)
-except Exception:
-    print('', '')
-")"
+# prj3#Issue845 — 디스패처가 파싱해 넘겼으면(HOOK_INPUT_PARSED) 재파싱하지 않는다(python3 기동 ~19ms)
+if [ "${HOOK_INPUT_PARSED:-0}" = "1" ]; then
+  FP="${HOOK_FILE-}"; CWD="${HOOK_CWD-}"
+else
+  read -r FP CWD <<< "$(printf '%s' "$input" | python3 -c "
+  import sys, json
+  try:
+      d = json.load(sys.stdin)
+      fp = d.get('tool_input', {}).get('file_path', '')
+      cwd = d.get('cwd', '')
+      print(fp, cwd)
+  except Exception:
+      print('', '')
+  ")"
+fi
 
 case "$FP" in
   # Issue28 Phase 4: Mode C dashboard data 파일만 매칭. 세션 응답 본문은 /session/update 직접 호출 (별도 hook 불필요)

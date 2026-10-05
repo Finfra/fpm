@@ -49,6 +49,13 @@ _HOOKS_SELF="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 STATE_PY="$_HOOKS_SELF/fbot-state.py"
 [ -f "$STATE_PY" ] || exit 0             # 상태 헬퍼 부재 = 배관 미완 → 조용히 no-op
 
+# prj3#Issue849 — PreToolUse 형제 agent-model-guard.sh 가 거부할 호출(허용 목록 밖 model: fable)은 결속하지 않는다.
+#   거부되면 PostToolUse 퇴근(fbot-agent-done)이 오지 않아 몸체 없는 출근이 남는다. 판정은 같은 라이브러리(순서 비의존)
+if [[ "$input" == *'"fable"'* ]] && . "$_HOOKS_SELF/lib/agent-model-verdict.sh" 2>/dev/null \
+   && agent_model_verdict "$input" >/dev/null; then
+  exit 0
+fi
+
 command -v jq >/dev/null 2>&1 || exit 0  # jq 부재는 fail-soft (스폰을 막지 않는다)
 
 sid=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)
@@ -87,7 +94,7 @@ cands=$(printf '%s' "$input" | jq -r '
   ' 2>/dev/null)
 [ -n "$cands" ] || exit 0
 
-LOG="$HOME/.claude/.fbot-handoff/agent-bind.log"
+LOG="${FBOT_BIND_LOG:-$HOME/.claude/.fbot-handoff/agent-bind.log}"   # 오버라이드: hook-smoke 격리(prj3#Issue728_1)
 mkdir -p "$(dirname "$LOG")" 2>/dev/null
 
 # ── ③ 레지스트리 실재 확인 후 결속 ─────────────────────────────────────────────
@@ -117,6 +124,20 @@ while IFS= read -r cand; do
         else
           printf '%s checkin skip bot=%s (이미 활성이거나 전이 불가)\n' \
             "$(date +%Y-%m-%dT%H:%M:%S)" "$cand" >> "$LOG"
+        fi
+        # ── ⑤ current_task 자동 기입 (prj3#Issue779_7 · Issue759 Agent 갈래 · Issue807) ──
+        #   fpm-do 몸체는 출근 훅이 FBOT_TASK 로 채우는데 Agent 경로엔 그 자리가 없어 늘 비었다 —
+        #   봇이 스스로 set-task 를 불러야 했다(호출 1회 = 컨텍스트 전체 재독). 무슨 일로 띄웠는지는
+        #   Agent 프롬프트가 이미 말한다 → 첫 줄(120자)을 힌트로 준다. 출근 전이가 current_task 를
+        #   비우므로(Issue441) 반드시 전이 **뒤**에 둔다.
+        #   Issue807 — fpm-do 갈래(fbot-checkin 훅)와 같은 `set-task --from-dispatch` 를 탄다: 판정 단일 지점이
+        #   그 봇의 미종결 배분에서 current_issue·task_ref 까지 채운다(`--task` 는 힌트이자 명시 인자라 이긴다).
+        #   종전 `--task` 만 쓰면 current_task 는 채워져도 current_issue 가 공란으로 남았다(두 갈래 갈림).
+        task=$(printf '%s' "$input" | jq -r '(.tool_input.prompt // "") | split("\n")[0] | .[0:120]' 2>/dev/null)
+        task_args=(--from-dispatch)
+        [ -n "$task" ] && task_args+=(--task "$task")
+        if python3 "$STATE_PY" set-task --bot-id "$cand" "${task_args[@]}" >/dev/null 2>&1; then
+          printf '%s set-task ok bot=%s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$cand" >> "$LOG"
         fi
     else
       printf '%s bind FAIL bot=%s sid=%s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$cand" "$sid" >> "$LOG"
