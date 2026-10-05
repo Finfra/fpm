@@ -19,15 +19,18 @@
 # 서버측 content_type=live liveness 게이트·카드 렌더는 prj1 ___pm#Issue98 소관.
 # 본 훅의 POST 는 서버가 live 를 아직 무시해도 무해 (sid entry 등록만 수행).
 
-input=$(< /dev/stdin)   # prj3#Issue921 — cat fork 제거(부하 시 CPU 경합 몫)
+input=$(cat)
 
 # Issue122: pid 추출 — stdin JSON 의 pid 필드(존재 시) 우선, 없으면 $PPID(훅 부모=claude).
 # pid 는 서버(Issue99) live 카드 dedup·liveness(사망 즉시 prune) 권위 신호 — content_type=live 필수.
-# prj3#Issue921 — python3(≈17ms CPU) → jq 1회. 필드 의미는 종전과 같다(공백 구분 → 0x1f 구분: 공백 든 cwd 도 보존)
-#   transcript_path 도 여기서 함께 꺼낸다(종전엔 아래에서 python3 를 한 번 더 띄웠다)
-IFS=$'\x1f' read -r SID CWD SRC PID_JSON TRANSCRIPT <<< "$(printf '%s' "$input" | jq -r '
-  [(.session_id // ""), (.cwd // ""), (.source // ""), (.pid // "" | tostring), (.transcript_path // "")]
-  | map(tostring | gsub("[\u001f\n]"; " ")) | join("\u001f")' 2>/dev/null)"
+read -r SID CWD SRC PID_JSON <<< "$(printf '%s' "$input" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(d.get('session_id', ''), d.get('cwd', ''), d.get('source', ''), d.get('pid', ''))
+except Exception:
+    print('', '', '', '')
+")"
 
 [ -z "$SID" ] && exit 0
 
@@ -38,6 +41,7 @@ IFS=$'\x1f' read -r SID CWD SRC PID_JSON TRANSCRIPT <<< "$(printf '%s' "$input" 
 FPM_LIB_DIR="$HOME/.claude/hooks/lib"
 [ -d "$FPM_LIB_DIR" ] || FPM_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)/lib"
 . "$FPM_LIB_DIR/claude-pid.sh"
+PID=$(fpm_resolve_claude_pid "$PID_JSON" "$PPID")
 
 [ -z "$CWD" ] && exit 0   # Issue179: PWD fallback 제거 — hook 컨텍스트 PWD 는 frontmost 반영 위험(세션 오귀속), doc-register.sh:43 표준 정합
 case "$CWD" in /*) ;; *) exit 0 ;; esac   # 절대경로만
@@ -47,10 +51,6 @@ HEALTH_URL="http://127.0.0.1:${SERVER_PORT}/healthz"
 
 health=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 "$HEALTH_URL" 2>/dev/null)
 [ "$health" = "200" ] || exit 0
-
-# prj3#Issue921 — pid 해소(부모 체인 ps 최대 13회)는 hub 생존이 확인된 뒤에만. 종전엔 healthz 전에 돌아
-#   서버 미기동(무발동) 경로가 매 SessionStart 마다 ps 를 훑었다. pid 는 아래 BODY 에서만 쓴다
-PID=$(fpm_resolve_claude_pid "$PID_JSON" "$PPID")
 
 # tmux window index (가능 시) — 동일 cwd 다중 window 구분용 (Issue122 T3)
 # $TMUX 가 훅 env 로 전파되면 정확. 미전파여도 단일 client 면 display-message 가 fallback 으로 동작.
@@ -96,6 +96,13 @@ esac
 # Issue221(보너스): resume 세션 model 선탐색 — SessionStart(source=resume/compact) 시점엔
 #   transcript 에 이미 assistant .message.model 존재 → dot 을 첫 응답 前 즉시 표시.
 #   신규(source=startup) 세션은 transcript 비어 MODEL='' → 무해(기존 동작 유지, Stop 훅이 채움).
+TRANSCRIPT=$(printf '%s' "$input" | python3 -c "
+import sys, json
+try:
+    print(json.load(sys.stdin).get('transcript_path', '') or '')
+except Exception:
+    print('')
+")
 MODEL=""
 if [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ]; then
   MODEL=$(tail -n 400 "$TRANSCRIPT" 2>/dev/null | python3 -c "

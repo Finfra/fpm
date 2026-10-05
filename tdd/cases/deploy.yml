@@ -12,10 +12,6 @@ cases:
     run: |
       s="$REPO_DIR/scripts/fpm-bundle-sync.sh"
       [ -x "$s" ] || { echo "skip(저작 머신 전용)"; exit 0; }
-      # Issue543 M3 — 스크립트 존재만으로는 저작 머신을 못 가른다(prj1 후보 트리엔 늘 있다).
-      #   원격 네이티브 실행에선 그 머신의 ~/.claude 가 라이브 소스로 잡혀 DRIFT 가 났다
-      #   (jma = 9/1 부분 사본). 번들 동기 판정은 저작 머신의 1행(dev-playlist) 소관이다
-      [ -n "${FPM_TDD_NATIVE_REMOTE:-}" ] && { echo "skip(원격 네이티브 실행 — 번들 동기는 저작 머신 소관)"; exit 0; }
       "$s" --check 2>&1 | grep -q "표류 없음" && echo ok || echo "DRIFT"
     expect: contains:ok
 
@@ -81,22 +77,6 @@ cases:
     run: |
       git -C "$REPO_DIR" ls-files --error-unmatch data/template/aoa-policy.default.yml \
         >/dev/null 2>&1 && echo ok || echo "UNTRACKED"
-    expect: contains:ok
-
-  - id: decision-policy-template-tracked
-    desc: 결정 권한 정책 템플릿이 git 에 **추적**되고, 배송 helper 의 [컨펌] 게이트와 함께 간다
-    why: |
-      Issue566 — mcp/aoa-mq/aoa-mq-enqueue.sh 의 `[컨펌]` 게이트(prj3#Issue756)는 정책 파일이
-      없으면 fail-loud 로 거부한다. 저작 머신에는 ~/.claude/data/decision-authority.yml 이
-      prj3 추적 파일로 늘 있어 **존재 검사로는 통과**하고, 소비자 머신에서만 `[컨펌]` 이 전건
-      막힌다. sh/fbot-bootstrap.sh 가 seed 하는 원본 템플릿이 추적되는지를 본다.
-    run: |
-      if grep -q 'decision-authority' "$REPO_DIR/mcp/aoa-mq/aoa-mq-enqueue.sh" 2>/dev/null; then
-        git -C "$REPO_DIR" ls-files --error-unmatch data/template/decision-authority.yml \
-          >/dev/null 2>&1 && echo ok || echo "UNTRACKED(helper 는 게이트를 싣고 나간다)"
-      else
-        echo "ok(게이트 없는 helper — 정책 불요)"
-      fi
     expect: contains:ok
 
   - id: aoa-policy-template-complete
@@ -239,7 +219,7 @@ cases:
     why: |
       Issue465 — git 은 링크를 링크로 저장(mode 120000)하고 `git archive | tar -x`
       도 `rsync -a` 도 그대로 보존한다. 아무것도 안 하면 **미러에 링크가 그대로
-      나간다**. Windows 소비자는 심볼릭 링크를 못 받는다(windows-port W2 =
+      나간다**. Windows 소비자는 심볼릭 링크를 못 받는다(windows-port-design W2 =
       실측 FAIL — `ln -s` 가 사본 디렉토리를 만들고 `Too many levels of symbolic
       links`, 개발자 모드 레지스트리 키 부재). 링크가 나가면 sh/install.sh 가 안내하는
       `cd <repo> && python3 services/hub/server.py` 가 통째로 깨진다.

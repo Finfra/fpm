@@ -22,7 +22,7 @@ set -u
 
 HOOKS_DIR="$HOME/.claude/hooks"
 
-input=$(< /dev/stdin)   # prj3#Issue921 — cat fork 제거(부하 시 CPU 경합 몫)
+input=$(cat)
 
 TMPD=$(mktemp -d "${TMPDIR:-/tmp}/ssdispatch.XXXXXX") || exit 0
 trap 'rm -rf "$TMPD"' EXIT
@@ -35,7 +35,6 @@ CHILDREN=(
   "0|$HOOKS_DIR/fpm-hub-session-register.sh"   # hub live 카드 등록 — 서버 미기동 시 무시
   "1|$HOOKS_DIR/pm-do-safety-context.sh"       # 위임 세션 안전 지시 — Issue351
   "2|$HOOKS_DIR/fbot-checkin.sh"               # 핀봇 출근: 매뉴얼·kv 복원 — Issue436_3
-  "3|$HOOKS_DIR/lang-anchor.sh"                # 압축·재개 직후 응답 언어 한국어 재고정 — Issue747
 )
 
 for spec in "${CHILDREN[@]}"; do
@@ -51,9 +50,7 @@ wait
 outs=()
 for spec in "${CHILDREN[@]}"; do
   idx="${spec%%|*}"
-  # prj3#Issue921 — `$(cat …)` 자식 수만큼 fork → bash 내장 읽기. 빈 결과(평소)는 읽기 자체를 건너뛴다
-  out=""
-  [ -s "$TMPD/$idx.out" ] && out=$(< "$TMPD/$idx.out")
+  out=$(cat "$TMPD/$idx.out" 2>/dev/null || true)
   [ -n "$out" ] && outs+=("$out")
 done
 

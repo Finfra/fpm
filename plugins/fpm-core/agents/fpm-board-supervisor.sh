@@ -27,12 +27,6 @@
 #   STUCK_SECS       상태 변화 0 이 이 초 이상 지속되면 stuck 자가 진단 (기본: 600, Issue98)
 #   SENTINEL_DIR     worker 완료 sentinel 파일 디렉토리 (기본: /tmp/___pm/<sid>.sentinel, Issue100)
 #   SID              sentinel 격리 키 (기본: md5(QUEUE_FILE)[:12], Issue100)
-# 환경변수 (선택 — 격리, Issue727: headless 테스트가 운영 tmux·임시 경로를 건드리지 않게):
-#   BOARD_TMUX_SOCKET  tmux 서버 소켓 — 이름이면 `tmux -L`, `/` 포함 경로면 `tmux -S`.
-#                      미지정 시 기본 서버 (현행 동작)
-#   FPM_TMP_ROOT       임시 루트 — 지정 시 board_policy.yml sentinel_base 보다 우선 (env > yml)
-#   BOARD_POLICY       정책 파일 경로 (기본: $FPM_BASE/data/board_policy.yml)
-#   PROJECTS_DIR       prj 번호 → 경로 맵 디렉토리 (기본: $FPM_BASE/projects)
 #
 # 종료:
 #   - SIGTERM/INT  → 로그 남기고 exit (queue.yaml 보존 — 재기동 시 running→ready resume)
@@ -52,16 +46,6 @@ if [ "${BASH_VERSINFO:-0}" -lt 4 ]; then
        "Homebrew bash 설치(brew install bash) 후 PATH 우선순위를 확인하세요." >&2
   exit 1
 fi
-
-# tmux 소켓 격리 (Issue727) — 이 스크립트의 모든 tmux 호출이 이 함수를 거친다. 호출부마다
-#   소켓 옵션을 붙이면 하나만 빠져도 운영 서버로 새므로, 이름 자체를 가로채 누락을 구조로 막는다.
-tmux() {
-  case "${BOARD_TMUX_SOCKET:-}" in
-    '')  command tmux "$@" ;;
-    */*) command tmux -S "$BOARD_TMUX_SOCKET" "$@" ;;
-    *)   command tmux -L "$BOARD_TMUX_SOCKET" "$@" ;;
-  esac
-}
 
 # board_policy.yml 로더 (Issue152) — 운영 상수 SSOT. 우선순위: env VAR > board_policy.yml > 인자 기본값.
 #   flat `key: value` 만 grep 파싱 (yq 불요). 정책 파일·키 부재 시 인자 기본값으로 무해 fallback.
@@ -89,7 +73,7 @@ WORKERS_FILE="$OUT_DIR/$TOPIC.workers"          # 런타임 worker 맵: "<prj> <
 WITHDRAW_REPORT="$OUT_DIR/$TOPIC.withdraw-report.md"
 APPROVAL_DIR="$OUT_DIR/.dash-approvals"          # T12-A 승인 마커 디렉토리 (<topic>__<id>)
 ANSWERS_DIR="$OUT_DIR/.dash-answers"             # Issue102 Q&A 답변 마커 디렉토리 (<topic>__<id>, 내용=답변)
-PROJECTS_DIR="${PROJECTS_DIR:-${FPM_BASE:-$HOME/_git/___pm}/projects}"
+PROJECTS_DIR="$HOME/_git/___pm/projects"
 MY_PID=$$
 ORIG_PPID=$PPID   # Issue120: 부모(tmux pane) PID — orphan guard 기준
 # sentinel 파일 디렉토리 — 완료 감지를 파일 기반으로 구현. 동시 실행 대시보드 간 격리는
@@ -100,14 +84,7 @@ SID="${SID:-$(python3 -c 'import hashlib,sys; print(hashlib.md5(sys.argv[1].enco
 #   prj1 server.py _tmp_root() 와 같은 규칙을 python 인라인으로 계산한다 —
 #   POSIX 는 /tmp 고정(gettempdir 금지 — macOS TMPDIR 은 세션마다 달라 재갈라짐).
 TMPNS_DEFAULT=$(python3 -c 'import os,tempfile;print(os.path.join(os.environ.get("FPM_TMP_ROOT") or ("/tmp" if os.name=="posix" else tempfile.gettempdir()),"___pm"))')
-# 우선순위 SENTINEL_DIR > FPM_TMP_ROOT > yml sentinel_base > 기본 (Issue727) — FPM_TMP_ROOT 도 env 라
-#   yml 보다 앞선다. 종전엔 _bp 기본값 자리에만 들어가 운영 yml(sentinel_base: /tmp/___pm)에 가려졌다.
-if [ -n "${FPM_TMP_ROOT:-}" ]; then
-  SENTINEL_BASE="$TMPNS_DEFAULT"
-else
-  SENTINEL_BASE=$(_bp sentinel_base "$TMPNS_DEFAULT")
-fi
-SENTINEL_DIR="${SENTINEL_DIR:-$SENTINEL_BASE/${SID}.sentinel}"
+SENTINEL_DIR="${SENTINEL_DIR:-$(_bp sentinel_base "$TMPNS_DEFAULT")/${SID}.sentinel}"
 
 mkdir -p "$OUT_DIR" "$APPROVAL_DIR" "$ANSWERS_DIR" "$SENTINEL_DIR"
 : > "$WORKERS_FILE"

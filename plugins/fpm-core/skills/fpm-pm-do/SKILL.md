@@ -153,8 +153,8 @@ is_completed "$dep_path" "$dep_iss" && continue
 
 신규 스폰 허가 판정의 단일 SSOT 는 인사핀봇(HR) 게이트다 — [fbot-arch.md §호출 경계](../../_doc_arch/fbot-arch.md). `~/.bin/fpm-do` 는 **신규 기동 else 가지 진입 직전**에 게이트 `check` 를 호출한다.
 
-* 호출 계약: `python3 ~/.claude/hooks/fbot-hr-gate.py check --parent <FBOT_ID|-> --depth <PM_DO_DEPTH>` — 종료코드 **0 허가 / 1 거부(사유 stdout) / 2 사용법 오류(호출 계약 깨짐) / 3 내부 오류(DB·policy — 판정 불능, 허가 아님)**(prj3#Issue930 — 게이트 `fbot-hr-gate.py` docstring «종료코드 계약» 이 정본). parent 는 `FBOT_ID` env 있으면 그 값, 없으면 `-`(일반 위임 = 비봇, check 만 경유·레지스트리 등록 없음 — UX 불변) · `FBOT_ID` 가 곧 `--parent` 면 게이트가 **그 봇 자신의 몸체 기동**으로 보고 깊이 = 그 봇의 기존 체인 깊이(새 자식 +1 아님 — prj3#Issue842)
-* **fail-open 은 «게이트를 부를 수 없을 때» 뿐**: 게이트 파일 부재·실행체 부재(126/127) 시 기존 `PM_DO_DEPTH >= DEPTH_LIMIT` 독자 검사로 폴백한다 — 위임 인프라가 게이트 미설치로 마비되면 안 된다. **게이트가 답을 냈다면(rc 1·2·3) 차단**이다 — rc 2 는 «호출 계약 깨짐» 으로 stderr 에 알리고 차단, rc 3 은 판정 불능이라 차단. 종전엔 rc 2 가 `--depth` 미지원 호환으로 fail-open 이었으나 게이트가 `--depth` 를 지원해 그 분기는 소멸했고, 오히려 게이트가 미등록 봇·parent 순환·DB 오류를 argparse 오류와 같은 2 로 내 거부가 통과했다(2026-10-03 실측 — prj3#Issue930)
+* 호출 계약: `python3 ~/.claude/hooks/fbot-hr-gate.py check --parent <FBOT_ID|-> --depth <PM_DO_DEPTH>` — exit 0 허가 / exit≠0 거부(사유 stdout). parent 는 `FBOT_ID` env 있으면 그 값, 없으면 `-`(일반 위임 = 비봇, check 만 경유·레지스트리 등록 없음 — UX 불변)
+* **fail-open**: 게이트 파일 부재·미호환(exit 2 — `--depth` 미지원)·실행 불능(126/127) 시 기존 `PM_DO_DEPTH >= DEPTH_LIMIT` 독자 검사로 폴백한다 — 위임 인프라가 게이트 미설치로 마비되면 안 된다
 * **판정 단일성**: 기존 깊이 상한 독자 판정(`auto_deps`·신규 기동)은 전부 `hr_gate_check()` 한 함수로 흡수했다. 게이트 실재 시 fpm-do 자체 판정 분기는 없다. `PM_DO_DEPTH` env 전파(+1)는 유지 — 게이트가 체인 깊이를 아는 재료다
 * **거부 시**: 사유 출력 + 중단 + 이번 호출이 새로 만든 빈 tmux 창 회수(창 생성이 게이트보다 앞서므로). 호출 전부터 있던 창은 보존
 * **불경유 경로**: 생존 pane 프롬프트 주입(interactive 분기)은 SendMessage 동형이라 게이트를 타지 않는다(계약 명시)
@@ -473,8 +473,8 @@ extract_completion_hash() {
 
 # 의존 룰·SCAR
 
-* **`~/.claude/_doc_arch/fpm-do.md` — 본 자산의 설계 SSOT (prj3 소유)**. 자산 3벌 동기화 경계(⚠️ prj1 plugin 배포판이 Issue351 미반영), 실행 10단계 실측, `--auto-deps` 파싱 결함. ⚠️ 본 SKILL 은 *실행 단계*, 설계 문서는 *왜·어디가 갈라졌나*를 담는다
-* `~/.claude/_doc_arch/session-delegation.md` — 위임 아키텍처 전반(3계층 중복·결손·DB 도입 경계)
+* **`~/.claude/_doc_arch/fpm-do-design.md` — 본 자산의 설계 SSOT (prj3 소유)**. 자산 3벌 동기화 경계(⚠️ prj1 plugin 배포판이 Issue351 미반영), 실행 10단계 실측, `--auto-deps` 파싱 결함. ⚠️ 본 SKILL 은 *실행 단계*, 설계 문서는 *왜·어디가 갈라졌나*를 담는다
+* `~/.claude/_doc_arch/session-delegation-design.md` — 위임 아키텍처 전반(3계층 중복·결손·DB 도입 경계)
 * **`~/.claude/_doc_arch/rules-ondemand/session-delegation-rules.md` — 세션 기동 표준 SSOT (Issue300)**. `-p` + `--dangerously-skip-permissions` 강제, 게이트를 사용자에게 넘기지 않기
 * `~/.claude/rules/issue-g.md` 규칙2 `* depends:` 필드 정의 (Issue17)
 * `~/_git/___pm/.claude/skills/cdf/index.md` — tmux pane 라우팅

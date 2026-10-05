@@ -1,7 +1,0 @@
-# 공통 — sentinel 완료 감지. worker 는 sentinel 을 쓰지 않고(mode=manual) 테스트가 직접 쓴다
-title: sentinel
-state: running
-on_fail: continue
-concurrency: 1
-items:
-- {id: ok1,  prj: 1, issue: 0, depends: [], status: ready, attempts: 0, prompt: 'FAKE: mode=manual'}

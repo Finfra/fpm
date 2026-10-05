@@ -111,19 +111,9 @@ ___pm/
     └── zed.json   # Issue327 — enabled_editors 에 zed 포함 시만 사용
 ```
 
-## 템플릿 토큰 치환 (필수) — **docs 전체가 대상** (Issue499)
+## CLAUDE.md 템플릿 토큰 치환 (필수)
 
-> 🔒 **집행: 스크립트** — [`sh/fpm-scaffold-fill.py`](../../../sh/fpm-scaffold-fill.py) 가 치환과 Harness 채움을 **실제로 수행**한다. 템플릿 복사 직후 1회 실행하고, 출력의 `✅ 잔존 오염 0` 을 확인한다.
->
-> ```bash
-> sh/fpm-scaffold-fill.py <repo> --name <프로젝트명> --desc "<설명>" --type general|web|mac --prj <번호>
-> sh/fpm-scaffold-fill.py <repo> --check      # 감사만 (읽기 전용)
-> sh/fpm-scaffold-fill.py --check-all         # 등록 프로젝트 전수 감사
-> ```
->
-> ⚠️ **종전에는 `CLAUDE.md`·`PROMPTS.md`·`vscode.json`·`zed.json` 만 치환하고 `Issue.md`·`Harness.md`·`noteForHuman.md` 는 `cp` 였다.** 오염이 정확히 그 둘에서 나왔다 — 2026-09-19 전수 실측에서 미치환 `{git-hash}` **12개 prj** · prj1 값 누출 `Project Mananger` **6개 prj** · 빈 global layer **7개 prj**. **치환 대상 목록을 사람이 기억하는 구조**가 원인이므로 목록을 스크립트 상수(`DOC_FILES`)로 옮겼다.
-
-`data/template/*` 복사 시 아래 토큰을 `Projects.md` 행 값으로 치환한다. 프로젝트 시작 컨텍스트(목적·구조)를 담아 첫 세션이 곧바로 작업 가능하게 함. 대상 파일: **`Issue.md`·`Harness.md`·`CLAUDE.md`·`PROMPTS.md`·`noteForHuman.md`**.
+`data/template/CLAUDE.md` 복사 시 아래 토큰을 `Projects.md` 행 값으로 치환한다. 프로젝트 시작 컨텍스트(목적·구조)를 담아 첫 세션이 곧바로 작업 가능하게 함.
 
 | 토큰            | 치환 값 (Projects.md 컬럼)      |
 | :-------------- | :------------------------------ |
@@ -169,11 +159,9 @@ ___pm/
 
 * 생성 후 `sh/fpm-identity-collect` 를 실행해 [Identity.md](../../../Identity.md) 에 새 prj 가 나타나는지 확인한다
 
-# 타입별 기본값 (Harness.md global layer)
+# 타입별 폴백 기본값 (Harness.md global layer)
 
-> 🔑 **SSOT 는 [`data/harness-defaults.yml`](../../../data/harness-defaults.yml)** 이다 (Issue499). `fpm-scaffold-fill.py` 가 그 파일을 읽어 채운다 — **아래 목록은 사람이 읽는 사본**이므로 값을 늘릴 때는 yml 을 고치고 여기를 맞춘다. 종전에는 이 산문이 유일한 자리였고, 읽어 줄 코드가 없어 «자동 채움» 이라는 템플릿 문구가 4개월간 거짓이었다.
-
-아래는 그 파일의 현재 값이다:
+수집 실패 시 아래를 사용:
 
 ## general
 ```
@@ -200,7 +188,7 @@ Commands: /issue-reg-m, /issue-fix-m, /issue-closer-m
 
 # .gitignore 케이스 무결성 검증 (필수)
 
-> 적용/skip 판정·표준 블록 정책 SSOT: [`_doc_arch/gitignore-policy.md`](../../../_doc_arch/gitignore-policy.md). 요지(**Issue497 개정**) — docs(`.claude/`·`CLAUDE.md`·`Issue.md`·`_doc_arch/`·`_doc_work/`·`noteForHuman.md`)는 **명시 선언 기반**이다. `.claude/doc-base.yml` 의 `docs: track|ignore` 를 따르고 **미선언이면 «추적»**(안전측 = 유실 방지). 구 규정의 *"미추적 프로젝트면 로컬전용 ignore"* 는 **폐기** — 갓 만든 repo 는 당연히 미추적이라 신규 프로젝트가 예외 없이 버전이력·백업 0 으로 태어났다. **이미 git 추적 중이면 special reason 으로 skip** 은 유지.
+> 적용/skip 판정·표준 블록 정책 SSOT: [`_doc_arch/gitignore-policy.md`](../../../_doc_arch/gitignore-policy.md). 요지 — docs(`.claude/`·`CLAUDE.md`·`Issue.md`·`_doc_arch/`·`_doc_work/`·`noteForHuman.md`)는 **미추적 프로젝트만** 로컬전용 ignore, **이미 git 추적 중이면 special reason 으로 skip**.
 
 `.gitignore` 템플릿(`data/template/gitignore`)에 적힌 폴더 패턴은 실제 생성 폴더명과 **대소문자 완전 일치**해야 함. macOS HFS+ 기본은 case-insensitive지만 APFS·Linux·git 인덱스는 case-sensitive — 한쪽이 다르면 `.gitignore` 매칭이 조용히 실패함.
 
@@ -231,31 +219,17 @@ done
 
 발견 시 사용자 컨펌 후 in-place 수정. history 파일 `# 변경 내역` 섹션에 기록.
 
-# Harness.md global layer 채움 절차
+# Harness.md global layer 자동 채움 절차
 
-> 🔒 **집행: `sh/fpm-scaffold-fill.py`** (Issue499). 아래 1·2 는 **사람이 더 정확한 목록을 넣고 싶을 때의 선택 경로**이고, 아무것도 하지 않아도 3 이 자동으로 적용된다. *"자동 수집한다"* 고만 적고 집행자를 밝히지 않던 종전 문구가 이 이슈의 원인이었다.
-
-1. (선택) 동일 타입의 기존 프로젝트 탐색 (ex: 맥 → `~/_git/` 하위 fApp 프로젝트들)
-2. (선택) 해당 프로젝트의 `Harness.md` 또는 `.claude/` 구조에서 global SCAR 목록 수집
-3. **기본**: `data/harness-defaults.yml` 의 타입별 값을 스크립트가 채운다. 이미 내용이 있으면 덮어쓰지 않는다(멱등 — `--force` 로만 덮어쓴다)
+1. 동일 타입의 기존 프로젝트 탐색 (ex: 맥 → `~/_git/` 하위 fApp 프로젝트들)
+2. 해당 프로젝트의 `Harness.md` 또는 `.claude/` 구조에서 global SCAR 목록 수집
+3. 수집 불가 시 위 폴백 기본값 사용
 
 채움 규칙:
 * **global Layer > Skills**: General(`-g`) + 해당 Domain(`-m` 또는 `-w`) 스킬만 기재
 * **global Layer > Commands**: 해당 도메인의 커맨드만 기재
 * **global Layer > Agents, Rules**: 동일 타입 프로젝트에서 수집
 * **local Layer**: 빈 상태로 생성
-
-# graphify 스캐폴드 배선 (Issue508 이월)
-
-`graphify-out/` 이 있는 프로젝트는 [`_doc_arch/graphify-priority-setup.md`](../../../_doc_arch/graphify-priority-setup.md) 의 표준 설정을 적용한다. 그 문서는 *"본 문서를 `pm-new` 적용 단계에서 참조하도록 링크 추가 의무"* 를 적어 두었으나 **이 스킬에 `graphify` 문자열이 0건이었다** — 약속만 있고 집행이 없던 자리다(Issue508 실측).
-
-* 핵심은 **brief 를 1회 만드는 것이 아니라 갱신 경로를 붙이는 것**이다:
-    ```bash
-    bash ~/.claude/hooks/graphify-post-commit-patch.sh <repo>            # 커밋마다 재압축 부착
-    bash ~/.claude/hooks/graphify-brief-refresh.sh --dir <repo>          # 지금 1회 압축
-    bash ~/.claude/hooks/graphify-brief-refresh.sh --dir <repo> --check  # rc=0 이어야 한다
-    ```
-* 미부착 상태는 커밋 한 번으로 brief 가 낡고, 그 낡은 요약이 **최우선 진입점으로 읽힌다**
 
 # vscode.json 컬러·이모지 선택 로직
 
@@ -264,61 +238,8 @@ done
     - 일반: 중성/회색 계열
     - 웹: 파랑/청록 계열
     - 맥: 난색 계열
-    - ⚠️ **톤은 색상(Hue) 힌트일 뿐 «연하게» 라는 뜻이 아니다 (Issue494)**. 관례를 *저채도* 로 읽어 온 것이 포화의 실제 원인이다 — 남아 있는 공간은 **채도가 높은 쪽**에 있다(여유 색 167개의 S 중앙값 65.1% vs 등록 52색 54.5%)
-3. **거리 가드 — 기존 색과 충분히 떨어질 것 (필수 · Issue494)**: 등록 전 색과의 최소 거리가 **40 이상**(하한 30). 척도는 녹색 민감도 가중 유클리드 `sqrt((2ΔR)² + (4ΔG)² + (3ΔB)²)`
-    - 검증·후보 탐색은 [`sh/fpm-peacock-audit.py`](../../../sh/fpm-peacock-audit.py) 가 한다. **눈대중 금지** — 최소 거리 11.3 쌍(prj26 ↔ prj42a)이 눈으로는 안 잡혔다
-    ```bash
-    sh/fpm-peacock-audit.py                 # 현황 (중앙값·최소·가드 이탈)
-    sh/fpm-peacock-audit.py --headroom 40   # 거리 40 이상 배정 가능 색 목록
-    ```
-    - ⚠️ **«거리 규칙은 성립하지 않는다» 던 종전 기재는 범위를 잘못 잡은 것이다.** 기존 자산 전체에 소급하면 118쌍이 먼저 위반이라 성립하지 않지만, **신규 배정에만** 걸면 현행 명도 가드 안에서도 거리 40 이상 색이 **95개** 남아 있다(2026-09-20 실측). 소급과 신규를 나누면 규칙이 선다
-4. **명도 가드 — 파스텔만 (필수)**: 고른 색은 아래 둘을 **모두** 만족해야 함
-    - HSL 명도 `L >= 80%` (권장 구간 85~92%. 등록 51건의 중앙값 L 87.1% — 2026.09.18 전수 실측)
-    - 상대 휘도 `lum >= 78%` (`0.2126R + 0.7152G + 0.0722B`, 채널 0~1 정규화)
-    - ⚠️ **채도(S)는 기준이 아님** — `#fee4e9`(L 94.5% · S 92.9%)처럼 충분히 밝으면 S 가 높아도 연하게 보임. S 로 거르면 정상 파스텔이 탈락함
-    - 눈대중·짐작 금지. 아래 스니펫으로 **수치 검증한 뒤** 확정함
-5. 이모지는 프로젝트 성격을 표현 (1~2개, 의미 있는 조합)
-6. 기존 프로젝트와 중복 불가 (컬러 + 이모지 모두)
-
-## 컬러 명도 검증 스니펫
-
-```bash
-python3 -c "import colorsys,sys
-h=sys.argv[1].lstrip('#'); r,g,b=[int(h[i:i+2],16)/255 for i in (0,2,4)]
-L=colorsys.rgb_to_hls(r,g,b)[1]; lum=0.2126*r+0.7152*g+0.0722*b
-print(f'L={L*100:.1f}% lum={lum*100:.1f}% ->', 'OK' if L>=0.80 and lum>=0.78 else 'REJECT (너무 진함)')" '#fee4e9'
-```
-
-* 가드는 **신규 배정에만** 적용됨. 기존 등록 색의 소급 교체 의무는 없음 (2026.09.18 전수 재측정 — 이탈 **3건**: prj9 `#42b883` L 49.0%·lum 60.8% / prj65 `#fc8099` L 74.5%·lum 61.2% / prj9a `#92dab6` L 71.4%·lum 78.5%. 종전 기재는 2건으로 prj9a 가 빠져 있었다)
-* 도입 계기: prj83(MultiAIAgent) 최초 배정색을 사용자가 `#fee4e9` 로 직접 교체 (2026-09-18). 종전 규칙은 색 *계열*만 정하고 명도 하한이 없어 세션마다 진한 색이 섞여 나왔음
-
-## ✅ 재검토 결과 — 명도 가드는 **그대로 둔다** (Issue494 종결, 2026-09-20)
-
-아래 «재검토 대상» 예고는 실측으로 닫혔다. **확장할 축은 채도 하나이고 명도는 건드릴 필요가 없다.**
-
-| 측정 (2026-09-20 · 등록 52색) | 값 |
-| :--- | ---: |
-| 현행 가드(L≥80·lum≥78) 안에서 거리 **30** 이상 배정 가능 | **167색** |
-| 같은 가드에서 거리 **40** 이상 | **95색** |
-| 빈 팔레트로 다시 짤 때 거리 **50** 이상 | **76색** (등록 52개를 덮고도 남는다) |
-
-* 🔑 **«고를 색이 남아 있지 않다» 는 전제가 틀렸다.** 색 공간이 아니라 **배정 습관**이 좁았다 — 관례를 저채도로 읽어 한 대역만 써 왔다
-* ⇒ 명도 축을 내리는 설계(전경색 임계 재보정 동반)는 **불필요**하다. 부작용이 큰 축을 건드리지 않고 목표(중앙값 40·최소 30)를 초과 달성할 수 있다
-* 남은 것은 **기존 52색의 전수 재배정**뿐이며, 산출물이 각 repo 소유라 별도로 분리했다(Issue510 — 산출물이 각 repo 소유라 승인 선행)
-
-## ⚠️ 이 가드의 위상 — prj83 사건의 원인 대응이 **아니다** (Issue494, 2026-09-18 교정)
-
-가드를 도입한 커밋 `04fd6a8` 의 메시지는 *"최초 배정색이 너무 진해"* 라고 적었으나, prj6 전수 실측으로 그 서술이 **추정이었음**이 확인됐다.
-
-| 색 | L | S | lum | 가드 판정 |
-| :--- | ---: | ---: | ---: | :--- |
-| prj83 최초 배정값 `#c9d9e3` | 83.9% | 31.7% | 84.0% | **OK — 통과** |
-| 사용자 조정값 `#fee4e9` | 94.5% | 92.9% | 91.7% | OK |
-
-* **가드가 먼저 있었어도 같은 일이 벌어졌다** — 배정값은 기준을 넘는 파스텔이었다. 진하지 않았다
-* 실제 원인은 **색 공간 포화**다. 등록 51색의 최근접 거리 중앙값이 18.0 에 불과했고, 배정값의 최근접 거리 33.0 은 오히려 중앙값보다 컸는데도 구분이 안 됐다. 대응은 [Issue494](Issue.md) 가 소유한다
-* ✅ **재검토 완료 (2026-09-20)**: B안의 «확대» 는 **채도 축으로 충분**했고 `L >= 80%` 하한과 충돌하지 않는다 — 위 「재검토 결과」 절 참조. 전경색 반전 규칙(`readable_fg` 임계 0.5)도 손대지 않는다
-* 진한 색을 막는 것 자체는 현행 UI 제약(상단 바 배경) 아래에서 타당하므로 **가드는 철회하지 않는다** — 바로잡는 것은 *"무엇을 막는 장치인가"* 라는 위상뿐이다
+3. 이모지는 프로젝트 성격을 표현 (1~2개, 의미 있는 조합)
+4. 기존 프로젝트와 중복 불가 (컬러 + 이모지 모두)
 
 ## window.title 포맷 (SSOT)
 
@@ -457,15 +378,12 @@ status: {success|partial|failed|cancelled}
 | `Harness.md`            | 보존                                                | 템플릿 + global layer 자동 채움  |
 | `_doc_work/{plan,tasks,report,z_done,z_done/htm,htm}`, `_doc_arch` | 없는 서브폴더만 생성   | 전체 생성                        |
 | `_doc_base`             | 없으면 생성                                         | 생성                             |
-| `.claude/doc-base.yml`  | **보존** (기존 선언 존중)                           | 템플릿 복사 후 2축 값 확정 (Issue497) |
 | `.vscode/settings.json` | **peacock 동기화** (아래 절차)                      | 템플릿 컬러·이모지 자동 선택     |
 | `.zed/settings.json`    | `sh/fpm-projects-sync` 가 단방향 생성 (역방향 없음) | `enabled_editors` 에 zed 포함 시 |
 | initial commit          | **스킵**. 변경분만 별도 커밋(사용자 컨펌)           | initial commit                   |
 
 * nPTiR 산출물·로컬 문서가 `.gitignore` 정책상 ignore 대상이면 `.gitkeep` 불필요 — 폴더만 생성
 * **`_doc_base` 무조건 생성 (사용자 지시, 2026-07-23)**: 구 규정은 원천 자료 필요 시만 생성하는 *선택 폴더*였으나, 신규·adopt 모두 항상 생성한다. gitignore 는 **명시 선언 기반** (Issue477 — 구 origin 기반 폐기): `.claude/doc-base.yml` 의 `tracking: allow|deny` 를 따르고, **미선언이면 `deny`(ignore·untrack)** 로 적용한다 — 새로 만드는 것은 닫힌 채 시작한다. 기존 repo 검사에서는 미선언이 위반이 아니다(적용 기본값 ≠ 검사 기본값). 판정 SSOT: [`_doc_arch/gitignore-policy.md`](../../../_doc_arch/gitignore-policy.md) "# `_doc_base/` 예외 — 명시 선언 규칙" · 검사: `sh/doc-base-check.sh`
-* **docs 6항목은 기본값이 반대다 (Issue497)**: 같은 `.claude/doc-base.yml` 의 `docs: track|ignore` 로 선언하고 **미선언이면 «추적»** 이다. `_doc_base` 의 위험은 *유출*이라 닫은 채 시작하지만 docs 의 위험은 *유실*이라 연 채 시작한다 — 두 기본값을 같게 두면 한쪽은 반드시 틀린다. `pm-new` 는 신규 프로젝트의 `doc-base.yml` 에 **두 키를 함께** 쓰고(`tracking:`·`docs:`), `docs: ignore` 를 택한 경우에만 `data/template/gitignore` 의 주석 처리된 docs 블록을 해제한다
-    - 검증: 초기 커밋 직후 `bash sh/doc-base-check.sh <repo>` 가 `docs` 축까지 ✅ 인지 확인한다. prj7(cg) 은 이 확인이 없어 **`.gitignore` 1개만 추적한 채** 태어났다(Issue497 발단)
 * **`htm` 필수 사유 (Issue289 — 구 `z_htm`)**: hub 렌더(`..show`/`..ask` 등)는 `$cwd/_doc_work/htm/` 존재 시 거기 저장하고, 그때만 register 훅(`fpm-hub-doc-register`)이 hub registry 에 자동 등록한다. 부재 시 `/tmp/___pm` fallback → 등록 스킵 → `/htm-doc` 403 dead link. 따라서 신규·adopt 프로젝트는 `htm` 을 함께 생성한다 (pm 스킬은 fpm 컨텍스트 전용이라 가드 자동 충족 — 글로벌 wrapper·nptir-rules 는 `[ -d ~/_git/___pm ] || command -v fpm` 가드로 비-fpm 환경 제외). 아카이브 대상은 `z_done/htm/` 이며 legacy `z_htm/` 은 읽기만 지원. 수명주기 SSOT: `_doc_arch/htm-lifecycle-design.md`
 
 ## 에디터 폴더 조건화 (Issue327)

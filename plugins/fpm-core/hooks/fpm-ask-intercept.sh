@@ -33,10 +33,12 @@
 set -u
 
 . "$HOME/.claude/hooks/hub-scope.sh"
+# prj3#Issue545 — 번들(플러그인) 설치본은 ~/.claude/hooks/lib 가 없다. 자기 옆의 lib/ 로 폴백한다
+FPM_LIB_DIR="$HOME/.claude/hooks/lib"
+[ -d "$FPM_LIB_DIR" ] || FPM_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)/lib"
+. "$FPM_LIB_DIR/ask-common.sh"   # Issue424_2: 공용 컨텍스트 5블록 (SID·이름/색·OUT_DIR·서버·브라우저)
 
-# prj3#Issue845 ③: `$(cat)` 대신 내장 리다이렉트(외부 exec 0). 폼 lib(ask-common → hub-browser 의 awk 선로드)는
-#   게이트 통과 뒤에만 source 한다 — off 분기(음성)에는 쓰이지 않는다.
-input=$(< /dev/stdin)
+input=$(cat)
 
 # Issue360_4: cwd·session_id 파싱을 판정 단일 지점 hook-input.sh 로 위임(jq 1회, 3.7ms).
 #   종전엔 python3 를 cwd·session_id 각각 기동해 no-op 경로에서만 프로세스 2개를 태웠다.
@@ -58,37 +60,17 @@ _ask_say() {
   # 있으면 그쪽으로 맞춰 준다 — 이름과 카테고리 오버라이드가 같은 기준으로 해석되게.
   [ -n "$cwd" ] && [ -d "$cwd" ] && cd "$cwd" 2>/dev/null
   # 수면 모드·카테고리 off 게이트는 hook-say.sh 가 자체 처리한다.
-  # prj3#Issue845 ③: 프로젝트명은 `{P}` 로 넘겨 hook-say 가 게이트 통과 뒤 1회 해소한다(무음 경로 jq·grep 0).
-  "$HOME/.claude/hooks/hook-say.sh" waiting_ask "{P}에서 응답 대기"
-  exit 0
-}
-
-# prj3#Issue912: 폼 경로가 꺼진 채 채팅 UI 로 넘기면 안 되는 클라이언트 — Zed(ACP).
-#   브리지(claude-agent-acp)는 AskUserQuestion 을 ACP form elicitation 으로 넘기는데 Zed 1.22.0 이 폼을
-#   그리지 않아 «Awaiting Confirmation.» 만 남고 세션이 멈췄다(2026-10-04 실측). 사람이 볼 수 없는 질문이다.
-#   클라이언트 판정은 Zed 마커 단일 지점(lib/zed-detect.sh, Issue289)을 쓴다 — 외부 exec 0(Issue845 하한 가드).
-#   hub on 분기(외부 브라우저 폼)는 Zed 에서도 보이므로 여기서 다루지 않는다.
-_ask_zed_plain() {
-  . "$HOME/.claude/hooks/lib/zed-detect.sh" 2>/dev/null || return 0
-  zed_is_marked "$HOOK_SESSION_ID" || return 0
-  printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"## Zed 세션 — AskUserQuestion 폼이 화면에 그려지지 않는다 (prj3#Issue912)\n\n이 세션의 클라이언트(Zed ACP)는 질문 폼을 렌더하지 않아 사용자가 볼 수도 답할 수도 없다. 도구로 다시 부르지 말고 같은 질문을 **채팅 본문에 평문으로** 쓰고 턴을 끝낸다.\n\n- 질문마다 번호(1. 2.)와 보기 번호(1) 2) 3))를 붙이고 권장 보기에 (권장) 표시\n- 끝 줄에 답 형식 예시: `1-1, 2-2` 또는 자유 서술\n- 답을 받기 전에는 그 결정에 걸린 작업을 진행하지 않는다"}}'
+  "$HOME/.claude/hooks/hook-say.sh" waiting_ask "$("$HOME/.bin/project-name.sh" 2>/dev/null)에서 응답 대기"
   exit 0
 }
 
 FLAG_MODE=$(hub_flag_file "$cwd")
 if [ ! -f "$FLAG_MODE" ]; then
-  _ask_zed_plain
   _ask_say
 fi
 if [ "$(hub_effective "$cwd")" = "off" ]; then
-  _ask_zed_plain
   _ask_say
 fi
-
-# prj3#Issue545 — 번들(플러그인) 설치본은 ~/.claude/hooks/lib 가 없다. 자기 옆의 lib/ 로 폴백한다
-FPM_LIB_DIR="$HOME/.claude/hooks/lib"
-[ -d "$FPM_LIB_DIR" ] || FPM_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)/lib"
-. "$FPM_LIB_DIR/ask-common.sh"   # Issue424_2: 공용 컨텍스트 5블록 (SID·이름/색·OUT_DIR·서버·브라우저)
 
 # Issue360_4: 위 hook_input_parse 가 이미 뽑아 둔 값을 재사용(python3 재기동 제거).
 session_id="$HOOK_SESSION_ID"
@@ -133,7 +115,7 @@ reason = (
     "Mode A paste-back fallback 은 Issue45(2026-05-19) 에서 제거됨. "
     "form 자동 회수 단일 경로만 지원.\n\n"
     "### 조치 (사용자 선택)\n"
-    "1. **서버 시작 후 재시도**: `/fpm-board-server start` 실행 → 본 질문 재호출\n"
+    "1. **서버 시작 후 재시도**: `/dashboard-server start` 실행 → 본 질문 재호출\n"
     "2. **hub 모드 해제**: `..hub stop` 입력 → AskUserQuestion 채팅 UI 로 정상 복귀\n\n"
     "### 채팅 응답 의무\n"
     "Claude 는 본 deny 를 받으면 사용자에게 위 두 옵션을 명확히 제시하고 입력 대기. "

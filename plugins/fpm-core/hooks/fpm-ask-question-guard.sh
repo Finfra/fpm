@@ -13,14 +13,13 @@
 #   설계상 한계(코드 버그 아님)이며, 본 hook 이 재발 방지 가드 역할.
 #
 # 동작:
-#   - FPM_SESSION_ORIGIN=pm-do(-p 몸체)     → exit 0 — 도구가 없다, 봇 질문은 중계 [Issue749]
 #   - .hub-active/<hash> 없음 or effective=off → exit 0 (평소) [Issue283]
 #   - stop_hook_active true               → exit 0 (무한 루프 방지)
 #   - Mode D 마커(htm-form:auto:v1) 존재  → exit 0 (Mode D 가 정당 처리)
 #   - 직전 assistant 응답이 평문 결정 질문 패턴 매칭
 #     → decision:"block" + reason 주입 (AskUserQuestion 재호출 지시)
 #
-# 탐지 휴리스틱 — 정본은 hooks/lib/decision-question.py (Issue749 단일 지점, 보수적 — false positive 회피):
+# 탐지 휴리스틱 (보수적 — false positive 회피):
 #   결정 요청 문구를 anchor 로 항상 요구. 추가로 둘 중 하나 충족 시 발동:
 #     (A) 강한 신호: 번호/문자/bullet 옵션 2~4개 나열  (Issue16_3 승격 조건)
 #     (B) 약한 신호: 짧은 응답(≤800자) + '?' 종결       (단순 binary confirm)
@@ -28,15 +27,8 @@
 #
 # 이력:
 #   - Issue72 (2026-05-20): 초기 도입. Mode B 평문 우회 가드.
-#   - Issue749 (2026-09-28): 판정을 lib/decision-question.py 로 추출(봇 질문 중계와 공용) +
-#     한 줄 안 `1) … 2) …` 선택지 인식 + pm-do 몸체 예외.
 
 set -u
-
-# prj3#Issue749 — pm-do 가 띄운 `claude -p` 몸체에는 AskUserQuestion 도구가 **없다**(M0 실측: 도구 213개 중 부재).
-#   block 하면 없는 도구 재호출을 지시하게 되고, 몸체가 «도구 없음» 으로 이어 말해 2차 Stop 에서 질문을 덮는다.
-#   그 몸체의 질문은 fbot-idle.sh → fbot-inbox.py defer 가 의뢰 세션으로 중계한다(같은 판정 함수).
-[ "${FPM_SESSION_ORIGIN:-}" = "pm-do" ] && { cat >/dev/null; exit 0; }
 
 . "$HOME/.claude/hooks/hub-scope.sh"
 # Issue370: stdin 파싱을 단일 지점으로 — 종전엔 **같은 JSON 을 python3 로 3번** 파싱했다
@@ -45,7 +37,7 @@ set -u
 # shellcheck source=/dev/null
 . "$HOME/.claude/hooks/hook-input.sh"
 
-input=$(< /dev/stdin)   # prj3#Issue921 — cat fork 제거(부하 시 CPU 경합 몫)
+input=$(cat)
 hook_input_parse "$input"
 transcript_path="${HOOK_TRANSCRIPT:-}"
 cwd="${HOOK_CWD:-}"
@@ -68,9 +60,84 @@ if [ -z "$transcript_path" ] || [ ! -f "$transcript_path" ]; then
   exit 0
 fi
 
-# 마지막 assistant 텍스트의 평문 결정 질문 판정 — 공용 단일 지점(prj3#Issue749).
-#   fbot-inbox.py defer(봇 질문 중계)와 같은 함수다. 휴리스틱을 여기 두면 두 벌이 되어 갈라진다.
-verdict=$(python3 "$(dirname "${BASH_SOURCE[0]:-$0}")/lib/decision-question.py" --transcript "$transcript_path" 2>/dev/null)
+# 마지막 assistant 메시지의 text content 추출 + 평문 결정 질문 패턴 판정
+verdict=$(TRANSCRIPT_PATH="$transcript_path" python3 <<'PYEOF' 2>/dev/null
+import json, os, re, sys
+
+path = os.environ.get('TRANSCRIPT_PATH', '')
+if not path or not os.path.exists(path):
+    sys.exit(0)
+
+# transcript JSONL — 마지막 assistant turn 의 text block 만 수집
+last_assistant_text = []
+try:
+    with open(path, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except Exception:
+                continue
+            if ev.get('type') == 'assistant':
+                msg = ev.get('message', {})
+                content = msg.get('content', [])
+                if isinstance(content, list):
+                    txt = [c.get('text', '') for c in content
+                           if isinstance(c, dict) and c.get('type') == 'text']
+                    if txt:
+                        last_assistant_text = txt
+except Exception:
+    sys.exit(0)
+
+if not last_assistant_text:
+    sys.exit(0)
+
+joined = '\n'.join(last_assistant_text)
+
+# Mode D 마커 존재 시 Mode D 가 정당 처리 — 가드 무동작
+if 'htm-form:auto:v1:BEGIN' in joined:
+    sys.exit(0)
+
+stripped = joined.strip()
+if not stripped:
+    sys.exit(0)
+
+# code fence 제거 후 분석 (코드 dump false positive 차단)
+analysis = re.sub(r'```.*?```', '', stripped, flags=re.DOTALL)
+low = analysis.lower()
+
+has_q = ('?' in analysis) or ('？' in analysis)
+if not has_q:
+    sys.exit(0)
+
+# 결정 요청 문구 (anchor — 항상 필요). htm.md Issue16_3 cond 3 + binary confirm 보강
+decision_phrases = [
+    '선택해', '선택하세요', '선택할', '어느 옵션', '어느 쪽', '어느 것',
+    '어떤 방식', '어떤 걸', '어떤 것', '골라', '번호로', '둘 중', '중 선택',
+    'y/n', 'yes/no', 'a/b', '진행할까', '커밋할까', '할까요', '할까?',
+    '할까 ', '하시겠', '어떻게 할까', '계속할까', '적용할까', '만들까',
+]
+has_decision = any(p in low for p in decision_phrases)
+if not has_decision:
+    sys.exit(0)
+
+# (A) 강한 신호: 옵션 2~4개 나열
+opt_lines = re.findall(r'(?m)^\s*(?:\d+[.)]|[A-Da-d][.)]|[-*])\s+\S', analysis)
+strong = 2 <= len(opt_lines) <= 4
+
+# (B) 약한 신호: 짧은 응답 + '?' 종결
+tail = analysis.rstrip()
+ends_q = bool(re.search('[?？]\\s*$', tail))
+binary = ends_q and (len(stripped) <= 800)
+
+if not (strong or binary):
+    sys.exit(0)
+
+print('FIRE')
+PYEOF
+)
 
 if [ "$verdict" != "FIRE" ]; then
   exit 0

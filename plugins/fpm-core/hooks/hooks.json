@@ -18,11 +18,6 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fbot-agent-bind.sh",
             "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fbot-agent-map.sh",
-            "timeout": 5
           }
         ]
       },
@@ -66,16 +61,6 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fbot-agent-done.sh",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "matcher": "SendMessage",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fbot-sendmessage-record.sh",
             "timeout": 10
           }
         ]
@@ -166,28 +151,6 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fbot-inbox-nudge.sh",
             "timeout": 5
-          }
-        ]
-      }
-    ],
-    "SubagentStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fbot-agent-map.sh",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
-    "SubagentStop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fbot-agent-map.sh",
-            "async": true
           }
         ]
       }

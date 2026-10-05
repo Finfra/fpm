@@ -36,7 +36,7 @@ triage(복잡도)와 **별개 축**인 스펙 완성도를 판정함. 아래 한
 * ⚠️ **금지**: 구현 방법이 이미 확정된 사안에 `(!)` 부착. "변경 파일이 적다"·"방법이 자명하다"는 `(!)` 의 근거가 **아니며** plan/task/report 를 생략할 근거일 뿐임 (그것은 triage `단순`의 역할)
 * ⚠️ **금지**: 조사·분석으로 확보한 근거를 `(!)` 형식에 맞추려고 본문에서 폐기하는 것. 근거가 있으면 정식 등록 대상임
 * 마커를 붙였다면 그 이슈는 이 커맨드 종료 시점에 **착수 불가 상태**임. `/issue-fix` 로 이어가지 말 것 (`/dev` 자동 진행도 여기서 멈춤)
-* 상세 규약: `rules/issue-g.md` 규칙2 예외 조항 · 설계 근거: `_doc_arch/lightweight-issue.md`
+* 상세 규약: `rules/issue-g.md` 규칙2 예외 조항 · 설계 근거: `_doc_arch/lightweight-issue-design.md`
 
 ### 1. 프로세스 규칙 검증
 
@@ -66,18 +66,6 @@ triage(복잡도)와 **별개 축**인 스펙 완성도를 판정함. 아래 한
 **근거**: `~/.claude/skills/issue-g/SKILL.md` "HWM은 부모 이슈 번호만 증가 (서브 이슈는 HWM에 미반영)" 규칙. 위반 시 메인 이슈 번호 gap 누적 → 추적 혼란.
 
 #### 2-1. HWM 확인 (일반 이슈인 경우만)
-
-**공유 `Issue.md` 는 [`sh/issue-tx.py`](../sh/issue-tx.py) 로 발급함** (Issue664 · `rules/issue-g.md` 규칙10). 읽기~쓰기가 벌어지면 그 창에서 번호가 충돌하므로, HWM 을 **읽는 즉시 올려 예약**함:
-
-```bash
-python3 ~/.claude/sh/issue-tx.py --file Issue.md alloc          # → 발급된 번호 1개 출력
-python3 ~/.claude/sh/issue-tx.py --file Issue.md alloc --count 3 # → 연속 3개
-```
-
-* 발급 즉시 HWM 이 올라가므로 **블록을 나중에 써도** 그 번호를 남이 가져가지 못함
-* ⚠️ 서브 이슈는 HWM 을 올리지 않음 — `alloc` 을 쓰지 않고 부모 ID 를 재사용함
-
-도구가 없는 프로젝트의 폴백:
 
 프로젝트에 `issue-hwm` 스크립트가 있으면 활용:
 ```bash
@@ -162,14 +150,9 @@ _doc_work/plan/{주제}_task.md
 ### 5. Git 저장
 
 ```bash
-python3 ~/.claude/sh/issue-tx.py commit --issues [번호] -m "Docs: Issue[번호] 등록 — [제목]" [plan·task 등 함께 올릴 파일…]
+git add Issue.md
+git commit -m "Docs: Issue[번호] 등록 — [제목]"
 ```
-
-* `commit` 은 **임시 인덱스**로 내 블록 + HWM(+ 지정 파일)만 커밋한다 — 공유 인덱스에 타 세션이 올려 둔 스테이징분을 싣지 않는다(Issue754, 2026-09-28 혼입 실측). 훅(tagcheck·낡은 blob 게이트)은 그대로 돈다
-* **rc 4 는 재커밋하지 않는다** — 커밋은 이미 성립했고 공유 인덱스 동기만 실패한 것이다. 출력된 복구 명령만 실행한다(Issue766 · 정본 [issue-concurrency.md](../_doc_arch/issue-concurrency.md))
-
-* ⚠️ **`git add Issue.md` 를 쓰지 않음** (Issue664) — 파일 단위 스테이징은 구조적으로 타 세션 미커밋분을 쓸어담음. 실사고 2026-09-20, 양방향
-* 맨 `git commit` 은 쓰지 않음 — 공유 인덱스의 남의 스테이징분까지 실림. 수동 경로가 필요하면 `stage --issues` → `check --issues`(FAIL 이면 중단) → 커밋 직전 `git diff --cached --name-only` 가 내 파일뿐인지 확인
 
 ### 5-1. Issue_map.htm 자동 갱신 (존재 시, Issue264)
 

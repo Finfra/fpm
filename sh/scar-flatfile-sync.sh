@@ -67,24 +67,6 @@ ORIGIN="$HOME/$ORIGIN_REL"
 [ -d "$ORIGIN" ] || { say "🚨 원본 없음: $ORIGIN"; exit 1; }
 [ "${#FILES[@]}" -gt 0 ] || { say "🚨 files[] 파싱 결과 0건 — 매니페스트 형식 확인"; exit 1; }
 
-#   원본 = prj3 HEAD (Issue591) — 배포 사본에는 prj3 HEAD 판을 싣는다(미커밋 사본 반출 금지).
-#   작업트리를 읽으면 다른 세션의 진행 중 편집을 표류로 세고, 재생성 시 그 미완성 편집을 반출한다
-#   (`scripts/fpm-bundle-sync.sh`·`sh/scar-hooks-check.sh` 와 같은 판정). git repo 가 아니면 작업트리 그대로.
-SNAP=""
-trap '[ -n "$SNAP" ] && rm -rf "$SNAP"' EXIT
-o_top="$(git -C "$ORIGIN" rev-parse --show-toplevel 2>/dev/null)"
-if [ -n "$o_top" ] && [ "$(cd "$o_top" && pwd -P)" = "$(cd "$ORIGIN" && pwd -P)" ]; then
-    in_head=()
-    for rel in "${FILES[@]}"; do
-        git -C "$ORIGIN" cat-file -e "HEAD:$rel" 2>/dev/null && in_head+=("$rel")
-    done
-    SNAP="$(mktemp -d "${TMPDIR:-/tmp}/scar-flatfile-src.XXXXXX")"
-    if [ "${#in_head[@]}" -gt 0 ] && ! git -C "$ORIGIN" archive HEAD -- "${in_head[@]}" | tar -x -C "$SNAP"; then
-        say "🚨 prj3 HEAD 스냅샷 추출 실패 ($ORIGIN) — 작업트리로 대체하지 않는다"; exit 1
-    fi
-    ORIGIN="$SNAP"
-fi
-
 missing=0 drifted=0 copied=0 orphan=0
 
 # ── 1. 선언 → 원본 대조 · 동기 ────────────────────────────────

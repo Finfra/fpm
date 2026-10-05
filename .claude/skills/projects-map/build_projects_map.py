@@ -20,19 +20,12 @@ import datetime
 import html
 import json
 import os
-import hashlib
 import re
 import sys
 import urllib.parse
 from pathlib import Path
 
 MISC_LABEL = "미할당"
-# Issue574: `# Project Map` 안 `### 숨김` 절 = **일부러 그리지 않는** 프로젝트. 맵이 아니다 — 그래프에서
-#   빼되 완전성 계산에는 «배치됨»으로 넣어 `미할당`(아직 목적 없음)과 섞이지 않게 한다.
-HIDDEN_LABEL = "숨김"
-# Issue577: Main Map 은 목적의 뿌리라 박스로 감싸지 않는다 — Issue583 부터 맨 위 머리 다이어그램 · 간격 압축 지시문
-MAIN_MAP = "Main Map"
-FLOW_INIT = '%%{init: {"flowchart": {"nodeSpacing": 22, "rankSpacing": 38, "padding": 6}}}%%'
 
 # Issue294: 계층 소스 섹션 헤딩. 현행은 `# Project Map` 이며, 완전 일치 하드코딩이
 #   헤딩 rename 한 번에 생성 실패로 이어졌으므로(회귀) 구 표기도 함께 받아 준다.
@@ -53,11 +46,9 @@ def pid_sort_key(pid):
     return (int(m.group(1)), m.group(2) or "", int(m.group(3) or 0))
 
 
-# Issue550: 본표 행은 컬럼 수를 고정하지 않는다 — 열 위치는 헤더 명칭으로 찾는다(parse_table).
-#   종전 8컬럼 고정 정규식은 tdd 컬럼이 끼자 0행을 반환했다.
-TABLE_ROW_RE = re.compile(rf"^\|\s*({PID_PAT})\s*\|(.*)\|\s*$")
-# 헤더가 없는 구 8컬럼 표의 위치 fallback (id·프로젝트명·한국어명칭·Dmn·경로·설명·이모지·color)
-LEGACY_COLS = {"name": 1, "path": 4, "emoji": 6, "color": 7}
+TABLE_ROW_RE = re.compile(
+    rf"^\|\s*({PID_PAT})\s*\|([^|]*)\|([^|]*)\|([^|]*)\|([^|]*)\|([^|]*)\|([^|]*)\|([^|]*)\|\s*$"
+)
 TREE_NODE_RE = re.compile(r"^(?P<indent>\s*)-\s+(?P<rest>.+?)\s*$")
 ID_NODE_RE = re.compile(rf"^(?P<id>{PID_PAT})\.\s+(?P<emoji>\S+)\s+(?P<name>.+)$")
 
@@ -81,10 +72,9 @@ def read_toggle(root):
 
 
 def parse_table(md_text):
-    """id -> {name, path, emoji, color} — 열 위치는 헤더 명칭(프로젝트명·경로·이모지·color)으로 찾는다"""
+    """id -> {name, path, emoji, color}"""
     table = {}
     in_table = False
-    cols = dict(LEGACY_COLS)
     for line in md_text.splitlines():
         if line.strip().startswith("### 📋 프로젝트"):
             in_table = True
@@ -97,28 +87,14 @@ def parse_table(md_text):
                 if not line.strip().startswith("|"):
                     in_table = False
                     continue
-            if line.strip().startswith("|"):
-                hdr = [c.strip() for c in line.strip().strip("|").split("|")]
-                if "id" in hdr and any("color" in c.lower() for c in hdr):
-                    find = lambda pred, dflt: next((i for i, c in enumerate(hdr) if pred(c)), dflt)
-                    cols = {
-                        "name": find(lambda c: "프로젝트명" in c, LEGACY_COLS["name"]),
-                        "path": find(lambda c: c == "경로", LEGACY_COLS["path"]),
-                        "emoji": find(lambda c: "이모지" in c, LEGACY_COLS["emoji"]),
-                        "color": find(lambda c: "color" in c.lower(), LEGACY_COLS["color"]),
-                    }
-                    continue
             m = TABLE_ROW_RE.match(line)
             if m:
-                cells = [c.strip() for c in line.strip().strip("|").split("|")]
-                cell = lambda k: cells[cols[k]] if cols[k] < len(cells) else ""
                 pid = m.group(1).strip()
-                table[pid] = {
-                    "name": cell("name"),
-                    "path": cell("path").strip("`"),
-                    "emoji": cell("emoji"),
-                    "color": cell("color"),
-                }
+                name = m.group(2).strip()
+                path = m.group(5).strip().strip("`")
+                emoji = m.group(7).strip()
+                color = m.group(8).strip()
+                table[pid] = {"name": name, "path": path, "emoji": emoji, "color": color}
     return table
 
 
@@ -257,27 +233,11 @@ def collect_tree_ids(nodes):
     return ids
 
 
-def split_hidden(maps):
-    """Issue574: `### 숨김` 절을 맵 목록에서 떼어 그 id 를 **적힌 순서대로** 낸다(중복 제거).
-    숨김은 맵이 아니다 — 남겨 두면 «숨김» subgraph 로 그려져 숨긴 것이 오히려 드러난다."""
-    out, seen = [], set()
-
-    def walk(nodes):
-        for n in nodes:
-            if n.get("id") and n["id"] not in seen:
-                seen.add(n["id"]); out.append(n["id"])
-            walk(n["children"])
-
-    walk(maps.pop(HIDDEN_LABEL, []))
-    return out
-
-
-def enforce_completeness(maps, table, hidden=None):
+def enforce_completeness(maps, table):
     """Issue298: 미할당 판정을 **전 맵 id 합집합** 기준으로. 맵이 여러 개인데 한 맵만
     보면 다른 맵에 있는 프로젝트가 미할당로 잘못 잡힌다. 합성 노드는 별도 `미할당` 맵에
-    담아, 사람이 쓴 맵을 오염시키지 않는다.
-    Issue574: `hidden`(숨김 절 id)은 배치된 것으로 센다 — 일부러 안 그린 것은 «목적 없음» 이 아니다."""
-    tree_ids = set(hidden or [])
+    담아, 사람이 쓴 맵을 오염시키지 않는다."""
+    tree_ids = set()
     for roots in maps.values():
         tree_ids |= collect_tree_ids(roots)
     missing = sorted((set(table.keys()) - tree_ids), key=pid_sort_key)
@@ -458,17 +418,8 @@ def mmd_label(text):
 
 
 def mmd_id(prefix, key):
-    """mermaid 노드 id — 영숫자·언더스코어만 허용.
-
-    Issue573: 치환이 일어난 키(한글·공백 등)에는 **원문의 짧은 해시**를 접미한다. 치환만 하면 한글은
-    글자 수만 남아 같은 길이 맵 이름이 같은 id 가 되고(`생애 판정`·`강의_과목` → `SG_____`), mermaid 가
-    두 subgraph 를 한 박스로 합치며 같은 id 의 그룹 노드는 둘째 것이 사라진다 — 경고 없는 조용한 병합이다.
-    ASCII 키(`P9a`·`SGfApp`)는 그대로 둔다 — 런타임 JS 가 `flowchart-P{id}-` 에 의존한다."""
-    k = str(key)
-    safe = re.sub(r"[^A-Za-z0-9_]", "_", k)
-    if safe != k:
-        safe += "_" + hashlib.sha1(k.encode("utf-8")).hexdigest()[:6]
-    return prefix + safe
+    """mermaid 노드 id — 영숫자·언더스코어만 허용."""
+    return prefix + re.sub(r"[^A-Za-z0-9_]", "_", str(key))
 
 
 def node_label(node):
@@ -556,113 +507,86 @@ def collect_map(nodes, table, maps_ctx, parent_nid=None, map_name=""):
         collect_map(n["children"], table, maps_ctx, parent_nid=nid, map_name=map_name)
 
 
-def box_order(maps):
-    """Issue583: 박스(서브맵) 표시 순서 — Main Map 에 참조(`"맵"`)가 **등장하는 순서** 가 먼저, 참조되지 않은
-    서브맵은 파일 순서로 뒤에 붙는다.
+def render_mermaid(maps, table):
+    """맵들 → 한 장의 mermaid flowchart.
 
-    한 장 flowchart 에서는 박스 세로 순서를 지정할 수 없다 — dagre 가 교차 최소화로 정하고 데이터 편집마다
-    다시 섞인다(prj6#Issue19 후속 실측: 서브맵 순서 120 가지 × 참조 순서 2 가지를 렌더해도 원하는 순서 0건).
-    순서의 SSOT 는 사람이 쓴 Main Map `Goal` 자식 순서다.
+    맵 분리는 *편집 단위*이지 표시 단위가 아니다(설계 "맵 구성"). 맵마다 `subgraph`
+    로 묶되 참조는 간선으로 환원해 그래프가 하나로 이어지게 한다. mermaid 는 트리가
+    아니라 그래프이므로 다중 부모·순환이 있어도 노드가 중복되지 않는다.
     """
-    subs = [n for n in maps if n not in (MAIN_MAP, MISC_LABEL)]
-    order = []
-
-    def walk(nodes):
-        for n in nodes:
-            if n.get("kind") == "ref" and n["label"] in subs and n["label"] not in order:
-                order.append(n["label"])
-            walk(n["children"])
-
-    walk(maps.get(MAIN_MAP, []))
-    return order + [n for n in subs if n not in order]
-
-
-def box_anchor(name):
-    """박스 `<section>` id — 서브맵 안 참조 표식(«→ 맵»)의 클릭 도착점."""
-    return mmd_id("box-", name)
-
-
-def node_style_lines(nodes):
-    """노드 스타일·클릭 줄 — 죽은 경로(회색 점선)·판정 주체(굵은 테두리)·peacock 색·`/open-prj` 링크."""
-    lines, styled = [], set()
-    for n in nodes:
-        if n["nid"] in styled:
+    # Issue298 P1-6: `미할당` 는 그래프에 그리지 않는다 — 목적이 없는 프로젝트가 22건이면
+    #   목적 지향 지도가 미할당 덩어리에 압도된다. 다이어그램 아래 리스트로 따로 낸다.
+    ctx = {}
+    for name, roots in maps.items():
+        if name == MISC_LABEL:
             continue
-        styled.add(n["nid"])
-        if n["dead"]:
-            lines.append(f'  style {n["nid"]} fill:#e8e8e8,stroke:#bbb,color:#999,'
-                         f"stroke-dasharray:4 3")
-        elif n["actor"]:
-            lines.append(f'  style {n["nid"]} fill:{n["color"] or "#ffffff"},'
-                         f'stroke:#333,stroke-width:3px,color:{text_on(n["color"])}')
-        elif n["color"]:
-            lines.append(f'  style {n["nid"]} fill:{n["color"]},stroke:#00000033,'
-                         f'color:{text_on(n["color"])}')
-        if n["id"]:
-            tip = n["purpose"] or n["path"] or "경로 미상"
-            # Issue294: 커스텀 스킴은 mermaid strict 가 sanitize → 상대경로 http 브리지만 유효
-            lines.append(f'  click {n["nid"]} href "/open-prj?id={n["id"]}" '
-                         f'"{mmd_label(tip)}"')
-    return lines
+        c = {"nodes": [], "edges": [], "refs": [], "ref_seq": [], "roots": []}
+        collect_map(roots, table, c, map_name=name)
+        ctx[name] = c
 
+    # 맵 이름 → 그 맵 루트 노드들의 nid (참조 간선의 도착점).
+    #   collect_map 이 순회하며 기록한 값을 그대로 쓴다 — 밖에서 되계산하면 그룹 루트를
+    #   놓친다(그룹은 id 가 없어 nid 를 유추할 수 없고, 실제로 `보조 도구` 가 빠졌었다).
+    roots_of = {name: c["roots"] for name, c in ctx.items()}
 
-def render_box(name, roots, table):
-    """맵 하나 → mermaid flowchart 1장. 노드가 없으면 None(빈 박스를 그리지 않는다).
+    # Issue298 P4: 맵 헤딩을 **노드로 승격**한다(설계 "맵 구성" — subgraph 제목 또는 루트).
+    #   subgraph 로 감싸면 참조 화살표가 클러스터 경계에서 끝나 어디로 이어지는지 눈으로
+    #   못 따라가고, 클러스터가 멀리 배치돼 화살표가 화면을 가로지른다(실측: 697px →
+    #   subgraph 제거 시 210px). 맵을 노드로 세우면 노드끼리 이어지고, 참조도 맵 노드
+    #   하나로 수렴해 화살표가 퍼지지 않는다.
+    # Issue298 P4-0: 두 요구를 함께 만족시킨다.
+    #   * **그룹 표시** — subgraph 로 맵 경계를 그리고 라벨에 맵 이름을 단다
+    #   * **노드 → 노드** — 참조는 subgraph 가 아니라 그 맵의 **루트 노드**를 가리킨다.
+    #     subgraph 를 가리키면 화살표가 경계에서 끝나 어디로 이어지는지 눈으로 못 따라간다.
+    #   맵 노드를 따로 세우는 안도 시도했으나 subgraph 라벨과 역할이 겹쳐 되돌렸다.
+    lines = ["flowchart LR"]
+    seen_nid = set()
+    for name, c in ctx.items():
+        lines.append(f'  subgraph {mmd_id("SG", name)}["{mmd_label(name)}"]')
+        for n in c["nodes"]:
+            if n["nid"] in seen_nid:
+                continue
+            seen_nid.add(n["nid"])
+            lines.append(f'    {n["nid"]}["{node_label(n)}"]')
+        lines.append("  end")
 
-    * **Main Map(머리)의 참조는 그리지 않는다** — 박스 순서가 곧 Goal 의 부채꼴이다(Issue583). 부채꼴을
-      그리면 Goal 에서 뻗은 화살표가 가리킬 박스가 이 다이어그램 밖에 있어 끝이 허공에 뜬다.
-    * **서브맵 안 참조는 «→ 맵» 표식 노드**로 남긴다 — 다른 박스로 이어진다는 사실이 사라지면 안 된다.
-      표식은 그 박스로 가는 앵커 링크다.
-    * 다른 박스에도 나오는 노드(ex: m2slide 42 — 프로모션 정의 + 강의_과목 뿌리)는 **두 박스 모두에** 그린다.
-      세션 배지·hover 는 `flowchart-P{id}-` 를 `querySelectorAll` 로 찾으므로 두 곳 모두 붙는다.
-    """
-    c = {"nodes": [], "edges": [], "refs": [], "ref_seq": [], "roots": []}
-    collect_map(roots, table, c, map_name=name)
-    stubs = [] if name == MAIN_MAP else c["refs"]
-    if not c["nodes"] and not stubs:
-        return None
-    lines = [FLOW_INIT, "flowchart LR"]
-    seen = set()
-    for n in c["nodes"]:
-        if n["nid"] in seen:
-            continue
-        seen.add(n["nid"])
-        lines.append(f'  {n["nid"]}["{node_label(n)}"]')
-    stub_ids = []
-    for i, (parent_nid, ref_name) in enumerate(stubs):
-        rid = mmd_id("R", f"{name}_{i}")
-        stub_ids.append((rid, ref_name))
-        lines.append(f'  {rid}["→ {mmd_label(ref_name)}"]')
-    for src, dst in c["edges"]:
-        lines.append(f"  {src} --> {dst}")
-    for (parent_nid, _), (rid, _) in zip(stubs, stub_ids):
-        if parent_nid:
-            lines.append(f"  {parent_nid} -.-> {rid}")
-    lines += node_style_lines(c["nodes"])
-    for rid, ref_name in stub_ids:
-        lines.append(f"  style {rid} fill:none,stroke:#999,stroke-dasharray:3 3,color:#777")
-        lines.append(f'  click {rid} href "#{box_anchor(ref_name)}" "{mmd_label(ref_name)} 박스로"')
+    for name, c in ctx.items():
+        for src, dst in c["edges"]:
+            lines.append(f"  {src} --> {dst}")
+        # Issue298 P4: 참조 → **대상 맵의 루트 노드**로 간선. subgraph 자체를 가리키면
+        #   화살표가 클러스터 경계에서 끝나 어디로 이어지는지 눈으로 못 따라간다(실사용 확인).
+        #   노드끼리 이어야 읽힌다 — 화살표가 여럿이 되더라도 각각이 무엇을 가리키는지 분명하다.
+        for parent_nid, ref_name in c["refs"]:
+            if not parent_nid:
+                continue
+            dsts = roots_of.get(ref_name)
+            if not dsts:
+                print(f"  ⚠️ 참조 대상 맵 없음: \"{ref_name}\" (오타?)", file=sys.stderr)
+                continue
+            for dst in dsts:
+                lines.append(f"  {parent_nid} -.-> {dst}")
+
+    styled = set()
+    for name, c in ctx.items():
+        for n in c["nodes"]:
+            if n["nid"] in styled:
+                continue
+            styled.add(n["nid"])
+            if n["dead"]:
+                lines.append(f'  style {n["nid"]} fill:#e8e8e8,stroke:#bbb,color:#999,'
+                             f"stroke-dasharray:4 3")
+            elif n["actor"]:
+                lines.append(f'  style {n["nid"]} fill:{n["color"] or "#ffffff"},'
+                             f'stroke:#333,stroke-width:3px,color:{text_on(n["color"])}')
+            elif n["color"]:
+                lines.append(f'  style {n["nid"]} fill:{n["color"]},stroke:#00000033,'
+                             f'color:{text_on(n["color"])}')
+            if n["id"]:
+                tip = n["purpose"] or n["path"] or "경로 미상"
+                # Issue294: 커스텀 스킴은 mermaid strict 가 sanitize → 상대경로 http 브리지만 유효
+                lines.append(f'  click {n["nid"]} href "/open-prj?id={n["id"]}" '
+                             f'"{mmd_label(tip)}"')
     return "\n".join(lines)
-
-
-def render_boxes(maps, table):
-    """맵들 → [(맵 이름, mermaid 원문)…] — **머리(Main Map) 1장 + 서브맵마다 1장**, 위에서 아래로 쌓을 순서.
-
-    Issue583: 종전(`render_mermaid`)은 전 맵을 한 장에 subgraph 로 담았다(Issue298 P4-0). 한 장이면 참조를
-    노드→노드 간선으로 이을 수 있지만 **박스 세로 순서를 지정할 수 없다**(dagre 가 정한다). 사용자 선택은
-    박스별 분리 렌더 — 순서는 Main Map 참조 순서(`box_order`)가 정한다. 대안 ELK(`considerModelOrder`)는
-    세 박스 순서는 지키지만 Infra 가 맨 위로 오고 폭이 1227 → 2033 으로 넓어져 기각(Issue583 상세).
-
-    `미할당` 은 그래프에 그리지 않는다(Issue298 P1-6) — 다이어그램 아래 리스트로 따로 낸다.
-    """
-    out = []
-    for name in [MAIN_MAP] + box_order(maps):
-        if name not in maps:
-            continue
-        src = render_box(name, maps[name], table)
-        if src:
-            out.append((name, src))
-    return out
 
 
 def render_node(node, table, depth=0):
@@ -806,12 +730,6 @@ HTML_HEAD = """<!doctype html>
   .misc-list { list-style: none; padding-left: 0; display: flex; flex-wrap: wrap;
     gap: 0.3rem 0.9rem; margin: 0.6rem 0 0; }
   .misc-list li { margin: 0; }
-  /* Issue583: 박스마다 다이어그램 1장 — 제목(서브맵 이름) + 얇은 테두리로 박스 경계를 대신한다.
-     머리(Main Map)는 목적의 뿌리라 테두리 없이 맨 위에 둔다(Issue577 과 같은 이유). */
-  .map-box { margin: 0 0 1rem; padding: 0.35rem 0.7rem 0.5rem; border: 1px solid #d8d8d0;
-    border-radius: 8px; }
-  .map-box.map-head { border: none; padding: 0; }
-  .map-box-title { margin: 0 0 0.2rem; font-size: 0.95rem; color: #555; }
   @media (prefers-color-scheme: dark) {
     body { background: #1e1e1e; color: #ddd; }
     #note { background: #26230f; border-left-color: #a8871f; }
@@ -821,8 +739,6 @@ HTML_HEAD = """<!doctype html>
     .deadloop { background: #2a1614; border-color: #7a3a32; }
     .deadloop small { color: #d9a49c; }
     #misc { background: #202024; border-color: #3a3b40; }
-    .map-box { border-color: #3a3b40; }
-    .map-box-title { color: #bbb; }
   }
 </style>
 </head>
@@ -1482,9 +1398,6 @@ def main():
     md_text = projects_path.read_text(encoding="utf-8")
     table = parse_table(md_text)
     maps = parse_maps(md_text)
-    # Issue574: 숨김 절은 참조 해석·루프 검사 **전에** 뗀다 — 남겨 두면 `- "숨김"` 이 참조로 통과하고
-    #   숨긴 노드가 검사 대상에 섞인다
-    hidden = split_hidden(maps)
     _refixed = resolve_refs(maps)
     if not maps:
         print("# Project Map 섹션을 찾지 못함", file=sys.stderr)
@@ -1504,31 +1417,11 @@ def main():
     #   Issue298 P2: 참조를 간선으로 환원한 전체 그래프에서 맵을 건너뛰는 순환·자기 참조 검출.
     loop_lines += format_reference_report(detect_reference_cycles(maps))
 
-    # Issue574: 숨김 절을 떼어 낸다. 숨김과 맵에 동시에 적힌 id 는 **그린다**(맵은 사람이 쓴 목적) —
-    #   모순이므로 경고로 드러낸다. 조용히 한쪽을 고르면 어느 쪽이 의도인지 사람이 모른다.
-    _drawn = set()
-    for _roots in maps.values():
-        _drawn |= collect_tree_ids(_roots)
-    _both = [pid for pid in hidden if pid in _drawn]
-    if _both:
-        loop_lines.append(f"숨김 절과 맵에 동시에 적힘 — 그려진다: {', '.join('#' + x for x in _both)}"
-                          " (숨길 것이면 맵에서, 그릴 것이면 숨김 절에서 지운다)")
-    hidden = [pid for pid in hidden if pid not in _drawn]
-
-    missing = enforce_completeness(maps, table, hidden)
+    missing = enforce_completeness(maps, table)
 
     # Issue294: 표현은 mermaid flowchart. 텍스트 트리는 다이어그램이 못 뜨는 환경
     #   (런타임 미주입·CSP 차단)의 fallback 으로 <details> 안에 함께 싣는다.
-    # Issue583: 박스(서브맵)마다 다이어그램 1장 — Main Map 참조 순서대로 위에서 아래로 쌓는다
-    boxes = render_boxes(maps, table)
-    canvas_html = []
-    for name, src in boxes:
-        head = name == MAIN_MAP
-        canvas_html.append(
-            f'<section class="map-box{" map-head" if head else ""}" id="{box_anchor(name)}" '
-            f'data-map="{html.escape(name)}">'
-            + ("" if head else f'<h3 class="map-box-title">{html.escape(name)}</h3>')
-            + f'<pre class="mermaid">{html.escape(src)}</pre></section>')
+    mermaid_src = render_mermaid(maps, table)
     tree_html = "".join(
         f'<details open><summary>{html.escape(name)}</summary><ul>'
         + "".join(render_node(n, table) for n in roots) + "</ul></details>"
@@ -1591,20 +1484,6 @@ def main():
                      "<b>목적 미할당 신호</b>이므로, 목적이 생기면 맵에 넣고 없으면 그대로 둡니다."
                      f'<ul class="misc-list">{"".join(items)}</ul></div>')
 
-    # Issue574: 숨김은 접힘 목록으로만 — 그래프에서는 뺐지만 «어디 갔나» 를 찾을 수 있게 링크는 남긴다
-    hidden_html = ""
-    if hidden:
-        items = []
-        for pid in hidden:
-            meta = table.get(pid) or {}
-            nm = html.escape(f'{meta.get("emoji","")} {meta.get("name", pid)}'.strip())
-            items.append(f'<li><a href="/open-prj?id={html.escape(pid)}">{nm}</a> '
-                         f'<span class="id-tag">#{html.escape(pid)}</span>'
-                         f'<span class="sess-slot" data-prj="{html.escape(pid)}"></span></li>')
-        hidden_html = ('<details id="hidden"><summary><b>숨김 ' + str(len(hidden)) + '건</b> — '
-                       "맵을 간추리려고 일부러 그리지 않는 프로젝트입니다(Projects.md <code>### 숨김</code>)."
-                       f'</summary><ul class="misc-list">{"".join(items)}</ul></details>')
-
     warn_html = ""
     if loop_lines:
         items = "".join(f"<li>{html.escape(x)}</li>" for x in loop_lines)
@@ -1621,16 +1500,16 @@ def main():
         warn_html,
         f'<div class="meta">프로젝트 {len(table)}건'
         + (f" · 미할당 편입 {len(missing)}건" if missing else "")
-        + (f" · 숨김 {len(hidden)}건" if hidden else "")
         + " · 노드 클릭 → VSCode 로 열기 · 🗂️ 버튼 → Projects.md · note 박스 직접 수정 → _note.md 자동 저장</div>",
         note_html,                      # Issue305: 부제 바로 아래 고정 — 열자마자 보이게
         "<!-- PROJECTS-MAP:MERMAID -->",
         '<div id="map-canvas">',
-        *canvas_html,
+        '<pre class="mermaid">',
+        html.escape(mermaid_src),
+        "</pre>",
         "</div>",
         "<!-- /PROJECTS-MAP:MERMAID -->",
         misc_html,
-        hidden_html,
         '<details id="text-tree"><summary>텍스트 트리 (필터·복사)</summary>',
         '<input id="filter" type="text" placeholder="프로젝트명 필터…">',
         "<!-- PROJECTS-MAP:TREE -->",
@@ -1664,21 +1543,17 @@ def main():
         "> 필터·복사·활성 세션 배지가 필요하면 hub 판을 여세요 — <http://127.0.0.1:9876/projects-map>",
         "",
         f"프로젝트 {len(table)}건"
-        + (f" · 미할당 편입 {len(missing)}건" if missing else "")
-        + (f" · 숨김 {len(hidden)}건" if hidden else ""),
+        + (f" · 미할당 편입 {len(missing)}건" if missing else ""),
         "",
         # Issue305: htm 판과 같은 자리(부제 아래)에 `_note.md` 를 싣는다. 인용 블록으로
         #   감싸 자동 생성 본문과 수기 메모를 눈으로 구분한다.
         "\n".join(f"> {ln}" if ln.strip() else ">" for ln in note_md.splitlines()),
         "",
-        "# 프로젝트 맵",
+        "```mermaid",
+        mermaid_src,
+        "```",
         "",
     ]
-    # Issue583: htm 판과 같은 순서 — 머리(Main Map) 다음 서브맵마다 `## 이름` + mermaid 1장
-    for name, src in boxes:
-        if name != MAIN_MAP:
-            md_body += [f"## {name}", ""]
-        md_body += ["```mermaid", src, "```", ""]
     if loop_lines:
         md_body += [f"# ⚠️ 확인 필요 {len(loop_lines)}건", ""]
         md_body += [f"* {x}" for x in loop_lines]
@@ -1693,17 +1568,9 @@ def main():
             path = meta.get("path", "")
             md_body.append(f"* {nm} `#{pid}`" + (f" — [{path}](vscode://file{path})" if path else ""))
         md_body += [""]
-    if hidden:
-        md_body += [f"# 숨김 {len(hidden)}건", "",
-                    "맵을 간추리려고 일부러 그리지 않는 프로젝트입니다(Projects.md `### 숨김`).", ""]
-        for pid in hidden:
-            meta = table.get(pid) or {}
-            md_body.append(f'* {meta.get("emoji","")} {meta.get("name", pid)}'.strip() + f" `#{pid}`")
-        md_body += [""]
     md_path.write_text("\n".join(md_body), encoding="utf-8")
 
-    print(f"Projects_map.htm 생성 완료 — 프로젝트 {len(table)}건, 미할당 편입 {len(missing)}건"
-          + (f", 숨김 {len(hidden)}건" if hidden else ""))
+    print(f"Projects_map.htm 생성 완료 — 프로젝트 {len(table)}건, 미할당 편입 {len(missing)}건")
     print(f"  형제 md: {md_path} (VSCode 탐색기 클릭 → 미리보기로 렌더)")
     if loop_lines:
         print(f"  ⚠️ 확인 필요 {len(loop_lines)}건:", file=sys.stderr)

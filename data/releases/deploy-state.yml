@@ -8,5 +8,3 @@
 
 releases:
   - { date: 2026-08-18T06:20:48+0900, prj: 25, name: fSnippetCli, version: 1.1.1, channel: homebrew, tag: cli-v1.1.1, commit: f2f3715 }
-  - { date: 2026-09-28T17:22:12+0900, prj: 26, name: fWarrangeCli, version: 1.1.2, channel: homebrew, tag: cli-v1.1.2, commit: d375c08 }
-  - { date: 2026-09-28T23:06:15+0900, prj: 25, name: fSnippetCli, version: 1.1.2, channel: homebrew, tag: cli-v1.1.2, commit: 30eed49 }

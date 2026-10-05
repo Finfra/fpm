@@ -15,12 +15,6 @@ hub 가 메일서버, 브라우저가 수신 클라이언트다. 서버는 세�
 * **적재 대상은 assistant 텍스트 + 도구 이름뿐** (보안·프라이버시 불변식):
     - `text` 블록 → 그대로 적재 (렌더 대상)
     - `tool_use` 블록 → **도구 이름만** activity 로 적재. 인자는 적재하지 않는다
-        · 좁은 예외 하나 (Issue532): `Write` 의 `file_path` 가 hub a모드 문서
-          (`_doc_work/{htm,z_htm}/hub_htm_*_a_*.md`)면 **그 경로 하나만** `doc` 블록으로
-          적재한다. 본문(`content`)은 여전히 적재하지 않는다 — 라이브 뷰가 `/md-doc?raw=1`
-          (화이트리스트 판정 동일)로 가져온다. 이 문서는 원래 사용자에게 보여주려고 만든
-          산출물이라 경로 노출이 새 표면을 만들지 않는다. 이 예외가 없으면 문서를 보려고
-          별도 탭이 필요해져 탭이 두 배로 쌓인다
     - `tool_result`·`thinking` → **적재하지 않는다**. 도구 출력에는 파일 내용·자격증명·
       명령 출력이 섞이며, 라이브 뷰는 원격(tailscale)에서도 열리는 표면이다
     - 사용자 프롬프트 → 턴 경계 마커 + 발췌. 노출 수준은 기존 hub 세션 카드
@@ -47,11 +41,6 @@ MAILBOX_TTL = 6 * 3600
 MAX_READ_CHUNK = 4 * 1024 * 1024
 # 프롬프트·텍스트 발췌 상한
 PROMPT_EXCERPT = 160
-# Issue532: 라이브 뷰에 인라인으로 싣는 hub 문서 — a모드 md 만(b모드 폼은 폼 카드가 담당)
-_HUB_DOC_RE = re.compile(r"/_doc_work/(?:htm|z_htm)/hub_htm_[0-9_]+_a_[^/]*\.md$")
-# Issue532: 라이브 창 생존 판정 창(초). 배경 탭은 HIDDEN(15초) 간격으로 폴링하지만
-#   브라우저가 배경 타이머를 더 늦출 수 있어 넉넉히 둔다. 오판의 대가는 탭 1개(현행과 동일)
-LIVE_ALIVE_SECS = 150
 
 _lock = threading.Lock()
 _boxes = {}          # (cwd_hash, sid) -> SessionMailbox
@@ -88,9 +77,6 @@ class SessionMailbox:
         self.last_mtime = -1.0
         self.last_access = _now()
         self.turn_active = False  # 마지막 엔트리가 사용자 프롬프트 이후인가
-        # Issue532: 라이브 뷰의 `/mail` 폴링 시각. last_access 는 stop 게이트도 갱신하므로
-        #   «창이 떠 있는가» 판정에 쓸 수 없다 — 폴링(read_since)만 여기를 갱신한다
-        self.last_poll = 0.0
 
     # ── tail ────────────────────────────────────────────────────────────
     def _stat(self):
@@ -147,13 +133,8 @@ class SessionMailbox:
                 continue
             added += self._ingest_line(raw.decode("utf-8", "replace"))
         self.offset += len(complete)
-        # Issue569_1: 청크 상한에 걸려 덜 읽었으면 «따라잡음» 으로 표시하지 않는다. 표시하면
-        #   파일이 멈춰 있는 동안 changed() 가 False 라 나머지가 영영 안 읽힌다 — hub 재기동·
-        #   첫 오픈에서 4MB 초과 transcript 의 뒷부분(문서 블록 포함)이 사라졌다(실측).
-        #   덜 읽었으면 다음 poll 이 이어 읽는다(한 요청에 몰아 읽지 않는 청크 설계는 유지).
-        if self.offset >= size:
-            self.last_size = size
-            self.last_mtime = mtime
+        self.last_size = size
+        self.last_mtime = mtime
         return added
 
     def _reset_generation(self):
@@ -186,12 +167,6 @@ class SessionMailbox:
         ts = e.get("timestamp") or ""
         added = 0
         if typ == "user":
-            # 하네스가 붙인 `isMeta` 는 «사람이 친 프롬프트가 아니다» 의 **확정 근거**다.
-            # 본문 생김새를 추측하는 _is_injected_context() 보다 먼저 본다 — 커맨드
-            # 파일 본문처럼 태그로 시작하지 않는 주입분(`> ⚠️ …`, `<!-- … -->`)이
-            # 접두 목록을 그대로 통과해 턴 카드로 승격되던 누수가 여기서 막힌다.
-            if e.get("isMeta"):
-                return 0
             # tool_result 를 담은 user 엔트리는 **적재하지 않는다** (도구 출력 미노출)
             if isinstance(content, list):
                 if any(isinstance(b, dict) and b.get("type") == "tool_result"
@@ -225,11 +200,7 @@ class SessionMailbox:
             elif bt == "tool_use":
                 # 도구 **이름만** — 인자는 파일 경로·명령·프롬프트를 담아 적재 대상 아님
                 name = b.get("name") or "tool"
-                doc = _hub_doc_path(name, b.get("input"))
-                if doc:
-                    self._append("doc", doc, ts)   # Issue532 좁은 예외 — 경로만
-                else:
-                    self._append("activity", str(name), ts)
+                self._append("activity", str(name), ts)
                 added += 1
             # thinking·tool_result 등 그 외 타입은 적재하지 않는다
         return added
@@ -252,7 +223,6 @@ class SessionMailbox:
         * `200` — 증분 블록 목록
         """
         self.last_access = _now()
-        self.last_poll = self.last_access
         if epoch and epoch != self.epoch:
             return 205, {"epoch": self.epoch, "reason": "epoch mismatch"}
         if since > self.max_seq:
@@ -306,32 +276,6 @@ def _clean_excerpt(text: str) -> str:
 
 
 # ── 레지스트리 ──────────────────────────────────────────────────────────
-def _hub_doc_path(name, inp) -> str:
-    """Issue532: Write 가 hub a모드 문서면 그 경로, 아니면 빈 문자열."""
-    if name != "Write" or not isinstance(inp, dict):
-        return ""
-    fp = inp.get("file_path")
-    if not isinstance(fp, str) or not _HUB_DOC_RE.search(fp.replace(os.sep, "/")):
-        return ""
-    return fp
-
-
-def live_alive(sid: str, now: float = None) -> bool:
-    """Issue532: 이 세션의 라이브 뷰가 지금 떠 있는가 — 최근 `/mail` 폴링 기준."""
-    now = now or _now()
-    with _lock:
-        return any(k[1] == sid and b.last_poll and now - b.last_poll <= LIVE_ALIVE_SECS
-                   for k, b in _boxes.items())
-
-
-def mark_closed(cwd_hash: str, sid: str) -> None:
-    """Issue532: 라이브 뷰가 닫혔다는 신호(pagehide beacon) — 생존 판정을 즉시 거둔다."""
-    with _lock:
-        box = _boxes.get((cwd_hash, sid))
-        if box is not None:
-            box.last_poll = 0.0
-
-
 def get_box(cwd_hash: str, sid: str, path: str):
     """세션 메일박스 획득(없으면 생성). path 가 바뀌면 세대를 새로 연다."""
     key = (cwd_hash, sid)

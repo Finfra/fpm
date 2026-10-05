@@ -1,9 +1,0 @@
-# s5 /goal 마일스톤 — 선형 3단계 (s4 와 같은 기제 — board-s4-linear-queue 가 함께 돌린다)
-title: s5-goal
-state: running
-on_fail: halt
-concurrency: 1
-items:
-- {id: m1, prj: 2, issue: 1, depends: [],   status: ready,   attempts: 0, prompt: milestone-1}
-- {id: m2, prj: 2, issue: 2, depends: [m1], status: blocked, attempts: 0, prompt: milestone-2}
-- {id: m3, prj: 2, issue: 3, depends: [m2], status: blocked, attempts: 0, prompt: milestone-3}

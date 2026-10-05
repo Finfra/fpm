@@ -67,10 +67,6 @@ def worker(env, *argv):
 def main():
     tmp = tempfile.mkdtemp(prefix="aoa-memory-selftest-")
     env = dict(os.environ, AOA_MEMORY_DIR=tmp)
-    # 정책 픽스처 — policy.py 는 `AOA_DIR/policy.yml` 이 없으면 prj3 정본 `~/.claude/data/aoa/policy.yml` 로 폴백한다
-    #   — 폴백 도입 경위는 policy.py 주석. 정본이 `consolidation_strategy: llm`·`backend: cli` 라 픽스처 없이 돌리면 consolidate 계열이
-    #   실 정책을 상속해 깨진다(prj3#Issue938 중 실측: HEAD 에서도 41/51). 격리 폴더의 policy.yml 이 이긴다(policy.py 규약).
-    open(os.path.join(tmp, "policy.yml"), "w").write("consolidation_strategy: stats\nconsolidation_backend: api\n")
     src = os.path.join(tmp, "fake_instinct.md")
     open(src, "w").write("dummy source")
     # 경로에 `projects/<id>/` 를 넣는다 — project_id 복원 경로를 함께 검증하기 위해서다
@@ -160,22 +156,11 @@ def main():
           S.observation_id("/x/y.jsonl", 7) != S.observation_id("/x/y.jsonl", 8))
 
     # 3. 통지 가속 B — done 잡 1건을 심고 hook 출력·멱등을 확인
-    #    통지는 **구독한 잡**(`learn_index` 가 남긴 kv ns=notify-want)만 — 스케줄러 잡·원장은 침묵 (Issue938)
     con = sqlite3.connect(os.path.join(tmp, "registry.db"))
-    check("learn_index 가 통지 구독 행을 남긴다 (Issue938)",
-          con.execute("SELECT count(*) FROM kv WHERE ns='notify-want'").fetchone()[0] == 1)
     con.execute("INSERT INTO job(id, store, kind, status, payload, result, attempts, owner, "
                 "lease_until, blocked_since, created_at) "
                 "VALUES('job_done1','learn','consolidation','done',NULL,'요약 3건 생성',0,"
                 "NULL,NULL,NULL,1)")
-    con.execute("INSERT INTO job(id, store, kind, status, payload, result, attempts, owner, "
-                "lease_until, blocked_since, created_at) "
-                "VALUES('job_ledger1','fbot','fbot_event','done',NULL,NULL,0,NULL,NULL,NULL,1)")
-    con.execute("INSERT INTO job(id, store, kind, status, payload, result, attempts, owner, "
-                "lease_until, blocked_since, created_at) "
-                "VALUES('job_sched1','learn','consolidation','done',NULL,'스케줄러 산출',0,"
-                "NULL,NULL,NULL,1)")
-    S.notify_subscribe(con, "job_done1")       # 세션 요청 잡만 구독 — job_ledger1·job_sched1 은 구독 없음
     con.commit()
     con.close()
 
@@ -183,10 +168,8 @@ def main():
                         capture_output=True, text=True, env=env, timeout=60)
     n2 = subprocess.run([sys.executable, os.path.join(HERE, "notify.py")],
                         capture_output=True, text=True, env=env, timeout=60)
-    check("notify 가 구독한 done 잡을 고지", "job_done1" in n1.stdout, n1.stdout + n1.stderr)
-    check("notify 는 구독 없는 잡(원장·스케줄러 산출)을 고지하지 않는다",
-          "job_ledger1" not in n1.stdout and "job_sched1" not in n1.stdout, n1.stdout)
-    check("notify 재실행은 침묵 (구독 행 소비)", n2.stdout.strip() == "", n2.stdout)
+    check("notify 가 done 잡을 고지", "job_done1" in n1.stdout, n1.stdout + n1.stderr)
+    check("notify 재실행은 침묵 (전달 표식)", n2.stdout.strip() == "", n2.stdout)
 
     # --- consolidation 실행기 (Issue69 B) ---
     def learn(sql):

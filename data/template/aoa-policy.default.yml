@@ -38,31 +38,19 @@ consolidation_budget_monthly_tokens: 0
 consolidation_grace_days: 90
 
 # ── job 실행 (설계 §실행 토폴로지) ── 둘 다 초기값이며 실측 재산정 대상이다.
-lease_ttl_secs: 720              # prj3#Issue693_1 300 → 720 — 단일 도구 호출(Bash 상한 600s)이 TTL 을 넘으면
-                                 #   살아 있는 세션이 reap 된다. 720 = 600 + heartbeat 스로틀 60 + 여유 60
+lease_ttl_secs: 300
 job_max_attempts: 2              # 재시도 상한 1회 = attempts 2
 
 # ── fbot 공급측 (채용 게이트 — hooks/fbot-hr-gate.py POLICY_KEYS) ─────────
-# 판정 단일 지점은 게이트다 — 이 수치를 코드·타 스크립트에 복제하지 않는다.
+# 판정 단일 지점은 게이트다 — 이 수치를 코드·타 스크립트에 복제하지 않는다. 셋 다 보수적 초기값.
 fbot_spawn_depth_limit: 3        # 스폰 깊이 상한 — fpm-do PM_DO_DEPTH_LIMIT(3) 선례 승계
-fbot_concurrent_limit: 60        # 동시 상주 상한 — state != checkout 인 봇 수. 배분 전역 동시 상한과 맞춘다
-# 월 채용 상한은 prj3#Issue697 로 **제거**됐다 — 신 hr-gate 는 아래 키를 읽지 않는다.
-#   ⚠️ 호환용으로만 남긴다: 번들(plugins/fpm-core/hooks/fbot-hr-gate.py)이 prj3 와 동기되기 전까지
-#   구 코드가 이 키를 **필수**로 요구한다(없으면 채용 fail-loud). 값은 사실상 무제한으로 둔다.
-#   번들 동기 후 이 키와 tdd `aoa-policy-template-complete` 기대가 함께 빠진다.
-fbot_spawn_budget_monthly: 100000
+fbot_concurrent_limit: 5         # 동시 상주 상한 — state != checkout 인 봇 수
+fbot_spawn_budget_monthly: 30    # 월 채용 상한 — 원장 registry.kv ns=fbot:budget key=YYYY-MM
+                                 #   (신규 월 키 생성이 곧 리셋 — 별도 리셋 잡 없음)
 
 # ── fbot 수요측 (배분 가드 — hooks/fbot-lead.py POLICY_KEYS) ───────────
-fbot_dispatch_monthly_limit: 100    # 월 배분 **알림 기준**(차단 아님, prj3#Issue696) — ns=fbot:dispatch
-fbot_dispatch_concurrent_limit: 60  # 동시 배분(전역) — registry.job kind=fbot_dispatch 활성 건수
-fbot_dispatch_actor_limit: 10       # 동시 배분(배분자당) — 한 봇이 동시에 굴리는 몸체 수
-
-# ── fbot 수요측 패턴 가드 (prj3#Issue696) — 선택 키, 부재 시 fbot-lead.py 기본값 ──
-# 월 누적 대신 폭주의 실제 모양(같은 이슈 반복·실패 반복·순간 쏟아짐)을 직접 막는다.
-fbot_dispatch_pattern_window_hours: 24  # 이슈 반복·연속 실패 가드가 보는 창
-fbot_dispatch_issue_repeat_limit: 4     # 같은 prj·이슈를 창 안에 이 수만큼 배분하면 거부
-fbot_dispatch_fail_streak_limit: 3      # 배분자의 창 안 최근 N건이 연달아 reaped/cancelled 면 정지
-fbot_dispatch_hourly_limit: 20          # 최근 1시간 전역 배분 수 — 자동 루프 오작동 차단
+fbot_dispatch_monthly_limit: 30     # 월 배분 상한 — ns=fbot:dispatch
+fbot_dispatch_concurrent_limit: 3   # 동시 배분 상한 — registry.job kind=fbot_dispatch 활성 건수
 
 # ── fbot 수명주기 (승격·아카이브 — hooks/fbot-hr-gate.py LIFECYCLE_KEYS) ──
 # 배치 상한과 **키 축이 분리**돼 있어 한쪽이 없어도 다른 쪽은 동작한다.

@@ -114,7 +114,6 @@ payloads:
         - dispatch-sessionstart.sh
         - fbot-agent-bind.sh
         - fbot-agent-done.sh
-        - fbot-agent-map.sh   # PreToolUse Agent·SubagentStart·SubagentStop — 포그라운드 Agent 봇 매핑 (prj3#Issue739 · prj1#Issue579)
         - fbot-board-init.sh
         - fbot-board-monitor.sh
         - fbot-checkin.sh
@@ -133,7 +132,6 @@ payloads:
         - fbot-scout.py         # 발굴핀봇 실행체 — register/archive/revive/list (prj3#Issue479)
         - fbot-registry-audit.py # fbot 레지스트리(registry.db) 정합성 검사기 (prj3#Issue515)
         - fbot-schedule.sh
-        - fbot-sendmessage-record.sh   # PostToolUse SendMessage — 위임 자동 기록 (prj3#Issue739 · prj1#Issue579)
         - fbot-state.py
         - fbot-lead.py
         - fbot-tick.sh
@@ -153,21 +151,11 @@ payloads:
         - fpm-hub-session-topic.sh
         - fpm-hub-trigger.sh
         - hooks.json
-        - lib/agent-model-verdict.sh   # 모델 티어 판정 — fbot-agent-bind·fbot-agent-map 이 source (prj3#Issue849 · prj1#Issue591)
         - lib/ask-common.sh
-        - lib/bash-guard.py   # Bash 가드 판정 (번들 동기 반입)
         - lib/claude-pid.sh
-        - lib/decision-question.py   # 질문 판정 단일 지점 (prj3#Issue749 · prj1#Issue561)
-        - lib/fbot-ident.py   # 봇 신원 확인 — fbot-state·lead·inbox 가 import (prj3#Issue832 · prj1#Issue591)
         - lib/hub-context.sh
         - lib/hub-instruction.py
-        - lib/issue-completion.py   # 이슈 완료 판정 (번들 동기 반입)
-        - lib/out-dir.sh   # 출력 폴더 해석 단일 지점 — ask-common·hub-context 가 source (prj3#Issue802 · prj1#Issue587)
-        - lib/perm-relax-guard.py
         - lib/schedule-core.py
-        - lib/selection-shadow.sh
-        - lib/session-end.py   # 퇴근 사유 판정 (prj1#Issue561 동반 반입)
-        - lib/shcmd.py   # 쓰기 가드 명령 판정 (prj1#Issue561 동반 반입)
         - lib/zed-detect.sh
     # ── hooks 정본 판정 (Issue412 ①, 2026-08-29) ─────────────────────────────
     #   **정본은 prj3(`~/.claude/hooks/`) 이고 번들은 사본이다.** 근거:

@@ -19,10 +19,6 @@
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
-# claude CLI 해석도 한 곳에서 한다(Issue564) — `command -v` 만으로는 비대화 셸에서
-# `~/.local/bin/claude` 를 못 보고 SCAR·MCP 를 «셸-only» 로 오판해 건너뛴다(jma 실측).
-# shellcheck source=sh/fpm-claude-bin.sh
-source "$REPO_DIR/sh/fpm-claude-bin.sh"
 
 info()  { printf '\033[36m[publish]\033[0m %s\n' "$1"; }
 warn()  { printf '\033[33m[publish]\033[0m %s\n' "$1"; }
@@ -110,7 +106,7 @@ PY
 [[ $? -eq 0 ]] || { err "🚨 버전 동기 실패"; exit 1; }
 
 # ── 3. validate 게이트 ──────────────────────────────────────
-if fpm_resolve_claude; then
+if command -v claude >/dev/null 2>&1; then
     info "claude plugin validate 게이트…"
     if ! claude plugin validate "$DEST" 2>&1 | sed 's/^/  /'; then
         err "🚨 validate 실패 — push 중단. 마켓 사본 변경은 남아있으니 수동 확인."

@@ -162,33 +162,6 @@ def main():
         # 8) lease 만료 → 크래시 의심 표시.
         check("lease 만료 감지", by["b-in"]["lease_stale"] is True)
         check("lease 유효는 미표시", by["b-work"]["lease_stale"] is False)
-        # 8-a) Issue531 — 수신대기 봇은 lease 가 끊겨도 idle 유예 안이면 크래시가 아니다.
-        #   reap(fbot-state.py, prj3#Issue554)과 같은 규칙이어야 한다 — 갈리면 reap 은
-        #   안 건드리는 살아 있는 세션을 화면만 "크래시 의심" 으로 부른다(나래 실측).
-        cx = sqlite3.connect(os.path.join(server.FBOT_AOA_DIR, "registry.db"))
-        cx.execute("UPDATE bot SET lease_expires=? WHERE bot_id='b-wait'", (int(time.time()) - 1140,))
-        cx.commit()
-        idle = {b["bot_id"]: b for b in server._collect_bots()["bots"]}
-        check("수신대기 + 유예 내 → stale 아님", idle["b-wait"]["lease_stale"] is False)
-        check("수신대기 + 유예 내 → lease_idle", idle["b-wait"]["lease_idle"] is True)
-        check("출근봇 만료는 유예 없음(stale)", idle["b-in"]["lease_stale"] is True
-              and idle["b-in"]["lease_idle"] is False)
-        cx.execute("UPDATE bot SET lease_expires=? WHERE bot_id='b-wait'", (int(time.time()) - 7300,))
-        cx.commit()
-        over = {b["bot_id"]: b for b in server._collect_bots()["bots"]}
-        check("수신대기 + 유예 초과 → stale", over["b-wait"]["lease_stale"] is True
-              and over["b-wait"]["lease_idle"] is False)
-        # 유예 수치는 policy.yml 이 정본 — 픽스처 policy 가 기본 7200 을 이겨야 한다.
-        with open(os.path.join(server.FBOT_AOA_DIR, "policy.yml"), "w") as f:
-            f.write("idle_ttl_secs: 600\n")
-        cx.execute("UPDATE bot SET lease_expires=? WHERE bot_id='b-wait'", (int(time.time()) - 1140,))
-        cx.commit()
-        pol = {b["bot_id"]: b for b in server._collect_bots()["bots"]}
-        check("policy idle_ttl_secs 반영", pol["b-wait"]["lease_stale"] is True)
-        os.remove(os.path.join(server.FBOT_AOA_DIR, "policy.yml"))
-        cx.execute("UPDATE bot SET lease_expires=? WHERE bot_id='b-wait'", (int(time.time()) + 600,))
-        cx.commit()
-        cx.close()
         # 8-b) Issue401 — 펼침 상세가 잔여/경과 분을 계산하려면 원본 epoch 이 필요하다.
         #      lease_stale(bool) 만으로는 "몇 분 지났나" 를 못 만든다.
         check("lease_expires epoch 노출", isinstance(by["b-work"]["lease_expires"], int))
@@ -323,8 +296,7 @@ def main():
     src = open(os.path.join(hub_dir, "server.py"), encoding="utf-8").read()
     # prj1#Issue449: 퇴근 칩은 최근(24h) 만 남기고 나머지는 "외 N개" 로 접는다 —
     #   무한 성장 방지(실측 워커 11칩). 전체는 조직도 ?all=1 이 담당.
-    check("최근 퇴근만 botChip 으로 배선(Issue546 상한 안)",
-          "const shown = recent.slice(0, BOT_CHIP_MAX);" in src and "shown.map(botChip)" in src)
+    check("최근 퇴근만 botChip 으로 배선", "recent.map(botChip)" in src)
     check("오래된 퇴근은 외 N개 링크로 접힘", "bot-rest-more" in src and "bots.restMore" in src)
     check("접힘 링크는 조직도 전체 뷰로", "&all=1" in src)
     check("24h 상수 존재", "const BOT_RECENT_SEC = 86400;" in src)
@@ -459,100 +431,6 @@ def main():
           "renderBotsIdle" in src and "bot-idle" in src)
     check("섹션 통째 숨김은 미설치(total 0) 한 경우뿐",
           "if (!total) { sec.style.display = 'none';" in src)
-
-    # 15) Issue546 — 퇴근 칩은 **기본 접힘 + 개수 상한**. Issue450 의 24h 창은 시간 기준뿐이라
-    #     웨이브 날(24h 내 31 퇴근)에 무력했다 — 칩 30개. 접힘 안에서 Issue405 강조 사양은 그대로 산다.
-    check("퇴근 칩 상한 상수", "const BOT_CHIP_MAX = 6;" in src)
-    check("펼침 상태 유지 집합(5초 재렌더 생존)", "const openBotRest = new Set();" in src)
-    check("한 줄 토글 버튼 렌더", 'class="bot-rest-toggle"' in src and "bots.restToggle" in src)
-    check("기본 접힘 — 펼친 그룹만 hidden 해제", "openBotRest.has(rid)" in src and "' hidden'" in src)
-    check("최근 퇴근은 최신순 정렬 후 상한", "recent.sort((a, b) => b.last_seen - a.last_seen)" in src)
-    check("hidden 이 flex 를 이긴다", ".bot-group-rest[hidden] { display: none; }" in src)
-    check("토글 클릭 배선(아코디언·이름 링크보다 먼저)", ".bot-rest-toggle[data-rest]" in src)
-    for loc in ("ko", "en"):
-        lp = os.path.join(os.path.dirname(os.path.dirname(hub_dir)), "data", "locales", f"{loc}.json")
-        check(f"bots.restToggle 번역 존재({loc})", "bots.restToggle" in open(lp, encoding="utf-8").read())
-
-    # 17) Issue547 — 홈 카드 그룹 축 = **prj 조직**. 원장의 parent 는 55/60 이 `fbot-lead`(본사 자리)라
-    #     루트 봇 축으로 묶으면 "팀장핀봇 1/56" 한 덩어리가 된다(2026-09-27 실측). `root` 는 조직도
-    #     관계 축이라 그대로 두고, 홈만 `group`(prj{N} | hq)·`group_head` 로 묶는다.
-    with tempfile.TemporaryDirectory() as tmp:
-        aoa = os.path.join(tmp, "aoa")
-        os.makedirs(aoa)
-        now = int(time.time())
-        con = sqlite3.connect(os.path.join(aoa, "registry.db"))
-        con.executescript(SCHEMA)
-        L = now + 600
-        con.executemany(
-            "INSERT INTO bot VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            [
-                ("fbot-chief", "나래", "chief", "working", "정식", None, "", None, "보고", None, L, now),
-                ("fbot-hr", "인사핀봇", "hr", "checkout", "정식", None, "", None, "", "fbot-chief", None, now),
-                ("fbot-lead", "팀장핀봇", "lead", "checkout", "정식", None, "", None, "", "fbot-chief", None, now),
-                ("fbot-lead-a", "a 팀장핀봇", "lead", "working", "정식", None, "", 26, "배포", "fbot-lead", L, now),
-                ("fbot-qa-a", "Issue9 담당 qa 워커", "qa", "checkout", "수습", None, "", 26, "", "fbot-lead", None, now),
-                ("fbot-lead-issue4", "Issue4 담당 lead 워커", "lead", "checkout", "수습", None, "", 60, "", "fbot-lead", None, now),
-                ("fbot-lead-lec", "lec 팀장핀봇", "lead", "checkout", "정식", None, "", 60, "", "fbot-lead", None, now),
-                ("fbot-qa-lec", "Issue4 담당 qa 워커", "qa", "working", "수습", None, "", 60, "검증", "fbot-lead", L, now),
-                ("fbot-lead-c", "c 팀장핀봇", "lead", "checkout", "정식", None, "", 5, "", "fbot-lead", None, now),
-            ])
-        con.commit()
-        con.close()
-        server.FBOT_AOA_DIR = aoa
-        server.FBOT_ROOT = tmp
-        ros = server._collect_bots()["bots_roster"]
-        by = {m["bot_id"]: m for m in ros}
-        check("roster 에 group 키", all("group" in m for m in ros))
-        check("prj 없는 봇 → 본사 그룹", {by[b]["group"] for b in ("fbot-chief", "fbot-hr", "fbot-lead")} == {"hq"})
-        check("prj 봇 → prj{N} 그룹", by["fbot-lead-a"]["group"] == "prj26" and by["fbot-qa-a"]["group"] == "prj26")
-        heads = {m["group"]: m["bot_id"] for m in ros if m.get("group_head")}
-        check("본사 그룹 머리 = chief", heads.get("hq") == "fbot-chief")
-        check("prj 그룹 머리 = 그 prj 팀장", heads.get("prj26") == "fbot-lead-a")
-        check("팀장 중복이면 '팀장핀봇' 호칭이 머리", heads.get("prj60") == "fbot-lead-lec")
-        check("그룹당 머리는 하나", len(heads) == len({m["group"] for m in ros})
-              and sum(1 for m in ros if m.get("group_head")) == len(heads))
-        order = []
-        for m in ros:
-            if m["group"] not in order:
-                order.append(m["group"])
-        check("활성 그룹 먼저·본사 먼저·prj 자연 정렬", order == ["hq", "prj26", "prj60", "prj5"])
-        firsts = {}
-        for m in ros:
-            firsts.setdefault(m["group"], m["bot_id"])
-        check("그룹 안에서 머리가 먼저", all(firsts[g] == heads[g] for g in heads))
-        check("root(조직도 관계 축)는 불변", by["fbot-lead-a"]["root"] == "fbot-chief")
-        check("group 머리 아이콘 키 동반", "icon_uri" in by["fbot-lead-a"])
-    check("홈 그룹핑은 group 우선·구 payload 는 root 폴백", "const gk = m.group || m.root;" in src)
-    check("그룹 머리 판정은 group_head 우선", "(m.group ? m.group_head : m.is_root)" in src)
-    check("prj 그룹 👥 링크는 조직도 org 탭", "/fbot-map?tab=org&prj=" in src)
-
-    # 18) Issue552 — 퇴역(해고·휴직)은 홈 명부·총계에서 빠진다. 조직도(_fbot_filter_career, Issue451)와
-    #     같은 판정이어야 한다 — 갈리면 prj60 처럼 해고된 중복 팀장이 홈에서만 구성원으로 남는다.
-    with tempfile.TemporaryDirectory() as tmp:
-        aoa = os.path.join(tmp, "aoa")
-        os.makedirs(aoa)
-        now = int(time.time())
-        con = sqlite3.connect(os.path.join(aoa, "registry.db"))
-        con.executescript(SCHEMA)
-        con.executemany(
-            "INSERT INTO bot VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            [
-                ("fbot-lead-lec", "lec 팀장핀봇", "lead", "working", "active", None, "", 60, "x", None, now + 600, now),
-                ("fbot-lead-issue4", "Issue4 담당 lead 워커", "lead", "checkout", "terminated", None, "", 60, "", None, None, now),
-                ("fbot-qa-old", "휴직 워커", "qa", "checkout", "leave", None, "", 60, "", None, None, now),
-                ("fbot-qa-ok", "재직 워커", "qa", "checkout", "probation", None, "", 60, "", None, None, now),
-            ])
-        con.commit()
-        con.close()
-        server.FBOT_AOA_DIR = aoa
-        server.FBOT_ROOT = tmp
-        r = server._collect_bots()
-        ids = {m["bot_id"] for m in r["bots_roster"]}
-        check("해고자는 홈 명부에서 빠진다", "fbot-lead-issue4" not in ids)
-        check("휴직자는 홈 명부에서 빠진다", "fbot-qa-old" not in ids)
-        check("재직자는 남는다", {"fbot-lead-lec", "fbot-qa-ok"} <= ids)
-        check("총계도 재직 기준(4행 → 2)", r["bots_total"] == 2)
-    check("퇴역 판정 단일 지점", "def _fbot_retired(" in src and src.count('("leave", "terminated")') == 1)
 
     # 11) badge 위젯 icon 스킴 가드 — data:/http(s) 만 <img> 로 렌더한다.
     #     문자열 존재만 보면 가드가 뒤집혀도 통과하므로, JS 소스에서 정규식을 **뽑아

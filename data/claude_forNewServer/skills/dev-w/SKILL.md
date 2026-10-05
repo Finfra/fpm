@@ -30,8 +30,6 @@ description: "웹 개발 프로젝트 특화 개발 주기 (dev-g 기반)"
 
 ## 테스트 단계
 
-> **순서는 red 먼저** (Issue695): 로직 변경은 실패하는 Unit Test 를 먼저 쓰고 red 를 확인한 뒤 구현한다 — `superpowers:test-driven-development`. 판정·예외: [`tdd-playlist-rules.md`](../../_doc_arch/rules-ondemand/tdd-playlist-rules.md) «TDD 기본 적용». 시각만 바뀌는 UI 는 아래 로컬 서버 검증이 대신한다
-
 | 단계           | 명령                       | 설명                        |
 | -------------- | -------------------------- | --------------------------- |
 | Unit Test      | `npm run test`             | Jest / Vitest 등            |
@@ -55,7 +53,7 @@ dev-g의 완료 프로토콜에 다음 단계를 **코드 커밋 전에** 추가
 1. 린트 통과 확인
 2. 타입 체크 통과 (TypeScript 프로젝트)
 3. 빌드 성공 확인
-4. 테스트 통과 확인 — TDD 적용 시 red→green 증거를 `* 구현 명세` 에 한 줄
+4. 테스트 통과 확인
 
 이후 dev-g 완료 프로토콜 (커밋 → 해시 확보 → 이슈 종결 → 문서 커밋 → 알림) 진행.
 

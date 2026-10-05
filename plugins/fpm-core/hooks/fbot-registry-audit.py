@@ -532,16 +532,13 @@ def check_org(con: sqlite3.Connection) -> dict:
     org = _load_org_module()
     if org is None:
         return {"id": "f_org", "label": "조직 선언 정합", "severity": "warn", "ok": True,
-                "unknown_role_seats": [], "orphan_seat_bindings": [], "stale_drops": [],
-                "invalid_ext_fields": [], "unknown_engines": [],
-                "same_engine_checks": [], "non_checker_targets": [],
                 "skipped": "fbot-org.py 부재 또는 PyYAML 미설치 — 조직 기능 미도입 상태로 본다"}
 
     roles = org.catalog_roles()
-    declared, declared_seats, bad_role, stale_drops, invalid_ext = {}, {}, [], [], []
-    # prj3#Issue757 — 선언 목록 원천은 fbot-org `_declared_names`(사용자 폴더 ∪ 번들 폴백) 하나
-    names = org._declared_names() if hasattr(org, "_declared_names") else (
-        sorted(f[:-4] for f in os.listdir(org.ORG_DIR) if f.endswith(".yml")) if os.path.isdir(org.ORG_DIR) else [])
+    declared, bad_role, stale_drops = {}, [], []
+    names = []
+    if os.path.isdir(org.ORG_DIR):
+        names = sorted(f[:-4] for f in os.listdir(org.ORG_DIR) if f.endswith(".yml"))
     for name in names:
         prj = None if name == "_hq" else (int(name) if name.isdigit() else None)
         if name != "_hq" and prj is None:
@@ -555,31 +552,10 @@ def check_org(con: sqlite3.Connection) -> dict:
             #   자리 93개가 12개로 뭉개지고, 그 상태의 고아 판정은 **다른 프로젝트의
             #   자리에 앉은 봇을 정상으로 통과시킨다**(2026-09-05 실측).
             declared[st.get("addr") or st["id"]] = name
-            declared_seats[st.get("addr") or st["id"]] = st
             if roles and st.get("role") not in roles:
                 bad_role.append({"org": name, "seat": st["id"], "role": st.get("role")})
         for d in got.get("stale_drops") or []:
             stale_drops.append({"org": name, "drop": d})
-        for item in got.get("invalid") or []:
-            invalid_ext.append(dict(item, org=name))
-
-    unknown_engines = []
-    for role, attrs in sorted(org.catalog_attrs().items()):
-        for value in (attrs.get("engine") or "").split("|"):
-            if value and value not in org.ENGINES:
-                unknown_engines.append({"role": role, "value": value})
-
-    same_engine, non_checker = [], []
-    for addr, st in declared_seats.items():
-        target = st.get("checked_by_addr")
-        target_seat = declared_seats.get(target)
-        if not target or target_seat is None:
-            continue
-        warning = {"org": declared.get(addr), "seat": st.get("id"), "target": target}
-        if org.role_engines(st.get("role")) & org.role_engines(target_seat.get("role")):
-            same_engine.append(warning)
-        if not org.is_checker(target_seat.get("role")):
-            non_checker.append(warning)
 
     orphan_seats = []
     cols = {r[1] for r in con.execute("PRAGMA table_info(bot)")}
@@ -588,22 +564,17 @@ def check_org(con: sqlite3.Connection) -> dict:
             if r["seat_id"] not in declared:
                 orphan_seats.append({"bot_id": r["bot_id"], "seat_id": r["seat_id"]})
 
-    ok = not (bad_role or orphan_seats or stale_drops or invalid_ext or unknown_engines)
+    ok = not (bad_role or orphan_seats or stale_drops)
     return {
         "id": "f_org", "label": "조직 선언 정합", "severity": "warn", "ok": ok,
         "declared_orgs": len(names), "declared_seats": len(declared),
         "unknown_role_seats": bad_role,       # ① 카탈로그 미등재 role 참조
         "orphan_seat_bindings": orphan_seats,  # ② 없는 자리를 가리키는 bot.seat_id
         "stale_drops": stale_drops,            # ③ 대상 없는 drop — 낡은 override
-        "invalid_ext_fields": invalid_ext,
-        "unknown_engines": unknown_engines,
-        "same_engine_checks": same_engine,
-        "non_checker_targets": non_checker,
         "note": ("" if ok else
                  "선언(파일)과 대장(DB)이 어긋났다. ①은 카탈로그에 없는 role 이라 HR 배치가 "
                  "불가능하고, ②는 조직도에서 고아가 되며, ③은 상위에서 이미 사라진 자리를 "
-                 "지우려는 낡은 override 다. 선언 확장 무효값과 카탈로그 미지원 엔진도 "
-                 "해소·선택 판정을 갈라놓는다."),
+                 "지우려는 낡은 override 다."),
     }
 
 

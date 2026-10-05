@@ -16,17 +16,13 @@ date: 2026.08.30
 
 # 구조
 
-| 경로                                                                                                       | 내용                                                                                                                                    |
-| :--------------------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------- |
-| [`machines.yml`](machines.yml)                                                                             | 머신 명부 — 이름·플랫폼·역할                                                                                                            |
-| [`cases/core.yml`](cases/core.yml)                                                                         | **전 플랫폼 공통** — 어디서든 통과해야 하는 것                                                                                          |
-| [`cases/macos.yml`](cases/macos.yml) · [`linux.yml`](cases/linux.yml) · [`windows.yml`](cases/windows.yml) | 플랫폼 전용                                                                                                                             |
-| [`cases/deploy.yml`](cases/deploy.yml)                                                                     | **배포 체인 무결성** — 번들 동기·무결성 매니페스트·gitignore 앵커·i18n parity·tagcheck·버전 정합. 전부 실제로 사고가 났던 지점이다      |
-| [`cases/board.yml`](cases/board.yml)                                                                       | **board L2 시나리오** — s1~s9 를 격리 tmux·합성 worker 로 기동해 상태 전이를 단언. 기본 경로 밖 — `--only board` 전용 (Issue544)        |
-| [`lib/board-harness.sh`](lib/board-harness.sh) · [`lib/board-cases.sh`](lib/board-cases.sh)                | board 격리 하네스(전용 tmux 소켓·임시 루트·hub 스텁, 운영 값이면 abort)와 케이스 본문. `bash tdd/lib/board-cases.sh --all` 은 병렬 실행 |
-| [`fixtures/board/`](fixtures/board/)                                                                       | board 축약 fixture — 시나리오 dash·queue yaml + 합성 worker [`fake-worker.sh`](fixtures/board/fake-worker.sh)(claude TUI 대역)          |
-| [`board-real-worker.sh`](board-real-worker.sh)                                                             | board **L3** 실 claude worker E2E — 출고 재생목록 [`release.md`](release.md) 7행. `--yes` 없으면 skip(사용 한도 소모)                   |
-| [`run-tdd.sh`](run-tdd.sh)                                                                                 | 러너 — `core` + 해당 플랫폼 + `deploy` 를 돈다                                                                                          |
+| 경로 | 내용 |
+| :--- | :--- |
+| [`machines.yml`](machines.yml) | 머신 명부 — 이름·플랫폼·역할 |
+| [`cases/core.yml`](cases/core.yml) | **전 플랫폼 공통** — 어디서든 통과해야 하는 것 |
+| [`cases/macos.yml`](cases/macos.yml) · [`linux.yml`](cases/linux.yml) · [`windows.yml`](cases/windows.yml) | 플랫폼 전용 |
+| [`cases/deploy.yml`](cases/deploy.yml) | **배포 체인 무결성** — 번들 동기·무결성 매니페스트·gitignore 앵커·i18n parity·tagcheck·버전 정합. 전부 실제로 사고가 났던 지점이다 |
+| [`run-tdd.sh`](run-tdd.sh) | 러너 — `core` + 해당 플랫폼 + `deploy` 를 돈다 |
 
 # 사용
 
@@ -52,11 +48,11 @@ bash tdd/run-tdd.sh --only core  # 특정 묶음만
   expect: nonzero-epoch             # 판정 방식 (아래 표)
 ```
 
-| `expect`            | 통과 조건                |
-| :------------------ | :----------------------- |
-| `exit0`             | 종료 코드 0              |
-| `nonempty`          | stdout 이 비어 있지 않음 |
-| `nonzero-epoch`     | stdout 이 0 보다 큰 정수 |
+| `expect` | 통과 조건 |
+| :--- | :--- |
+| `exit0` | 종료 코드 0 |
+| `nonempty` | stdout 이 비어 있지 않음 |
+| `nonzero-epoch` | stdout 이 0 보다 큰 정수 |
 | `contains:<문자열>` | stdout 에 그 문자열 포함 |
 
 ⚠️ **`2>/dev/null || echo 0` 같은 삼킴을 케이스 안에 쓰지 말 것** — 그 패턴이야말로

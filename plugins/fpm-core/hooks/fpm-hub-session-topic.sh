@@ -13,15 +13,14 @@
 # 동작:
 #   1. stdin JSON 에서 session_id + cwd + prompt + pid 추출
 #   2. prompt 첫 줄 ~50자 요약(제어문자 제거, 슬래시 커맨드 보존, truncate +…)
-#   3. 포트 리슨 확인 (서버 미기동 → silent exit 0, UserPromptSubmit 비블로킹)
+#   3. healthz 200 확인 (서버 미기동 → silent exit 0, UserPromptSubmit 비블로킹)
 #   4. POST /session/register?cwd=<abs> body={sid, content_type:"live", pid, label, capabilities}
-#   5. fire-and-forget (--max-time 2, 백그라운드) — healthz 200 확인도 여기서(Issue803)
+#   5. fire-and-forget (--max-time 2, 백그라운드) — 프롬프트 처리 지연 방지
 #
 # 서버측: live_label 우선 카드 렌더(server.py:1965)·register 마다 갱신(server.py:3920).
 # fpm-hub-session-register.sh(SessionStart) 와 병행 — 첫 프롬프트 전까지만 win fallback.
 
-# Issue714: bash 내장 읽기 — cat fork+exec(2.6ms) 제거. 청크 단위라 큰 프롬프트도 안전
-input=$(< /dev/stdin)
+input=$(cat)
 
 # stdin JSON 에서 session_id·cwd·prompt·pid 추출 + prompt 요약(label) 동시 산출.
 # 요약: 첫 비어있지 않은 줄 → 제어문자 제거 → 50자 truncate(+…). 슬래시 커맨드는 첫 줄에
@@ -37,17 +36,6 @@ PID_JSON="$HOOK_PID"
 # prj3#Issue594 — 게이트가 비용보다 먼저다. 종전에는 SID 가 비어도 python3 로 라벨을 먼저 뽑았다
 #   (매 프롬프트 ~25ms 고정 지출, UserPromptSubmit 예산 200ms 의 12%).
 [ -z "$SID" ] && exit 0
-[ -z "$CWD" ] && exit 0   # Issue179: PWD fallback 제거 — hook 컨텍스트 PWD 는 frontmost 반영 위험(세션 오귀속), doc-register.sh:43 표준 정합
-case "$CWD" in /*) ;; *) exit 0 ;; esac   # 절대경로만
-
-SERVER_PORT="${HTM_SERVER_PORT:-9876}"
-HEALTH_URL="http://127.0.0.1:${SERVER_PORT}/healthz"
-
-# Issue714 — 서버가 안 떠 있으면 아무것도 할 일이 없다. 종전에는 라벨(tr)·pid 체인(ps 최대 20회)을
-#   다 계산한 **뒤에** healthz 를 봤다 — 서버 down 턴마다 ~45ms 를 버렸다(hook-smoke no-op 이 정확히
-#   이 경로). 포트 리슨 여부는 bash 내장 /dev/tcp 로 exec 없이(서브셸 1회) 먼저 본다(hub-context.sh Issue340 과
-#   같은 판정). 리슨 중이면 아래 healthz 200 확인은 그대로 한다 — 판정 결과는 종전과 같다.
-{ : 3<>"/dev/tcp/127.0.0.1/$SERVER_PORT"; } 2>/dev/null || exit 0   # prj3#Issue921 — 서브셸 fork 없는 프로브
 
 # prj3#Issue594 — fast path: 프롬프트에 태그(`<`)가 없으면 python3 없이 bash 로 끝낸다.
 #   실제 프롬프트 대다수가 평문이고, python3 기동(~25ms)이 이 hook 최대 비용이었다.
@@ -109,17 +97,20 @@ print(line)
 
 # prj3#Issue428: $PPID 직등록 금지 — 단명 wrapper pid 가 live_pid 를 덮어써 세션이
 #   hub 카드에서 사라졌다(prj9a 실측). lib 단일 지점으로 생존 확인 + claude 승격.
-#   Issue714: 서버 리슨 확인(/dev/tcp) 뒤로 옮겼다 — pid 는 POST 본문에만 쓰인다.
-#   여전히 **동기**로 센다(백그라운드로 미루면 hook 부모 체인이 먼저 죽어 Issue428 이 재발한다).
-#   Issue803: 세션별 캐시 — 2번째 프롬프트부터 체인(ps 4~5회) 대신 캐시 pid 검증(ps 1회).
-#     `$(…)` 가 아니라 현재 셸에서 불러 _FPM_PID 를 읽는다(캐시 적중 여부와 무관하게 결과 동등).
 # shellcheck source=lib/claude-pid.sh
 # prj3#Issue545 — 번들(플러그인) 설치본은 ~/.claude/hooks/lib 가 없다. 자기 옆의 lib/ 로 폴백한다
 FPM_LIB_DIR="$HOME/.claude/hooks/lib"
 [ -d "$FPM_LIB_DIR" ] || FPM_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)/lib"
 . "$FPM_LIB_DIR/claude-pid.sh"
-fpm_claude_pid_cached_into "$SID" "$PID_JSON" "$PPID"
-PID="$_FPM_PID"
+PID=$(fpm_resolve_claude_pid "$PID_JSON" "$PPID")
+[ -z "$CWD" ] && exit 0   # Issue179: PWD fallback 제거 — hook 컨텍스트 PWD 는 frontmost 반영 위험(세션 오귀속), doc-register.sh:43 표준 정합
+case "$CWD" in /*) ;; *) exit 0 ;; esac   # 절대경로만
+
+SERVER_PORT="${HTM_SERVER_PORT:-9876}"
+HEALTH_URL="http://127.0.0.1:${SERVER_PORT}/healthz"
+
+health=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 "$HEALTH_URL" 2>/dev/null)
+[ "$health" = "200" ] || exit 0
 
 # prj3#Issue594 — urlencode 하나로 python3(~25ms)를 띄우던 것을 bash 로.
 #   ⚠️ LC_ALL=C 필수 — 없으면 한글 경로에서 코드포인트를 바이트로 오인해 잘못된 %XX 를 만든다
@@ -128,11 +119,9 @@ PID="$_FPM_PID"
 CWD_ENC=$(LC_ALL=C; _s="$CWD"; _o=""; _i=0
   while [ "$_i" -lt "${#_s}" ]; do
     _c="${_s:$_i:1}"
-    # Issue794: 패턴 앞 `(` 필수 — 3.2 는 `$(…)` 안 case 의 `)` 를 치환 끝으로 읽어 파싱 실패(hook 무동작)
     case "$_c" in
-      ([A-Za-z0-9._~/-]) _o="$_o$_c" ;;
-      # Issue794: 3.2 의 printf %d 는 0x80+ 바이트를 음수로 부호 확장한다(%FFFFFFFFFFFFFFED) — & 255 로 바이트값을 되찾는다
-      (*) printf -v _n '%d' "'$_c"; printf -v _c '%%%02X' $((_n & 255)); _o="$_o$_c" ;;
+      [A-Za-z0-9._~/-]) _o="$_o$_c" ;;
+      *) _o="$_o$(printf '%%%02X' "'$_c")" ;;
     esac
     _i=$((_i+1))
   done
@@ -143,6 +132,26 @@ REG_URL="http://127.0.0.1:${SERVER_PORT}/session/register?cwd=${CWD_ENC}"
 #   SessionStart(register.sh)가 보낸 entrypoint caps 를 이 훅의 caps 가 서버 merge
 #   (caps or 기존)에서 매 턴 덮어써 origin 이 항상 terminal 로 회귀하던 버그(Issue177 회귀) 차단.
 ENTRY="${CLAUDE_CODE_ENTRYPOINT:-}"
+
+# Issue217(prj1#Issue273): 현재 세션 모델 — transcript jsonl 마지막 assistant .message.model.
+#   hub 활성세션 카드 신호등 이모지(🟣opus/🔵sonnet/🟢haiku/🟠fable) producer.
+#   SessionStart(register.sh)는 첫 응답 전이라 model 미상 → 매 프롬프트 이 훅이 갱신.
+TRANSCRIPT="$HOOK_TRANSCRIPT"   # F2-1: 재파싱 제거 (hook-input.sh 가 이미 추출)
+MODEL=""
+if [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ]; then
+  MODEL=$(tail -n 400 "$TRANSCRIPT" 2>/dev/null | python3 -c "
+import sys, json
+last = ''
+for line in sys.stdin:
+    try:
+        m = (json.loads(line).get('message') or {}).get('model')
+        if m:
+            last = m
+    except Exception:
+        pass
+print(last)
+" 2>/dev/null)
+fi
 
 # Issue313: Zed 신호 재전송 — 마커 조회(`[ -f ]` 1회)만 하므로 ps 재조회 없이 무비용.
 #   SessionStart 1회 등록에만 실리던 caps.editor 가 이 훅의 재등록에서 지워지는 회귀 차단.
@@ -155,68 +164,28 @@ if [ "$ENTRY" != "claude-vscode" ]; then
   fi
 fi
 
-# Issue217(prj1#Issue273): 현재 세션 모델 — transcript jsonl 마지막 assistant .message.model.
-#   hub 활성세션 카드 신호등 이모지(🟣opus/🔵sonnet/🟢haiku/🟠fable) producer.
-#   SessionStart(register.sh)는 첫 응답 전이라 model 미상 → 매 프롬프트 이 훅이 갱신.
-# Issue803: model 추출과 BODY 조립을 **jq 1회**로 — 종전 python3 2회(~20ms × 2)가 발동 경로 최대 비용.
-#   판정은 종전 python 과 같다: 줄마다 JSON 객체 → .message 가 객체 → .model 이 비지 않은 문자열이면
-#   갱신(마지막 값). 깨진 줄·비객체는 건너뛴다. pid 는 정수일 때만 싣는다(Issue122 서버 계약 int).
-#   ⚠️ 차이는 표현뿐 — jq 는 비ASCII 를 UTF-8 그대로 싣고 python json.dumps 는 \uXXXX 로 싣는다.
-#      서버는 JSON 으로 파싱하므로 받는 값은 같다(test-session-topic-fire.sh A 가 파싱 후 대조).
-#   jq 부재(번들 설치본 등)면 python3 1회로 같은 일을 한다.
-TRANSCRIPT="$HOOK_TRANSCRIPT"   # F2-1: 재파싱 제거 (hook-input.sh 가 이미 추출)
-[ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ] || TRANSCRIPT=/dev/null
-BODY=""
-if command -v jq >/dev/null 2>&1; then
-  BODY=$(tail -n 400 "$TRANSCRIPT" 2>/dev/null | jq -cRn \
-    --arg sid "$SID" --arg label "$LABEL" --arg pid "$PID" \
-    --arg entry "$ENTRY" --arg editor "$EDITOR_SIG" '
-    (reduce (inputs | (try fromjson catch null) | objects | .message | objects | .model
-             | select(type == "string" and . != "")) as $m (""; $m)) as $model
-    | {sid: $sid, content_type: "live", label: $label,
-       capabilities: ({source: "prompt", kind: "live"}
-         + (if $entry  != "" then {entrypoint: $entry} else {} end)    # Issue179: 출처 배지용
-         + (if $model  != "" then {model: $model}      else {} end)    # Issue217: 모델 신호등
-         + (if $editor != "" then {editor: $editor}    else {} end))}  # Issue313: origin=zed
-      + (if ($pid | test("^[0-9]+$")) then {pid: ($pid | tonumber)} else {} end)
-  ' 2>/dev/null)
-fi
-[ -n "$BODY" ] || BODY=$(tail -n 400 "$TRANSCRIPT" 2>/dev/null | python3 -c "
+BODY=$(python3 -c "
 import json, sys
-sid, label, pid, entry, editor = sys.argv[1:6]
-model = ''
-for line in sys.stdin.buffer:   # bytes — 깨진 UTF-8 줄도 try 안에서 건너뛴다
-    try:
-        m = (json.loads(line).get('message') or {}).get('model')
-        if m:
-            model = m
-    except Exception:
-        pass
+sid, label, pid, entry, model, editor = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6]
 caps = {'source': 'prompt', 'kind': 'live'}
 if entry:
-    caps['entrypoint'] = entry
+    caps['entrypoint'] = entry   # Issue179: 출처 배지용 (claude-vscode|cli|...)
 if model:
-    caps['model'] = model
+    caps['model'] = model        # Issue217: 카드 모델 신호등 이모지 (prj1#Issue273)
 if editor:
-    caps['editor'] = editor
+    caps['editor'] = editor      # Issue313: 서버 _origin_from_caps 가 origin=zed 로 소비
 body = {'sid': sid, 'content_type': 'live', 'label': label, 'capabilities': caps}
 try:
-    body['pid'] = int(pid)
+    body['pid'] = int(pid)   # Issue122: 서버 계약 pid(int) — live 카드 dedup·liveness
 except (ValueError, TypeError):
     pass
 print(json.dumps(body))
-" "$SID" "$LABEL" "$PID" "$ENTRY" "$EDITOR_SIG" 2>/dev/null)
-[ -n "$BODY" ] || exit 0
+" "$SID" "$LABEL" "$PID" "$ENTRY" "$MODEL" "$EDITOR_SIG")
 
-# Issue803: healthz 200 확인까지 POST 와 함께 백그라운드로 — 종전엔 healthz 를 동기로 기다렸다
-#   (--max-time 2, 서버가 느리면 프롬프트가 그만큼 멈춘다). 판정은 같다: 200 일 때만 POST.
-#   리슨 여부는 위 /dev/tcp 가 이미 동기로 걸렀다. pid·본문은 위에서 동기로 확정했다(Issue428).
-( health=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 "$HEALTH_URL" 2>/dev/null)
-  [ "$health" = "200" ] || exit 0
-  curl -s --max-time 2 \
-    -X POST "$REG_URL" \
-    -H "Content-Type: application/json" \
-    -d "$BODY"
-) >/dev/null 2>&1 &
+curl -s --max-time 2 \
+  -X POST "$REG_URL" \
+  -H "Content-Type: application/json" \
+  -d "$BODY" \
+  >/dev/null 2>&1 &
 
 exit 0

@@ -276,7 +276,7 @@ def build_downgrade_notes():
         out += (
             "   - ℹ️ **자동 강등 고지 (Issue340)**: hub 서버(port %s)가 떠 있지 않아 md 서버 렌더가 불가 → "
             "자립형 HTML(`file://`)로 강등함. 이번 턴은 `.md` 가 아니라 **`.htm` 을 생성**하고 `file://` 로 연다. "
-            "%s: `(알림: hub 서버 미기동 — file:// 자립형 렌더로 강등. 서버 복귀: /fpm-board-server start)`\n"
+            "%s: `(알림: hub 서버 미기동 — file:// 자립형 렌더로 강등. 서버 복귀: /hub start)`\n"
             % (render_port, tail)
         )
     return out
@@ -420,7 +420,7 @@ def build_show():
         "- hub 모드(`..show`) 활성 중 `AskUserQuestion` 도구는 PreToolUse hook (`fpm-ask-intercept.sh`) 이 자동 deny\n"
         "- deny reason 에 form HTML 생성·Firefox open·fetch POST·inbox polling 절차 포함 — 그 지시를 그대로 따를 것\n"
         "- 회수: 사용자 폼 \"전송\" → fetch POST → server inbox → Claude bash polling → JSON Read·rm → answers 추출 → 흐름 재개\n"
-        "- 서버 down 시: intercept hook 이 fail-loud reason 주입 (`/fpm-board-server start` 후 재시도 또는 `..hub stop` 안내). paste-back fallback 없음\n"
+        "- 서버 down 시: intercept hook 이 fail-loud reason 주입 (`/dashboard-server start` 후 재시도 또는 `..hub stop` 안내). paste-back fallback 없음\n"
         "- 해제: 사용자가 `..hub stop` 입력 시 플래그 해제 + AskUserQuestion 정상 복귀\n\n"
         "### 실시간 모니터링이 필요할 때 (Mode C)\n"
         "- 장시간 background 모니터링·SSE push 가 필요하면 `..hub dash <topic>` 로 dashboard agent 호출\n"
@@ -533,7 +533,7 @@ def build_auto():
         "- 선택지 자동 승격: 응답이 2~4 선택지 + 결정 요청 문구면 텍스트 dump 금지 → `AskUserQuestion` 호출로 분리\n\n"
         "### 상세 / 해제\n"
         "- %s·mermaid·폼 규약: `~/.claude/commands/fpm-hub.md`\n" % ('md 규약' if md_first else 'HTML 템플릿') +
-        "- 이 폴더에서 hub 끄기: `..hub stop` (per-folder 영구 off — `~/.claude/.hub-state/` 기록). 다시 켜기: `..hub on`\n"
+        "- 이 폴더에서 hub 끄기: `..hub stop` (per-folder 영구 off — `~/.claude/.hub-state/` 기록). 다시 켜기: `..hub start`\n"
     )
 
     # prj3#Issue341: live 는 문서 절차를 통째로 대체. 자동 모드이므로 **작업 차단 없음**(a모드와 다른 점).

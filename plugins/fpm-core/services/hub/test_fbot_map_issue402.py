@@ -37,10 +37,7 @@ _org_mod = None
 if _os.path.exists(_op):
     _sp = _ilu.spec_from_file_location("fbot_org_t", _op)
     _org_mod = _ilu.module_from_spec(_sp); _sp.loader.exec_module(_org_mod)
-# prj3#Issue689 — 팀장 판정 SQL 이 `_lead_rows`(단일 지점)로 옮겨갔다. 생사 판정 소스는 둘을 합쳐 본다
-_org_alive_src = (_insp.getsource(_org_mod.team_alive)
-                  + (_insp.getsource(_org_mod._lead_rows) if hasattr(_org_mod, "_lead_rows") else "")
-                  ) if _org_mod else ""
+_org_alive_src = _insp.getsource(_org_mod.team_alive) if _org_mod else ""
 
 
 def check(name, cond):
@@ -268,12 +265,10 @@ def main():
         check("전원 명부(퇴근 포함)", len(ros) == 9)
         check("활성만 카드에 오른다", r["bots_active"] == 2)
         check("루트 표식", {m["bot_id"] for m in ros if m["is_root"]} >= {"R1", "R2", "B1"})
-        check("아이콘은 그룹 헤더(루트·그룹 머리)만 싣는다(payload 비대 차단)",
-              all(not m["icon_uri"] for m in ros if not (m["is_root"] or m["group_head"])))
-        # Issue547 — 홈 정렬·머리는 prj 조직(group) 축이다. root 는 조직도 관계 축으로 불변.
-        _act_g = {m["group"] for m in ros if m["active"]}
-        check("활성 있는 그룹이 먼저", ros[0]["group"] in _act_g)
-        check("그룹 안에서 머리가 먼저", ros[0]["group_head"] is True)
+        check("아이콘은 루트만 싣는다(payload 비대 차단)",
+              all(not m["icon_uri"] for m in ros if not m["is_root"]))
+        check("활성 있는 그룹이 먼저", ros[0]["root"] == "R1")
+        check("그룹 안에서 루트가 먼저", ros[0]["is_root"] is True)
         check("소속 판정은 _fbot_root_map 과 같다",
               {m["bot_id"] for m in ros if m["root"] == "R1"} == {"R1", "C1", "C2", "G1"})
 
@@ -330,10 +325,6 @@ def main():
         check("조직 데이터에도 그 배분 엣지가 선다",
               any(e["src"] == "R1" for e in after["dispatch"]))
 
-    _check_career_filter_edges()
-    _check_hist_toggle()
-    _check_issue535()
-    _check_board_active_seg()
     _check_issue488()
     _check_issue494()
     _check_issue502()
@@ -373,205 +364,6 @@ def _d488(nodes, dispatch, hires=None):
     return {"error": "", "nodes": nodes, "hires": hires or [], "dispatch": dispatch,
             "roots": [n["bot_id"] for n in nodes if n["root"] == n["bot_id"]],
             "root_filter": "", "unknown_root": False}
-
-
-def _check_board_active_seg():
-    """보드 「활성만 | 전체」 — 세그먼트 UI + 조직도 카드까지 같은 판정(seatVisible)으로 거른다.
-
-    종전엔 단독 토글 버튼이라 현재 상태인지 누를 동작인지 안 읽혔고(그래프 탭 ea0e737 과 같은 문제),
-    활성만이어도 오른쪽 조직도에는 퇴근 봇·공석 카드가 그대로 섰다(2026-09-26 사용자 관측).
-    """
-    print("\n== 보드 활성만·전체 세그먼트 + 조직도 카드 필터 ==")
-    bh = server._fbot_board_html("", None)
-    check("보드 셸 — 세그먼트(활성만|전체) 두 칸", 'id="fb-seg-all"' in bh
-          and 'data-all="0"' in bh and 'data-all="1"' in bh)
-    check("보드 셸 — 구 단독 토글 버튼 제거", 'id="fb-toggle-all"' not in bh)
-    node = shutil.which("node")
-    if not node:
-        print("  skip node 미설치 — seatVisible 검증 생략")
-        return
-    js_src = server._FBOT_BOARD_JS
-    js = (_grab_line(js_src, "const ACTIVE") + "\n" + _grab_js(js_src, "seatVisible") + "\n" + r"""
-const bots={A:{state:"working"},C:{state:"checkout"},W:{state:"checkout"}};
-const work=b=>b==="W"?2:0;
-const r=[
-  seatVisible({bot_id:"A"},bots,work,true,null)===true,
-  seatVisible({bot_id:"C"},bots,work,true,null)===false,
-  seatVisible({bot_id:"W"},bots,work,true,null)===true,
-  seatVisible({bot_id:""},bots,work,true,null)===false,
-  seatVisible({bot_id:"C"},bots,work,true,"C")===true,
-  seatVisible({bot_id:"C"},bots,work,false,null)===true,
-  seatVisible({bot_id:""},bots,work,false,null)===true,
-];
-console.log(JSON.stringify(r));
-""")
-    with tempfile.TemporaryDirectory() as tmp:
-        p = os.path.join(tmp, "seat.js")
-        with open(p, "w", encoding="utf-8") as f:
-            f.write(js)
-        out = subprocess.run([node, p], capture_output=True, text=True)
-    try:
-        r = json.loads(out.stdout.strip().splitlines()[-1])
-    except Exception:
-        check("seatVisible node 실행: " + (out.stderr or "")[:200], False)
-        return
-    names = ["활성 봇 표시", "퇴근·일 없음 숨김", "퇴근이라도 기간 안 일 있으면 표시", "활성만이면 공석 숨김",
-             "포커스 봇은 퇴근이어도 표시", "전체면 퇴근 봇 표시", "전체면 공석 표시"]
-    for n, ok in zip(names, r):
-        check("seatVisible — " + n, ok)
-
-    # 트리도 스코프 단위로 거른다 — 활성만인데 20개 팀 줄이 그대로면 전체와 구성이 같아 보인다(2026-09-26 사용자 관측)
-    js2 = _grab_js(js_src, "treeScopes") + "\n" + r"""
-const sc=[{prj:null},{prj:1},{prj:3},{prj:7}];
-const act=s=>s.prj===3;
-const a=treeScopes(sc,true,act,"7"), b=treeScopes(sc,false,act,null), c=treeScopes(sc,true,act,null);
-console.log(JSON.stringify([
-  a.shown.map(s=>s.prj), a.hidden,
-  b.shown.length, b.hidden,
-  c.shown.map(s=>s.prj), c.hidden]));
-"""
-    with tempfile.TemporaryDirectory() as tmp:
-        p = os.path.join(tmp, "tree.js")
-        with open(p, "w", encoding="utf-8") as f:
-            f.write(js2)
-        out = subprocess.run([node, p], capture_output=True, text=True)
-    try:
-        r2 = json.loads(out.stdout.strip().splitlines()[-1])
-    except Exception:
-        check("treeScopes node 실행: " + (out.stderr or "")[:200], False)
-        return
-    check("treeScopes — 활성만: 본사+활성 팀+선택 팀만, 나머지 숨김 수", r2[0] == [None, 3, 7] and r2[1] == 1)
-    check("treeScopes — 전체: 전부 표시", r2[2] == 4 and r2[3] == 0)
-    check("treeScopes — 활성만·선택 없음: 본사+활성 팀", r2[4] == [None, 3] and r2[5] == 2)
-
-    # 새로고침하면 「활성만」이 「전체」로 풀리던 문제(2026-09-27 사용자 관측) — #sel= 이 있으면 ensureSelVisible 이
-    #   매 로드마다 activeOnly 를 끄고, 선택값 자체는 저장되지 않았다.
-    js3 = (_grab_line(js_src, "const ACTIVE") + "\n" + _grab_js(js_src, "seatVisible") + "\n"
-           + _grab_js(js_src, "initActiveOnly") + "\n" + r"""
-const bots={C:{state:"checkout"}}, work=()=>0;
-console.log(JSON.stringify([
-  seatVisible({bot_id:"C",addr:"7/x"},bots,work,true,null,"7/x"),
-  seatVisible({bot_id:"",addr:"7/v"},bots,work,true,null,"7/v"),
-  seatVisible({bot_id:"C",addr:"7/x"},bots,work,true,null,"7/y"),
-  initActiveOnly(null,null), initActiveOnly(null,false), initActiveOnly(null,true),
-  initActiveOnly("1",true), initActiveOnly("0",false)]));
-""")
-    with tempfile.TemporaryDirectory() as tmp:
-        p = os.path.join(tmp, "keep.js")
-        with open(p, "w", encoding="utf-8") as f:
-            f.write(js3)
-        out = subprocess.run([node, p], capture_output=True, text=True)
-    try:
-        r3 = json.loads(out.stdout.strip().splitlines()[-1])
-    except Exception:
-        check("initActiveOnly node 실행: " + (out.stderr or "")[:200], False)
-        return
-    check("seatVisible — 선택 자리(퇴근 봇)는 활성만이어도 표시", r3[0] is True)
-    check("seatVisible — 선택 자리(공석)도 활성만이어도 표시", r3[1] is True)
-    check("seatVisible — 선택 아닌 퇴근 자리는 숨김", r3[2] is False)
-    check("initActiveOnly — 해시·저장값 없으면 기본 활성만", r3[3] is True)
-    check("initActiveOnly — 해시 없으면 저장된 이전 선택 복원", r3[4] is False and r3[5] is True)
-    check("initActiveOnly — 해시 all= 이 저장값보다 우선", r3[6] is False and r3[7] is True)
-    check("ensureSelVisible 는 activeOnly 를 강제로 끄지 않는다",
-          "activeOnly" not in _grab_js(js_src, "ensureSelVisible"))
-
-    # Issue538 — 팀장핀봇(자리) 클릭 시 그 팀 레인만. 타 prj 는 배분 왕래(협업)가 있을 때만 함께 선다.
-    #   종전엔 레인 한정이 scope:/dept: 선택에만 걸려 자리·봇 선택은 전 레인으로 떨어졌다(2026-09-27 사용자 관측)
-    js3 = _grab_js(js_src, "lanePick") + "\n" + r"""
-const lanes=[{prj:1},{prj:3},{prj:7},{prj:57}];
-const home={L1:"1",L3:"3",L7:"7",L57:"57",T3:"3",N:"hq"};
-const of=b=>home[b]?new Set([home[b]]):null;
-const jobs=[{owner:"L3",dst:"T3"},{owner:"N",dst:"L57"},{owner:"N",dst:"L1"}];
-const k=r=>r?r.map(s=>s.prj):null;
-console.log(JSON.stringify([
-  k(lanePick(lanes,"57",of,jobs)),
-  k(lanePick(lanes,"57",of,jobs.concat([{owner:"L7",dst:"L57"}]))),
-  k(lanePick(lanes,"3",of,jobs.concat([{owner:"L3",dst:"L1"}]))),
-  k(lanePick(lanes,"hq",of,jobs)),
-  k(lanePick(lanes,null,of,jobs))]));
-"""
-    with tempfile.TemporaryDirectory() as tmp:
-        p = os.path.join(tmp, "pick.js")
-        with open(p, "w", encoding="utf-8") as f:
-            f.write(js3)
-        out = subprocess.run([node, p], capture_output=True, text=True)
-    try:
-        r3 = json.loads(out.stdout.strip().splitlines()[-1])
-    except Exception:
-        check("lanePick node 실행: " + (out.stderr or "")[:200], False)
-        return
-    check("lanePick — 협업 없으면 선택 팀 레인만(본사 경유 배분은 협업 아님)", r3[0] == [57])
-    check("lanePick — 배분 왕래한 타 prj 레인은 함께", r3[1] == [7, 57])
-    check("lanePick — 반대 방향 배분도 협업", r3[2] == [1, 3])
-    check("lanePick — 본사 선택은 한정 없음(null)", r3[3] is None)
-    check("lanePick — 선택 없음은 한정 없음(null)", r3[4] is None)
-    check("org() — 레인 한정이 lanePick 단일 지점을 거친다", "lanePick(lanesAll" in js_src)
-
-
-def _check_issue535():
-    """prj1#Issue535 — 그래프 옆 패널 "보드에서 이 봇 보기" 가 개체 bot_id 를 `?root=` 에
-    실으면 root_filter(루트 봇 전용)가 unknown_root 경고를 띄우고, 탭·토글이 root 를
-    보존해 org 탭까지 따라간다(실측 root=fbot-contractor-issue415). 개체 지목은
-    botNameLink 와 같은 `tab=board#bot=` 해시 계약이어야 한다."""
-    print("\n== 그래프 패널 봇 링크 — 개체 지목은 #bot= (Issue535) ==")
-    d = _d488([_n488("BOSS")], [])
-    page = server.Handler._render_fbot_map(d, True, True, "map").decode("utf-8")
-    check("패널 링크가 개체 id 를 root= 에 싣지 않는다",
-          "tab=board&root='+encodeURIComponent(d.bot)" not in page)
-    check("패널 링크가 tab=board#bot= 해시로 봇을 지목한다",
-          "/fbot-map?tab=board#bot='+encodeURIComponent(d.bot)" in page)
-
-
-def _check_career_filter_edges():
-    """전체 보기(?all=1) 빈 화면 회귀 — 퇴역 필터가 노드만 거르고 엣지를 남기면
-    Cytoscape 가 `nonexistant target` 예외로 그래프 전체를 그리지 않는다(사용자 관측
-    2026-09-26: 활성만은 그려지고 전체는 빈 화면이라 토글이 뒤바뀐 것처럼 보였다)."""
-    print("\n== 전체 보기: 퇴역 필터 후 엣지 끝점이 전부 노드에 있다 ==")
-    boss = _n488("BOSS")
-    gone = dict(_n488("LEAVE", state="checkout", root="BOSS"), career="leave")
-    d = _d488([boss, gone], [_e488("BOSS", "LEAVE", status="done", ago_h=200)],
-              hires=[{"src": "BOSS", "dst": "LEAVE"}])
-    out = server._fbot_filter_career(d)
-    ids = {n["bot_id"] for n in out["nodes"]}
-    check("퇴역 봇은 노드에서 빠진다", "LEAVE" not in ids)
-    check("채용 엣지 끝점이 전부 노드에 있다",
-          all(e["src"] in ids and e["dst"] in ids for e in out["hires"]))
-    check("배분 엣지 끝점이 전부 노드에 있다",
-          all(e["src"] in ids and e["dst"] in ids for e in out["dispatch"]))
-    els = server._fbot_graph_elements(out)
-    nids = {n["data"]["id"] for n in els["nodes"]}
-    check("Cytoscape 엣지가 없는 노드를 가리키지 않는다",
-          all(e["data"]["source"] in nids and e["data"]["target"] in nids for e in els["edges"]))
-
-
-def _check_hist_toggle():
-    """«기록 포함»(?hist=1) 무반응 회귀 — 활성·퇴역 필터가 hist 와 무관하게 오래된 종결
-    배분을 먼저 떨궈, 뒤의 hist 분기에 넘어올 엣지가 없었다(사용자 관측 2026-09-26:
-    라벨만 바뀌고 «숨긴 배분 87» 그대로). 두 필터 모두 hist 축을 받아야 한다."""
-    print("\n== 기록 포함(?hist=1): 오래된 종결 배분이 실제로 드러난다 ==")
-    boss = _n488("BOSS")
-    w = _n488("W", state="checkout", root="BOSS")
-    gone = dict(_n488("LEAVE", state="checkout", root="BOSS"), career="leave")
-    old = [_e488("BOSS", "W", status="done", ago_h=200),
-           _e488("BOSS", "LEAVE", status="cancelled", ago_h=300)]
-    d = _d488([boss, w, gone], old)
-    base = server._fbot_filter_active(d)
-    check("기본(활성만): 오래된 종결 배분은 숨는다", base["dispatch"] == [])
-    act = server._fbot_filter_active(d, hist=True)
-    ids = {n["bot_id"] for n in act["nodes"]}
-    check("활성만+기록: 종결 배분 2건이 남는다", len(act["dispatch"]) == 2)
-    check("활성만+기록: 배분 끝점이 전부 노드에 있다",
-          all(e["src"] in ids and e["dst"] in ids for e in act["dispatch"]))
-    car = server._fbot_filter_career(d, hist=True)
-    cids = {n["bot_id"] for n in car["nodes"]}
-    check("전체+기록: 종결 배분 2건이 남는다", len(car["dispatch"]) == 2)
-    check("전체+기록: 배분 끝점이 전부 노드에 있다",
-          all(e["src"] in cids and e["dst"] in cids for e in car["dispatch"]))
-    for a in (False, True):
-        pg = server.Handler._render_fbot_map(d, a, True, "map").decode("utf-8")
-        check("페이지(all=%d&hist=1): 숨긴 배분 계수가 0" % a, not re.search(r"·배분 [1-9]", pg))
-    pg0 = server.Handler._render_fbot_map(d, False, False, "map").decode("utf-8")
-    check("페이지(기본): 숨긴 배분 2 가 표시된다", "배분 2" in pg0)
 
 
 def _check_issue488():
@@ -692,13 +484,6 @@ def _check_issue488():
     page_all = server.Handler._render_fbot_map(d, True).decode("utf-8")
     check("전체 보기에서 퇴근 봇이 돌아온다", "B_GONE" in page_all)
     check("전체 보기 토글은 활성으로 되돌린다", bool(re.search(r'href="/fbot-map(\?tab=map)?"', page_all)))
-    # 표시 토글은 «현재 상태 라벨 + 반대 방향 버튼» 을 나란히 두면 반대로 읽힌다(사용자 관측
-    #   2026-09-26: "표시 전체 · ← 활성만 보기"). 세그먼트로 두고 **현재 칸만 on·비링크**로 그린다.
-    check("기본 화면: 표시 세그먼트의 현재 칸은 활성만",
-          '<span class="fm-seg-on">활성만</span>' in page)
-    check("전체 화면: 표시 세그먼트의 현재 칸은 전체",
-          '<span class="fm-seg-on">전체</span>' in page_all)
-    check("전체 화면에 «← 활성만 보기» 버튼 문구가 없다", "활성만 보기" not in page_all)
     _healthy = server.Handler._render_fbot_map(
         _d488([_n488("M"), _n488("W", root="M")],
               [_e488("M", "W")])).decode("utf-8")
@@ -764,50 +549,11 @@ def _check_issue488():
     check("problem·recent 판정이 실린다", _by["fbotdisp-2-bbbbbbbb"]["problem"] is True and _by["fbotdisp-3-cccccccc"]["recent"] is False and _by["fbotdisp-1-aaaaaaaa"]["recent"] is True)
     check("요약 — 열린 1 · 문제 1 · 인박스 2", _pl["summary"]["open_dispatch"] == 1 and _pl["summary"]["problem_dispatch"] == 1 and _pl["summary"]["inbox_open"] == 2)
     _bh = server._fbot_board_html("", 2)
-    # Issue523 — 2·3열 병합: 트리 | (업무 배당 조직도 / 작업 상세)
-    check("보드 셸 — 트리·조직도·작업 상세·기간 토글·요약·필터·폴링", all(x in _bh for x in ('id="fb-tree"', 'id="fb-org"', 'id="fb-work"', 'id="fb-period"', 'id="fb-toggle-problem"', "/fbot-map.json", "setInterval(load, 30000)")))
-    check("보드 셸 — 3열 폭 변수(--fb-w3)·구 3열 id 제거", "--fb-w3" not in _bh and 'id="fb-chain"' not in _bh and 'id="fb-detail"' not in _bh)
+    check("보드 셸 — 3-pane 컨테이너·요약·필터·폴링 스크립트", all(x in _bh for x in ('id="fb-tree"', 'id="fb-detail"', 'id="fb-chain"', 'id="fb-toggle-problem"', "/fbot-map.json", "setInterval(load, 30000)")))
     check("보드 셸 — 쿼리 전달(prj=2)", 'window.__fbQuery="prj=2"' in _bh)
-    # Issue524 — 조직도 ↔ 작업 상세 경계 = 가로 분할 바 하나로 통일(구 resize:vertical 모서리 손잡이 제거)
-    check("보드 셸 — 가로 분할 바(.fb-hsplit)·resize:vertical 부재", 'id="fb-hsplit"' in _bh and "row-resize" in _bh and "resize:vertical" not in _bh)
     _pg_b = server.Handler._render_fbot_map(_d488(_nb, [_e_a]), tab="board").decode("utf-8")
     check("tab=board 렌더 — 탭바에 보드 on + 셸 포함", 'class="fm-tab on" href="/fbot-map"' in _pg_b and 'id="fb-tree"' in _pg_b)   # prj3#Issue588: board 가 기본 → 링크에 tab 생략
     check("보드 탭은 그래프 캔버스를 만들지 않는다", 'id="fb-cy-org"' not in _pg_b)
-
-    print("\n== Issue523 — 봇별 work 분류(받은·하는·미룬·지시한) 단일 판정 ==")
-    _now = int(time.time())
-    _nw = [_n488("CH", state="working"), _n488("LD", state="working", root="CH"),
-           _n488("W1", state="working", root="CH"), _n488("W2", state="checkin", root="CH")]
-    _w_open = dict(_e488("CH", "LD", issue="OPEN"), job_id="fbotdisp-w1", ts=_now - 600)
-    _w_gate = dict(_e488("LD", "W1", issue="GATE", status="blocked"), job_id="fbotdisp-w2", ts=_now - 500)
-    _w_stale = dict(_e488("LD", "W2", issue="STALE"), job_id="fbotdisp-w3", ts=_now - 8 * 3600)
-    _w_def = dict(_e488("LD", "W1", issue="DEFER", status="deferred"), job_id="fbotdisp-w4", ts=_now - 400)
-    _w_done = dict(_e488("LD", "W1", issue="DONE", status="done"), job_id="fbotdisp-w5", ts=_now - 300)
-    _w_old = dict(_e488("LD", "W1", issue="OLD", status="done", ago_h=96), job_id="fbotdisp-w6")
-    _fw = _d488(_nw, [_w_open, _w_gate, _w_stale, _w_def, _w_done, _w_old])
-    _xw = [{"id": "fbotreq-esc", "kind": "fbot_request", "status": "open", "owner": "W2", "created_at": _now - 90,
-            "payload": json.dumps({"from": "CH", "body": "수락 대기", "escalated_at": _now - 30})},
-           {"id": "fbotreq-ok", "kind": "fbot_request", "status": "open", "owner": "W2", "created_at": _now - 80,
-            "payload": json.dumps({"from": "CH", "body": "새 요청"})},
-           {"id": "fbotreq-done", "kind": "fbot_request", "status": "done", "owner": "W2", "created_at": _now - 70,
-            "payload": json.dumps({"from": "CH", "body": "끝난 요청"})}]
-    _plw = server._fbot_board_payload(_fw, {"available": True, "seats": []},
-                                      dl=server._fbot_deadlocks(_fw), extra_jobs=_xw)
-    _W = {b: _plw["bots"][b]["work"] for b in ("CH", "LD", "W1", "W2")}
-    _why = lambda b: {x["id"]: x["why"] for x in _W[b]["deferred"]}
-    check("모든 봇에 work 4칸", all(set(w) == {"received", "doing", "deferred", "directed"} for w in _W.values()))
-    check("doing — 정체 아닌 open 만(LD: OPEN)", _W["LD"]["doing"] == ["fbotdisp-w1"] and _W["LD"]["received"] == ["fbotdisp-w1"])
-    check("gate — blocked 는 미룬 일(why=gate), 하는 일 아님", _why("W1").get("fbotdisp-w2") == "gate" and "fbotdisp-w2" not in _W["W1"]["doing"])
-    check("deferred — 명시 보류 상태는 why=deferred", _why("W1").get("fbotdisp-w4") == "deferred")
-    check("stale — 정체 판정 open 은 why=stale, 하는 일 아님", _why("W2").get("fbotdisp-w3") == "stale" and "fbotdisp-w3" not in _W["W2"]["doing"])
-    check("unaccepted — 에스컬된 open 요청만 미룬 일", _why("W2").get("fbotreq-esc") == "unaccepted" and "fbotreq-ok" not in _why("W2"))
-    check("받은 일에 open 요청 2건 포함·종결 요청 제외", {"fbotreq-esc", "fbotreq-ok"} <= set(_W["W2"]["received"]) and "fbotreq-done" not in _W["W2"]["received"])
-    check("recent 밖 종결 배분은 받은 일·지시한 일에서 제외", "fbotdisp-w6" not in _W["W1"]["received"] and "fbotdisp-w6" not in _W["LD"]["directed"])
-    check("recent 안 종결 배분은 받은 일에 남는다", "fbotdisp-w5" in _W["W1"]["received"])
-    check("directed — 배분자 기준, problem 먼저",
-          set(_W["LD"]["directed"]) == {"fbotdisp-w2", "fbotdisp-w3", "fbotdisp-w4", "fbotdisp-w5"}
-          and _W["LD"]["directed"][0] in ("fbotdisp-w2", "fbotdisp-w3") and _W["CH"]["directed"] == ["fbotdisp-w1"])
-    check("deferred 상태 기호 ⏸ · 문제로 치지 않는다", _plw["jobs"]["fbotdisp-w4"]["sign"] == "⏸" and not _plw["jobs"]["fbotdisp-w4"]["problem"])
 
     print("\n== prj3#Issue561·562 — 상단 상태 요약 · 흐름 필터 ==")
     _n561 = [_n488("M", state="working"), _n488("A", state="waiting_input", root="M"),
@@ -951,9 +697,8 @@ def _check_issue494():
           and pmulti.count('fm-scope idle') == 2
           and pmulti.count(" open>") == 0
           and "prj16 · fWarrange" in pmulti)
-    # prj3#Issue689 — 「휴면」 은 3일 구성 판정의 이름이 됐다. 팀장 부재(휴직·PM 없음) 계수는 이름을 갈랐다
-    check("팀장 부재 팀은 그리지 않고 계수만 한다(공석 배경 방지)",
-          "팀장 부재 1팀" in pmulti)
+    check("휴면 팀은 그리지 않고 계수만 한다(공석 배경 방지)",
+          "휴면 1팀" in pmulti)
     # prj3#Issue538: 팀의 생사는 PM핀봇 career 가 답한다. state 를 보면 안 된다 —
     #   checkout 은 cold 라 퇴근을 죽음으로 읽으면 매일 밤 전 조직이 사라진다.
     # 소스 텍스트를 훑지 않는다 — docstring 의 설명까지 잡혀 통과하는 구현도 실패한다
@@ -1033,9 +778,8 @@ def _check_issue494():
 # renderBots 는 서버가 문자열로 들고 있는 JS 라 python 단위테스트로는 닿지 않는다.
 #   Issue400·401 과 같은 방식으로 **서빙되는 소스를 그대로 뽑아** node 로 실행한다.
 #   재구현을 검사하면 회귀를 못 잡으므로 반드시 원문을 쓴다.
-JS_FNS = ("renderBotsIdle", "renderBots", "botGroupMapHref", "renderBotGroups", "botChip",
-          "botCard", "botDetail", "botNameLink",  # botNameLink: Issue535 에서 botCard 가 의존
-          "botGridCols", "fitBotGroups")  # Issue560: renderBots 가 렌더 직후 그룹 폭을 맞춘다
+JS_FNS = ("renderBotsIdle", "renderBots", "renderBotGroups", "botChip",
+          "botCard", "botDetail")
 
 JS_SHIM = r"""
 class El { constructor(id){this.id=id;this._html='';this.style={};this.textContent='';}
@@ -1045,9 +789,6 @@ class Grid extends El { addEventListener(type, fn){ LISTEN[type] = fn; } }
 const els = { 'bots-section': new El('s'), 'bots-grid': new Grid('g'), 'bots-count': new El('c') };
 const document = { getElementById: (id) => els[id] || null };
 const window = { __i18n: I18N };
-// Issue560: 트랙 해석값이 없는(=레이아웃 없는) 환경 — fitBotGroups 는 폭을 모르면 손대지 않는다.
-//   폭 계약 자체는 test_bot_layout_issue560.py 가 검증한다.
-function getComputedStyle(){ return { gridTemplateColumns: 'none' }; }
 function escapeHtml(s){ return String(s==null?'':s).replace(/[&<>"']/g,
   c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function t(key, vars){ let v = I18N[key]; if(v===undefined) return key;
@@ -1131,10 +872,7 @@ const NOW = Math.floor(Date.now()/1000);
 //   픽스처 원장 때문에 일부 봇엔 이미 last_seen 이 있다 — 사본에서 걷어내고 두
 //   건만 심어야 "경계가 가르는가" 를 단독으로 볼 수 있다.
 const ros2 = P.bots_roster.map(m => { const c = Object.assign({}, m); delete c.last_seen; return c; });
-// Issue547: roster 정렬 축이 바뀌어도 흔들리지 않게 **화면에 서는 그룹(활성 있는 루트)** 의
-//   퇴근 봇을 고른다 — 순서에 기대면 활성 0 그룹(미렌더) 소속이 뽑혀 칩이 아예 안 선다.
-const liveRoots = new Set(ros2.filter(m => m.active).map(m => m.root));
-const outs = ros2.filter(m => !m.active && liveRoots.has(m.root));
+const outs = ros2.filter(m => !m.active);
 outs[0].last_seen = NOW - 3600;          // 1시간 전 — 최근
 outs[1].last_seen = NOW - 3 * 86400;     // 3일 전 — 오래됨
 renderBots(P.bots, P.bots_total, P.bots_today, ros2);
@@ -1252,16 +990,11 @@ def _run_js_checks():
     with tempfile.TemporaryDirectory() as tmp:
         build_fixture(tmp)
         payload = server._collect_bots()
-        # Issue547 — 이 픽스처는 **루트 관계 축**(Issue402) 전용 모양이다. 홈 카드는 이제 prj 조직
-        #   (group)으로 묶이므로, 여기서는 group 을 벗겨 **구 payload 폴백 경로**(root 그룹핑)를
-        #   검증한다. group 축 자체는 test_fbot_bots.py 17) 이 python·소스로 박제한다.
-        for _m in payload["bots_roster"]:
-            _m.pop("group", None); _m.pop("group_head", None)
-        payload["__groups"] = len({m.get("group") or m["root"] for m in payload["bots_roster"]})
+        payload["__groups"] = len({m["root"] for m in payload["bots_roster"]})
         # prj3#Issue611: 화면에 서는 그룹은 **활성 봇을 가진 루트**뿐이다(사용자 지시
         #   2026-09-10). 전건 수(__groups)는 접힘·명부 검증에 계속 쓰이므로 둘 다 둔다.
         _act = {b["bot_id"] for b in payload["bots"]}
-        payload["__activeGroups"] = len({m.get("group") or m["root"] for m in payload["bots_roster"]
+        payload["__activeGroups"] = len({m["root"] for m in payload["bots_roster"]
                                          if m["bot_id"] in _act})
         ko = json.load(open(os.path.join(REPO, "data", "locales", "ko.json"),
                             encoding="utf-8"))
@@ -1270,9 +1003,6 @@ def _run_js_checks():
               + "const P = " + json.dumps(payload, ensure_ascii=False) + ";\n"
               + JS_SHIM
               + _grab_line(src, "const BOT_RECENT_SEC") + "\n"
-              # Issue546 — 퇴근 칩 상한·펼침 집합도 renderBots 가 참조한다
-              + _grab_line(src, "const BOT_CHIP_MAX") + "\n"
-              + _grab_line(src, "const openBotRest") + "\n"
               + "\n".join(_grab_js(src, n) for n in JS_FNS) + "\n"
               + JS_CHECKS.replace("BIND_SRC;", _grab_iife(src, "bindBotToggle")))
         path = os.path.join(tmp, "check.js")

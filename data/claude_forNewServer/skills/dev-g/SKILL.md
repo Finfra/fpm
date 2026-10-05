@@ -44,12 +44,12 @@ description: "모든 프로젝트에서 사용 가능한 이슈 기반 개발 �
     - 있으면: 이슈 등록 시 자동 연결 (`/issue-reg` 3-1 단계)
     - 없으면: **생성하지 않음** — plan/task는 사용자가 명시적으로 요청할 때만 생성
 3. `/issue-reg`로 이슈 등록 (진행중 상태로 전환, plan/task 파일 자동 연결)
-4. `/issue-fix`로 해결 진행 — **테스트 가능한 코드 변경은 red 먼저가 기본**(`superpowers:test-driven-development`, Issue695) · 대상 repo 에 `tdd/playlist.md` 가 있으면 Fix 전 확인·재현 목표 추가(Issue694). 둘 다 `/issue-fix-g` 1~3단계, 룰 [`tdd-playlist-rules.md`](../../_doc_arch/rules-ondemand/tdd-playlist-rules.md)
+4. `/issue-fix`로 해결 진행
 
 ### Case B: 인자가 없는 경우 (자동 모드)
 
 1. 사용자 요청 분석 후 적합한 이슈 발급 (`/issue-reg`)
-2. 이슈 내용 확인 후 `/issue-fix` 진행 (TDD 기본 적용·재생목록 확인은 Case A 4번과 동일)
+2. 이슈 내용 확인 후 `/issue-fix` 진행
 
 ## 완료 프로토콜 (CRITICAL)
 
@@ -132,7 +132,6 @@ task가 크거나 독립 서브태스크 다수일 때 superpowers 자동화 스
 
 | 상황                                    | 권장 SP 스킬                              | 호출 조건                                    |
 | :-------------------------------------- | :---------------------------------------- | :------------------------------------------- |
-| 테스트 가능한 코드 변경 (기본값)        | `superpowers:test-driven-development`     | 룰 «TDD 기본 적용» 대상일 때 — 예외는 사유 1줄 (Issue695) |
 | plan 파일 기반 다단계 실행              | `superpowers:executing-plans`             | `_doc_work/plan/{주제}_plan.md` 존재 시      |
 | 독립 서브태스크 다수 (상태 공유 없음)   | `superpowers:subagent-driven-development` | Claude Code 등 subagent 지원 환경            |
 | 다중 버그·다중 도메인 동시 수정         | `superpowers:dispatching-parallel-agents` | 세부 가이드는 `/issue-fix-g` 병렬 섹션 참조  |

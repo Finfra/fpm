@@ -23,10 +23,9 @@ cases:
       새 규약이 생기지 않는다. 게이트를 늘리는 것이 아니라 **배선**만 하는 것이다.
 
       ⚠️ 이 케이스가 PASS 하면 sh/release-check.sh 가
-      `scripts/fpm-deploy-record.sh --gate release` 로 통과 기록(yml 색인)을 남긴다.
-      출고 근거는 이 케이스를 2행으로 품은 R1 드라이버(tdd/run-release.sh)의 md 증거이고,
-      출고(G4 = R2, do_deploy 진입부)가 그 증거를 재확인한다(Issue543) — "돌았다" 를
-      사람의 기억이 아니라 파일이 답하게 하는 것이 요점이다.
+      `scripts/fpm-deploy-record.sh --gate release` 로 통과 기록을 남기고,
+      출고(G4 = do_deploy 진입부)가 그 기록을 읽어 재확인한다. 기록이 없으면
+      G4 가 막는다 — "돌았다" 를 사람의 기억이 아니라 파일이 답하게 하는 것이 요점이다.
     run: |
       s="$REPO_DIR/sh/release-check.sh"
       [ -f "$s" ] || { echo "skip(저작 머신 전용)"; exit 0; }

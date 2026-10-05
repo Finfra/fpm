@@ -8,7 +8,7 @@ date: 2026-05-19
 
 # 트리거
 
-`/fpm-board-server <subcmd>` — `<subcmd>`: `start`, `stop`, `status`, `restart`
+`/board-server <subcmd>` — `<subcmd>`: `start`, `stop`, `status`, `restart`
 
 # 동작 모델
 
@@ -60,7 +60,7 @@ port override 는 plist 의 `EnvironmentVariables` 에 `HTM_SERVER_PORT` 를 넣
 
 ```bash
 launchctl bootout gui/$UID/kr.finfra.htm-server 2>/dev/null
-echo "board-server stopped (unloaded) — 다시 켜기: /fpm-board-server start"
+echo "board-server stopped (unloaded) — 다시 켜기: /board-server start"
 ```
 
 * **`kill` 을 쓰지 않는 이유**: plist 가 `KeepAlive=true` 라 프로세스를 죽이면 `ThrottleInterval=10` 초 뒤 launchd 가 되살린다. 종전 pid 파일 `kill` 방식으로는 **hub 를 끌 수 없었다**
@@ -87,7 +87,7 @@ tail -20 /tmp/___pm/claude-htm-server/server.log 2>/dev/null
 
 # 비고
 
-* 서버 파일 시스템 경로 (`/tmp/___pm/claude-htm-server/`, Issue64 — `/tmp` 평면 흩어짐 방지. `server.py` 의 `htm-server` 이름) 는 ___pm 측 호환성을 위해 유지. 슬래시 커맨드 명칭만 `/fpm-board-server` 로 변경 (Issue37 → Issue45 에서 hub 도 동일 서버 사용으로 통합)
+* 서버 파일 시스템 경로 (`/tmp/___pm/claude-htm-server/`, Issue64 — `/tmp` 평면 흩어짐 방지. `server.py` 의 `htm-server` 이름) 는 ___pm 측 호환성을 위해 유지. 슬래시 커맨드 명칭만 `/board-server` 로 변경 (Issue37 → Issue45 에서 hub 도 동일 서버 사용으로 통합)
 * hub 스킬 Q&A 회수 (Issue45) — `..show` 트리거(구 `..hub`) + AskUserQuestion 호출 시 `fpm-ask-intercept.sh` 가 본 서버 healthz·register·answer 사용. 서버 down 시 fail-loud
 
 # 참조

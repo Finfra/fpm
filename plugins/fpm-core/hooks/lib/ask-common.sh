@@ -99,15 +99,26 @@ PYEOF
 )"
 }
 
-# ── OUT_DIR (Issue289/203) — 판정 단일 지점 lib/out-dir.sh 에 위임 (prj3#Issue802) ──
+# ── OUT_DIR (Issue289) — 활성 htm/ → legacy z_htm/ → htm/ 신규 → /tmp fallback ──
 #   입력: $1=cwd → 출력변수: OUT_DIR
-#   종전엔 «cwd 직하 → 하향 1단계 → /tmp» 만 보는 사본이라 hub-context 의 상향 탐색(Issue203/714)과
-#   같은 cwd 에서 갈렸다(프로젝트 하위 폴더에서 hub 는 루트 htm/, ask 는 /tmp/___pm). 이제 같은 함수다.
-#   자기 옆의 lib/ 에서 찾는다 — 번들(플러그인) 설치본은 ~/.claude/hooks/lib 가 없다(prj3#Issue545)
-. "${BASH_SOURCE[0]%/*}/out-dir.sh"
-. "${BASH_SOURCE[0]%/*}/hub-browser.sh"   # prj3#Issue877
+_htm_dir_of() {  # $1=프로젝트 루트 → htm 출력 폴더 경로(없으면 빈 문자열)
+  [ -d "$1/_doc_work/htm" ] && { printf '%s' "$1/_doc_work/htm"; return; }
+  [ -d "$1/_doc_work/z_htm" ] && { printf '%s' "$1/_doc_work/z_htm"; return; }
+  [ -d "$1/_doc_work" ] && { mkdir -p "$1/_doc_work/htm" && printf '%s' "$1/_doc_work/htm"; return; }
+  printf ''
+}
 ask_ctx_out_dir() {
-out_dir_resolve "$1"
+OUT_DIR=""
+if [ -n "$1" ] && [ -d "$1/_doc_work" ]; then
+  OUT_DIR=$(_htm_dir_of "$1")
+elif [ -n "$1" ]; then
+  sub_found=$(find "$1" -mindepth 2 -maxdepth 2 -type d -name "_doc_work" 2>/dev/null | head -1)
+  [ -n "$sub_found" ] && OUT_DIR=$(_htm_dir_of "$(dirname "$sub_found")")
+fi
+if [ -z "$OUT_DIR" ]; then
+  OUT_DIR="/tmp/___pm"
+  mkdir -p "$OUT_DIR"
+fi
 }
 
 # ── 서버 healthz + register (Issue45) ────────────────────────────────────
@@ -137,12 +148,24 @@ except: pass" 2>/dev/null)
 fi
 }
 
-# ── 브라우저 open 커맨드 (Issue130/173/877) — 판정은 hub-browser.sh 단일 지점 ──
-#   출력변수: _app _focus HTM_OPEN_CMD BROWSER_OPEN_OFF  (HUB_SETTING_FILE 도 여기서 정한다)
-#   browser_open: off → 폼 자동 open 생략 — 지시문의 open 줄이 URL 만 출력하도록 echo 로 대체(채팅 URL 안내)
+# ── 브라우저 open 커맨드 (Issue130/173) — default_browser + browser_focus ──
+#   출력변수: _app _focus HTM_OPEN_CMD  (HUB_SETTING_FILE 도 여기서 정한다)
 ask_ctx_browser() {
-hub_browser_resolve
-if [ "$BROWSER_OPEN_OFF" = "1" ]; then
-  HTM_OPEN_CMD="echo \"browser_open=off — 자동 open 생략, 이 URL 을 채팅에 안내:\""
+HUB_SETTING_FILE="${HUB_SETTING_FILE:-$HOME/_git/___pm/data/hub_setting.yml}"
+# default_browser: firefox(기본)/chrome/edge/safari/ego, 미지원 값은 .app 절대 경로로 해석 (ego=ego lite, Issue533)
+_db=$(grep -E '^[[:space:]]*default_browser:' "$HUB_SETTING_FILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//; s/^"//; s/"$//')
+case "$_db" in
+  ""|firefox|Firefox) _app="Firefox" ;;
+  chrome|Chrome)      _app="Google Chrome" ;;
+  edge|Edge)          _app="Microsoft Edge" ;;
+  safari|Safari)      _app="Safari" ;;
+  ego|Ego|"ego lite") _app="ego lite" ;;   # Issue533: 자동화 엔진 ego-browser 와 같은 앱. AppleScript 탭 제어 없음 → firefox 와 동일 open 폴백
+  *)                  _app="$_db" ;;
+esac
+# browser_focus: false(기본)=백그라운드 open(-g, 포커스 미탈취), true=foreground
+if grep -qE '^[[:space:]]*browser_focus:[[:space:]]*true' "$HUB_SETTING_FILE" 2>/dev/null; then
+  HTM_OPEN_CMD="open -a \"$_app\""; _focus="true"
+else
+  HTM_OPEN_CMD="bash \"$HOME/_git/___pm/plugins/fpm-core/hooks/fpm-browser-open.sh\" -a \"$_app\" -f false -r false"; _focus="false"  # Issue173: helper 경유(focus 복원). Chrome open -g self-activate 방지. -r false=폼 새 탭(Issue153)
 fi
 }

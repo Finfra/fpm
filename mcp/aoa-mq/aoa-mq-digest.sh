@@ -174,22 +174,6 @@ for f in $(ls "$QUEUE"/*.json 2>/dev/null | sort); do
   [ "$due" != "-" ] && meta="$meta · ⏰ $due"
   meta="$meta · asks $asks · $src"
   [ -n "$pend" ] && meta="$meta · ⏳ 미소비 응답: $pend"
-  # 진행 3종 (prj3#Issue643) — **상세 절에만** 싣는다. 표 칸에 넣으면 폭이 무너지고,
-  #   사람이 "그래서 뭘 하고 있나" 를 궁금해하는 시점은 이미 그 항목을 펼친 뒤다.
-  #   있는 항목만 붙는다(부재가 정상 — 마이그레이션 없음).
-  wclaim=$("$JQ" -r '.claimed_by // ""' "$f" 2>/dev/null)
-  wprog=$("$JQ" -r '.progress // ""' "$f" 2>/dev/null)
-  wres=$("$JQ" -r '.result // ""' "$f" 2>/dev/null)
-  [ -n "$wclaim" ] && meta="$meta"$'\n'"* 집은 주체: $wclaim"
-  [ -n "$wprog" ]  && meta="$meta"$'\n'"* 진행: $wprog"
-  [ -n "$wres" ]   && meta="$meta"$'\n'"* 결과: $wres"
-  # 대상·승인·대기·사람 몫 (prj3#Issue770) — 있는 항목만, jq 1회로 줄 단위로 받는다
-  wx=$("$JQ" -r '
-    (if .target then "* 대상: \(.target)" else empty end),
-    (if .approved_ts then "* 착수 승인: \(.approved_by // "-") \(.approved_ts)" else empty end),
-    (if .wait_for then "* ⏳ 대기: \(.wait_for) (재확인 \(.recheck_ts // "-"))" else empty end),
-    (if ((.needs_human // []) | length) > 0 then "* 🙋 사람 몫: \(.needs_human | join(" / "))" else empty end)' "$f" 2>/dev/null)
-  [ -n "$wx" ] && meta="$meta"$'\n'"$wx"
   details="$details### $id"$'\n'"$meta"$'\n\n'"$msg_full"$'\n\n'
 done
 

@@ -18,21 +18,16 @@
 
 input=$(cat)
 
-# prj3#Issue845 — 디스패처가 파싱해 넘겼으면(HOOK_INPUT_PARSED) 재파싱하지 않는다(python3 기동 ~19ms)
-if [ "${HOOK_INPUT_PARSED:-0}" = "1" ]; then
-  FP="${HOOK_FILE-}"; CWD="${HOOK_CWD-}"
-else
-  read -r FP CWD <<< "$(printf '%s' "$input" | python3 -c "
-  import sys, json
-  try:
-      d = json.load(sys.stdin)
-      fp = d.get('tool_input', {}).get('file_path', '')
-      cwd = d.get('cwd', '')
-      print(fp, cwd)
-  except Exception:
-      print('', '')
-  ")"
-fi
+read -r FP CWD <<< "$(printf '%s' "$input" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    fp = d.get('tool_input', {}).get('file_path', '')
+    cwd = d.get('cwd', '')
+    print(fp, cwd)
+except Exception:
+    print('', '')
+")"
 
 # Issue73/Issue80: 본문(mode a) + B모드 ask(mode b) 폼 등록. Mode D auto(mode c) 만 transient 로 제외.
 # Issue158: htm 폴더에 hub_htm_ 비표준(dotted/하이픈-날짜) 파일명 Write 감지 시 경고 — 등록 훅 미매칭 403 재발 차단.

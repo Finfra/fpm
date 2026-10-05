@@ -13,8 +13,7 @@
 # 비용 가드: ps 조회는 SessionStart 1회만. 판정 결과는 마커 파일로 캐시하고
 #   매 렌더(fpm-hub-trigger)에서는 마커 존재 여부만 본다(ps 재조회 금지).
 
-# 주입구 ZED_MARKER_DIR 는 테스트 전용(prj3#Issue912) — 운영에선 설정하지 않는다
-ZED_MARKER_DIR="${ZED_MARKER_DIR:-$HOME/.claude/.zed-sessions}"
+ZED_MARKER_DIR="$HOME/.claude/.zed-sessions"
 
 # zed_detect_by_proc <start_pid> → rc 0 = Zed 세션
 #   조상 체인을 최대 12단계 거슬러 올라가며 claude-agent-acp / Zed.app 을 찾는다.
@@ -51,9 +50,7 @@ zed_mark() {
 }
 
 # zed_is_marked <sid> → rc 0 = 캐시된 Zed 세션 (ps 조회 없음)
-#   prj3#Issue912: 외부 exec 0 — 매 AskUserQuestion 의 무음 경로(Issue845 하한 가드)에서 불린다.
-#   zed_marker_path 의 `tr -c` 와 같은 안전화를 bash 치환으로 한다(서브셸·tr 없음).
 zed_is_marked() {
   [ -n "$1" ] || return 1
-  [ -f "$ZED_MARKER_DIR/${1//[^A-Za-z0-9-]/-}" ]
+  [ -f "$(zed_marker_path "$1")" ]
 }

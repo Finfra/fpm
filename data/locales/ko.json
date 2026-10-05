@@ -236,7 +236,6 @@
   "bots.d.lease": "lease",
   "bots.leaseLeft": "{m}분 남음",
   "bots.leaseGone": "만료 — {m}분 경과 (크래시 의심)",
-  "bots.leaseIdle": "만료 — {m}분 경과 (입력 대기 유휴 · 크래시 아님)",
   "bots.career.probation": "수습",
   "bots.career.active": "정식",
   "bots.career.leave": "휴직",
@@ -244,10 +243,8 @@
   "bots.groupCount": "활성 {a}/{n}",
   "bots.mapTitle": "이 핀봇 조직의 위임 관계도 열기 (새 창)",
   "bots.mapAllTitle": "핀봇 조직도 전체 열기 (새 창)",
-  "bots.openBoardTitle": "이 핀봇을 조직도 보드에서 열기 (새 창)",
   "bots.restTitle": "퇴근 — 조직 구성원이지만 지금은 활동하지 않는다",
   "bots.restMore": "외 {n}개 (퇴근) — 전체는 조직도에서",
-  "bots.restToggle": "최근 퇴근 {r} · 퇴근 전체 {n}",
   "bots.chipCheckout": "{t} 전 퇴근",
   "bots.chipLastSeen": "마지막 실행 {t}"
 }

@@ -47,13 +47,6 @@ def user(text):
             "message": {"role": "user", "content": [{"type": "text", "text": text}]}}
 
 
-def meta_user(text):
-    """하네스가 `isMeta` 를 붙여 남기는 주입분(커맨드 파일 본문·instinct 등)."""
-    e = user(text)
-    e["isMeta"] = True
-    return e
-
-
 def assistant(*blocks):
     return {"type": "assistant", "timestamp": "2026-08-05T00:00:01Z",
             "message": {"role": "assistant", "content": list(blocks)}}
@@ -98,18 +91,6 @@ w(user("진짜 사용자 질문"))
 box.sync()
 check("실제 프롬프트는 turn 생성", box.max_seq == before + 1
       and box.blocks[-1]["text"] == "진짜 사용자 질문")
-
-# --- isMeta 주입분: 접두 목록에 없는 생김새여도 턴이 되면 안 된다 ---
-# 라이브 뷰에 «같은 메시지가 여러 번» 뜨던 실제 원인. 커맨드 1회 실행이 남기는
-# 두 엔트리 중 본문 쪽은 `>` 로 시작해 접두 화이트리스트를 그대로 통과했다.
-before = box.max_seq
-w(meta_user("> \u26a0\ufe0f **글로벌 SCAR 변경 가드** (Issue46)\n>\n> 본 커맨드는 모든 프로젝트가 공유."),
-  meta_user("<!-- 승격 이력 -->\n# Issue.md 편집\u2013검증\n\n## Action\n`Issue.md` 를 고치면 같은 응답에서 확인한다"))
-box.sync()
-check("isMeta 주입분은 접두가 없어도 turn 미생성", box.max_seq == before)
-w(user("> 인용으로 시작하는 진짜 프롬프트"))
-box.sync()
-check("isMeta 없는 `>` 프롬프트는 그대로 turn 생성", box.max_seq == before + 1)
 
 # --- sidechain(subagent) 제외 ---
 w({"type": "assistant", "isSidechain": True, "timestamp": "t",
@@ -246,35 +227,6 @@ check("폼 판정: answered 는 후보 제외 (1회 소비 = first-wins)",
 for e in ents:
     e["answered"] = True
 check("폼 판정: 모두 응답됨 → None", _pick_pending(ents, "/p", now) is None)
-
-# --- Issue569_1: 청크 상한보다 큰 transcript 는 파일이 멈춰 있어도 끝까지 읽힌다 ---
-#   hub 재기동·라이브 뷰 첫 오픈에서 4MB 초과 transcript 가 첫 청크만 읽힌 채 «따라잡음» 으로
-#   표시돼, 세션이 유휴면 뒷부분(문서 블록 포함)이 영영 안 나왔다(2026-09-28 fWarrange 실측:
-#   4,395,167 B · 151 → 130 블록 · 문서 블록 소실).
-BIG = os.path.join(TMP, "big.jsonl")
-with open(BIG, "w", encoding="utf-8") as f:
-    for i in range(40):
-        f.write(json.dumps(assistant({"type": "text", "text": f"블록{i:02d} " + "x" * 100}),
-                           ensure_ascii=False) + "\n")
-    f.write(json.dumps(assistant({"type": "tool_use", "name": "Write", "input": {
-        "file_path": "/p/_doc_work/htm/hub_htm_20260928_130646_a_last.md", "content": "..."}}),
-        ensure_ascii=False) + "\n")
-_saved_chunk = mailbox.MAX_READ_CHUNK
-mailbox.MAX_READ_CHUNK = 1024   # 한 번에 몇 줄만 읽히게
-try:
-    big = mailbox.SessionMailbox(("hB", "sB"), BIG)
-    polls = 0
-    while big.changed() and polls < 50:   # server poll 과 같은 조건 — changed() 일 때만 sync
-        big.sync()
-        polls += 1
-    kinds_b = [(b["kind"], b["text"]) for b in big.blocks]
-    check("청크 상한 초과 transcript 도 파일 무변경 상태에서 끝까지 적재",
-          big.offset == os.path.getsize(BIG))
-    check("마지막 문서 블록까지 보인다",
-          ("doc", "/p/_doc_work/htm/hub_htm_20260928_130646_a_last.md") in kinds_b)
-    check("다 읽은 뒤에는 changed() False (poll 폭주 없음)", big.changed() is False)
-finally:
-    mailbox.MAX_READ_CHUNK = _saved_chunk
 
 print()
 print(f"PASS={PASS} FAIL={FAIL}")

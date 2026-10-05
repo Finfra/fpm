@@ -106,12 +106,6 @@ def tracked_set():
         return None
 
 TRACKED = tracked_set()
-# Issue561 — 호출자가 «방금 만든, 아직 미추적인» 번들 파일을 명시로 넘기면(번들 상대 경로, 줄 구분)
-#   추적 집합에 더한다. scripts/fpm-bundle-sync.sh 가 새로 반입한 파일이 매니페스트에서 빠져
-#   커밋 게이트가 ADDED 로 거부하던 것 — 공유 git 인덱스를 조작하지 않고 푸는 경로다.
-_EXTRA = {n.strip() for n in os.environ.get('FPM_MANIFEST_EXTRA', '').split('\n') if n.strip()}
-if TRACKED is not None and _EXTRA:
-    TRACKED |= _EXTRA
 
 def walk():
     for root, dirs, files in os.walk(bundle):

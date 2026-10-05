@@ -7,17 +7,13 @@ depts:
   - id: dev
     label: 개발부서
     seats:
-      - { id: dev-architect-1, role: architect, reports_to: ops-lead-1 }
-      - { id: dev-planner-1,   role: planner, reports_to: ops-lead-1 }
-      # 구현 자리 (prj3#Issue757 T3) — 없으면 팀장이 배분할 곳이 없어 직접 수행한다(solo «자리 없음» 56건).
-      #   최소셋 원칙의 예외가 아니다: 구현은 모든 prj 가 쓰는 일이라 공석이 곧 결원 신호다
-      - { id: dev-developer-1, role: developer, reports_to: ops-lead-1 }
+      - { id: dev-architect-1, role: architect, reports_to: ops-taskmgr-1 }
+      - { id: dev-planner-1,   role: planner, reports_to: ops-taskmgr-1 }
   - id: review
     label: 리뷰부서
     seats:
-      - { id: rev-qa-1, role: qa, reports_to: ops-lead-1 }
+      - { id: rev-qa-1, role: qa, reports_to: ops-taskmgr-1 }
   - id: ops
     label: 운영부서
     seats:
-      - { id: ops-lead-1, role: lead, reports_to: hq/hq-lead-1 }
-      - { id: ops-release-1,   role: release, reports_to: ops-lead-1 }
+      - { id: ops-taskmgr-1, role: taskmgr, reports_to: hq/hq-taskmgr-1 }

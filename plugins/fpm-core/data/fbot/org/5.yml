@@ -1,0 +1,8 @@
+# 조직 인스턴스 — prj5 (prj3#Issue538)
+#
+# 점진 생성분(2026-09-05): 최근 3일 내 활동이 있는 프로젝트부터 세웠다. 전수 생성하면
+# 조직도가 공석 배경이 되어 공석이 결원 신호로 기능하지 못한다(§조직 생명주기).
+prj: 5
+title: common
+machine: jm4
+extends: _template/general.yml

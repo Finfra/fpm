@@ -31,10 +31,6 @@ set -uo pipefail
 # ${BASH_SOURCE[0]:-$0}: bash 실행 시 BASH_SOURCE, zsh/sh source 시 미설정이라 $0 fallback
 # (set -u 하에서 미설정 참조 시 'parameter not set' crash 방지). 본 스크립트는 `bash` 실행 전용.
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
-# claude CLI 해석도 한 곳에서 한다(Issue564) — `command -v` 만으로는 비대화 셸에서
-# `~/.local/bin/claude` 를 못 보고 SCAR·MCP 를 «셸-only» 로 오판해 건너뛴다(jma 실측).
-# shellcheck source=sh/fpm-claude-bin.sh
-source "$REPO_DIR/sh/fpm-claude-bin.sh"
 
 # ── 아티팩트 SSOT 로드 (install/check 공통) ───────────────────
 MANIFEST="$REPO_DIR/data/install_manifest.sh"
@@ -203,10 +199,10 @@ fi
 # ── [SCAR] 7~9 ────────────────────────────────────────────────
 if [[ "$CHECK_SCAR" -eq 1 ]]; then
     sec "── SCAR (fpm-core 플러그인) ──"
-    if ! fpm_resolve_claude; then
+    if ! command -v claude >/dev/null 2>&1; then
         warn "claude CLI 미발견 → SCAR 미설치(셸-only 정상 시나리오). 점검 생략"
     else
-        ok "claude CLI 존재: $FPM_CLAUDE_BIN"
+        ok "claude CLI 존재: $(command -v claude)"
         # 8) marketplace
         if claude plugin marketplace list 2>/dev/null | grep -qF "$FPM_MKT_NAME"; then
             ok "marketplace 등록: $FPM_MKT_NAME"

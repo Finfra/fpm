@@ -426,9 +426,6 @@ def t_learn_index(a):
             "VALUES(?, 'learn', ?, 'pending', ?, NULL, 0, NULL, NULL, NULL, ?)",
             (jid, kind, a.get("payload"), S.now()),
         )
-        # 종결 통지 구독 (prj3#Issue938) — 세션이 요청한 잡만 UPS 통지(notify.py)로 알린다. 잡 INSERT 와 같은 트랜잭션:
-        #   잡만 있고 구독이 없으면 종결이 조용히 통지에서 빠진다. 스케줄러(`worker.py enqueue`)의 잡은 구독하지 않는다.
-        S.notify_subscribe(c, jid)
         c.commit()
     return ("✅ enqueue %s (kind=%s, status=pending)\n"
             "⚠️ 실행 대기 — 상주 데몬이 없다. `python3 mcp/aoa-memory/worker.py run` 을 돌려야 "
@@ -473,11 +470,6 @@ def reply(rid, result=None, error=None):
     if error:
         m["error"] = error
     else:
-        # prj1#Issue600 — 2026-07-28 은 tools/list 를 포함한 모든 result 에 resultType 을 요구한다.
-        # 메서드별로 넣으면 한 곳이 빠진다(Issue484 가 tools/call 에만 넣어 «tools fetch failed») → 판정 단일 지점.
-        # 이 서버는 부분 응답을 만들지 않으므로 항상 complete.
-        if isinstance(result, dict):
-            result.setdefault("resultType", "complete")
         m["result"] = result
     sys.stdout.write(json.dumps(m, ensure_ascii=False) + "\n")
     sys.stdout.flush()

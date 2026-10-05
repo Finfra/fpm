@@ -61,7 +61,7 @@ bash "$HOME/_git/___pm/sh/fpm-git-status.sh" $ARGUMENTS
 | :-- | :--- | :--- |
 | 1 | `~/_git/___pm` | `~/_git/fpm` |
 | 3 | `~/.claude` | `~/.claude` (동일) |
-| 8 | `~/_git/__all/fpm` | (없음) |
+| 7 | `~/_git/__all/fpm` | (없음) |
 | 55 | `~/Library/_nowage_lib/DeviceManagement` | `~/_git/__all/DeviceManagement` |
 
 `1@fg1` 은 **fg1 의 1번(=fpm)** 이지 "jm4 의 1번을 fg1 에서 찾기"가 아니다. fg1 에서 `cdf 1` 이 가는 곳과 같다.

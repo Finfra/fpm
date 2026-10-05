@@ -78,17 +78,6 @@ def suite(name, server, env, tool):
         {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": tool, "arguments": {}}},
     ], env)
     call = res[-1].get("result", {}) if res else {}
-    # prj1#Issue600 — 2026-07-28 클라이언트는 tools/list 에도 resultType 을 요구한다(없으면 «tools fetch failed»).
-    # 모든 result 응답이 대상이다 — 메서드별로 따로 검사해 한 곳만 고친 회귀를 잡는다.
-    res = rpc(server, [
-        {"jsonrpc": "2.0", "id": 1, "method": "server/discover"},
-        {"jsonrpc": "2.0", "id": 2, "method": "initialize", "params": {"protocolVersion": "2024-11-05"}},
-        {"jsonrpc": "2.0", "id": 3, "method": "tools/list"},
-    ], env)
-    for r in res:
-        check(r.get("result", {}).get("resultType") == "complete",
-              f"id={r.get('id')} result.resultType={r.get('result', {}).get('resultType')}")
-
     check(call.get("resultType") == "complete", f"{tool} resultType={call.get('resultType')}")
     text = (call.get("content") or [{}])[0].get("text", "")
     check(bool(text) and not text.startswith("❌"),

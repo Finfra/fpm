@@ -43,10 +43,6 @@ err()   { printf '\033[31m[fpm]\033[0m %s\n' "$1" >&2; }
 # MS Store 스텁을 실물로 통과시킨다. 후보·판정 계약은 sh/fbot-python.sh 한 곳에만 둔다.
 # shellcheck source=sh/fbot-python.sh
 source "$REPO_DIR/sh/fbot-python.sh"
-# claude CLI 해석도 한 곳에서 한다(Issue564) — `command -v` 만으로는 비대화 셸에서
-# `~/.local/bin/claude` 를 못 보고 SCAR·MCP 를 «셸-only» 로 오판해 건너뛴다(jma 실측).
-# shellcheck source=sh/fpm-claude-bin.sh
-source "$REPO_DIR/sh/fpm-claude-bin.sh"
 
 # ── 아티팩트 SSOT 로드 (install/check 공통) ───────────────────
 MANIFEST="$REPO_DIR/data/install_manifest.sh"
@@ -90,7 +86,7 @@ FPM_PLUGIN="${FPM_PLUGIN_NAME}@${FPM_MKT_NAME}"
 install_scar() {
     # claude CLI 부재 = 셸-only 유저 정상 시나리오 → benign skip(SCAR_SKIPPED), exit 0 유지.
     # 네트워크·권한 등 실제 설치 실패만 SCAR_FAILED(exit 2)로 구분.
-    if ! fpm_resolve_claude; then
+    if ! command -v claude >/dev/null 2>&1; then
         warn "──────────────────────────────────────────────"
         warn "ℹ️  'claude' CLI 미발견 → fpm-core 플러그인(SCAR) 설치 건너뜀."
         warn "   (셸 설치는 정상 완료. SCAR 가 필요하면 Claude Code 설치 후 재실행)"
@@ -192,7 +188,7 @@ install_mcp() {
         warn "mcp/ 디렉토리 없음: $mcp_dir — MCP 배선 건너뜀"
         MCP_SKIPPED=1; return 0
     fi
-    if ! fpm_resolve_claude; then
+    if ! command -v claude >/dev/null 2>&1; then
         warn "ℹ️  'claude' CLI 미발견 → MCP 배선 건너뜀 (Claude Code 설치 후 재실행)"
         MCP_SKIPPED=1; return 0
     fi
@@ -496,8 +492,6 @@ ensure_projects_map() {
 ensure_projects_map
 
 # ── 5. 안내 ──────────────────────────────────────────────────
-# ⚠️ $REPO_DIR 전개 때문에 따옴표 없는 heredoc 이다 — 본문의 백틱은 **명령으로 실행**된다.
-#    코드 표기는 \` 로 이스케이프한다(Issue567: 설치할 때마다 cwd 의 server.py 를 실행했다)
 cat <<EOF
 
 ────────────────────────────────────────────
@@ -513,7 +507,7 @@ cat <<EOF
 [선택] hub 서버 (HTML 렌더 + 대시보드, Python 3):
   cd "$REPO_DIR" && python3 services/hub/server.py
   ⚠️ 반드시 **repo 루트에서 상대경로로** 띄운다 (Issue437). services/hub 안에서
-     \`python3 server.py\` 로 띄우면 프로세스 명령줄에 경로가 남지 않아, 재기동·정리가
+     `python3 server.py` 로 띄우면 프로세스 명령줄에 경로가 남지 않아, 재기동·정리가
      그 인스턴스를 **찾지 못한다**(Windows 에서 실제로 그렇게 떠 있었다).
   → http://127.0.0.1:9876/hub
 

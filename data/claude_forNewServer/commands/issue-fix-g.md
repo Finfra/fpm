@@ -29,30 +29,20 @@ grep -n "^#\{2,3\} Issue{번호}:" Issue.md
 * **`/dev` 경유 호출도 예외 없음** — 비대화 자동 진행 원칙은 "모호한 선택을 기본값으로 결정"하는 것이지 착수 금지를 우회하는 근거가 아님. 여기서 사이클을 멈추고 승격 필요를 보고할 것
 * **본 가드가 `(!)` 오용을 잡는 실질적 강제 지점**임. 등록 측 가드(`issue-reg-g` 0-1)를 통과해 잘못 붙은 마커도 여기서 한 번 더 걸림
 * 마커가 **없으면** 무조건 통과 — 아래 1단계로 진행
-* 설계 근거: `_doc_arch/lightweight-issue.md` 「의미」 2항(fix 게이트) · `rules/issue-g.md` 규칙2 예외 조항
+* 설계 근거: `_doc_arch/lightweight-issue-design.md` 「의미」 2항(fix 게이트) · `rules/issue-g.md` 규칙2 예외 조항
 
 ### 1. 문제 분석
 
 - 이슈 원인 분석
 - 관련 파일 파악 (프로젝트 구조에 맞게)
 - 플랫폼별 이슈 카테고리 분류 (각 `-m`/`-w` 커맨드 참조)
-- **TDD 룰 로드** (Issue694·695): [`tdd-playlist-rules.md`](../_doc_arch/rules-ondemand/tdd-playlist-rules.md) 를 **Read** 한다 — 재생목록 유무와 무관하게 «TDD 기본 적용» 판정(2단계)에 쓴다
-- **TDD 재생목록 확인** (Issue694): 작업 대상 repo 에 `tdd/playlist.md` 가 있으면 목록을 먼저 본다 — 이번 변경이 건드리는 행과 그 실행 열을 정한다. 없으면 건너뜀(새로 만들지 않음)
-- **실행 머신 판정** (Issue771): `bash ~/.claude/sh/fapp-test-host.sh for "$(git rev-parse --show-toplevel)"` — `jma`·`jm4` 면 fApp 이다. red·green 을 그 머신에서 보고(절차 [`/issue-closer-m`](issue-closer-m.md) «TDD 실행 머신»), 종결 게이트도 같은 지점을 읽는다
 
 ### 2. 구현
 
-- **TDD 기본 적용** (Issue695): 테스트로 검증할 수 있는 코드 변경이면 `superpowers:test-driven-development` 를 호출하고 **실패하는 테스트를 먼저** 쓴다 — red 를 확인한 뒤 구현한다. 적용 대상·예외 표는 [`tdd-playlist-rules.md`](../_doc_arch/rules-ondemand/tdd-playlist-rules.md) «TDD 기본 적용» 이 SSOT. 예외(문서·설정·시각 UI·spike)면 `* 구현 명세` 에 *"TDD 해당 없음: {사유}"* 한 줄. **재생목록 frontmatter 에 `tdd_mode: tiered` 인 시범 repo** 는 같은 룰의 «중요도별 강도» 표를 따른다(Issue779_10)
-- **버그 수정이면 재현 목표 먼저**: 재생목록이 있으면 고칠 버그의 재현 목표를 한 줄 추가한 뒤 재현 테스트(red)를 쓴다. 재생목록 = **무엇을**, `superpowers:test-driven-development` = **어떻게**
-- **기능 추가면 성질 행 추가** (Issue694): 재생목록이 있고 새 성질이 검증 가능하면 행을 추가한다. 검증 불가능한 성질은 적지 않는다
-- 코드 수정 (green 까지 → refactor)
-- **구현 루프 외주** (prj3#Issue779_9): 📗·📙 이슈이고 테스트 러너가 있으면 red 테스트를 쓴 뒤 **구현·green 반복은 [codex-patcher](../agents/codex-patcher.md) 에 맡긴다**(격리 worktree → patch). 메인은 patch 와 red→green 증거만 검토해 적용한다 — 편집·실행 반복이 codex 쿼터로 간다. 📕·출고 직전·2원 구조 변경은 직접 진행. 파일 3개 이상 기계적 변경(이름·경로·형식)은 [codex-migrator](../agents/codex-migrator.md). 표: [outer-agent.md](../_doc_arch/outer-agent.md) §11
+- 코드 수정
 - 커밋 메시지: `Fix: Issue[번호] [제목]`
 
 ### 3. 검증
-
-- **red→green 증거** (Issue695): TDD 를 적용했으면 red 실행 결과와 green 실행 결과를 `* 구현 명세` 에 한 줄로 남긴다 — 형식은 룰 «red→green 증거»
-- **재생목록 행 실행** (Issue694): 재생목록이 있으면 1단계에서 정한 행의 실행 열(또는 `tdd/run.sh` 등 러너)을 돌린다
 
 > 플랫폼별 검증 방법은 각 `-m`/`-w` 커맨드에서 정의.
 

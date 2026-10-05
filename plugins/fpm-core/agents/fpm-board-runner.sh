@@ -14,10 +14,6 @@
 #   TOPIC          dashboard 주제 식별자
 #   WIN_NAME       tmux window name (e.g. _scenario1)
 #
-# 환경변수 (선택 — 격리, Issue727):
-#   BOARD_POLICY   정책 파일 경로 (기본: $FPM_BASE/data/board_policy.yml)
-#   BOARD_HUB_URL  register-doc 대상 hub (기본: http://127.0.0.1:9876, 빈 문자열이면 등록 생략)
-#
 # 동작:
 #   1) data 파일에 pid 기록 + status='running'
 #   2) trap TERM/INT/HUP → status='stopped' 마킹 후 cleanup (worker_pid 종료) + exit
@@ -43,7 +39,6 @@ _bp() {  # _bp <key> <default>
 }
 
 INTERVAL="${INTERVAL:-$(_bp interval_default 5)}"
-BOARD_HUB_URL="${BOARD_HUB_URL-http://127.0.0.1:9876}"
 : "${DATA_FILE:?DATA_FILE required}"
 : "${TOPIC:?TOPIC required}"
 : "${WIN_NAME:?WIN_NAME required}"
@@ -84,21 +79,10 @@ mark_status() {
   write_data "$data"
 }
 
-# worker_pid 정규화 (Issue142·Issue727) — 양의 정수만 worker 로 본다. 키 부재·null·'None'
-#   문자열·빈값·비정수는 전부 "worker 없음"(infinite heartbeat). 비정수를 kill -0 에 넘기면
-#   실패 = 사망으로 오판해 첫 iter 후 status=done 으로 heartbeat 를 파괴한다.
-#   stdin: data JSON → stdout: PID 또는 빈 문자열
-worker_pid_of() {
-  python3 -c "import json,sys
-v = json.load(sys.stdin).get('worker_pid')
-s = '' if v is None or isinstance(v, bool) else str(v).strip()
-print(s if s.isdigit() and int(s) > 0 else '')" 2>/dev/null || true
-}
-
 # worker_pid 종료
 kill_worker() {
   local wpid
-  wpid=$(read_data | worker_pid_of)
+  wpid=$(read_data | python3 -c "import json,sys; print(json.load(sys.stdin).get('worker_pid') or '')" 2>/dev/null || echo "")
   if [[ -n "$wpid" ]] && kill -0 "$wpid" 2>/dev/null; then
     kill -TERM "$wpid" 2>/dev/null || true
     sleep 0.5
@@ -124,10 +108,9 @@ refresh_signal() {
 # 서버 down 시 무시 (fail-soft) — dashboard 본연 동작은 서버와 무관.
 register_dash() {
   local payload
-  [[ -n "$BOARD_HUB_URL" ]] || return 0
   payload=$(python3 -c "import json,sys; print(json.dumps({'type':'dash','path':sys.argv[1],'cwd':sys.argv[2],'title':sys.argv[3]}))" \
     "$DATA_FILE" "$PWD" "$TOPIC" 2>/dev/null) || return 0
-  curl -s --max-time 3 -X POST "$BOARD_HUB_URL/register-doc" \
+  curl -s --max-time 3 -X POST http://127.0.0.1:9876/register-doc \
     -H 'Content-Type: application/json' -d "$payload" >/dev/null 2>&1 || true
 }
 
@@ -135,7 +118,7 @@ trap cleanup TERM INT HUP
 trap refresh_signal USR1
 
 # Startup: PID 기록
-echo "[runner] PID=$MY_PID start at $(date -Iseconds) interval=$INTERVAL"
+echo "[runner] PID=$MY_PID start at $(date -Iseconds)"
 {
   data=$(read_data)
   data=$(echo "$data" | python3 -c "import json,sys; d=json.load(sys.stdin); d['pid']=$MY_PID; d['status']='running'; print(json.dumps(d))")
@@ -189,7 +172,7 @@ PYTHON
   write_data "$data"
 
   # Check worker completion
-  wpid=$(echo "$data" | worker_pid_of)
+  wpid=$(echo "$data" | python3 -c "import json,sys; print(json.load(sys.stdin).get('worker_pid') or '')" 2>/dev/null || echo "")
   if [[ -n "$wpid" ]] && ! kill -0 "$wpid" 2>/dev/null; then
     mark_status done
     exit 0

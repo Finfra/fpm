@@ -48,30 +48,12 @@ set -uo pipefail
 #   즉 한 세션에 봇이 여럿 결속될 수 있고, 마커는 마지막 1건만 담는다 — 마커 내용을 믿으면
 #   메인 세션의 도구 호출이 엉뚱한 봇의 lease 를 갱신하고, 정작 그 봇은 reap 된다.
 #   그래서 **내용을 읽지 않고** session_id 를 그대로 넘긴다. "누구인가" 는 DB 가 답한다.
-#
-# 🔧 Issue693_1 — **게이트가 하청 슬롯을 못 봤다.** Issue616 이 Agent 하청의 마커를
-#   `sid-<SID>.agent-<bot>.id` 로 갈랐는데(부모 슬롯 덮어쓰기 방지) 이 게이트는 세션 슬롯
-#   `sid-<SID>.id` 만 봤다. 그래서 일반 세션이 띄운 Agent 봇은 결속·출근 뒤 heartbeat 가
-#   **한 번도** 돌지 않았다(prj42#Issue415 실측 2회 «lease 미갱신»). 두 슬롯 중 하나라도
-#   있으면 결속된 세션이다 — 글롭은 bash 내장이라 여전히 fork 0회다.
-#   봇 세션(FBOT_ID)이 하청을 거느린 경우도 같다 — 종전엔 FBOT_ID 한 명만 갱신했다.
-#   그때는 `--bot-id` 와 `--session-id` 를 **함께** 넘긴다(state.py 가 합집합으로 갱신).
 _SID="${CLAUDE_CODE_SESSION_ID:-}"
-_HD="$HOME/.claude/.fbot-handoff"
-_BOUND=0
-if [ -n "$_SID" ]; then
-  if [ -f "$_HD/sid-$_SID.id" ]; then
-    _BOUND=1
-  else
-    for _f in "$_HD/sid-$_SID".agent-*.id; do [ -e "$_f" ] && _BOUND=1; break; done
-  fi
-fi
-_EXTRA=()
 if [ -n "${FBOT_ID:-}" ]; then
   _TARGET_FLAG="--bot-id"; _TARGET_VAL="$FBOT_ID"; _STAMP_KEY="$FBOT_ID"
-  [ "$_BOUND" = 1 ] && _EXTRA=(--session-id "$_SID")
 else
-  [ "$_BOUND" = 1 ] || exit 0
+  [ -n "$_SID" ] || exit 0
+  [ -f "$HOME/.claude/.fbot-handoff/sid-$_SID.id" ] || exit 0
   _TARGET_FLAG="--session-id"; _TARGET_VAL="$_SID"; _STAMP_KEY="sid-$_SID"
 fi
 
@@ -100,5 +82,5 @@ if [ -f "$STAMP" ]; then
 fi
 
 mkdir -p "$STAMP_DIR" 2>/dev/null && : > "$STAMP"
-python3 "$STATE_PY" heartbeat "$_TARGET_FLAG" "$_TARGET_VAL" ${_EXTRA[@]+"${_EXTRA[@]}"} >/dev/null 2>&1 || true
+python3 "$STATE_PY" heartbeat "$_TARGET_FLAG" "$_TARGET_VAL" >/dev/null 2>&1 || true
 exit 0

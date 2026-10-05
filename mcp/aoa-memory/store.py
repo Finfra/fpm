@@ -152,39 +152,6 @@ def now() -> int:
     return int(time.time())
 
 
-# --- 배치 잡 통지·GC 계약 (prj3#Issue938) ------------------------------------
-# 스키마와 짝이라 여기 둔다 — notify.py(통지)·worker.py(GC)·server.py(구독)가 **같은 kind 집합**을 봐야 한다.
-#   각자 목록을 들면 통지는 A 를 보고 GC 는 B 를 지워 갈라진다(Issue938 의 뿌리 — 통지·GC 판정이 한쪽만 갱신).
-#
-# BATCH_JOB_KINDS — worker 가 **소유**하는 배치 잡 kind(`learn_index` 가 큐에 넣는 것 = `worker.run_jobs` 가 소비하는 것).
-#   ⚠️ job 테이블은 worker 전용이 아니다 — fbot 원장(`fbot_*` — 영구, fbot-arch §로깅 규약 «행 삭제 금지»)·selection 의
-#   `sel_event`(롤업 뒤 삭제 — hooks/lib/selection.py)가 같은 테이블을 쓴다. 그래서 통지도 GC 도 **허용 목록**(이 튜플)
-#   안의 kind 만 본다. 차단 목록으로 쓰면 새 kind 가 생길 때마다 원장이 조용히 지워지거나 통지로 샌다.
-BATCH_JOB_KINDS = ("consolidation", "index")
-
-# 통지 구독 — «이 잡이 끝나면 다음 프롬프트에 알려라». `learn_index`(세션이 요청한 잡)만 남긴다.
-#   스케줄러(fbot-tick 의 `worker.py enqueue`)가 30분마다 만드는 consolidation 은 구독이 없다 — 내부 정리 잡이라
-#   종결을 알릴 상대가 없다. **소비형**이다(전달하면 지운다) — 전달 표식에 TTL 을 두면 TTL 이 만료된 뒤 같은 잡이
-#   재통지된다(종전 결함 ③). 구독 행에는 TTL 이 있지만 방향이 반대다: 만료는 «더는 알릴 필요 없다» 일 뿐 재통지가 아니다.
-#   TTL ≥ job 보존 기간(policy `job_retention_days` 기본 30일) — 보존 중인 잡의 구독이 먼저 죽지 않게 한다.
-NOTIFY_WANT_NS = "notify-want"
-NOTIFY_WANT_TTL_SEC = 30 * 24 * 3600
-LEGACY_NOTIFY_NS = "notify"          # 종전 «전달 표식» 네임스페이스 — 퇴역. GC 가 정리한다
-
-
-def notify_subscribe(con: sqlite3.Connection, job_id: str) -> None:
-    """잡 종결 통지를 구독한다. ⚠️ 커밋하지 않는다 — 잡 INSERT 와 **같은 트랜잭션**에서 부르라는 뜻이다
-    (잡만 있고 구독이 없으면 조용히 통지가 빠진다)."""
-    t = now()
-    con.execute(
-        "INSERT INTO kv(ns, key, value, expires_at, updated_at, updated_by) "
-        "VALUES(?, ?, 'pending', ?, ?, 'learn_index') "
-        "ON CONFLICT(ns, key) DO UPDATE SET value='pending', expires_at=excluded.expires_at, "
-        "updated_at=excluded.updated_at",
-        (NOTIFY_WANT_NS, job_id, t + NOTIFY_WANT_TTL_SEC, t),
-    )
-
-
 def _budget_keys() -> tuple:
     """예산 테이블의 (일별 키, 월별 키) — UTC 기준 (month_bucket 과 동일 축)."""
     import datetime
