@@ -106,3 +106,20 @@ def issue_completed_in(cwd: str, issue: str):
     except OSError:
         return None                      # 부재·권한 — **미완료로 단정하지 않는다**(부재와 미감지를 구별)
     return completed_in_lines(lines, issue)
+
+
+def issue_done_unmarked(cwd: str, issue: str):
+    """``done_unmarked`` 의 파일 판독판 — 3-state (prj3#Issue968).
+
+    True=완료 섹션에 있으나 완료 표기 누락 · False=그 외 · None=**판독 불가**(``issue_completed_in`` 과 같은 규칙).
+    완료 판정 regex 는 확장하지 않는다(Issue944) — 감지·통지용이다.
+    """
+    if not cwd or not issue:
+        return None
+    path = os.path.join(os.path.expanduser(cwd), "Issue.md")
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().split("\n")
+    except OSError:
+        return None
+    return done_unmarked(lines, issue)

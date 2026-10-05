@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: 2e5b7f570740c058644ea0f2adb5cb62d6082916e96ccb74f93450fa179c4151
+source_sha: cb96d673a16cec78ad7ce7b765efc1d2f03d8e8fafd173106f9fb8c97a198bc6
 ---
 
 # 안내
@@ -27,6 +27,44 @@ source_sha: 2e5b7f570740c058644ea0f2adb5cb62d6082916e96ccb74f93450fa179c4151
 직접 편집하지 말 것 — `scripts/fpm-issue-digest.sh` 가 덮어쓴다.
 
 # 이슈 근거
+
+## Issue604: v0.8.4 재출고 — prj1·prj3 동반 출고 + 3 OS(host·host·jpc1) 배포·hub 점검·네이티브 TDD·종합 리포트
+* 목적: 15:20 v0.8.4 출고가 prj1 단독으로 나가 prj3(release/0.8.4)와 라인이 갈라졌다. 사용자 결정(2026-10-05 *"0.8.5로 브랜치가 올라갔다 … prj3과 같이 가야 하고 0.8.4는 아직 deploy도 되지 않았음"* → «재출고» 선택)으로 v0.8.4 를 prj1·prj3 동반으로 다시 내보내고, 소비자 3 OS 를 실측 증거로 판정한다
+* depends: Issue605, Issue606
+* 구현 명세:
+    - Issue605·606 수정(TDD red 먼저) → R1(`tdd/run-release.sh --version 0.8.4`) → main merge → 원격 태그·GitHub Release 정리 → `deploy 0.8.4 --with-marketplace`
+    - prj3 동반: prj3 release/0.8.4 → main merge · 태그 v0.8.4 · 다음 라인은 prj1·prj3 동시 개시
+    - 소비자: host·host·jpc1 갱신 + hub 재기동 + ego-browser 점검 + 네이티브 TDD(run-remote laptop·gpu-server, GitHub 태그 clean clone 3 OS)
+    - 산출: 종합 판단 리포트 `_doc_work/report/` (증거 host·host·jpc1) · 재사용 plan · deploy 절차 갱신
+
+## Issue605: prj20 publish 무결성 매니페스트가 sanitize 이전 바이트로 생성됨 — 마켓 설치 소비자 `check.sh` 전원 FAIL
+* 목적: 소비자는 prj20 마켓에서 fpm-core 를 받는데 그 안의 `.fpm-integrity.json` 이 sanitize **전** 정본 바이트로 만들어져, sanitize 가 바꾼 파일(8건)이 항상 «변조/구버전» 으로 판정된다. 진짜 변조와 구분이 안 되어 무결성 게이트가 무력화된다
+* 구현 명세:
+    - `do_publish`: staging sanitize **뒤** staging 트리에서 매니페스트를 재생성해 vendor 한다(정본 불변)
+    - 검증(TDD red 먼저): `tdd/cases/deploy.yml` 에 publish 경로 순서 검사(sanitize < 매니페스트 재생성 < rsync vendor) — 현 코드에서 FAIL 확인 후 수정
+
+## Issue606: hub `/boards` 가 Windows 에서 크래시 — `os.uname()` 부재로 대시보드가 `Loading…` 에서 멈춤
+* 목적: Windows(Git Bash·네이티브 Python) 소비자의 hub 메인 화면이 영구 로딩 상태다. `_collect_bots()` 의 `os.uname().nodename` 이 Windows Python 에 없어 `/boards` 요청마다 AttributeError → 연결 끊김
+* 구현 명세:
+    - `platform.node()`(또는 `socket.gethostname()`)로 교체 — 번들 내 `os.uname()` 호출은 이 1곳
+    - 검증(TDD red 먼저): `os.uname` 을 제거한 상태에서 `_collect_bots()` 호출 단위 테스트 → 수정 전 AttributeError, 수정 후 `bots_scope` 문자열 · `sh/check.sh` 크로스플랫폼 항목(15)에 `os.uname(` 정적 검출 추가
+
+## Issue601: 릴리스 라인 마감을 출고 절차에 배선 — deploy 가 소스 태그·GitHub Release·다음 라인까지 (해결: 2026-10-05, commit: <commit>) ✅
+* 목적: v0.8.3 출고 뒤 `release/0.8.3` 이 닫히지 않아 539커밋이 출고된 이름 아래 쌓이고, 출고 절차가 `deploy minor` 로 0.9.0 을 계산한 사고를 절차 수준에서 재발 방지한다
+* depends: prj3#Issue967
+* 구현 명세:
+    - `fpm-sync.sh deploy` 마감 단계: 미러 태그에 더해 **소스(prj1) 태그** `v$NEW` · `--push` 시 **GitHub Release** `gh release create v$NEW -R Finfra/fpm --verify-tag` · 완료 로그에 «다음 라인 `release/<다음>` 을 prj1·prj3 에 열 것» 안내
+    - [fpm-gitflow.md](_doc_arch/fpm-gitflow.md) R1 정리 — 규칙은 `release/{X.Y}` ↔ `{X.Y}.0` 인데 실태는 `release/0.8.0`·`0.8.1`·`0.8.3`·`0.8.4`(X.Y.Z). 한쪽으로 확정(가드는 둘 다 수용)
+    - «출고» 절의 `next-version minor`·`deploy minor` 고정 해소 — VERSION 이 이미 라인 버전이면 `deploy <VERSION>`(명시), 라인 전환만 minor
+    - Issue592 검증 기준 «미러·marketplace 버전 0.8.3 일치» → v0.8.4 로 정정(0.8.3 은 09-01 출고분)
+    - 검증: 격리 클론에서 deploy dry 경로 — 소스 태그 생성·Release 명령 조립·`deploy patch` 가 VERSION==라인 버전일 때 경고/거부
+
+## Issue602: hub-internal 모드에서 aoa-mq(/mq)가 내부 탭이 아니라 OS 새 탭으로 열림 (해결: 2026.10.05, commit: <commit>) ✅
+* 목적: `render_tab_mode: hub-internal` 이면 hub 가 여는 화면은 /hub-shell 내부 탭에 실려야 하는데, 📮 Aoa-mq 만 OS 새 탭으로 빠져 단일 표면 계약이 깨진다
+* 구현 명세:
+    - `#btn-mq` 에 `data-title` + `onclick="return fpmOpenInShell(event,this)"` (비임베드 /hub 는 종전 새 탭 유지)
+    - /mq 페이지에 임베드 판정 헬퍼 1개 — 임베드면 부모 셸로 `fpm-open-tab` postMessage, 아니면 새 탭. `window.open(_blank)` 지점과 same-origin `a[target=_blank]` 클릭을 이 헬퍼로 모은다(외부 URI·vscode:// 제외)
+    - 검증: 회귀 테스트(red→green) — HUB_HTML 의 `#btn-mq` 라우팅 · /mq 페이지에 `_blank` 직접 호출 잔존 0 · 헬퍼가 `fpm-open-tab` 을 보낸다
 
 ## Issue600: aoa-mq·aoa-memory `tools/list` 에 `resultType` 누락 — Claude Code(2026-07-28)가 «tools fetch failed» 로 도구를 안 올려 전 세션에서 MCP 도구 부재 (해결: 2026.10.05, commit: <commit>) ✅
 * 목적: 두 서버의 모든 결과 응답을 2026-07-28 계약대로 맞춰 세션이 aoa-mq·aoa-memory 도구를 다시 받게 한다
