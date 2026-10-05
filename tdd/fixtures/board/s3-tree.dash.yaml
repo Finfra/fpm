@@ -1,0 +1,19 @@
+# s3 이슈 의존 트리 — 정적 graph(tree). runner 왕복 후에도 authoring(type·width)이 보존돼야 한다
+title: s3-tree
+status: init
+widgets:
+- id: issue-tree
+  type: tree
+  title: 이슈 트리
+  width: 2
+  nodes:
+  - {id: I1, label: 'Issue1 루트', status: done}
+  - {id: I2, label: 'Issue2', status: running}
+  - {id: I3, label: 'Issue3', status: blocked}
+  edges:
+  - {from: I1, to: I2}
+  - {from: I1, to: I3}
+- id: current
+  type: text
+  title: 현재
+  content: Issue2

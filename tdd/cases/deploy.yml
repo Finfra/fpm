@@ -12,6 +12,10 @@ cases:
     run: |
       s="$REPO_DIR/scripts/fpm-bundle-sync.sh"
       [ -x "$s" ] || { echo "skip(저작 머신 전용)"; exit 0; }
+      # Issue543 M3 — 스크립트 존재만으로는 저작 머신을 못 가른다(prj1 후보 트리엔 늘 있다).
+      #   원격 네이티브 실행에선 그 머신의 ~/.claude 가 라이브 소스로 잡혀 DRIFT 가 났다
+      #   (jma = 9/1 부분 사본). 번들 동기 판정은 저작 머신의 1행(dev-playlist) 소관이다
+      [ -n "${FPM_TDD_NATIVE_REMOTE:-}" ] && { echo "skip(원격 네이티브 실행 — 번들 동기는 저작 머신 소관)"; exit 0; }
       "$s" --check 2>&1 | grep -q "표류 없음" && echo ok || echo "DRIFT"
     expect: contains:ok
 
@@ -41,8 +45,11 @@ cases:
     run: |
       REPO_DIR="$REPO_DIR" python3 - <<'PYEOF'
       import io, os, re, sys
-      src = io.open(os.path.join(os.environ["REPO_DIR"], "scripts/fpm-sync.sh"),
-                    encoding="utf-8").read()
+      p = os.path.join(os.environ["REPO_DIR"], "scripts/fpm-sync.sh")
+      if not os.path.exists(p):
+          # Issue604: 미러(공개 clone)엔 fpm-sync.sh 가 반출되지 않는다 — 3 OS P1 에서 FAIL 오탐
+          print("skip(저작 머신 전용)"); sys.exit(0)
+      src = io.open(p, encoding="utf-8").read()
       m = re.search(r'^do_forward\(\) \{$(.*?)^\}$', src, re.M | re.S)
       if not m:
           print("NO-DO-FORWARD"); sys.exit(0)
@@ -66,6 +73,48 @@ cases:
       PYEOF
     expect: contains:ok
 
+  - id: market-integrity-post-sanitize
+    desc: 마켓(prj20) 무결성 매니페스트가 sanitize·vendor **이후** 트리에서 재생성되도록 배선돼 있다
+    why: |
+      Issue605 — 소비자는 prj20 마켓에서 fpm-core 를 받는다. do_publish 는 매니페스트를
+      vendor **앞**(Issue413 ①, 정본 바이트)에 만들고 그 뒤 staging 을 sanitize(Issue461)해
+      vendor 했다. 그래서 sanitize 가 바꾼 8파일이 jma·fg1·jpc1 3/3 에서 «변조/구버전» 으로
+      잡혔다(2026-10-05 v0.8.4 실측). mirror-integrity-post-sanitize(Issue459)의 두 번째
+      배송 트리 판이다. 순서가 전부라 순서를 검사한다. do_publish 안에서
+        sanitize  <  vendor rsync  <  git add fpm-core  <  매니페스트 재생성(--bundle "$vdst")  <  prj20 커밋
+      런타임 실측은 `bash sh/gen-integrity-manifest.sh --check --bundle <prj20>/fpm-core`.
+    run: |
+      REPO_DIR="$REPO_DIR" python3 - <<'PYEOF'
+      import io, os, re, sys
+      p = os.path.join(os.environ["REPO_DIR"], "scripts/fpm-sync.sh")
+      if not os.path.exists(p):
+          # Issue604: 미러(공개 clone)엔 fpm-sync.sh 가 반출되지 않는다 — 3 OS P1 에서 FAIL 오탐
+          print("skip(저작 머신 전용)"); sys.exit(0)
+      src = io.open(p, encoding="utf-8").read()
+      m = re.search(r'^do_publish\(\) \{$(.*?)^\}$', src, re.M | re.S)
+      if not m:
+          print("NO-DO-PUBLISH"); sys.exit(0)
+      body = m.group(1)
+      def at(pat):
+          h = re.search(pat, body)
+          return h.start() if h else -1
+      sanit  = at(r'"\$HERE/fpm-sanitize\.sh" "\$vstg"')
+      vendor = at(r'"\$vstg/" "\$vdst/"')
+      add    = at(r'git -C "\$MKT20_DIR" add "\$MKT20_REL" fpm-core')
+      regen  = at(r'gen-integrity-manifest\.sh[^\n]*\\?\n?[^\n]*--bundle "\$vdst"')
+      cmt    = at(r'git -C "\$MKT20_DIR" commit -q')
+      if regen < 0:
+          print("MISSING-MARKET-REGEN"); sys.exit(0)
+      order = [("sanitize", sanit), ("vendor", vendor), ("add", add), ("regen", regen), ("commit", cmt)]
+      bad = [n for (n, i) in order if i < 0]
+      if bad:
+          print("ANCHOR-LOST:" + ",".join(bad)); sys.exit(0)
+      idx = [i for _, i in order]
+      print("ok" if idx == sorted(idx) else "ORDER-BROKEN:" +
+            ",".join(n for n, _ in sorted(order, key=lambda t: t[1])))
+      PYEOF
+    expect: contains:ok
+
   - id: aoa-policy-template-tracked
     desc: aoa 정책 템플릿이 git 에 **추적**된다
     why: |
@@ -77,6 +126,22 @@ cases:
     run: |
       git -C "$REPO_DIR" ls-files --error-unmatch data/template/aoa-policy.default.yml \
         >/dev/null 2>&1 && echo ok || echo "UNTRACKED"
+    expect: contains:ok
+
+  - id: decision-policy-template-tracked
+    desc: 결정 권한 정책 템플릿이 git 에 **추적**되고, 배송 helper 의 [컨펌] 게이트와 함께 간다
+    why: |
+      Issue566 — mcp/aoa-mq/aoa-mq-enqueue.sh 의 `[컨펌]` 게이트(prj3#Issue756)는 정책 파일이
+      없으면 fail-loud 로 거부한다. 저작 머신에는 ~/.claude/data/decision-authority.yml 이
+      prj3 추적 파일로 늘 있어 **존재 검사로는 통과**하고, 소비자 머신에서만 `[컨펌]` 이 전건
+      막힌다. sh/fbot-bootstrap.sh 가 seed 하는 원본 템플릿이 추적되는지를 본다.
+    run: |
+      if grep -q 'decision-authority' "$REPO_DIR/mcp/aoa-mq/aoa-mq-enqueue.sh" 2>/dev/null; then
+        git -C "$REPO_DIR" ls-files --error-unmatch data/template/decision-authority.yml \
+          >/dev/null 2>&1 && echo ok || echo "UNTRACKED(helper 는 게이트를 싣고 나간다)"
+      else
+        echo "ok(게이트 없는 helper — 정책 불요)"
+      fi
     expect: contains:ok
 
   - id: aoa-policy-template-complete
@@ -137,6 +202,8 @@ cases:
       **denylist** 문서 — 미러(prj8)가 정본을 소유하고 forward 가 나르지 않는다.
       따라서 "미러 직접 커밋 = 위반" 판정 대상에서 **제외**한다(직접 커밋이 정본 편집이다).
       이 검사가 계속 보는 것은 forward 로 회수되는 문서(aoa 정책 템플릿 등)뿐이다.
+      ⚠️ `Revert "Sync: …"` 도 Sync 로 본다(Issue608) — 0.8.3 통일이 미러에서 Sync 커밋을 되돌려
+      최신 커밋 제목이 Revert 가 됐고, 이는 미러 단독 수정이 아니라 forward 산물의 되돌림이다.
     run: |
       dst="${FPM_DST:-$HOME/_git/__all/fpm}"
       [ -d "$dst/.git" ] || { echo "ok(미러 미보유 — 소비자 머신)"; exit 0; }
@@ -146,7 +213,7 @@ cases:
         cmp -s "$dst/$f" "$REPO_DIR/$f" && continue
         msg="$(git -C "$dst" log -1 --format=%s -- "$f" 2>/dev/null)"
         case "$msg" in
-          Sync:*|"") ;;
+          Sync:*|'Revert "Sync:'*|"") ;;
           *) bad="$bad $f" ;;
         esac
       done
@@ -204,6 +271,9 @@ cases:
       vendor(`rsync -a`)는 번들 밖을 가리키는 링크를 복사해 플러그인이 깨진다.
     run: |
       cd "$REPO_DIR" || exit 0
+      # Issue604: 미러는 반출 시 이 링크를 실파일로 편다(hub-symlink-materialized-for-mirror)
+      #   — 미러 clone(3 OS P1)에선 NOT-A-SYMLINK 가 설계대로라 저작 트리에서만 판정한다
+      [ -f scripts/fpm-sync.sh ] || { echo "skip(저작 머신 전용 — 미러는 실파일)"; exit 0; }
       want="../plugins/fpm-core/services/hub"
       [ -L services/hub ] || { echo "NOT-A-SYMLINK(2원화 부활)"; exit 0; }
       [ "$(readlink services/hub)" = "$want" ] || { echo "WRONG-TARGET:$(readlink services/hub)"; exit 0; }
@@ -219,7 +289,7 @@ cases:
     why: |
       Issue465 — git 은 링크를 링크로 저장(mode 120000)하고 `git archive | tar -x`
       도 `rsync -a` 도 그대로 보존한다. 아무것도 안 하면 **미러에 링크가 그대로
-      나간다**. Windows 소비자는 심볼릭 링크를 못 받는다(windows-port-design W2 =
+      나간다**. Windows 소비자는 심볼릭 링크를 못 받는다(windows-port W2 =
       실측 FAIL — `ln -s` 가 사본 디렉토리를 만들고 `Too many levels of symbolic
       links`, 개발자 모드 레지스트리 키 부재). 링크가 나가면 sh/install.sh 가 안내하는
       `cd <repo> && python3 services/hub/server.py` 가 통째로 깨진다.

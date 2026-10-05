@@ -11,16 +11,24 @@ mmdc 로 SVG 선렌더한 뒤 자립형 HTML 문서로 조립한다.
 
 사용 (nPTiR 루트 = Issue.md 위치에서 실행 — 경로는 플러그인 번들/글로벌 2단계 해석, Issue316):
     python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/skills/{fpm-issue-map|issue-map}/build_issue_map.py"
-        [--check] [--json] [--all] [--deadlock] [--no-cross] [--out Issue_map.htm]
+        [--check] [--json] [--all] [--deadlock] [--no-cross] [--fbot] [--out Issue_map.htm]
+
+    --fbot: 핀봇 배분 원장(registry.db, 읽기 전용)을 이슈 노드에 조인해 담당 봇 배지를 얹는다
+            (옵트인 — Issue740). 산출물 앵커: 노드 id="issue-<N>" · 표 행 id="issue-<N>-row"
+            · 딥링크 Issue_map.htm#issue=<N> 수신 시 선택·스크롤·강조
 """
 
 import argparse
+import base64
+import copy
 import functools
 import html
+import importlib.util
 import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -44,6 +52,9 @@ DONE_SECTIONS = {"✅ 완료"}
 # 보는 도구라 보류·취소 이슈가 노드로 남으면 활성 흐름의 시야를 흐린다.
 # 단, 활성 이슈가 선행으로 가리키는 경우만 유령 노드로 남긴다 (아래 split_excluded).
 EXCLUDED_SECTIONS = {"⏸️ 보류", "🚫 취소"}
+# «⏸️ 보류 포함» 토글 (Issue974) — 보류만 켜서 볼 수 있다. 취소는 토글 대상이 아니다
+HELD_SECTION = "⏸️ 보류"
+HELD_TOGGLE_EXCLUDED = EXCLUDED_SECTIONS - {HELD_SECTION}
 
 CLASS_DEFS = """    classDef done fill:#d8ecd8,stroke:#5a9a5a,color:#1a1a1a
     classDef prog fill:#cfe6f5,stroke:#4a90c4,color:#1a1a1a
@@ -182,7 +193,7 @@ def _match_section(head: str):
 
 
 def parse_issue_md(path: Path, warn: list | None = None, lenient: bool = False,
-                   quiet: bool = False):
+                   quiet: bool = False, archive: bool = False):
     """Issue.md → {id: {...}} 순서 보존 dict.
 
     warn 을 주면 `* depends:` 규약 위반을 (kind, 이슈ID, 원문토큰) 으로 수집한다 (Issue343).
@@ -213,6 +224,15 @@ def parse_issue_md(path: Path, warn: list | None = None, lenient: bool = False,
             hit = _match_section(head)
             if hit:
                 section, current, unknown_head = hit, None, None
+                continue
+            # Issue672 — **아카이브 파일에서는 미지 섹션을 완료로 받는다.** 아카이브는
+            #   정의상 완료분이고, 실제 운용 헤더는 `# 📦 2026-09-11 아카이브 — 완료 131건`
+            #   처럼 SECTIONS 와 접두조차 안 맞게 갈렸다(실측: 684건 중 443건이 조용히 샜다).
+            #   SECTIONS 에 `📦` 를 박지 않는 이유 — 그러면 **활성 Issue.md 에서도** 유효
+            #   섹션이 되고, 다음에 아카이브 헤더 문구가 또 바뀌면 같은 결함이 재발한다.
+            #   «파일이 아카이브인가» 로 가르는 편이 관례 드리프트에 강하다.
+            if archive and head not in NON_GRAPH_SECTIONS:
+                section, current, unknown_head = "✅ 완료", None, None
                 continue
             # 여기까지 왔으면 우리가 모르는 섹션이다. `section=None` 이라 이 구간의 이슈는
             # 버려진다 — 버리는 것 자체는 맞지만 **말은 해야 한다**(아래 경고).
@@ -303,15 +323,30 @@ def parse_issue_md(path: Path, warn: list | None = None, lenient: bool = False,
     return issues
 
 
-def split_excluded(issues):
+def parked(iss):
+    """보류·취소로 멈춘 노드인가 — 유령(Issue259) 또는 «보류 포함» 변형의 보류 이슈(Issue974).
+
+    둘 다 «기다려도 자동으로 안 풀리는» 선행이라 표시(⏸️·회색 점선·보류 색 화살표)가 같다.
+    표·집계 제외는 유령만이다 — 그건 `ghost` 를 직접 본다.
+    """
+    return iss["ghost"] or iss.get("held", False)
+
+
+def split_excluded(issues, excluded_sections=EXCLUDED_SECTIONS):
     """⏸️ 보류 · 🚫 취소 이슈를 맵에서 제거 (Issue259). → 유령으로 남긴 id 집합.
+
+    Issue974: «보류 포함» 변형은 `excluded_sections=HELD_TOGGLE_EXCLUDED` 로 부른다 —
+    보류 이슈는 정식 노드(`held=True`)로 남고 선행(로컬·타 prj)도 그대로 그린다.
 
     통째로 지우면 활성 이슈가 그 이슈에 `* depends:` 를 걸고 있을 때
     화살표가 소리 없이 사라져 '차단 중' 이라는 사실이 맵에서 실종된다.
     그래서 **활성 이슈의 선행으로 참조된 것만** 유령 노드(회색 점선)로 남기고,
     나머지는 노드·표 양쪽에서 제거한다. 유령은 그래프에만 있고 표에는 안 나온다.
     """
-    excluded = {k for k, v in issues.items() if v["section"] in EXCLUDED_SECTIONS}
+    for v in issues.values():
+        if v["section"] == HELD_SECTION and HELD_SECTION not in excluded_sections:
+            v["held"] = True
+    excluded = {k for k, v in issues.items() if v["section"] in excluded_sections}
     if not excluded:
         return frozenset()
     # 참조자가 이미 완료면 그 화살표는 볼 이유가 없다 — 미완료 후행만 유령을 살린다
@@ -401,7 +436,10 @@ class CrossResolver:
                 a = path / rel
                 if not a.exists():
                     continue
-                for iid, iss in parse_issue_md(a, lenient=True).items():
+                # Issue672: archive=True 로 `📦` 계열 섹션까지 받고, quiet 로 «고칠 수 없는»
+                #   경고를 남의 repo 빌드에서 띄우지 않는다 — 판정과 침묵은 별개 축이라 둘 다 건다
+                for iid, iss in parse_issue_md(a, lenient=True, quiet=True,
+                                               archive=True).items():
                     merged.setdefault(iid, iss)
             self._issues[key] = merged
         return self._issues[key]
@@ -487,6 +525,494 @@ def load_stage_map(root: Path):
         return {}
 
 
+# ── fbot 오버레이 (Issue740 — Issue725 M2) ──────────────────────────────
+# 담당의 SSOT 는 배분 원장이다(fbot-org.md §이슈 축 연동 결정 1). Issue.md 에 담당을 쓰지 않고,
+# 여기서 `job.kind='fbot_dispatch'` 를 **읽기 전용**으로 조인해 노드에 배지를 얹는다.
+# 옵트인인 이유(결정 3): Issue_map.htm 은 커밋·공유 산출물이라 봇 명부가 새면 안 된다.
+FBOT_DISPATCH_KIND = "fbot_dispatch"
+# 시간 창 — hub server.py `FBOT_RECENT_SECS`(prj3#Issue556)·fbot-org `IDLE_DAYS` 와 같은 3일.
+#   세 뷰가 한 데이터를 보므로(결정 3) 창도 같아야 한 화면에서 보인 배분이 다른 화면에서 안 사라진다
+FBOT_RECENT_SECS = 3 * 86400
+# 「아직 안 끝난」 배분 — hub `_FBOT_LIVE_STATUS` 와 동일. 기간과 무관하게 싣는다
+FBOT_LIVE_STATUS = ("open", "blocked", "logged", "deferred")
+# 배분 사인 — hub `_FBOT_FLOW_SIGN`(prj3#Issue538 s4) 사본. 완료와 취소·회수는 다른 기호다
+FBOT_SIGN = {"done": "✓", "open": "⏳", "blocked": "⛔", "reaped": "⌇",
+             "cancelled": "✕", "logged": "▪", "deferred": "⏸"}
+FBOT_BADGE_MAX = 2          # 노드 하나에 그리는 배지 상한. 넘으면 `+k`
+FBOT_ICON_MAX = 16 * 1024   # 아이콘 data URI 인라인 상한 — 초과·부재는 색 점으로 폴백(hub 와 동일)
+
+
+def _fbot_state_mod():
+    """`hooks/fbot-state.py` 로드 — 원장 경로 해석(`aoa_dir()`)을 **복제하지 않는다**.
+
+    정본(`~/.claude/skills/issue-map/`)·prj1 번들(`plugins/fpm-core/skills/fpm-issue-map/`) 모두
+    두 단계 위에 `hooks/fbot-state.py` 가 있다. 부재·로드 실패는 None — 오버레이만 빠진다.
+    """
+    path = Path(__file__).resolve().parents[2] / "hooks" / "fbot-state.py"
+    if not path.is_file():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("fbot_state_for_issue_map", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:
+        return None
+
+
+def project_number(root: Path):
+    """root → prj 번호(int). projects 레지스트리에 없으면 None — 호출측은 cwd 대조로 폴백한다."""
+    try:
+        rr = root.resolve()
+        for k, p in CrossResolver._load_projects(resolve_projects_dir()).items():
+            if k.startswith("prj") and k[3:].isdigit() and p.resolve() == rr:
+                return int(k[3:])
+    except OSError:
+        pass
+    return None
+
+
+def _prj_int(v):
+    """`payload.prj` 값(10 · "10" · "prj10") → int. 해석 불가면 None."""
+    if isinstance(v, bool) or v in (None, ""):
+        return None
+    if isinstance(v, int):
+        return v
+    m = re.fullmatch(r"\s*(?:prj)?(\d+)\s*", str(v), re.I)
+    return int(m.group(1)) if m else None
+
+
+def _dispatch_ref(text, prj_field):
+    """배분 식별자 → (prj|None, 'IssueN', 접두 명시 여부) | None.
+
+    * **선두 식별자만** 본다 — topic 배분은 `Issue21 … → Issue22 …` 처럼 뒤에 다른 이슈를 언급한다.
+      주제는 선두다. (fbot-state `norm_issue` 는 **마지막** 토큰을 쓰는데, 그건 중복 기록 판정용이다)
+    * 숫자만 적힌 배분(`718`)도 이슈다. 단 `4:3 전환` 같은 문장 선두 숫자는 아니다 — 전체가 숫자일 때만
+    * `prj<N>#` 접두가 `payload.prj` 보다 **우선**한다. `payload.prj` 는 fbot-lead 가 cwd 로 해소한
+      **작업 위치**라서(`resolve_prj(cwd)`), prj5 의 이슈를 prj15 에서 수행한 배분은 prj=15 로 적힌다
+      (실측 2026-09-28 — `prj5#Issue99 TDD 라운드…` 가 prj 15·16·25·26 으로 4건). 이슈의 주인은 접두다
+    """
+    t = str(text or "").replace("`", "").strip()
+    if not t:
+        return None
+    prefix = None
+    m = re.match(r"prj(\d+)\s*#\s*", t, re.I)
+    if m:
+        prefix, t = int(m.group(1)), t[m.end():]
+    m = re.match(r"issue[_-]?(\d+(?:_\d+)*)(?![0-9A-Za-z_])", t, re.I)
+    if m:
+        num = m.group(1)
+    elif re.fullmatch(r"\d+(?:_\d+)*", t):
+        num = t
+    else:
+        return None
+    prj = prefix if prefix is not None else _prj_int(prj_field)
+    return prj, f"Issue{num}", prefix is not None
+
+
+def dispatch_issue_ref(text, prj_field=None):
+    """배분 `payload.issue`(+`payload.prj`) → (prj|None, 'IssueN') | None. 규칙은 `_dispatch_ref`."""
+    r = _dispatch_ref(text, prj_field)
+    return (r[0], r[1]) if r else None
+
+
+def match_dispatches(rows, issue_ids, root: Path, my_prj):
+    """배분 행 × 이 맵의 이슈 → {IssueN: [row…]} (입력 순서 보존).
+
+    같은 번호는 prj 마다 있다(Issue47 이 여러 prj 에 있다) — **prj 가 맞아야** 붙인다.
+      ① 배분의 prj(접두 > 필드)와 이 맵의 prj 를 둘 다 알면 → 같을 때만
+      ② 접두를 명시했는데 이 맵의 prj 를 모르면 → 붙이지 않는다(다른 prj 이슈일 수 있다)
+      ③ 그 밖(배분 prj 미상 · 맵 prj 미상) → `payload.cwd` 가 이 맵 root 와 같을 때만
+    """
+    root_r = os.path.realpath(str(root))
+    out = {}
+    for r in rows:
+        pl = r.get("payload") or {}
+        ref = _dispatch_ref(pl.get("issue"), pl.get("prj"))
+        if not ref:
+            continue
+        prj, iid, explicit = ref
+        if iid not in issue_ids:
+            continue
+        if prj is not None and my_prj is not None:
+            if prj != my_prj:
+                continue
+        elif explicit:
+            continue
+        else:
+            cwd = pl.get("cwd")
+            if not cwd or os.path.realpath(os.path.expanduser(str(cwd))) != root_r:
+                continue
+        out.setdefault(iid, []).append(r)
+    return out
+
+
+def _fbot_icon_uri(fbot_root: Path, icon_rel: str) -> str:
+    """봇 아이콘 SVG → data URI (hub `_fbot_icon_data_uri` 와 같은 규약). 실패는 전부 ""."""
+    if not icon_rel or not isinstance(icon_rel, str):
+        return ""
+    base = os.path.realpath(fbot_root / "data" / "fbot" / "icons")
+    path = os.path.realpath(fbot_root / icon_rel)
+    if not (path == base or path.startswith(base + os.sep)):     # 경로 탈출 차단
+        return ""
+    try:
+        if os.path.getsize(path) > FBOT_ICON_MAX:
+            return ""
+        with open(path, "rb") as fh:
+            raw = fh.read()
+    except OSError:
+        return ""
+    return "data:image/svg+xml;base64," + base64.b64encode(raw).decode("ascii")
+
+
+def _css_rgb(color: str) -> str:
+    """`#RRGGBB` → `rgb(r,g,b)`. mermaid 라벨은 `#\\w+;` 를 엔티티로 해석해 `#AE615C;` 가 깨진다."""
+    m = re.fullmatch(r"\s*#?([0-9A-Fa-f]{6})\s*", color or "")
+    if not m:
+        return "rgb(111,111,120)"
+    h = m.group(1)
+    return "rgb(%d,%d,%d)" % (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+
+
+def load_fbot_overlay(root: Path, issue_ids, now=None) -> dict:
+    """원장 읽기 전용 조인 → {ok, reason, db, window_secs, issues: {IssueN: [badge…]}}.
+
+    실패(모듈·DB 부재·읽기 오류)는 **예외가 아니라 ok=False** 다 — 오버레이만 빠지고 맵은 선다.
+    badge = {worker, owner, status, sign, created_at, dispatch_id, role, color, icon_uri}.
+    """
+    fail = lambda why: {"ok": False, "reason": why, "db": None,           # noqa: E731
+                        "window_secs": FBOT_RECENT_SECS, "issues": {}}
+    mod = _fbot_state_mod()
+    if mod is None or not hasattr(mod, "aoa_dir"):
+        return fail("hooks/fbot-state.py 없음·로드 실패 — 원장 경로 해석 불가")
+    db = Path(mod.aoa_dir()) / "registry.db"
+    if not db.is_file():
+        return fail(f"원장 없음 ({db})")
+    now = int(now if now is not None else time.time())
+    try:
+        con = sqlite3.connect("file:" + urllib.parse.quote(str(db)) + "?mode=ro",
+                              uri=True, timeout=3)
+        con.row_factory = sqlite3.Row
+        try:
+            marks = ",".join("?" * len(FBOT_LIVE_STATUS))
+            cur = con.execute(
+                f"SELECT * FROM job WHERE kind=? AND (status IN ({marks}) OR created_at >= ?)"
+                " ORDER BY created_at DESC",
+                (FBOT_DISPATCH_KIND, *FBOT_LIVE_STATUS, now - FBOT_RECENT_SECS))
+            rows = []
+            for r in cur.fetchall():
+                keys = r.keys()
+                # 계약을 어긴 행 1건(payload 비JSON·created_at 비정수)은 **그 행만** 건너뛴다 —
+                #   한 줄 때문에 오버레이 전체나 맵 생성이 죽으면 안 된다
+                try:
+                    pl = json.loads(r["payload"] or "{}")
+                    created = int(r["created_at"] or 0)
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(pl, dict):
+                    continue
+                owner = (r["owner_id"] if "owner_id" in keys else None) or r["owner"] or ""
+                rows.append({"id": r["id"], "status": r["status"] or "", "owner": owner,
+                             "created_at": created, "payload": pl})
+            matched = match_dispatches(rows, set(issue_ids), root, project_number(root))
+            workers = {r["payload"].get("worker_bot_id") for rs in matched.values() for r in rs}
+            workers.discard(None)
+            bots = {}
+            if workers:
+                try:
+                    q = ",".join("?" * len(workers))
+                    for b in con.execute(f"SELECT bot_id, role, icon, color FROM bot"
+                                         f" WHERE bot_id IN ({q})", tuple(workers)):
+                        bots[b["bot_id"]] = dict(b)
+                except sqlite3.Error:
+                    pass                            # bot 표 부재 — 아이콘·색 없이 배지만
+        finally:
+            con.close()
+    except (sqlite3.Error, IndexError) as e:     # IndexError — 구 스키마에 owner 등 열 부재
+        return fail(f"원장 읽기 실패 ({db}: {e})")
+
+    fbot_root = Path(os.environ.get("FBOT_ROOT") or Path(__file__).resolve().parents[2])
+    issues = {}
+    for iid, rs in matched.items():
+        # 워커당 1개 — 열린 배분 우선, 그다음 최신. 같은 워커를 두 번 그리면 배분 2회로 읽힌다
+        best = {}
+        for r in rs:
+            w = r["payload"].get("worker_bot_id") or ""
+            cur = best.get(w)
+            key = (r["status"] in FBOT_LIVE_STATUS, r["created_at"])
+            if cur is None or key > (cur["status"] in FBOT_LIVE_STATUS, cur["created_at"]):
+                best[w] = r
+        badges = []
+        for w, r in best.items():
+            b = bots.get(w) or {}
+            role = b.get("role") or r["payload"].get("role") or ""
+            icon = (_fbot_icon_uri(fbot_root, b.get("icon") or "")
+                    or (_fbot_icon_uri(fbot_root, f"data/fbot/icons/{role}.svg") if role else ""))
+            badges.append({"worker": w, "owner": r["owner"], "status": r["status"],
+                           "sign": FBOT_SIGN.get(r["status"], "?"),
+                           "created_at": r["created_at"], "dispatch_id": r["id"],
+                           "role": role, "color": b.get("color") or "", "icon_uri": icon})
+        badges.sort(key=lambda x: (x["status"] in FBOT_LIVE_STATUS, x["created_at"]),
+                    reverse=True)
+        issues[iid] = badges
+    return {"ok": True, "reason": "", "db": str(db), "window_secs": FBOT_RECENT_SECS,
+            "issues": issues}
+
+
+def _bot_short(bot_id: str) -> str:
+    return re.sub(r"^fbot-", "", bot_id or "") or "(미상)"
+
+
+def fbot_badge_label(badges) -> str:
+    """mermaid 노드 라벨용 배지 HTML — 속성은 홑따옴표(라벨 자체가 겹따옴표로 싸인다)."""
+    parts = []
+    for b in badges[:FBOT_BADGE_MAX]:
+        # quote=False — `&#x27;` 의 `#x27;` 도 mermaid 가 엔티티로 오해한다
+        name = esc(html.escape(_bot_short(b["worker"]), quote=False))
+        if b["icon_uri"]:
+            # <img> 를 쓰지 않는다 — mermaid 는 라벨 속 img 에 width:100%·display:flex 를 강제해
+            #   아이콘이 라벨 폭만큼 커지고 노드 크기도 그 기준으로 잡힌다(2026-09-28 mmdc 11.6 실측)
+            mark = (f"<span style='display:inline-block;width:14px;height:14px;"
+                    f"vertical-align:-2px;margin-right:2px;"
+                    f"background:url({b['icon_uri']}) center/contain no-repeat'></span>")
+        else:
+            mark = f"<span style='color:{_css_rgb(b['color'])}'>●</span>"
+        parts.append(f"<span class='fbot-badge' style='display:inline-block;font-size:0.82em;"
+                     f"padding:0 4px;border-radius:4px;background:rgba(127,127,127,0.16)'>"
+                     f"{mark}{name} {b['sign']}</span>")
+    more = len(badges) - FBOT_BADGE_MAX
+    return " ".join(parts) + (f" +{more}" if more > 0 else "")
+
+
+def fbot_cell(badges) -> str:
+    """표 셀용 — 담당 봇 · 사인 · 배분자(누가 시켰나) · 상대시각.
+
+    표는 **전체 bot_id** 를 쓴다(노드 라벨만 폭 때문에 `fbot-` 를 뗀다) — 봇 카드·원장 조회의 키다.
+    """
+    if not badges:
+        return "&mdash;"
+    now = time.time()
+
+    def rel(ts):
+        d = int(now - ts) if ts else -1
+        if d < 0:
+            return ""
+        if d < 3600:
+            return f"{max(d // 60, 0)}분 전"
+        if d < 86400:
+            return f"{d // 3600}시간 전"
+        return f"{d // 86400}일 전"
+
+    return "<br>".join(
+        "{sign} {w} <small>&larr; {o}{t}</small>".format(
+            sign=html.escape(b["sign"]), w=html.escape(b["worker"] or "(미상)"),
+            o=html.escape(b["owner"] or "(미상)"),
+            t=(" · " + rel(b["created_at"])) if rel(b["created_at"]) else "")
+        for b in badges)
+
+
+def anchor_svg_nodes(svg: str, with_id: bool = True, id_prefix: str = "") -> str:
+    """mermaid 노드 `<g id="flowchart-IssueN-k">` 에 앵커를 단다 (Issue740 딥링크 수신 계약).
+
+    with_id=True(전체 관계도): id 를 안정 id `issue-<N>` 로 바꾸고 `data-issue` 부착.
+    with_id=False(임계 경로): `data-issue` 만 — 같은 이슈가 두 그림에 있어 id 가 겹치면 안 된다.
+    mermaid 산출 id 의 순번(k)은 그래프가 바뀌면 흔들린다 — 그래서 외부 링크 키로 못 쓴다.
+    id_prefix: «보류 포함» 변형은 `held-` — 두 변형이 한 문서에 있어 id 가 겹치면 안 된다(Issue974).
+    """
+    def rep(m):
+        n = m.group(1)[len("Issue"):]
+        return (f'id="{id_prefix}issue-{n}"' if with_id else m.group(0)) + f' data-issue="{n}"'
+    return re.sub(r'id="flowchart-(Issue[0-9A-Za-z_]+?)-\d+"', rep, svg)
+
+
+# 딥링크 착지 강조 (Issue740). mermaid 노드 도형은 인라인 `!important` 로 칠해져 stroke 를
+#   덮어쓸 수 없다 — 그래서 도형이 아니라 <g> 에 filter(발광)를 건다.
+ANCHOR_CSS = """  @keyframes issue-pulse { 0%, 100% { filter: drop-shadow(0 0 3px #e67e22); }
+    50% { filter: drop-shadow(0 0 12px #e67e22); } }
+  g.issue-sel { filter: drop-shadow(0 0 5px #e67e22); animation: issue-pulse 1.1s ease-in-out 3; }
+  tr.issue-sel td { background: rgba(230,126,34,0.20) !important; }
+  tr[data-issue] td:first-child a { color: inherit; text-decoration: none; }
+  tr[data-issue] td:first-child a:hover { text-decoration: underline; }
+  .fbot-note { font-size: 0.87rem; opacity: 0.85; margin-top: -0.6rem; }"""
+
+# 확대 상자 (Issue828). 배율 1 = SVG 자연 폭(`data-natural-w`). «맞춤» 은 fit_svg 가 준 원래 style 로
+#   되돌린다 — inline style 을 지우면 Issue251 캡까지 사라져 작은 그래프가 과확대된다.
+ZOOM_CSS = """  .zoom-box { border: 1px solid rgba(127,127,127,0.28); border-radius: 6px; }
+  .zoom-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; padding: 0.3rem 0.5rem;
+    border-bottom: 1px solid rgba(127,127,127,0.2); font-size: 0.85rem; }
+  .zoom-bar button { cursor: pointer; min-width: 2rem; padding: 0.1rem 0.5rem; font: inherit; color: inherit;
+    border: 1px solid rgba(127,127,127,0.4); border-radius: 5px; background: rgba(127,127,127,0.08); }
+  .zoom-bar button:hover { background: rgba(127,127,127,0.2); }
+  .zoom-pct { min-width: 3.2rem; text-align: center; opacity: 0.8; font-variant-numeric: tabular-nums; }
+  .zoom-hint { margin-left: auto; opacity: 0.6; font-size: 0.78rem; }
+  .zoom-vp { overflow: auto; max-height: 75vh; cursor: grab; }
+  .zoom-vp.dragging { cursor: grabbing; user-select: none; }
+  .zoom-box:fullscreen { background: #fff; display: flex; flex-direction: column; }
+  .zoom-box:fullscreen .zoom-vp { max-height: none; flex: 1 1 auto; }"""
+
+ZOOM_JS = """<script>
+(function () {
+  var STEP = 1.25, MIN = 0.05, MAX = 4;
+  function svgOf(box) { return box.querySelector('.zoom-vp svg'); }
+  function nat(svg) {
+    var w = parseFloat(svg.getAttribute('data-natural-w'));
+    if (!w && svg.viewBox && svg.viewBox.baseVal) w = svg.viewBox.baseVal.width;
+    return w || svg.getBoundingClientRect().width || 1;
+  }
+  function cur(box) { var svg = svgOf(box); return svg.getBoundingClientRect().width / nat(svg); }
+  function label(box) {
+    var p = box.querySelector('.zoom-pct');
+    if (p) p.textContent = Math.round(cur(box) * 100) + '%';
+  }
+  function setScale(box, s, cx, cy) {
+    var vp = box.querySelector('.zoom-vp'), svg = svgOf(box);
+    s = Math.max(MIN, Math.min(MAX, s));
+    var r = vp.getBoundingClientRect();
+    if (cx == null) { cx = r.left + vp.clientWidth / 2; cy = r.top + vp.clientHeight / 2; }
+    var ox = cx - r.left, oy = cy - r.top;
+    var px = vp.scrollLeft + ox, py = vp.scrollTop + oy;
+    var oldW = svg.getBoundingClientRect().width || 1;
+    svg.style.maxWidth = 'none';
+    svg.style.width = (nat(svg) * s) + 'px';
+    var k = svg.getBoundingClientRect().width / oldW;
+    vp.scrollLeft = px * k - ox;
+    vp.scrollTop = py * k - oy;
+    label(box);
+  }
+  function fit(box) { svgOf(box).setAttribute('style', box.__orig || ''); label(box); }
+  function init(box) {
+    var vp = box.querySelector('.zoom-vp'), svg = svgOf(box);
+    if (!vp || !svg) return;
+    box.__orig = svg.getAttribute('style') || '';
+    var full = box.querySelector('[data-zoom="full"]');
+    if (full && !(document.fullscreenEnabled && box.requestFullscreen)) full.style.display = 'none';
+    box.querySelector('.zoom-bar').addEventListener('click', function (e) {
+      var b = e.target.closest ? e.target.closest('[data-zoom]') : null;
+      if (!b) return;
+      var a = b.getAttribute('data-zoom');
+      if (a === 'in') setScale(box, cur(box) * STEP);
+      else if (a === 'out') setScale(box, cur(box) / STEP);
+      else if (a === '1') setScale(box, 1);
+      else if (a === 'fit') fit(box);
+      else if (a === 'full') {
+        if (document.fullscreenElement) document.exitFullscreen();
+        else { var p = box.requestFullscreen(); if (p && p.catch) p.catch(function () {}); }
+      }
+    });
+    // Ctrl/⌘+휠 = 커서 기준 확대(트랙패드 핀치도 ctrlKey 휠로 온다). 휠 단독은 페이지 스크롤 그대로
+    vp.addEventListener('wheel', function (e) {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      // 마우스 휠 한 칸(deltaY≈100)이 한 번에 1/e 로 튀지 않게 한 이벤트의 폭을 ±40 으로 자른다(×0.67~×1.49)
+      var dy = Math.max(-40, Math.min(40, e.deltaY));
+      setScale(box, cur(box) * Math.exp(-dy * 0.01), e.clientX, e.clientY);
+    }, {passive: false});
+    // 드래그 이동 — 3px 넘게 움직여야 드래그. 드래그 끝의 click 은 삼켜 노드 링크가 잘못 열리지 않게
+    var d = null;
+    vp.addEventListener('pointerdown', function (e) {
+      if (e.button !== 0) return;
+      d = {x: e.clientX, y: e.clientY, sl: vp.scrollLeft, st: vp.scrollTop, on: false, id: e.pointerId};
+    });
+    vp.addEventListener('pointermove', function (e) {
+      if (!d) return;
+      var dx = e.clientX - d.x, dy = e.clientY - d.y;
+      if (!d.on && Math.abs(dx) + Math.abs(dy) > 3) {
+        d.on = true; vp.classList.add('dragging');
+        try { vp.setPointerCapture(d.id); } catch (err) {}
+      }
+      if (d.on) { vp.scrollLeft = d.sl - dx; vp.scrollTop = d.st - dy; }
+    });
+    function end() {
+      if (d && d.on) { box.__dragged = true; setTimeout(function () { box.__dragged = false; }, 0); }
+      vp.classList.remove('dragging'); d = null;
+    }
+    vp.addEventListener('pointerup', end);
+    vp.addEventListener('pointercancel', end);
+    vp.addEventListener('click', function (e) {
+      if (box.__dragged) { e.preventDefault(); e.stopPropagation(); box.__dragged = false; }
+    }, true);
+    label(box);
+  }
+  var boxes = document.querySelectorAll('.zoom-box');
+  for (var i = 0; i < boxes.length; i++) init(boxes[i]);
+  window.addEventListener('resize', function () { for (var j = 0; j < boxes.length; j++) label(boxes[j]); });
+  // 딥링크 착지 훅 — 대상이 확대 상자 안이고 1:1 미만이면 1:1 로(노드 글자 판독)
+  window.__issueMapZoom = function (t) {
+    var box = t && t.closest ? t.closest('.zoom-box') : null;
+    if (box && cur(box) < 0.999) setScale(box, 1);
+  };
+})();
+</script>"""
+
+
+# «⏸️ 보류 포함» 토글 (Issue974). 기본 = 미포함. 선택값은 localStorage 에 저장 — 저장소가 막힌
+#   환경(사생활 모드·file:// 정책)에서도 throw 하지 않고 기본값으로 렌더한다. 키는 프로젝트 공통이다
+#   (hub 가 같은 origin 으로 모든 prj 맵을 서빙 — 한 번 켜면 다른 prj 맵에서도 켜진 채로 열린다).
+#   숨겨 둔 변형의 확대 상자는 배율 표시가 0% 라 전환 직후 resize 로 다시 잰다(ZOOM_JS 가 듣는다).
+HELD_TOGGLE_JS = """<script>
+(function () {
+  var KEY = 'issueMap.includeHeld';
+  var btn = document.querySelector('header .held-toggle');
+  function load() { try { return window.localStorage.getItem(KEY) === '1'; } catch (e) { return false; } }
+  function save(on) { try { window.localStorage.setItem(KEY, on ? '1' : '0'); } catch (e) {} }
+  function apply(on) {
+    var vs = document.querySelectorAll('.im-v[data-variant]');
+    for (var i = 0; i < vs.length; i++) vs[i].hidden = (vs[i].getAttribute('data-variant') === 'held') ? !on : on;
+    document.documentElement.setAttribute('data-held', on ? '1' : '0');
+    if (btn) {
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      btn.textContent = on ? '⏸️ 보류 포함' : '⏸️ 보류 미포함';
+    }
+    try { window.dispatchEvent(new Event('resize')); } catch (e) {}
+  }
+  if (!btn || btn.disabled || !document.querySelector('.im-v[data-variant="held"]')) return;
+  if (load()) apply(true);
+  btn.addEventListener('click', function () {
+    var on = btn.getAttribute('aria-pressed') !== 'true';
+    apply(on);
+    save(on);
+    if (window.__issueMapLand) window.__issueMapLand();
+  });
+})();
+</script>"""
+
+
+# 딥링크 수신 계약 (Issue740 · fbot-org.md §이슈 축 연동 결정 3 교차 링크):
+#   `Issue_map.htm#issue=<N>` — N 은 `740` · `Issue740` · `prj3#Issue740`(인코딩 포함) · `740_2`.
+#   같은 data-issue 를 가진 요소(관계도 노드·임계 경로 노드·표 행)를 전부 선택 표시하고,
+#   노드(`issue-<N>`)가 있으면 노드로, 없으면(정리 완료로 그래프 밖) 표 행으로 스크롤한다.
+DEEPLINK_JS = """<script>
+(function () {
+  function norm(v) {
+    try { v = decodeURIComponent(v || ''); } catch (e) { v = v || ''; }
+    v = v.trim().replace(/^prj\\d+#/i, '').replace(/^issue/i, '');
+    return /^[0-9A-Za-z_]+$/.test(v) ? v : '';
+  }
+  function land() {
+    var m = /[#&]issue=([^&]+)/.exec(location.hash || '');
+    if (!m) return;
+    var n = norm(m[1]);
+    if (!n) return;
+    var old = document.querySelectorAll('.issue-sel');
+    for (var i = 0; i < old.length; i++) old[i].classList.remove('issue-sel');
+    var hits = document.querySelectorAll('[data-issue="' + n + '"]');
+    for (var j = 0; j < hits.length; j++) hits[j].classList.add('issue-sel');
+    // Issue974: «보류 포함» 변형이 보이면 그쪽 앵커(`held-` 접두)를 찾는다
+    var pre = document.documentElement.getAttribute('data-held') === '1' ? 'held-' : '';
+    var t = document.getElementById(pre + 'issue-' + n) || document.getElementById(pre + 'issue-' + n + '-row');
+    // Issue828: 노드가 확대 상자 안이면 글자를 읽을 수 있는 배율(1:1)로 키운 뒤 스크롤한다
+    if (t && window.__issueMapZoom) window.__issueMapZoom(t);
+    if (t) t.scrollIntoView({behavior: 'smooth', block: 'center', inline: 'center'});
+    else if (window.console) console.warn('issue-map: #issue=' + n + ' 에 해당하는 노드·행 없음');
+  }
+  window.addEventListener('hashchange', land);
+  window.__issueMapLand = land;
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', land);
+  else land();
+})();
+</script>"""
+
+
 # ── mermaid 생성 ────────────────────────────────────────────────────────
 def esc(s):
     # 백틱 제거: 라벨 선두 백틱은 mermaid 가 markdown-string("`...`") 으로 오인해
@@ -495,8 +1021,8 @@ def esc(s):
     return s.replace('"', "'").replace("|", "/").replace("`", "")
 
 
-def node_line(iss):
-    if iss["ghost"]:                      # 보류·취소 선행 (Issue259)
+def node_line(iss, badges=None):
+    if parked(iss):                       # 보류·취소 선행 (Issue259) · 보류 포함 (Issue974)
         icon = SECTIONS[iss['section']][0]
     else:
         icon = "✅" if iss["done"] else ""
@@ -505,6 +1031,8 @@ def node_line(iss):
     mark = (f'<span style="display:inline-block;margin-left:0.3em">{icon}</span>'
             if icon else "")
     label = f"{iss['id']}{mark}<br>{esc(iss['title'])[:42]}"
+    if badges:                            # --fbot 담당 봇 배지 (Issue740)
+        label += "<br>" + fbot_badge_label(badges)
     return f'    {iss["id"]}["{label}"]'
 
 
@@ -539,7 +1067,8 @@ def merge_archived_deps(issues, root):
         seen.add(key)
         # 아카이브의 섹션 관례(`# 📦 … 아카이브`)는 활성 Issue.md 와 다르다 — 여기서 나오는
         # 미지 섹션 경고는 사용자가 고칠 것이 아니므로 삼킨다(warn 미전달 + 전용 sink).
-        for iid, iss in parse_issue_md(a, lenient=True, quiet=True).items():
+        for iid, iss in parse_issue_md(a, lenient=True, quiet=True,
+                                       archive=True).items():
             if iid in missing:
                 issues[iid] = iss
                 pulled.add(iid)
@@ -616,9 +1145,10 @@ def click_target(path):
 
 
 def build_graph_mmd(issues, stage_map, hidden=frozenset(), resolver=None,
-                    isolated=frozenset()):
+                    isolated=frozenset(), fbot=None):
     lines = ["flowchart TD"]
     visible = {k: v for k, v in issues.items() if k not in hidden}
+    fb = (fbot or {}).get("issues") or {}          # --fbot 배지 (Issue740) — 없으면 종전과 동일
     grouped = set()
     for stage, ids in stage_map.items():
         members = [i for i in ids if i in visible]
@@ -626,12 +1156,12 @@ def build_graph_mmd(issues, stage_map, hidden=frozenset(), resolver=None,
             continue
         lines.append(f'    subgraph SG_{abs(hash(stage)) % 10**6}["{esc(stage)}"]')
         for iid in members:
-            lines.append("    " + node_line(visible[iid]))
+            lines.append("    " + node_line(visible[iid], fb.get(iid)))
             grouped.add(iid)
         lines.append("    end")
     for iid, iss in visible.items():
         if iid not in grouped:
-            lines.append(node_line(iss))
+            lines.append(node_line(iss, fb.get(iid)))
 
     def edge_label(iss, dep=None):
         # 화살표 라벨은 60자에서 끊는다 — 전문은 '전이 트리거' 표에 그대로 남는다
@@ -639,7 +1169,7 @@ def build_graph_mmd(issues, stage_map, hidden=frozenset(), resolver=None,
         trg = trg[:60] + "…" if len(trg) > 60 else trg
         # 선행이 보류·취소면 그 사실을 화살표에 박는다 — 노드만 회색이면
         # "왜 안 풀리는지" 가 안 보인다 (Issue259)
-        if dep is not None and dep["ghost"]:
+        if dep is not None and parked(dep):
             held = SECTIONS[dep["section"]][0]
             trg = f"{held} · {trg}" if trg else f"{held} — 자동 해제 없음"
         return f'|"{trg}"|' if trg else ""
@@ -652,7 +1182,7 @@ def build_graph_mmd(issues, stage_map, hidden=frozenset(), resolver=None,
             if dep not in visible:
                 continue
             edges.append(f"    {dep} -->{edge_label(iss, issues[dep])} {iid}")
-            if issues[dep]["ghost"]:
+            if parked(issues[dep]):
                 styles["held"].append(idx)
             else:
                 styles["go" if issues[dep]["done"] else "block"].append(idx)
@@ -676,7 +1206,7 @@ def build_graph_mmd(issues, stage_map, hidden=frozenset(), resolver=None,
     clicks = []
     local_root = resolver.root if resolver is not None else None
     for iid, iss in visible.items():
-        if iss["done"] or iss["ghost"]:
+        if iss["done"] or parked(iss):
             continue
         url = click_target(local_root)
         if url:
@@ -695,7 +1225,7 @@ def build_graph_mmd(issues, stage_map, hidden=frozenset(), resolver=None,
     # Issue606: 고립 노드(다른 잔여와 `depends` 로 안 엮인 이슈)는 그래프에서 빼지 않고
     #   흐린 class 로 남긴다 — 엮인 것과 독립인 것을 한 화면에서 구분하기 위함.
     for iid, iss in visible.items():
-        cls = ("held" if iss["ghost"]
+        cls = ("held" if parked(iss)
                else "iso" if iid in isolated
                else SECTIONS[iss["section"]][1])
         lines.append(f'    class {iid} {cls}')
@@ -774,11 +1304,37 @@ def fit_svg(s: str) -> str:
     head, body = s[:head_end], s[head_end:]
     m = re.search(r"max-width:\s*([\d.]+)px", head)
     cap = f"min(100%, {m.group(1)}px)" if m else "100%"
-    head = re.sub(r'\s(?:style|width)="[^"]*"', "", head)   # 기존 style·고정 폭 제거
+    # Issue828: 자연 폭을 남긴다 — 확대 상자가 배율(1:1 = 자연 폭)을 계산하는 기준이다.
+    #   max-width 가 없으면 viewBox 폭으로 대신한다.
+    vb = re.search(r'viewBox="\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)', head)
+    natural = m.group(1) if m else (vb.group(1) if vb else "")
+    head = re.sub(r'\s(?:style|width|data-natural-w)="[^"]*"', "", head)   # 기존 style·고정 폭 제거
+    nat_attr = f' data-natural-w="{natural}"' if natural else ""
     head = head.replace(
         "<svg",
-        f'<svg style="max-width:{cap};height:auto;display:block;margin:0 auto"', 1)
+        f'<svg{nat_attr} style="max-width:{cap};height:auto;display:block;margin:0 auto"', 1)
     return head + body
+
+
+def zoom_box(svg: str) -> str:
+    """Issue828: SVG 를 확대 상자(도구 막대 + 스크롤 뷰포트)로 감싼다.
+
+    넓은 그래프는 `fit_svg` 캡 때문에 화면 폭으로 눌려 글자를 못 읽는다. 캡은 작은 그래프의
+    과확대 방지(Issue251)라 유지하고, 사용자가 필요할 때 키우는 수단을 붙인다. 동작은 `ZOOM_JS`."""
+    return (
+        '<div class="zoom-box">\n'
+        '<div class="zoom-bar" role="toolbar" aria-label="관계도 확대">'
+        '<button type="button" data-zoom="out" title="축소">－</button>'
+        '<span class="zoom-pct" aria-live="polite"></span>'
+        '<button type="button" data-zoom="in" title="확대">＋</button>'
+        '<button type="button" data-zoom="fit" title="화면 폭에 맞춤">맞춤</button>'
+        '<button type="button" data-zoom="1" title="원래 크기(글자 판독)">1:1</button>'
+        '<button type="button" data-zoom="full" title="전체 화면">⛶</button>'
+        '<span class="zoom-hint">드래그로 이동 · Ctrl/⌘+휠(핀치)로 확대</span>'
+        '</div>\n'
+        f'<div class="zoom-vp">\n{svg}\n</div>\n'
+        '</div>'
+    )
 
 
 # ── HTML 조립 ───────────────────────────────────────────────────────────
@@ -809,7 +1365,7 @@ def status_text(iss, issues, resolver=None):
         return iss["note"]
     local, ext_blocked, unknown = blocking_of(iss, issues, resolver)
     # 보류·취소 선행은 '기다리면 풀리는 차단' 이 아니므로 상태 문구에 그 사실을 남긴다 (Issue259)
-    blockers = [f"{d} {SECTIONS[issues[d]['section']][0]}" if issues[d]["ghost"] else d
+    blockers = [f"{d} {SECTIONS[issues[d]['section']][0]}" if parked(issues[d]) else d
                 for d in local] + ext_blocked
     if blockers:
         return f"⛔ 차단 ({', '.join(blockers)})"
@@ -886,9 +1442,20 @@ def build_cross_section(issues, resolver, cycles):
 <!-- ISSUE-MAP:CROSS:END -->"""
 
 
-def build_html(issues, svg_graph, svg_critical, preserved_notes, root: Path,
-               hidden=frozenset(), isolated=frozenset(), has_graph=True,
-               resolver=None, cycles=(), has_edges=True):
+def build_variant(issues, svg_graph, svg_critical, hidden=frozenset(), isolated=frozenset(),
+                  has_graph=True, resolver=None, cycles=(), has_edges=True, fbot=None,
+                  held_mode=False):
+    """한 변형(기본 / «⏸️ 보류 포함» — Issue974)의 (meta 문구, 본문 HTML).
+
+    본문 = 관계도·임계 경로·타 prj 연동·진행 전·트리거·이슈 목록. 두 변형이 한 문서에 들어가므로
+    포함 변형은 앵커 id 에 `held-` 접두를 달고 `ISSUE-MAP:*` 마커를 뺀다 — 마커는 hub 가
+    파싱하는 계약이라 기본 변형 1벌만 둔다(`_issue_map_has_graph` 판정 불변).
+    """
+    # Issue740 — fbot=None 이면 오버레이 미요청(표 열·범례 모두 종전과 동일)
+    fb_on = bool(fbot and fbot.get("ok"))
+    fb = (fbot or {}).get("issues") or {}
+    pfx = "held-" if held_mode else ""
+
     def graph_cell(iid):                                   # Issue247: 3값 표기
         if iid in hidden:
             return "정리 완료"
@@ -909,15 +1476,21 @@ def build_html(issues, svg_graph, svg_critical, preserved_notes, root: Path,
         parts = list(i["depends"]) + [f"{r}#{d}" for r, d in i["ext"]]
         return html.escape(", ".join(parts)) if parts else "&mdash;"
 
+    # Issue740 — 표 행 앵커 `issue-<N>-row`(노드가 `issue-<N>` 을 가진다 — id 는 문서에서 유일)
+    #   + 번호 칸 자체가 딥링크(`#issue=<N>`)라 복사해 공유할 수 있다
     rows = "\n".join(
-        "  <tr><td>{id}</td><td>{title}</td><td class='sec'>{sec}</td>"
-        "<td>{dep}</td><td>{st}</td><td>{gr}</td></tr>".format(
+        "  <tr id=\"{pfx}issue-{n}-row\" data-issue=\"{n}\"><td><a href=\"#issue={n}\">{id}</a></td>"
+        "<td>{title}</td><td class='sec'>{sec}</td>"
+        "<td>{dep}</td><td>{st}</td><td>{gr}</td>{fbc}</tr>".format(
+            n=html.escape(i["id"][len("Issue"):]), pfx=pfx,
             id=i["id"], title=html.escape(i["title"]),
             sec=SECTIONS[i["section"]][0],
             dep=dep_cell(i),
             st=html.escape(status_text(i, issues, resolver)),
-            gr=graph_cell(i["id"]))
-        for i in listed) or "  <tr><td colspan='6'>남은 이슈 없음</td></tr>"
+            gr=graph_cell(i["id"]),
+            fbc=(f"<td>{fbot_cell(fb.get(i['id']))}</td>" if fb_on else ""))
+        for i in listed) or (f"  <tr><td colspan='{7 if fb_on else 6}'>남은 이슈 없음</td></tr>")
+    fb_th = "<th>담당(fbot)</th>" if fb_on else ""
     hidden_note = (
         f"<p>완료 {dropped}건은 그래프와 무관하여 생략했습니다"
         f"(잔여 작업과 그래프 연동분만 표시). 전량 표시는 <code>--all</code> 옵션.</p>"
@@ -933,9 +1506,7 @@ def build_html(issues, svg_graph, svg_critical, preserved_notes, root: Path,
 
     total = len(active)
     done = sum(1 for i in active.values() if i["done"])
-    notes = preserved_notes or (
-        "<ul>\n  <li>메모 없음 &mdash; 이 구간은 수기 편집분이 보존됩니다."
-        " 재생성해도 지워지지 않습니다.</li>\n</ul>")
+    n_held = sum(1 for i in active.values() if i.get("held"))
 
     # ── 조건부 섹션 (Issue247) ───────────────────────────────────────────
     # edge 가 하나도 없으면 의존 관계도·임계 경로는 보여줄 것이 없으므로 통째 생략.
@@ -946,7 +1517,7 @@ def build_html(issues, svg_graph, svg_critical, preserved_notes, root: Path,
 <h2>임계 경로</h2>
 <!-- ISSUE-MAP:CRITICAL:START -->
 <figure>
-{svg_critical}
+{zoom_box(svg_critical)}
 <figcaption>미완료 이슈 중 의존 사슬이 가장 긴 경로. 중간 하나가 막히면 뒤 전체가 정지합니다.</figcaption>
 </figure>
 <!-- ISSUE-MAP:CRITICAL:END -->
@@ -956,11 +1527,17 @@ def build_html(issues, svg_graph, svg_critical, preserved_notes, root: Path,
 <blockquote><p><code>depends</code> 로 이어진 이슈가 없어 임계 경로를 생략했습니다 &mdash; 남은 이슈가 서로 독립이라 순서 제약이 없습니다.</p></blockquote>
 <!-- ISSUE-MAP:CRITICAL:END -->
 """
+    excl_note = (
+        "<strong>⏸️ 보류 이슈를 포함</strong>해 회색 점선 노드로 그립니다(타 프로젝트 선행 포함). "
+        "<strong>취소 이슈는 제외</strong>되며, 활성 이슈가 선행으로 걸고 있는 경우에만 회색 점선 노드로 남습니다."
+        if held_mode else
+        "<strong>보류 · 취소 이슈는 맵에서 제외</strong>되며, 활성 이슈가 선행으로 걸고 있는 경우에만 "
+        "회색 점선 노드로 남습니다. 보류 이슈는 상단 <strong>⏸️ 보류</strong> 토글로 켜서 볼 수 있습니다.")
     graph_section = f"""<h2>전체 의존 관계</h2>
 <!-- ISSUE-MAP:GRAPH:START -->
 <figure>
-{svg_graph}
-<figcaption>노드 색은 <code>Issue.md</code> 섹션(완료 · 중요 · 일반 · 선택), 화살표 색은 선행 이슈 완료 여부로 결정됩니다. <strong>다른 잔여 이슈와 <code>depends</code> 로 엮이지 않은 독립 이슈는 흐린 회색</strong>으로 그려집니다 &mdash; 그래프에서 빠지지는 않습니다. 자신도 후행도 모두 완료된 이슈만 표로 빠집니다. <strong>보류 · 취소 이슈는 맵에서 제외</strong>되며, 활성 이슈가 선행으로 걸고 있는 경우에만 회색 점선 노드로 남습니다.</figcaption>
+{zoom_box(svg_graph)}
+<figcaption>노드 색은 <code>Issue.md</code> 섹션(완료 · 중요 · 일반 · 선택), 화살표 색은 선행 이슈 완료 여부로 결정됩니다. <strong>다른 잔여 이슈와 <code>depends</code> 로 엮이지 않은 독립 이슈는 흐린 회색</strong>으로 그려집니다 &mdash; 그래프에서 빠지지는 않습니다. 자신도 후행도 모두 완료된 이슈만 표로 빠집니다. {excl_note}</figcaption>
 </figure>
 <!-- ISSUE-MAP:GRAPH:END -->
 {critical_section}""" if has_graph else """<!-- ISSUE-MAP:GRAPH:START -->
@@ -979,6 +1556,82 @@ def build_html(issues, svg_graph, svg_critical, preserved_notes, root: Path,
             st=html.escape(status_text(i, issues, resolver)))
         for i in pending) or "  <tr><td colspan='4'>없음 &mdash; 미완료 이슈가 모두 의존 관계도 안에 있습니다</td></tr>"
 
+    meta = (f"이슈 {total}건 · 완료 {done}건"
+            + (f" · ⏸️ 보류 {n_held}건 포함" if held_mode else ""))
+    body = f"""{graph_section}
+{build_cross_section(issues, resolver, cycles)}
+
+<h2>진행 전 이슈</h2>
+<!-- ISSUE-MAP:PENDING:START -->
+<div class="wrap">
+<table>
+  <tr><th>번호</th><th>제목</th><th>섹션</th><th>상태</th></tr>
+{pending_rows}
+</table>
+</div>
+<p><code>depends</code> 연결이 없어 의존 관계도에 그리지 않은 미완료 이슈입니다. 선행이 있다면 <code>* depends:</code> 와 전이 조건 <code>* trigger:</code> 를 이슈에 적어 두면 위 관계도에 편입됩니다.</p>
+<!-- ISSUE-MAP:PENDING:END -->
+
+<h2>전이 트리거</h2>
+<!-- ISSUE-MAP:TRIGGER:START -->
+<div class="wrap">
+<table>
+  <tr><th>전이</th><th>트리거 조건</th><th>현재 상태</th></tr>
+{trg_rows}
+</table>
+</div>
+<!-- ISSUE-MAP:TRIGGER:END -->
+
+<h2>이슈 목록</h2>
+<!-- ISSUE-MAP:TABLE:START -->
+<div class="wrap">
+<table>
+  <tr><th>번호</th><th>제목</th><th>섹션</th><th>depends</th><th>상태</th><th>그래프</th>{fb_th}</tr>
+{rows}
+</table>
+</div>
+{hidden_note}
+<!-- ISSUE-MAP:TABLE:END -->
+"""
+    if held_mode:
+        body = re.sub(r"<!-- ISSUE-MAP:[A-Z]+:(?:START|END) -->\n?", "", body)
+    return meta, body
+
+
+def build_html(base, held, preserved_notes, root: Path, fbot=None):
+    """문서 조립 — base·held = `build_variant` 의 (meta, 본문). held=None 이면 보류 이슈 0건(Issue974).
+
+    기본 변형이 먼저 온다(무 JS·hub 파서가 보는 쪽). 포함 변형은 `hidden` 으로 실어 두고
+    헤더 토글(`HELD_TOGGLE_JS`)이 localStorage 값에 따라 전환한다.
+    """
+    fb_on = bool(fbot and fbot.get("ok"))
+    if fb_on:
+        fbot_note = (
+            '<p class="fbot-note">노드 아래 배지 = <strong>담당 봇</strong>(원장 <code>fbot_dispatch</code> '
+            f'읽기 전용 조인 · 열린 배분 + 최근 {FBOT_RECENT_SECS // 86400}일). '
+            "사인 ⏳ 수행중 · ✓ 완료 · ⛔ 차단 · ⌇ 회수(완료 미상) · ✕ 취소 · ▪ 사후 기록 · ⏸ 보류. "
+            "표의 <strong>담당(fbot)</strong> 열에 배분자(&larr;)를 함께 적습니다.</p>")
+    elif fbot is not None:
+        fbot_note = (f'<p class="fbot-note">fbot 오버레이 생략 &mdash; '
+                     f'{html.escape(fbot.get("reason") or "")}</p>')
+    else:
+        fbot_note = ""
+    notes = preserved_notes or (
+        "<ul>\n  <li>메모 없음 &mdash; 이 구간은 수기 편집분이 보존됩니다."
+        " 재생성해도 지워지지 않습니다.</li>\n</ul>")
+    base_meta, base_body = base
+    meta_spans = f'<span class="im-v" data-variant="base">{base_meta}</span>'
+    bodies = f'<div class="im-v im-body" data-variant="base">\n{base_body}\n</div><!-- /im-body -->'
+    if held is not None:
+        meta_spans += f'<span class="im-v" data-variant="held" hidden>{held[0]}</span>'
+        bodies += (f'\n<div class="im-v im-body" data-variant="held" hidden>\n{held[1]}'
+                   '\n</div><!-- /im-body -->')
+        toggle_btn = ('<button type="button" class="held-toggle" aria-pressed="false" '
+                      'title="⏸️ 보류 이슈를 관계도·표에 포함할지 전환 (선택값은 이 브라우저에 저장)">'
+                      '⏸️ 보류 미포함</button>')
+    else:
+        toggle_btn = ('<button type="button" class="held-toggle" aria-pressed="false" disabled '
+                      'title="보류 이슈 없음">⏸️ 보류 없음</button>')
     return f"""<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -1036,10 +1689,16 @@ def build_html(issues, svg_graph, svg_critical, preserved_notes, root: Path,
   .eg-block::before {{ color: {EDGE_BLOCK}; }}
   .eg-ref::before {{ color: {EDGE_REF}; }}
   .sec {{ white-space: nowrap; font-weight: 600; }}
+  .im-v[hidden] {{ display: none !important; }}
+  header button.held-toggle[aria-pressed="true"] {{ background: rgba(138,122,176,0.35); border-color: {EDGE_HELD}; }}
+  header button.held-toggle:disabled {{ opacity: 0.45; cursor: default; text-decoration: none; }}
   footer {{ margin-top: 3rem; padding-top: 1rem; border-top: 1px solid rgba(127,127,127,0.3);
     font-size: 0.85rem; opacity: 0.75; }}
+{ANCHOR_CSS}
+{ZOOM_CSS}
   @media (prefers-color-scheme: dark) {{
     body {{ background: #16181c; color: #e6e6e6; }}
+    .zoom-box:fullscreen {{ background: #16181c; }}
     a {{ color: hsl(205,80%,68%); }}
     blockquote {{ background: rgba(200,160,60,0.14); }}
     .meta {{ background: rgba(255,255,255,0.04); border-left-color: hsl(205,80%,62%); }}
@@ -1054,10 +1713,11 @@ def build_html(issues, svg_graph, svg_critical, preserved_notes, root: Path,
   <nav class="header-actions">
     <a class="proj-badge" href="#" title="클릭 → VSCode 로 {html.escape(root.name)} 열기"
        onclick="event.preventDefault();fetch('/open-project',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{cwd:'{html.escape(str(root))}'}})}}).then(function(r){{return r.json();}}).then(function(j){{if(j&&j.error)alert('VSCode 열기 실패: '+j.error);}}).catch(function(){{alert('hub 서버 미응답 — VSCode 열기 실패');}});">📁 {html.escape(root.name)}</a>
+    {toggle_btn}
     <button type="button" class="close-btn" title="이 문서 탭 닫기" onclick="window.close()">✕</button>
   </nav>
 </header>
-<div class="meta">이슈 {total}건 · 완료 {done}건 · 기준 자료 <code>Issue.md</code> · 갱신 {date.today().isoformat()}</div>
+<div class="meta">{meta_spans} · 기준 자료 <code>Issue.md</code> · 갱신 {date.today().isoformat()}</div>
 
 <blockquote>
 <p>이 문서는 <code>Issue.md</code> 를 파싱해 <strong>issue-map 스킬이 자동 생성</strong>합니다. 직접 편집한 내용은 다음 재생성 때 사라지므로, 수기 메모는 문서 하단 &ldquo;메모&rdquo; 구간에만 작성하십시오(그 구간은 보존됩니다).</p>
@@ -1071,41 +1731,9 @@ def build_html(issues, svg_graph, svg_critical, preserved_notes, root: Path,
   <span class="eg-ref"><strong>회색 점선</strong>: 타 프로젝트 선행을 <strong>확인하지 못함</strong> (차단 여부 미판정)</span>
 </div>
 <p style="font-size:0.87rem;opacity:0.8;margin-top:-0.8rem">점선 테두리 노드는 <strong>다른 프로젝트의 이슈</strong>입니다. 상태는 그 프로젝트 <code>Issue.md</code> 를 직접 읽어 판정합니다.</p>
+{fbot_note}
 
-{graph_section}
-{build_cross_section(issues, resolver, cycles)}
-
-<h2>진행 전 이슈</h2>
-<!-- ISSUE-MAP:PENDING:START -->
-<div class="wrap">
-<table>
-  <tr><th>번호</th><th>제목</th><th>섹션</th><th>상태</th></tr>
-{pending_rows}
-</table>
-</div>
-<p><code>depends</code> 연결이 없어 의존 관계도에 그리지 않은 미완료 이슈입니다. 선행이 있다면 <code>* depends:</code> 와 전이 조건 <code>* trigger:</code> 를 이슈에 적어 두면 위 관계도에 편입됩니다.</p>
-<!-- ISSUE-MAP:PENDING:END -->
-
-<h2>전이 트리거</h2>
-<!-- ISSUE-MAP:TRIGGER:START -->
-<div class="wrap">
-<table>
-  <tr><th>전이</th><th>트리거 조건</th><th>현재 상태</th></tr>
-{trg_rows}
-</table>
-</div>
-<!-- ISSUE-MAP:TRIGGER:END -->
-
-<h2>이슈 목록</h2>
-<!-- ISSUE-MAP:TABLE:START -->
-<div class="wrap">
-<table>
-  <tr><th>번호</th><th>제목</th><th>섹션</th><th>depends</th><th>상태</th><th>그래프</th></tr>
-{rows}
-</table>
-</div>
-{hidden_note}
-<!-- ISSUE-MAP:TABLE:END -->
+{bodies}
 
 <h2>메모 (수기 편집 구간 · 재생성 시 보존)</h2>
 <!-- ISSUE-MAP:NOTES:START -->
@@ -1116,6 +1744,9 @@ def build_html(issues, svg_graph, svg_critical, preserved_notes, root: Path,
   <p>생성: <code>build_issue_map.py</code> (issue-map 스킬 — 글로벌 SCAR / fpm-core 번들) · 기준: <code>Issue.md</code></p>
 </footer>
 
+{HELD_TOGGLE_JS}
+{ZOOM_JS}
+{DEEPLINK_JS}
 </body>
 </html>
 """
@@ -1139,7 +1770,7 @@ def longest_chain(issues):
         return memo[iid]
 
     # 유령(보류·취소 선행)은 사슬 머리로 세지 않는다 — 임계 경로가 왜곡된다 (Issue259)
-    chains = [walk(i["id"]) for i in issues.values() if not i["done"] and not i["ghost"]]
+    chains = [walk(i["id"]) for i in issues.values() if not i["done"] and not parked(i)]
     return max(chains, key=len) if chains else []
 
 
@@ -1210,7 +1841,7 @@ def print_deadlock_report(issues, resolver, cycles):
               "선행 완료 시 자동 해제")
 
 
-def emit_json(issues, resolver, root: Path) -> None:
+def emit_json(issues, resolver, root: Path, fbot=None) -> None:
     """--json: 파싱·판정 결과를 기계 소비용 JSON 으로 stdout 출력 (Issue436_3).
 
     htm 미생성·mmdc 미호출 — 빠르고 무의존. 판정은 blocking_of(status_text 와
@@ -1249,8 +1880,19 @@ def emit_json(issues, resolver, root: Path) -> None:
                     "status": ("done" if st["done"]
                                else ("blocked" if st["ok"] else "unknown")),
                 })
-    print(json.dumps({"root": str(root), "generated": int(time.time()),
-                      "issues": out_issues, "cross": cross}, ensure_ascii=False))
+    doc = {"root": str(root), "generated": int(time.time()),
+           "issues": out_issues, "cross": cross}
+    # Issue740 — `--fbot` 일 때만 `fbot` 키를 **추가**한다. 소비처 fbot-lead `load_issue_map()` 은
+    #   `--fbot` 없이 부르므로 기존 4키 스키마는 바이트 단위로 그대로다. icon_uri(수백 B base64)는
+    #   기계 소비에 쓸모가 없어 뺀다
+    if fbot is not None:
+        doc["fbot"] = {
+            "ok": fbot["ok"], "reason": fbot["reason"], "db": fbot["db"],
+            "window_secs": fbot["window_secs"],
+            "issues": {iid: [{k: v for k, v in b.items() if k != "icon_uri"} for b in bs]
+                       for iid, bs in fbot["issues"].items()},
+        }
+    print(json.dumps(doc, ensure_ascii=False))
 
 
 def print_dep_warnings(warn: list) -> None:
@@ -1276,6 +1918,32 @@ def print_dep_warnings(warn: list) -> None:
     print("   규약: rules/issue-g.md 규칙2 `depends` 토큰 문법\n", file=sys.stderr)
 
 
+def render_variant(issues, stage_map, hidden, isolated, has_graph, has_edges,
+                   resolver, cycles, fbot, wd: Path, held_mode=False):
+    """한 변형의 SVG 렌더 + 본문 조립 → `build_variant` 의 (meta, 본문) (Issue974).
+
+    «보류 포함» 변형은 mermaid SVG id(`my-svg`)를 바꾼다 — 같은 id 가 두 번 나오면 포함 변형의
+    화살촉 `marker-end="url(#my-svg_…)"` 가 **숨겨진** 기본 변형의 marker 를 가리켜 사라진다.
+    """
+    svg_graph = svg_crit = ""
+    tag = "-held" if held_mode else ""
+    pfx = "held-" if held_mode else ""
+
+    def fix(svg):
+        return svg.replace("my-svg", "my-svg-held") if held_mode else svg
+
+    if has_graph:                      # 노드 0 이면 mmdc 를 아예 타지 않는다
+        # Issue740 — 관계도 노드에 안정 id `issue-<N>`, 임계 경로엔 data-issue 만(id 중복 방지)
+        svg_graph = anchor_svg_nodes(fix(render_svg(
+            build_graph_mmd(issues, stage_map, hidden, resolver, isolated, fbot),
+            wd, "graph" + tag)), id_prefix=pfx)
+        svg_crit = (anchor_svg_nodes(fix(render_svg(build_critical_mmd(issues), wd,
+                                                    "critical" + tag)), with_id=False)
+                    if has_edges else "")
+    return build_variant(issues, svg_graph, svg_crit, hidden, isolated, has_graph,
+                         resolver, cycles, has_edges, fbot, held_mode=held_mode)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="Issue_map.htm")
@@ -1289,6 +1957,8 @@ def main():
                     help="타 프로젝트 선행을 조회하지 않음 (오프라인·속도 우선)")
     ap.add_argument("--deadlock", action="store_true",
                     help="교착(순환 대기) 진단만 출력 (파일 미생성)")
+    ap.add_argument("--fbot", action="store_true",
+                    help="핀봇 배분 원장을 읽기 전용 조인해 담당 봇 배지 표시 (옵트인, Issue740)")
     args = ap.parse_args()
 
     root = Path.cwd()
@@ -1301,6 +1971,9 @@ def main():
     if not issues:
         sys.exit("❌ 이슈 파싱 결과 0건 — Issue.md 형식 확인 필요")
     pulled = merge_archived_deps(issues, root)   # Issue606: 아카이브로 옮겨진 선행 보충
+    # Issue974: «⏸️ 보류 포함» 변형은 제외 전 사본에서 만든다 — split_excluded 가 지우고 비운다
+    issues_held = (copy.deepcopy(issues)
+                   if any(i["section"] == HELD_SECTION for i in issues.values()) else None)
     ghosts = split_excluded(issues)         # ⏸️ 보류 · 🚫 취소 제외 (Issue259)
     stage_map = load_stage_map(root)
 
@@ -1309,8 +1982,16 @@ def main():
     demote_self_refs(issues, resolver)
     cycles = resolver.deadlocks(issues)
 
+    # Issue740 — 옵트인 오버레이. 실패는 **오류 exit 가 아니다** — 1줄 안내 후 오버레이만 뺀다
+    fbot = None
+    if args.fbot:
+        fbot = load_fbot_overlay(root, set(issues))
+        if not fbot["ok"]:
+            print(f"ℹ️ fbot 오버레이 생략 — {fbot['reason']} · 나머지 출력은 정상",
+                  file=sys.stderr)
+
     if args.as_json:                        # Issue436_3 — 기계 출력, htm 경로 완전 미진입
-        emit_json(issues, resolver, root)
+        emit_json(issues, resolver, root, fbot)
         print_dep_warnings(dep_warn)
         return
 
@@ -1349,6 +2030,10 @@ def main():
               f" / 타 prj 선행 {sum(len(i['ext']) for i in issues.values())}건"
               + (f" / 보류·취소 유령 {len(ghosts)}건" if ghosts else ""))
         print("임계 경로:", " → ".join(longest_chain(issues)) or "없음")
+        if fbot and fbot["ok"]:
+            for iid, bs in fbot["issues"].items():
+                print(f"fbot 배지 {iid:<10} " + " · ".join(
+                    f"{b['sign']} {b['worker']} ← {b['owner']}" for b in bs))
         if not has_edges:
             print("ℹ️ depends 연결 0건 — 임계 경로만 생략, 관계도는 흐린 노드로 렌더")
         if not has_graph:
@@ -1372,18 +2057,25 @@ def main():
         print_dep_warnings(dep_warn)
         return
 
-    svg_graph = svg_crit = ""
-    if has_graph:                      # 노드 0 이면 mmdc 를 아예 타지 않는다
-        with tempfile.TemporaryDirectory() as td:
-            wd = Path(td)
-            svg_graph = render_svg(
-                build_graph_mmd(issues, stage_map, graph_hidden, resolver, isolated),
-                wd, "graph")
-            svg_crit = (render_svg(build_critical_mmd(issues), wd, "critical")
-                        if has_edges else "")
+    with tempfile.TemporaryDirectory() as td:
+        wd = Path(td)
+        base = render_variant(issues, stage_map, hidden, isolated, has_graph, has_edges,
+                              resolver, cycles, fbot, wd)
+        held = None
+        if issues_held is not None:        # Issue974 — 보류 이슈가 있을 때만 두 번째 렌더
+            split_excluded(issues_held, HELD_TOGGLE_EXCLUDED)   # 아카이브 선행은 사본 전에 보충됨
+            demote_self_refs(issues_held, resolver)
+            h_hidden = frozenset() if args.all else settled(issues_held)
+            h_linked = linked_ids(issues_held, h_hidden)
+            h_isolated = frozenset(k for k in issues_held
+                                   if k not in h_hidden and k not in h_linked)
+            h_fbot = load_fbot_overlay(root, set(issues_held)) if args.fbot else None
+            held = render_variant(issues_held, stage_map, h_hidden, h_isolated,
+                                  bool(set(issues_held) - h_hidden), bool(h_linked),
+                                  resolver, resolver.deadlocks(issues_held), h_fbot, wd,
+                                  held_mode=True)
 
-    html_text = build_html(issues, svg_graph, svg_crit, extract_notes(out), root,
-                           hidden, isolated, has_graph, resolver, cycles, has_edges)
+    html_text = build_html(base, held, extract_notes(out), root, fbot)
     out.write_text(html_text)
     shown = len(issues) - len(graph_hidden)
     n_ext = sum(len(i["ext"]) for i in issues.values())
@@ -1394,7 +2086,10 @@ def main():
           + (f" / 아카이브 선행 {len(pulled)}건 보충" if pulled else "")
           + (f" / 정리 완료 {len(hidden)}건 숨김" if hidden else "")
           + (f" / 보류·취소 유령 {len(ghosts)}건" if ghosts else "")
-          + (f" / 타 prj 선행 {n_ext}건" if n_ext else "") + ")")
+          + (f" / 타 prj 선행 {n_ext}건" if n_ext else "")
+          + (f" / fbot 배지 {len(fbot['issues'])}건" if fbot and fbot["ok"] else "")
+          + (f" / ⏸️ 보류 포함 토글 {sum(1 for i in issues_held.values() if i.get('held'))}건"
+             if issues_held is not None else "") + ")")
     if cycles:
         print(f"🔴 교착 {len(cycles)}건 검출 — 상세는 `--deadlock`:")
         for c in cycles:

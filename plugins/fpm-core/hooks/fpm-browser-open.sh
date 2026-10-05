@@ -70,6 +70,23 @@ case "$app_raw" in
   *)                  app="$app_raw" ;;
 esac
 
+# Issue532: 세션당 창 하나 — md-doc 탭을 열기 전에 hub 서버에 «이 세션의 창»을 묻는다.
+#   판정은 서버 `/live-route` 한 곳이 한다(라이브 뷰 폴링 중 → skip, 창 없음 → 라이브 URL,
+#   archive·판정 불가 → 원래 URL). 이 helper 는 결과만 따른다. 무응답·오류는 원래 URL(fail-open).
+#   서버 조회는 항상 loopback 으로 한다 — 문서 URL 의 host(tailnet 이름 등)는 표시용이다.
+#   우회: FPM_OPEN_NO_ROUTE=1
+if [[ "${FPM_OPEN_NO_ROUTE:-0}" != "1" && "$url" == *"/md-doc?"* ]]; then
+  _port=$(printf '%s' "$url" | sed -nE 's#^[a-z]+://[^/:]+:([0-9]+)/.*#\1#p')
+  _route=$(curl -s --max-time 1 -G --data-urlencode "url=$url" \
+      "http://127.0.0.1:${_port:-9876}/live-route" 2>/dev/null || true)
+  _act=$(printf '%s' "$_route" | sed -nE 's/.*"action"[[:space:]]*:[[:space:]]*"([a-z]+)".*/\1/p')
+  _rurl=$(printf '%s' "$_route" | sed -nE 's/.*"url"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p')
+  case "$_act" in
+    skip) echo "fpm-browser-open: 라이브 뷰에 인라인 표시 — 새 탭 생략 (Issue532)" >&2; exit 0 ;;
+    open) [[ -n "$_rurl" ]] && url="$_rurl" ;;
+  esac
+fi
+
 # match 미지정 시 origin(scheme://host:port) 추출 → hub 의 모든 path(/hub·?path=…) 단일 탭 재사용
 if [[ -z "$match" ]]; then
   match=$(printf '%s' "$url" | sed -E 's#^([a-z]+://[^/]+).*#\1#')

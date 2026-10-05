@@ -15,7 +15,8 @@
 #
 # 배선 (Issue478_2): 호출은 `bash tdd/run-tdd.sh --only release` 가 표준이다.
 #   러너·판정·결과 경로가 이미 표준화돼 있어 새 규약이 생기지 않는다. 전체 PASS 시
-#   scripts/fpm-deploy-record.sh --gate release 로 통과 기록을 남기고, 출고(G4)가 그것을 읽는다.
+#   scripts/fpm-deploy-record.sh --gate release 로 통과 기록(yml 색인)을 남긴다. 출고 근거는
+#   이 스위트를 2행으로 품은 R1(tdd/run-release.sh — 격리 worktree)의 md 증거이고 G4 = R2 가 그것을 읽는다(Issue543).
 #
 # 사용: bash sh/release-check.sh            전체 (1+2+3)
 #       bash sh/release-check.sh --no-sandbox  스테이지3 생략 (단위+게이트만)
@@ -104,7 +105,8 @@ if [ "$SANDBOX" -eq 1 ]; then
     else
         noclaude_path="$PATH"
     fi
-    if run env HOME="$SBX2" PATH="$noclaude_path" bash "$REPO/sh/install.sh"; then
+    # Issue564: 해석기는 PATH 밖 관례 경로도 훑는다 — «부재» 를 흉내 내려면 PATH 만 보게 한다
+    if run env HOME="$SBX2" PATH="$noclaude_path" FPM_CLAUDE_PATH_ONLY=1 bash "$REPO/sh/install.sh"; then
         echo "  claude부재 → SCAR skip + exit0 PASS"
     else
         echo "  claude부재 exit≠0 FAIL"; sb_fail=$((sb_fail+1))
@@ -176,9 +178,13 @@ if [ "$STAGE_FAIL" -eq 0 ]; then
     #   ⚠️ `--no-sandbox` 는 기록하지 않는다 — 스테이지 3·4(샌드박스 설치·미러
     #      dry-run)를 건너뛴 부분 실행이라 통과 근거가 될 수 없다. 부분 실행을
     #      전체 통과로 기록하면 게이트가 존재만 하고 아무것도 지키지 못한다.
-    if [ "$SANDBOX" -eq 1 ] && [ -x "$REPO/scripts/fpm-deploy-record.sh" ]; then
-        bash "$REPO/scripts/fpm-deploy-record.sh" --gate release --repo "$REPO" || true
-    elif [ "$SANDBOX" -eq 0 ]; then
+    #   ⚠️ 기록 실패는 실패다 (Issue543 M1-0b) — 종전 `|| true` 는 "검증 PASS + 근거 없음" 을
+    #      rc 0 으로 끝냈다. 기록기 부재도 같은 결과라 `-x` 조건으로 조용히 건너뛰지 않는다.
+    if [ "$SANDBOX" -eq 1 ]; then
+        bash "$REPO/scripts/fpm-deploy-record.sh" --gate release --repo "$REPO" || {
+            echo "🚨 G3 통과 기록 실패 — 검증은 통과했으나 근거가 남지 않았다(출고 게이트가 이 실행을 볼 수 없다)"
+            STAGE_FAIL=$((STAGE_FAIL+1)); }
+    else
         echo "ℹ️ --no-sandbox 실행이라 G3 통과 기록 생략 (출고 게이트 근거가 되지 않는다)"
     fi
 else

@@ -72,9 +72,12 @@ REGISTRY_DB = os.path.join(AOA_DIR, "registry.db")
 #   aoa_dir 우선(테스트 픽스처 존중) → 없으면 prj3.
 POLICY_YML = os.path.join(AOA_DIR, "policy.yml")
 if not os.path.exists(POLICY_YML):
-    _P3 = os.path.join(HOME, ".claude", "data", "aoa", "policy.yml")
-    if os.path.exists(_P3):
-        POLICY_YML = _P3
+    # ⓒ prj3#Issue696 — prj3 policy.yml 도 없으면 배포 기본값 policy_org.yml
+    for _name in ("policy.yml", "policy_org.yml"):
+        _P3 = os.path.join(HOME, ".claude", "data", "aoa", _name)
+        if os.path.exists(_P3):
+            POLICY_YML = _P3
+            break
 MQ_DIR = os.environ.get("AOA_MQ_DIR") or os.path.join(AOA_DIR, "mq")
 MQ_DIGEST_SH = os.path.join(HOME, ".claude", "mcp", "aoa-mq", "aoa-mq-digest.sh")
 FPM_SANITIZE_SH = os.path.join(HOME, "_git", "___pm", "scripts", "fpm-sanitize.sh")
@@ -95,6 +98,7 @@ DISCORD_ACCOUNT = "clawm4"      # 계약 §Discord 발신 경로 확정행(2026-
 POLICY_TARGET_KEY = "fbot_report_discord_target"
 
 ISSUE_SUMMARY_LEN = 24          # 이슈 제목 축약 길이 — 번호 + 한 줄 요약만 내보낸다
+ISSUE_LABEL_LEN = 40            # daily «완료» 절 식별자 축약 — topic 배분은 문장 전체가 식별자다 (prj3#Issue750)
 JOB_RECENT_SECS = 24 * 3600     # job 원장 요약 창
 
 ROLE_KO = {
@@ -295,6 +299,8 @@ def collect_registry(con) -> dict:
     totals = [dict(r) for r in con.execute(
         "SELECT kind, COUNT(*) c FROM job GROUP BY kind ORDER BY c DESC").fetchall()]
     return {
+        "completed_24h": collect_completed(con, since),
+        "decisions_24h": collect_decisions(con, since),
         "bots": bots,
         "by_state": by_state,
         "active": sum(by_state.get(s, 0) for s in ACTIVE_STATES),
@@ -305,6 +311,58 @@ def collect_registry(con) -> dict:
         "job_recent": recent,
         "job_totals": totals,
     }
+
+
+def collect_completed(con, since: int) -> dict:
+    """최근 창에 끝난 일 — sweep 완료가 mq 에서 빠진 자리를 받는다 (prj3#Issue750).
+
+    * 배분 완료: `fbot_dispatch` status=done 중 판정 시각(`swept_at`·`closed_at`)이 창 안
+    * 봇 작업 완료: `fbot_session` done 중 **배분에 매이지 않은** 것(sweep 과 같은 역참조)
+    """
+    rows = con.execute(
+        "SELECT payload FROM job WHERE kind='fbot_dispatch' AND status='done'"
+        " AND COALESCE(json_extract(result,'$.swept_at'), json_extract(result,'$.closed_at')) >= ?"
+        " ORDER BY created_at DESC", (since,)).fetchall()
+    issues = []
+    for r in rows:
+        try:
+            ident = (json.loads(r["payload"] or "{}") or {}).get("issue")
+        except ValueError:
+            ident = None
+        ident = str(ident).strip()[:ISSUE_LABEL_LEN] if ident else ""   # topic 배분은 식별자가 문장이다
+        if ident and ident not in issues:
+            issues.append(ident)
+    sessions = con.execute(
+        "SELECT COUNT(*) c FROM job s WHERE s.kind='fbot_session' AND s.status='done'"
+        " AND s.created_at >= ? AND NOT EXISTS (SELECT 1 FROM job d WHERE d.kind='fbot_dispatch'"
+        " AND json_extract(d.result,'$.session_job_id') = s.id)", (since,)).fetchone()["c"]
+    return {"dispatch": len(rows), "sessions": sessions, "issues": issues}
+
+
+def collect_decisions(con, since: int) -> dict:
+    """최근 창의 전결 기록 — 사람이 승인하지 않고 **훑는** 창 (prj3#Issue756).
+
+    `fbot-state.py decide` 가 남긴 `fbot_event` type=decision. detail 머리 `[C]`·`[L]` 로 등급을 가른다.
+    C(총괄 전결)는 본문까지 싣는다 — 사후 거부권은 무엇을 정했는지 보여야 행사된다.
+    L(팀장 전결)은 건수만 — 자기 prj 안의 되돌릴 수 있는 결정이라 원장 기록으로 충분하다.
+    """
+    rows = con.execute(
+        "SELECT j.owner, j.payload, b.title FROM job j LEFT JOIN bot b ON b.bot_id = j.owner"
+        " WHERE j.kind='fbot_event' AND j.created_at >= ?"
+        " AND json_extract(j.payload,'$.type')='decision' ORDER BY j.created_at", (since,)).fetchall()
+    out = {"C": 0, "L": 0, "items": []}
+    for r in rows:
+        try:
+            pl = json.loads(r["payload"] or "{}")
+        except ValueError:
+            continue
+        detail = pl.get("detail") or ""
+        grade = detail[1:2] if detail.startswith("[") else "?"
+        if grade in ("C", "L"):
+            out[grade] += 1
+        if grade == "C":
+            out["items"].append({"by": r["title"] or r["owner"], "detail": detail[4:], "ref": pl.get("ref") or ""})
+    return out
 
 
 # ── aoa-mq digest (재료 ②) ───────────────────────────────────────────────────
@@ -421,6 +479,22 @@ def build_daily(reg: dict, mq: dict, warnings: list) -> str:
     lines.append("* 상태별: " + (by_state or "—"))
     lines += ["", f"## 인사·배분 — {reg['month']}", "",
               f"* 채용(스폰) {reg['hired']}건 · 배분 {reg['dispatched']}건 · 활성 배분 {reg['active_dispatch']}건"]
+    done = reg.get("completed_24h") or {}
+    lines += ["", "## 완료 (최근 24시간)", "",
+              f"* 배분 완료 {done.get('dispatch', 0)}건 · 봇 작업 완료 {done.get('sessions', 0)}건"
+              " — 건별 기록은 hub `/fbot-map` 타임라인 (mq 에는 싣지 않는다 · prj3#Issue750)"]
+    if done.get("issues"):
+        head = done["issues"][:5]
+        more = f" 외 {len(done['issues']) - 5}건" if len(done["issues"]) > 5 else ""
+        lines.append("    - " + " · ".join(head) + more)
+    dec = reg.get("decisions_24h") or {}
+    lines += ["", "## 대신 결정한 것 (최근 24시간)", "",
+              f"* 총괄 전결 C {dec.get('C', 0)}건 · 팀장 전결 L {dec.get('L', 0)}건"
+              " — 승인이 아니라 훑기다. 되돌릴 것만 지시한다 (prj3#Issue756)"]
+    for it in (dec.get("items") or [])[:10]:
+        lines.append(f"    - {it['detail']} — {it['by']}" + (f" ({it['ref']})" if it["ref"] else ""))
+    if len(dec.get("items") or []) > 10:
+        lines.append(f"    - … 외 {len(dec['items']) - 10}건 — `/fbot-map` 타임라인")
     lines += ["", "## 작업 원장 (최근 24시간)", ""]
     if reg["job_recent"]:
         lines += [f"* {r['kind']} / {r['status']} — {r['c']}건" for r in reg["job_recent"]]

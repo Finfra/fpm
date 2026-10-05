@@ -13,7 +13,7 @@ date: 2026-05-19
 요청을 처리한 결과를 완전한 HTML 문서로 작성하여 설정 브라우저(hub_setting.yml `default_browser`)로 자동 표시함. 본문 HTML 은 `file://` 직접 open. Q&A 폼은 ___pm htm-server (port 9876) 로 fetch POST → inbox → bash polling 자동 회수.
 
 * **전제**: ___pm htm-server 상시 운영 (___pm 프로젝트가 lifecycle 책임)
-* **서버 down 시**: intercept hook 이 fail-loud — 사용자에게 `/board-server start` 후 재시도 또는 `..hub stop` 안내. paste-back fallback 없음 (Issue45 제거)
+* **서버 down 시**: intercept hook 이 fail-loud — 사용자에게 `/fpm-board-server start` 후 재시도 또는 `..hub stop` 안내. paste-back fallback 없음 (Issue45 제거)
 
 브라우저·오픈 방식은 `~/_git/___pm/data/hub_setting.yml` 의 `default_browser`·`browser_open` 이 결정 (Issue193 — 특정 브라우저명 하드코딩 금지). 기본 권장: 일반 브라우징용과 hub·dashboard 전용 브라우저 분리 운영.
 
@@ -33,7 +33,7 @@ date: 2026-05-19
 * `on` → 다음 턴부터 매 응답 자동 HTML 렌더 (trivial 응답은 Issue85 로 skip)
 * `off` → 프로젝트 폴더라도 자동 렌더 안 함 (`..hub stop` 과 동일 효과)
 * 인자 없는 `/show` 또는 `/show <요청>` 은 HTML 렌더 (아래 절차). `/hub <요청>` 도 deprecated alias 로 동일 동작
-* bare `..show <요청>` 은 render-only(워크플로우 차단) 모드 — 우산 토글 `..hub on`/`..hub start` 와 구분됨 (Issue133)
+* bare `..show <요청>` 은 render-only(워크플로우 차단) 모드 — 우산 토글 `..hub on`/`..hub off` 와 구분됨 (Issue133)
 * **단발 render-off (Issue159 신설·Issue163 구현)**: `..text` / `/text` / `..txt` / `/txt` → **이번 turn 한정** 자동 hub 렌더 skip(평문 채팅 응답). `..show`(단발 render-on)의 대칭. `fpm-hub-trigger.sh` 가 자동 모드 분기 평가 전에 감지 → suppress 컨텍스트 주입 후 exit. **state/flag 파일 무변경**(영속 토글 `..hub stop`/`off` 와 구분) → 다음 turn 자동 복귀. 작업은 정상 수행(HTML 미작성·브라우저 미open). ⚠️ 매처 regex `(\.\.te?xt|/te?xt)` 4종 동시 커버. Issue159 는 문서만 신설·매처 미구현이었고 Issue163 에서 본체 구현 + `..txt`/`/txt` alias 추가
 
 ## Mode 분리 (Issue45, 2026-05-19)
@@ -136,7 +136,7 @@ date: 2026-05-19
 | :--- | :--- |
 | 마커 JSON syntax error | hook reason 에 에러 메시지·schema 안내 |
 | schema 위반 (questions 누락 등) | hook reason 에 위반 필드 명시 |
-| 서버 down (healthz ≠ 200) | hook reason 에 `/board-server start` 또는 `..hub stop` 안내 |
+| 서버 down (healthz ≠ 200) | hook reason 에 `/fpm-board-server start` 또는 `..hub stop` 안내 |
 | `.hub-active/<hash>` 없음 or effective=off | hook 즉시 exit 0 |
 | 단일 BEGIN 또는 단일 END 만 | 미매칭 (정규식 쌍 매칭 강제) → hook exit 0 |
 
@@ -576,7 +576,7 @@ dashboard 서버 lifecycle wrapper: [`~/.claude/commands/fpm-board-server.md`](f
 2. **AskUserQuestion 가로채기**: intercept hook 이 healthz + `/register` 판정 → **deny + form 자동 회수 지시 주입**
 3. **Form HTML 생성**: deny reason 에 포함된 질문 JSON + answer_url + cwd_hash 로 Claude 가 form HTML 생성·저장·브라우저 open
 4. **자동 회수**: 사용자 폼 작성 → "전송" 버튼 → JS fetch POST → server inbox → Claude bash polling → 답변 파일 Read → answers 추출 → 흐름 재개
-5. **서버 실패 시**: deny + fail-loud 안내 (`/board-server start` 후 재시도 또는 `..hub stop`). paste-back fallback 없음 (Issue45 제거)
+5. **서버 실패 시**: deny + fail-loud 안내 (`/fpm-board-server start` 후 재시도 또는 `..hub stop`). paste-back fallback 없음 (Issue45 제거)
 6. **해제**: `..hub stop` 또는 `..hub off` 입력 시 플래그 삭제, AskUserQuestion 정상 복귀
 
 ### 선택지 자동 승격 (Issue16_3) — form 자동 전환
@@ -732,7 +732,7 @@ hub 가 생성한 htm 문서 안에서 **다른 htm 문서를 iframe·링크로 
 - `~/.claude/hooks/hub-scope.sh` (플래그 경로·effective 판정 공통 헬퍼 — Issue283)
 - `~/_git/___pm/services/hub/server.py` — `/healthz`, `/register`, `/answer` endpoint (___pm 소유, 상시 운영)
 - `/tmp/___pm/claude-htm-inbox/{cwd_hash}/{sid}/{ts}.json` — 답변 파일 (Issue90 sid 서브폴더 세션 격리, Claude Read 후 삭제)
-- `/board-server start|stop|status|restart` — 서버 lifecycle wrapper
+- `/fpm-board-server start|stop|status|restart` — 서버 lifecycle wrapper
 
 ## 분리 이력
 

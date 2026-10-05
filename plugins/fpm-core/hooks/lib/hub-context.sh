@@ -34,60 +34,27 @@ cwd = os.environ.get('CWD_VAL', '')
 print(hashlib.md5(cwd.encode('utf-8')).hexdigest()[:12] if cwd else 'unknown')")
 fi
 # SID_FULL: open-session API 호출용 full UUID (Issue137 회귀 fix — truncate 시 vscode 세션 매칭 실패 → 새 세션 생성)
-SID_FULL=$(printf '%s' "$SID" | tr -c 'A-Za-z0-9-' '-')
 # SID는 파일명·URL 안전화용 32자 slug (영문/숫자/하이픈만)
-SID=$(printf '%s' "$SID" | tr -c 'A-Za-z0-9-' '-' | cut -c1-32)
+# Issue714: session_id 는 UUID 라 치환할 문자가 없다 — 그때는 tr·cut(3 fork, ~8ms)을 건너뛴다.
+#   허용 외 문자가 하나라도 있으면 종전 경로 그대로(tr 는 **바이트** 단위라 비-ASCII 에서
+#   bash 문자 단위 치환과 결과가 갈린다 — 의미를 옮기지 않고 경로만 나눈다).
+case "$SID" in
+  *[!A-Za-z0-9-]*)
+    SID_FULL=$(printf '%s' "$SID" | tr -c 'A-Za-z0-9-' '-')
+    SID=$(printf '%s' "$SID" | tr -c 'A-Za-z0-9-' '-' | cut -c1-32)
+    ;;
+  *)
+    SID_FULL="$SID"
+    SID="${SID:0:32}"
+    ;;
+esac
 
-# Issue289: 렌더 산출물 쓰기 폴더 — 활성 `_doc_work/htm/`, legacy `_doc_work/z_htm/`.
-#   프로젝트 단위 우선순위: 기존 htm/ → (없으면) 기존 z_htm/ 유지 → (둘 다 없으면) htm/ 신규 생성.
-#   z_htm 만 있는 프로젝트를 강제로 htm/ 로 끌어올리지 않는 이유: P3 마이그레이션이
-#   프로젝트별 전환 스위치 역할을 하고(htm/ 생성 = 그 프로젝트 전환 완료), 범위 밖 프로젝트
-#   (prj2 볼트 등)를 하드코딩 없이 자동 제외할 수 있기 때문. 읽기는 서버가 HTM_DIRS 로 전부 커버.
-#   설계 SSOT: ~/_git/___pm/_doc_arch/htm-lifecycle-design.md
-_htm_dir_of() {  # $1=프로젝트 루트 → htm 출력 폴더 경로(없으면 빈 문자열)
-  [ -d "$1/_doc_work/htm" ] && { printf '%s' "$1/_doc_work/htm"; return; }
-  [ -d "$1/_doc_work/z_htm" ] && { printf '%s' "$1/_doc_work/z_htm"; return; }
-  [ -d "$1/_doc_work" ] && { mkdir -p "$1/_doc_work/htm" && printf '%s' "$1/_doc_work/htm"; return; }
-  printf ''
-}
-
-# OUT_DIR 결정: 프로젝트 로컬 우선 (Issue203 — 상향 탐색 추가)
-# 1) $cwd/_doc_work                  (cwd 직하 — 단일 레포)
-# 2) git root / 부모 순회 _doc_work  (cwd 가 프로젝트 하위폴더일 때 루트 채택)
-# 3) $cwd/*/_doc_work                (mono-repo / sub-package 하향 스캔 — ex: cli/_doc_work)
-# 4) /tmp fallback
-OUT_DIR=""
-if [ -n "$cwd" ] && [ -d "$cwd/_doc_work" ]; then
-  OUT_DIR=$(_htm_dir_of "$cwd")
-elif [ -n "$cwd" ]; then
-  # Issue203: cwd 가 프로젝트 하위폴더(ex: unity_base/Assets)면 루트 _doc_work 를 놓쳐
-  #   /tmp fallback → 등록 스킵 → hub 403. 하향 find 이전에 상향 탐색으로 루트 채택.
-  up_root=""
-  git_root=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)
-  if [ -n "$git_root" ] && [ -d "$git_root/_doc_work" ]; then
-    up_root="$git_root"
-  else
-    # git 미사용 대비 cwd 부모 순회 — 첫 발견 _doc_work 채택
-    dir="$cwd"
-    while [ -n "$dir" ] && [ "$dir" != "/" ]; do
-      if [ -d "$dir/_doc_work" ]; then
-        up_root="$dir"
-        break
-      fi
-      dir=$(dirname "$dir")
-    done
-  fi
-  if [ -n "$up_root" ]; then
-    OUT_DIR=$(_htm_dir_of "$up_root")
-  else
-    sub_found=$(find "$cwd" -mindepth 2 -maxdepth 2 -type d -name "_doc_work" 2>/dev/null | head -1)
-    [ -n "$sub_found" ] && OUT_DIR=$(_htm_dir_of "$(dirname "$sub_found")")
-  fi
-fi
-if [ -z "$OUT_DIR" ]; then
-  OUT_DIR="/tmp/___pm"
-  mkdir -p "$OUT_DIR"
-fi
+# OUT_DIR 결정 — 판정 단일 지점 lib/out-dir.sh 에 위임 (prj3#Issue802)
+#   종전엔 `_htm_dir_of` + 상향 탐색(Issue203/289/714)이 여기 있었고 ask-common.sh 는 상향 탐색 없는
+#   사본을 따로 들고 있어 프로젝트 하위 폴더 cwd 에서 두 판정이 갈렸다. 정의는 이제 out-dir.sh 하나다.
+#   자기 옆의 lib/ 에서 찾는다 — 번들(플러그인) 설치본은 ~/.claude/hooks/lib 가 없다(prj3#Issue545)
+. "${BASH_SOURCE[0]%/*}/out-dir.sh"
+out_dir_resolve "$cwd"
 
 # Issue22/Issue157: PROJECT_NAME + PROJECT_COLOR 계산
 #   색 = peacock.color 실색 (Issue58/157) — cwd 에서 위로 .vscode/settings.json 탐색,
@@ -97,20 +64,37 @@ fi
 #   두 원천 파일(.vscode/settings.json · Projects.md)뿐이라 결과가 거의 안 바뀐다 →
 #   원천 mtime 이 캐시보다 새로울 때만 다시 뽑는다. 캐시 손상·부재는 그냥 재계산(fail-soft).
 _HUBCTX_CACHE_DIR="${TMPDIR:-/tmp}/___pm/hubctx"
-_HUBCTX_KEY=$(printf '%s' "$cwd" | md5 -q 2>/dev/null || printf '%s' "$cwd" | md5sum 2>/dev/null | cut -d' ' -f1)
+# Issue714: cwd 의 md5 는 여기(캐시 키)와 아래 CWD_HASH 가 **같은 입력**(cwd 원문)이다 —
+#   한 번만 계산해 둘이 나눠 쓴다(종전 2회). `md5 -q -s` 는 `printf | md5 -q` 와 같은 다이제스트다.
+_HUBCTX_MD5=""
+# prj3#Issue921 — sleep-state.sh 가 같은 원문을 이미 해시했으면 재사용(fpm-hub-trigger 1턴 md5 2 → 1회)
+if [ -n "${_CWD_MD5-}" ] && [ "${_CWD_MD5_FOR-}" = "$cwd" ]; then
+  _HUBCTX_MD5="$_CWD_MD5"
+elif command -v md5 >/dev/null 2>&1; then
+  _HUBCTX_MD5=$(md5 -q -s "$cwd" 2>/dev/null)
+else
+  _HUBCTX_MD5=$(printf '%s' "$cwd" | md5sum 2>/dev/null | cut -d' ' -f1)
+fi
+_HUBCTX_KEY="$_HUBCTX_MD5"
 _HUBCTX_CACHE="$_HUBCTX_CACHE_DIR/${_HUBCTX_KEY:-none}"
 _HUBCTX_SRC="$HOME/_git/___pm/Projects.md"
+# Issue714: `find -newer`(원천마다 fork) → 내장 `-nt`. 캐시가 원천보다 **엄격히 새로울 때만** 신선 —
+#   원천 부재는 신선(종전 find 무출력과 같다). 초 단위 비교인 bash(3.2)에서 같은 초의 갱신은
+#   stale 쪽으로 기운다(재계산 1회 — 안전 방향).
 _hubctx_fresh() {
   [ -s "$_HUBCTX_CACHE" ] || return 1
-  [ -z "$(find "$_HUBCTX_SRC" -newer "$_HUBCTX_CACHE" 2>/dev/null)" ] || return 1
+  if [ -e "$_HUBCTX_SRC" ]; then
+    [ "$_HUBCTX_CACHE" -nt "$_HUBCTX_SRC" ] || return 1
+  fi
   # cwd 위쪽 .vscode/settings.json 이 캐시보다 새로우면 무효 — peacock 색이 우선 원천이다
   _d="$cwd"
   while [ "$_d" != "/" ] && [ -n "$_d" ]; do
     if [ -f "$_d/.vscode/settings.json" ]; then
-      [ -z "$(find "$_d/.vscode/settings.json" -newer "$_HUBCTX_CACHE" 2>/dev/null)" ] || return 1
+      [ "$_HUBCTX_CACHE" -nt "$_d/.vscode/settings.json" ] || return 1
       break
     fi
-    _d=$(dirname "$_d")
+    [ "${_d%/*}" = "$_d" ] && break   # 상대경로 무진행 가드
+    _d="${_d%/*}"   # Issue714: dirname fork 대신 파라미터 확장("/a" → "" 도 루프 조건이 끊는다)
   done
   return 0
 }
@@ -196,33 +180,27 @@ PROJECT_LABEL=""
 case "$cwd" in
   *[!A-Za-z0-9._/-]*|"") ;;
   *)
-    _md5bin=$(command -v md5 2>/dev/null || command -v md5sum 2>/dev/null)
-    if [ -n "$_md5bin" ]; then
-      if [ "${_md5bin##*/}" = "md5" ]; then
-        _h=$("$_md5bin" -q -s "$cwd" 2>/dev/null)
-      else
-        _h=$(printf '%s' "$cwd" | "$_md5bin" 2>/dev/null | cut -d' ' -f1)
-      fi
-      if [ -n "$_h" ]; then
-        CWD_HASH="${_h:0:8}"
-        _c="${cwd%/}"
-        _base="${_c##*/}"; _rest="${_c%/*}"; _parent="${_rest##*/}"
-        case "$_base" in
-          _*) [ -n "$_parent" ] && _label="$_parent-$_base" || _label="$_base" ;;
-          *)  _label="$_base" ;;
+    # Issue714: 위 캐시 키에서 이미 계산한 cwd md5 를 쓴다(같은 입력 — 재계산 fork 제거)
+    _h="$_HUBCTX_MD5"
+    if [ -n "$_h" ]; then
+      CWD_HASH="${_h:0:8}"
+      _c="${cwd%/}"
+      _base="${_c##*/}"; _rest="${_c%/*}"; _parent="${_rest##*/}"
+      case "$_base" in
+        _*) [ -n "$_parent" ] && _label="$_parent-$_base" || _label="$_base" ;;
+        *)  _label="$_base" ;;
+      esac
+      _san=""
+      for ((_i = 0; _i < ${#_label}; _i++)); do
+        _ch="${_label:_i:1}"
+        case "$_ch" in
+          [A-Za-z0-9._-]) _san="$_san$_ch" ;;
+          *) _san="${_san}_" ;;
         esac
-        _san=""
-        for ((_i = 0; _i < ${#_label}; _i++)); do
-          _ch="${_label:_i:1}"
-          case "$_ch" in
-            [A-Za-z0-9._-]) _san="$_san$_ch" ;;
-            *) _san="${_san}_" ;;
-          esac
-        done
-        _san="${_san:0:48}"
-        [ -z "$_san" ] && _san="unknown"
-        PROJECT_LABEL="$_san"
-      fi
+      done
+      _san="${_san:0:48}"
+      [ -z "$_san" ] && _san="unknown"
+      PROJECT_LABEL="$_san"
     fi
     ;;
 esac
@@ -253,7 +231,7 @@ STATE_FILE="$STATE_DIR/${CWD_HASH}__${PROJECT_LABEL}"
 # 2026-09-05: 루트 산재 → `.hub-active/` 디렉토리. 여기가 **쓰기 경로**라 touch 전에
 #   디렉토리를 보장한다 — 없으면 touch 가 rc=1 로 조용히 실패하고 b모드가 안 뜬다.
 FLAG_FILE="$HOME/.claude/.hub-active/${CWD_HASH}"
-mkdir -p "$HOME/.claude/.hub-active" 2>/dev/null
+[ -d "$HOME/.claude/.hub-active" ] || mkdir -p "$HOME/.claude/.hub-active" 2>/dev/null   # Issue714: 있으면 fork 없음
 
 # Issue105 마이그레이션: 기존 hash-only 파일이 있고 새 라벨 파일이 없으면 rename
 OLD_STATE_FILE="$STATE_DIR/$CWD_HASH"
@@ -280,95 +258,17 @@ export HUB_IS_PROJ="$IS_PROJECT" HUB_IS_PROJ_FOR="$cwd"
 # ── ② 렌더 표면 해소 — 설정 로드 · 브라우저 커맨드 · EFFECTIVE · RENDER_TARGET · 강등 3종 ──
 #   (Zed 표현불가 · hub 서버 미생존 · /tmp fallback → 각각 표면을 강등하고 고지 플래그를 세운다)
 hub_ctx_surface() {
+# prj3#Issue877: hub_cfg·browser_open 판정 단일 지점. source 시점에 hub_setting.yml 을 awk 로 1회 파싱한다.
+# prj3#Issue921 — identity 에서 여기로 옮겼다. 설정을 읽는 것은 표면 계산뿐이라, hub off·트리거 없음으로
+#   표면 전에 끝나는 턴(fpm-hub-trigger 조기 종료)은 awk 를 띄우지 않는다
+. "${BASH_SOURCE[0]%/*}/hub-browser.sh"
 # Issue130: browser_focus + default_browser 토글 (Issue128 확장)
 # Issue424_2: 값은 그대로 prj1 SSOT. env override 를 허용하는 이유는 **검증 가능성**이다 —
 #   표면(local-open·hub·vscode·both)별 지시문 동등성을 증명하려면 설정을 갈아 끼우며 돌려야 하는데,
 #   prj1 의 실 yml 을 고치는 것은 타 repo 부작용이라 불가하다. env 미설정 시 동작은 종전과 동일.
 HUB_SETTING_FILE="${HUB_SETTING_FILE:-$HOME/_git/___pm/data/hub_setting.yml}"
 
-# ── hub_setting.yml 조회 단일 지점 (F2-3 후속, 2026.07.31) ──────────────
-# 종전에는 **키마다** `grep | head | sed` 3프로세스를 띄웠고 이 hook 이 8키를 읽어
-# no-op 경로에서만 20+ 프로세스를 지출했다(실측 138ms — 규칙3 50ms 의 2.7배,
-# UserPromptSubmit 예산 193/200ms 의 주범). sleep-state.sh 가 Issue305_3 에서
-# 같은 패턴을 고친 방식을 그대로 적용한다: **awk 1회로 전체를 평탄화**해 캐시하고
-# 조회는 쉘 내장만 쓴다.
-#   ⚠️ 파싱 의미는 종전 sed 체인과 동일하게 맞춘다 — 값 뒤 `#` 주석 절단, 앞뒤 공백 제거,
-#      감싼 큰따옴표 제거, 같은 키가 여럿이면 첫 줄 우선(head -1 과 동일).
-_HUB_CFG_DUMP=""
-_HUB_CFG_LOADED=0
-_hub_cfg_load() {
-  [ "$_HUB_CFG_LOADED" = 1 ] && return 0
-  _HUB_CFG_LOADED=1
-  [ -f "$HUB_SETTING_FILE" ] || return 0
-  _HUB_CFG_DUMP=$(awk '
-    /^[[:space:]]*#/ { next }
-    match($0, /^[[:space:]]*[A-Za-z0-9_.-]+[[:space:]]*:/) {
-      key = substr($0, 1, RLENGTH); sub(/[[:space:]]*:$/, "", key); gsub(/^[[:space:]]+/, "", key)
-      val = substr($0, RLENGTH + 1)
-      sub(/[[:space:]]*#.*$/, "", val); gsub(/^[[:space:]]+|[[:space:]]+$/, "", val)
-      sub(/^"/, "", val); sub(/"$/, "", val)
-      if (!(key in seen)) { seen[key] = 1; printf "%s\t%s\n", key, val }
-    }
-  ' "$HUB_SETTING_FILE" 2>/dev/null)
-  return 0
-}
-
-# hub_cfg <키> [기본값] — 값을 stdout 으로.
-# ⚠️ 호출은 대개 `$(hub_cfg x)` = **커맨드 치환 = 서브셸**이라, 캐시를 서브셸 안에서 채우면
-#   부모로 전파되지 않아 매 호출 awk 가 다시 뜬다(실측: 치환 전후 시간 동일, awk 8회).
-#   그래서 아래 정의 직후 **부모 셸에서 _hub_cfg_load 를 1회 직접 호출**해 둔다.
-hub_cfg() {
-  local key="$1" default="${2:-}" line
-  _hub_cfg_load
-  if [ -n "$_HUB_CFG_DUMP" ]; then
-    while IFS= read -r line; do
-      if [ "${line%%	*}" = "$key" ]; then
-        local v="${line#*	}"
-        [ -n "$v" ] && { printf '%s\n' "$v"; return 0; }
-        break
-      fi
-    done <<< "$_HUB_CFG_DUMP"
-  fi
-  printf '%s\n' "$default"
-}
-
-# 부모 셸에서 1회 선로드 — 이후 서브셸 호출은 상속된 _HUB_CFG_DUMP 를 그대로 쓴다(awk 0회)
-_hub_cfg_load
-# default_browser: firefox(기본)/chrome/edge/safari/ego, 미지원 값은 .app 절대 경로로 해석 (ego=ego lite, Issue533)
-_db=$(hub_cfg default_browser)
-case "$_db" in
-  ""|firefox|Firefox) _app="Firefox" ;;
-  chrome|Chrome)      _app="Google Chrome" ;;
-  edge|Edge)          _app="Microsoft Edge" ;;
-  safari|Safari)      _app="Safari" ;;
-  ego|Ego|"ego lite") _app="ego lite" ;;   # Issue533: 자동화 엔진 ego-browser 와 같은 앱. AppleScript 탭 제어 없음 → firefox 와 동일 open 폴백
-  *)                  _app="$_db" ;;
-esac
-# Issue152: browser_open 키 — off/background/foreground 3-way 자동 open 판정.
-#   browser_focus(open 포커스 여부) + render_target:hub(open-skip) 두 신호를 단일 키로 통합.
-#   SSOT 설계: ~/_git/___pm/_doc_arch/hub_setting.md "browser_open (Issue170)".
-#   off=자동 open 생략(채팅 URL 만) / background=open -g(포커스 미탈취) / foreground=open(포커스 탈취).
-_bopen=$(hub_cfg browser_open)
-# fallback(키 미설정/빈값): render_target:vscode→off, browser_focus(true→foreground/false→background) 역산 — 하위호환.
-#   Issue263: 표면 축 분리 — open-skip 을 함의하는 값은 이제 `vscode`(VSCode 패널). `hub` 는 외부 브라우저 open 이므로 여기서 제외.
-if [ -z "$_bopen" ]; then
-  _rt_raw=$(hub_cfg render_target)
-  if [ "$_rt_raw" = "vscode" ]; then
-    _bopen="off"
-  elif [ "$(hub_cfg browser_focus)" = "true" ]; then
-    _bopen="foreground"
-  else
-    _bopen="background"
-  fi
-fi
-# browser_open → _focus(helper 윈도우 raise 게이팅용) + HTM_OPEN_CMD(open 커맨드) 도출.
-#   off → 실제 open 생략(아래 render_target 강제 hub 로 open-skip + URL emit).
-BROWSER_OPEN_OFF=0
-case "$_bopen" in
-  foreground) _focus="true";  HTM_OPEN_CMD="open -a \"$_app\"" ;;
-  off)        _focus="false"; HTM_OPEN_CMD="open -g -a \"$_app\""; BROWSER_OPEN_OFF=1 ;;
-  *)          _focus="false"; HTM_OPEN_CMD="bash \"$HOME/_git/___pm/plugins/fpm-core/hooks/fpm-browser-open.sh\" -a \"$_app\" -f false -r false" ;;  # background(기본) — Issue173: helper 경유(focus 복원). Chrome 은 open -g 무시 self-activate → helper 가 직전 frontmost 재활성. -r false=렌더 새 탭(Issue153 정합)
-esac
+hub_browser_resolve
 # Issue153: browser_tab_reuse 재정의 — 렌더는 항상 새 탭(HTM_OPEN_CMD 미치환). reuse 는 `/hub` 단일탭 전용.
 #   true  → canonical 헤더 hub-link target=fpm-hub (브라우저 네이티브 명명 탭 재사용; helper 불필요)
 #   false → target=_blank (hub-link 도 매번 새 탭)
@@ -451,12 +351,15 @@ if [ "$RENDER_TARGET_CFG" = "hub" ] || [ "$RENDER_TARGET_CFG" = "vscode" ]; then
   #   ⚠️ bind_host 는 단일 값 **또는 리스트** `[127.0.0.1, 192.168.0.17, ...]` 다(멀티소켓 bind).
   #   그대로 쓰면 `[127.0.0.1,` 로 probe 해 살아있는 서버를 죽었다고 오판한다(구현 중 실측) → 토큰화 후 순회.
   #   루프백을 먼저 본다 — 정상 운영이면 첫 시도에서 끝나고, 죽었으면 ECONNREFUSED 가 즉시라 순회도 무비용.
-  _probe_hosts="127.0.0.1 $(printf '%s' "$_bind" | tr -d '[]' | tr ',' ' ')"
+  # Issue714: `tr -d '[]' | tr ',' ' '`(2 fork) → 파라미터 확장. 같은 치환이다
+  _pb="${_bind//[\[\]]/}"; _probe_hosts="127.0.0.1 ${_pb//,/ }"
   _alive=0
   for _h in $_probe_hosts; do
     [ -z "$_h" ] && continue
     [ "$_h" = "0.0.0.0" ] && _h="127.0.0.1"
-    if (: </dev/tcp/"$_h"/"$RENDER_PORT") 2>/dev/null; then _alive=1; break; fi
+    # prj3#Issue921 — `( : </dev/tcp/… )` 는 프로브마다 서브셸 fork 였다(부하 시 UPS 임계 경로 fpm-hub-trigger 의 몫).
+    #   내장 `:` 에 붙인 리다이렉션은 현재 셸에서 열고 닫는다 — fork 0 · 실패해도 셸은 계속(bash 3.2·5 실측)
+    if { : 3<>"/dev/tcp/$_h/$RENDER_PORT"; } 2>/dev/null; then _alive=1; break; fi
   done
   if [ "$_alive" = "0" ]; then
     RENDER_TARGET="local-open"
@@ -551,8 +454,12 @@ hub_ctx_live_preopen() {
 LIVE_OPENED=0     # 0=안 엶 / 1=이번 턴에 엶 / 2=이미 열려 있음(마커) / 3=open 생략(URL emit only)
 LIVE_URL=""
 LIVE_DISPLAY=""
+#   * prj1#Issue532: 선오픈은 **`..show` 턴에만** 한다. 자동 모드(`EFFECTIVE=on`)에서 턴 시작에
+#     열면 문서가 없는 턴에도 탭이 생기고, LLM 이 여는 md 문서 탭과 겹쳐 탭이 두 배가 됐다.
+#     자동 모드의 세션 창은 첫 문서가 나올 때 opener(`fpm-browser-open.sh` → 서버 `/live-route`)가
+#     연다 — 그 창이 문서를 인라인으로 보여주므로 창은 세션당 하나다.
 if [ "$HUB_DOWN_DOWNGRADED" = "0" ] && [ "$RENDER_TARGET_CFG" = "hub" ] \
-   && { [ "$EFFECTIVE" = "on" ] || [ -n "$HUB_RENDER_TRIGGER" ]; }; then
+   && [ "$HUB_RENDER_TRIGGER" = "show" ]; then
   _live_marker="/tmp/___pm/hub-live/${SID_FULL}.live"
   if [ -f "$_live_marker" ]; then
     # 캐시 히트 — read 는 bash 내장이라 프로세스 0회. `live` 는 강등되지 않는 값이고(Issue356_1)

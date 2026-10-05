@@ -22,6 +22,9 @@ CLI
         파일(매뉴얼·아이콘·기록)은 남는다 — 아카이브는 삭제가 아니다.
     revive --role R
         부활 — status 필드 제거 1줄. 매뉴얼이 잔존하므로 ①~② 재수행 불요.
+    set-kind --role R --kind tool|bot
+        분류 기입 — `tool` 은 «도구 래핑» 재분류(prj3#Issue636). 엔트리를 지우지 않고
+        표시만 단다(지우면 이력이 사라져 같은 승격이 반복된다). 배분은 막지 않는다.
     list
         카탈로그 전체 + status 표시.
 
@@ -67,7 +70,14 @@ class RecruitError(Exception):
 
 #   ⚠️ 값에 공백·따옴표를 넣지 않는다 — 파서가 `split()` 기준이라 공백 1개로 필드가
 #   갈라진다. URL 에 공백이 있으면 percent-encode 한다(계약 §A 형식).
-ORIGIN_KINDS = ("agent:", "skill:", "plugin:", "web:", "native")
+ORIGIN_KINDS = (
+    "agent:", "skill:", "plugin:", "command:", "hook:", "web:", "native")
+
+# 분류 — 이 role 이 «봇이 수행하는 공정» 인가 «도구 래핑» 인가 (prj3#Issue636).
+#   부재 = `bot`(기본). `tool` 은 **봇 계층 배분을 기대하지 않는다**는 선언이며, 개정
+#   루프의 신호 기대가 여기서 갈린다(fbot-manual-review `role_kind`). 배분 0 이
+#   «정상» 인지 «방치» 인지 구별되지 않던 것이 재분류가 답하는 질문이다.
+KIND_VALUES = ("bot", "tool")
 
 
 def validate_origin(value: str) -> str:
@@ -86,7 +96,8 @@ def validate_origin(value: str) -> str:
     # prj3#Issue589 자체 검토 m3 — 값 안의 `status=archived` 부분문자열이 hr-gate 를
     #   오판시킨다. hr-gate 는 행 전체를 `"status=archived" not in line` 으로 보므로
     #   `web:…?status=archived` 같은 정상 URL 하나로 그 role 이 아카이브 취급된다.
-    for k in ("status=", "manager=", "shape=", "base=", "label=", "tags=", "origin="):
+    for k in ("status=", "manager=", "shape=", "base=", "label=", "tags=", "origin=",
+              "kind="):
         if k in v:
             raise RecruitError(
                 f"origin 값에 예약 키 {k!r} 불가: {value!r} — 소비처가 행 전체를 "
@@ -179,12 +190,60 @@ def emit(obj) -> None:
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
 
+def _org_module():
+    """fbot-org.py — 자리 추가(`add_seat`)의 단일 원천. 호출 시점 env(FBOT_ORG_DIR·FBOT_CATALOG)를 따르도록 매번 적재한다."""
+    import importlib.util
+    sp = importlib.util.spec_from_file_location(
+        "fbot_org_scout", os.path.join(os.path.dirname(os.path.abspath(__file__)), "fbot-org.py"))
+    m = importlib.util.module_from_spec(sp)
+    sp.loader.exec_module(m)
+    return m
+
+
+def apply_home(path, role: str, prj, dept: str = "dev") -> dict:
+    """프로젝트 단위 발굴의 본거지 (prj3#Issue757 T13 사다리 ③) — 카탈로그 `home=<prj>` + 그 prj 조직 선언 자리.
+
+    신설 직능은 **요청 prj 에 먼저** 선다. 다른 팀은 이후 사다리 ②(총괄 차용)로 쓰고, 총괄의 탐색(`fbot-org find`)은
+    본거지를 1순위 후보로 낸다(plan 열린 질문 15 — prj42 슬라이드 선례)."""
+    if role not in parse_catalog(path):
+        raise RecruitError(f"미등재 role: {role} — 등재(register) 뒤에 본거지를 둔다")
+    set_field(path, role, "home", str(int(prj)))
+    out = _org_module().add_seat(int(prj), role, dept=dept, apply=True, note="발굴 등재 본거지")
+    if not out.get("ok"):
+        raise RecruitError(f"본거지 자리 추가 실패(prj{prj}): {out.get('error')}")
+    return {"home": int(prj), "seat": out}
+
+
+_AUTHOR_MARK_RE = re.compile(r"^<!-- fbot-manual-review:author=\S+ sha=[0-9a-f]{16} -->\n?", re.M)  # fbot-manual-review.py AUTHOR_RE 사본
+
+
+def promote_draft(draft, manual):
+    """`{role}.md.draft` → `{role}.md`. 기계 작성 표지 줄은 정본에 남기지 않는다. 정본이 있으면 거부(덮어쓰기 금지)."""
+    if os.path.exists(manual):
+        raise RecruitError(f"정본 존재: {manual} — 덮어쓰기 금지")
+    with open(draft, encoding="utf-8") as fh:
+        text = _AUTHOR_MARK_RE.sub("", fh.read())
+    with open(manual, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    os.remove(draft)
+
+
 def cmd_register(args) -> int:
     roles = parse_catalog()
     if args.role in roles:
         raise RecruitError(f"이미 등재된 role: {args.role} — 중복 등재 금지(부활은 revive)")
     manual = os.path.join(MANUAL_DIR, f"{args.role}.md")
-    if not os.path.exists(manual):
+    draft = manual + ".draft"
+    promote = None
+    if not os.path.exists(manual) and os.path.exists(draft):
+        # prj3#Issue823_1 — writeguard 는 scout 에 `.md.draft` 만 연다(정본은 register 경유 계약).
+        #   그 계약을 여기서 구현한다: draft → 정본 승격. 정본이 이미 있으면 이 분기에 안 들어온다
+        #   (덮어쓰기 금지). 승인 근거 없는 승격은 «승인 전 등재 금지»(scout.md)의 코드 집행으로 거부.
+        if not getattr(args, "approved_by", None):
+            raise RecruitError(f"draft 승격 거부: {draft} — --approved-by <승인 근거 id> 필수 "
+                               "(총괄 C 결정·mq ACK id, 승인 전 등재 금지)")
+        promote = draft
+    elif not os.path.exists(manual):
         # 절차 ①② 가 선행이다 — 매뉴얼 없는 등재는 "직능 정의 없이 이름만 있는" 상태
         raise RecruitError(f"매뉴얼 부재: {manual} — 등록 절차 ①② 선행 (계약 §직능 카탈로그)")
     cmd = [sys.executable, ICON_GEN, "add-role", args.role,
@@ -203,8 +262,12 @@ def cmd_register(args) -> int:
                        capture_output=True, text=True)
     if g.returncode != 0:
         raise RecruitError(f"아이콘 생성 실패: {(g.stderr or g.stdout).strip()}")
+    if promote:
+        promote_draft(draft, manual)
+    home = apply_home(CATALOG_PATH, args.role, args.home, args.home_dept) if getattr(args, "home", None) is not None else None
     emit({"ok": True, "action": "register", "role": args.role,
-          "manual": manual, "icon": json.loads(g.stdout.strip().splitlines()[-1]),
+          "manual": manual, **({"promoted_from": draft, "approved_by": args.approved_by} if promote else {}), "icon": json.loads(g.stdout.strip().splitlines()[-1]),
+          **({"home": home} if home else {}),
           "note": "이 시점부터 HR 배치 가능 (계약 §직능 카탈로그 ④)"})
     return 0
 
@@ -237,6 +300,34 @@ def cmd_revive(args) -> int:
     set_status(CATALOG_PATH, args.role, None)
     emit({"ok": True, "action": "revive", "role": args.role,
           "note": "매뉴얼·아이콘 잔존 — 등록 절차 ①② 재수행 불요 (계약 §직능 카탈로그)"})
+    return 0
+
+
+def cmd_set_kind(args) -> int:
+    """role 분류 기입 — `tool` 은 «도구 래핑» 재분류 (prj3#Issue636).
+
+    🔴 **엔트리를 지우지 않는다.** 도구로 판정된 role 을 카탈로그에서 빼면 *"왜 이것이
+      봇이 아닌가"* 의 근거가 함께 사라져 **같은 승격이 다시 올라온다**. 남은 표시가
+      다음 발굴에게 하는 답이며, 그것이 재분류의 실체다(아카이브와 다른 축이다 —
+      아카이브는 *"안 쓴다"*, 재분류는 *"봇으로 쓸 것이 아니다"*).
+
+    ⚠️ **배분을 막지 않는다.** `lead dispatch --role R` 명시 배분 경로는 그대로 산다 —
+      봇 경유 조건 3종(동시 다발·장기 실행·2회 실패 에스컬레이션)에 걸리면 도구 role
+      에도 봇이 붙는다. 막는 순간 그 조건이 표현 불가능해진다.
+
+    ⚠️ `origin` 2원화는 **유지**한다 — 도구에도 drift 감지는 유효하다(prj3#Issue634 성과).
+    """
+    roles = parse_catalog()
+    if args.role not in roles:
+        raise RecruitError(f"미등재 role: {args.role!r} — 허용값 {', '.join(sorted(roles))}")
+    if args.kind not in KIND_VALUES:
+        raise RecruitError(
+            f"미정의 분류: {args.kind!r} — 허용 {', '.join(KIND_VALUES)} "
+            "(`bot` 은 기본값이라 필드를 지운다)")
+    # 기본값은 필드 부재로 표현한다 — `kind=bot` 12줄을 깔면 신호가 아니라 잡음이 된다
+    set_field(CATALOG_PATH, args.role, "kind", None if args.kind == "bot" else args.kind)
+    emit({"ok": True, "action": "set-kind", "role": args.role, "kind": args.kind,
+          "note": "표시만 바뀐다 — 배분·채용·drift 감지 경로는 전부 그대로다"})
     return 0
 
 
@@ -279,6 +370,59 @@ def manual_mtime(role: str):
     return int(os.path.getmtime(p)) if os.path.exists(p) else None
 
 
+def _plugin_install_path(marketplace: str, name: str) -> str:
+    """plugin 원본 1개를 결정론적으로 고른다 (prj3#Issue833).
+
+    marketplace 원본 호환을 우선하고, 설치 manifest 의 실존 경로, cache 버전 순으로
+    내린다. cache 폴백은 클론·rsync 에서 흔들리는 mtime 대신 이름만 사용한다.
+    """
+    marketplace_path = os.path.join(
+        SCAR_ROOT, "plugins", "marketplaces", marketplace, name)
+    if os.path.exists(marketplace_path):
+        return marketplace_path
+
+    manifest_path = os.path.join(SCAR_ROOT, "plugins", "installed_plugins.json")
+    try:
+        with open(manifest_path, encoding="utf-8") as fh:
+            manifest = json.load(fh)
+    except (OSError, ValueError):
+        manifest = {}
+    plugins = manifest.get("plugins", {}) if isinstance(manifest, dict) else {}
+    entries = plugins.get(f"{name}@{marketplace}", []) if isinstance(plugins, dict) else []
+    installed = []
+    if isinstance(entries, list):
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            install_path = entry.get("installPath")
+            if isinstance(install_path, str) and os.path.exists(install_path):
+                installed.append((str(entry.get("lastUpdated") or ""), install_path))
+    if installed:
+        return max(installed)[1]
+
+    cache_root = os.path.join(SCAR_ROOT, "plugins", "cache", marketplace, name)
+    try:
+        versions = [
+            entry for entry in os.listdir(cache_root)
+            if os.path.isdir(os.path.join(cache_root, entry))
+        ]
+    except OSError:
+        versions = []
+    if versions:
+        # (prj3#Issue833) 전부 점 구분 정수일 때만 정수 튜플 비교한다. 하나라도 해시 등
+        # 다른 형식이면 이름 정렬로 고정해 mtime 복제·동기화 차이를 배제한다.
+        if all(all(piece.isdigit() for piece in version.split("."))
+               for version in versions):
+            selected = max(versions, key=lambda version: tuple(
+                int(piece) for piece in version.split(".")))
+        else:
+            selected = max(versions)
+        return os.path.join(cache_root, selected)
+
+    # 종전 호출측 규약: 부재 경로를 돌려 digest 가 None 으로 판정하게 한다.
+    return marketplace_path
+
+
 def origin_source_paths(origin: str) -> list:
     """origin 값 → 로컬 원본 파일 경로들. `web:`·`native` 는 빈 목록(원본이 없다)."""
     paths = []
@@ -288,10 +432,16 @@ def origin_source_paths(origin: str) -> list:
         elif part.startswith("skill:"):
             paths.append(os.path.join(SCAR_ROOT, "skills", part[6:], "SKILL.md"))
         elif part.startswith("plugin:"):
-            # ⚠️ 실제 설치 경로는 `plugins/marketplaces/{M}/{N}` 이다(2026-09-09 실측 —
-            #   plugins/ 직하는 cache·data·marketplaces 셋뿐). 세그먼트를 빼면 경로가
-            #   영영 부재라 drift 가 **조용히** 미검출된다(prj3#Issue589 자체 검토 M5).
-            paths.append(os.path.join(SCAR_ROOT, "plugins", "marketplaces", part[7:]))
+            marketplace, separator, name = part[7:].partition("/")
+            if separator and marketplace and name:
+                paths.append(_plugin_install_path(marketplace, name))
+            else:
+                paths.append(os.path.join(
+                    SCAR_ROOT, "plugins", "marketplaces", part[7:]))
+        elif part.startswith("command:"):
+            paths.append(os.path.join(SCAR_ROOT, "commands", part[8:] + ".md"))
+        elif part.startswith("hook:"):
+            paths.append(os.path.join(SCAR_ROOT, "hooks", part[5:]))
     return paths
 
 
@@ -340,6 +490,7 @@ def cmd_list(args) -> int:
     emit({"ok": True, "action": "list", "count": len(roles),
           "roles": [{"role": r, "label": f.get("label", ""),
                      "status": f.get("status", "active"),
+                     "kind": f.get("kind", "bot"),
                      "origin": f.get("origin"), "origin_seen": f.get("origin_seen"),
                      "core": r in CORE_ROLES} for r, f in sorted(roles.items())]})
     return 0
@@ -356,14 +507,21 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--label", required=True)
     sp.add_argument("--tags", default=None)
     sp.add_argument("--origin", default=None,
-                    help="재료 출처 — agent:N|skill:N|plugin:M/N|web:URL|native "
+                    help="재료 출처 — agent:N|skill:N|plugin:M/N|command:N|hook:N|web:URL|native "
                          "(생략 시 native. 복수는 '|' 구분, 공백·따옴표 불가)")
+    sp.add_argument("--home", type=int, default=None,
+                    help="프로젝트 단위 발굴의 본거지 prj — 카탈로그 home= + 그 prj 조직 선언 자리 (prj3#Issue757 T13)")
+    sp.add_argument("--home-dept", default="dev", help="본거지 자리 부서(기본 dev)")
+    sp.add_argument("--approved-by", default=None,
+                    help="③ 승인 근거 id(총괄 C 결정·mq ACK id) — draft(`{role}.md.draft`) 승격 등재에 필수 (prj3#Issue823_1)")
     sp.set_defaults(func=cmd_register)
 
     sp = sub.add_parser("set-origin",
                         help="기존 role 의 출처 기입·갱신 (소급 기입 경로, prj3#Issue589)")
     sp.add_argument("--role", required=True)
-    sp.add_argument("--origin", required=True)
+    sp.add_argument("--origin", required=True,
+                    help="재료 출처 — agent:N|skill:N|plugin:M/N|command:N|hook:N|web:URL|native "
+                         "(복수는 '|' 구분, 공백·따옴표 불가)")
     sp.add_argument("--seen", default=None,
                     help="drift 기준선 해시를 직접 지정 (보통 쓰지 않는다)")
     sp.add_argument("--reconciled", action="store_true",
@@ -379,6 +537,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("revive", help="부활 — status 제거 1줄")
     sp.add_argument("--role", required=True)
     sp.set_defaults(func=cmd_revive)
+
+    sp = sub.add_parser("set-kind",
+                        help="분류 기입 — tool=도구 재분류(표시만·배분 불변, prj3#Issue636)")
+    sp.add_argument("--role", required=True)
+    sp.add_argument("--kind", required=True, choices=KIND_VALUES,
+                    help="tool=도구 래핑(배분 0 이 정상) · bot=공정 role(필드 제거)")
+    sp.set_defaults(func=cmd_set_kind)
 
     sp = sub.add_parser("list", help="카탈로그 전체 + status")
     sp.set_defaults(func=cmd_list)

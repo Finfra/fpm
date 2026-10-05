@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
-# doc-base-check.sh — `_doc_base/` 추적 선언 ↔ 실태 대조 (Issue477)
+# doc-base-check.sh — 문서 추적 선언 ↔ 실태 대조 (2축: `_doc_base/` Issue477 · docs 6항목 Issue497)
 #
 # 왜 필요한가: 구 규칙(`_doc_base gitignore ⟺ remote origin`)은 **검사 수단이 없어서**
 #   조용히 무너졌다. 2026-09-05 전수 조사에서 실태가 3분기로 갈렸다 —
 #   PUBLIC 인데 추적 1건, PRIVATE 인데 미추적 8건(백업 0), PRIVATE 인데 추적 3건.
 #   각 프로젝트가 다른 이유로 결정했고 그 이유가 아무 데도 적혀 있지 않았다.
 #   판정을 명시 선언으로 옮긴 이상, **선언이 지켜지는지 보는 눈**이 함께 있어야 한다.
+#
+# 축2 — docs 6항목 (Issue497, 2026-09-20)
+#   선언  : 같은 파일의 `docs: track|ignore`   실태: Issue.md·CLAUDE.md·_doc_arch/ 추적 여부
+#     track  + tracked    → OK
+#     ignore + untracked  → OK
+#     track  + untracked  → 🚨 유실 위험 (선언은 열라는데 .gitignore 가 막고 있다)
+#     ignore + tracked    → 🚨 선언과 실태 불일치 (gitignore 는 이미 추적된 파일에 효력 없음)
+#     미선언              → ⏳ 보류. ⚠️ 기본값이 축1과 **반대**다 — docs 의 안전측은 «추적» 이다
+#       (유출 위험이 낮고 유실 위험이 높다. 실태도 추적 33 : ignore 10 으로 추적이 다수)
 #
 # 판정 (SSOT: _doc_arch/gitignore-policy.md "# `_doc_base/` 예외 — 명시 선언 규칙")
 #   선언  : .claude/doc-base.yml 의 `tracking: allow|deny`
@@ -45,7 +54,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-viol=0; checked=0; undecl=0
+viol=0; checked=0; undecl=0; dchecked=0; dundecl=0
 
 # 선언 읽기 — yaml 파서 의존을 만들지 않는다(키 하나짜리 스칼라다).
 #   주석·인라인 주석·따옴표를 벗기고 첫 매치만 쓴다.
@@ -57,6 +66,47 @@ decl_of() {  # $1=repo  → allow | deny | none
     allow|deny) echo "$v" ;;
     *) echo "none" ;;   # 오타·빈 값은 선언으로 치지 않는다(조용한 오독보다 미선언이 낫다)
   esac
+}
+
+docs_decl_of() {  # $1=repo  → track | ignore | none   (Issue497)
+  local f="$1/.claude/doc-base.yml" v
+  [ -f "$f" ] || { echo "none"; return 0; }
+  v="$(sed -n 's/^[[:space:]]*docs:[[:space:]]*\([A-Za-z]*\).*/\1/p' "$f" | head -1)"
+  case "$v" in
+    track|ignore) echo "$v" ;;
+    *) echo "none" ;;
+  esac
+}
+
+# docs 실태: 6항목 중 «존재하는» 것만 본다. 하나라도 추적 중이면 tracked 로 센다 —
+#   부분 추적(ex: Issue.md 만 추적)은 «열려 있다» 쪽이 사실에 가깝다.
+check_docs() {  # $1=repo  $2=라벨   (Issue497)
+  local repo="$1" label="$2" decl tracked present item
+  git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || return 0
+  present=0; tracked=0
+  for item in Issue.md CLAUDE.md noteForHuman.md _doc_arch _doc_work .claude; do
+    [ -e "$repo/$item" ] || continue
+    present=$((present + 1))
+    [ "$(git -C "$repo" ls-files -- "$item" 2>/dev/null | head -1)" ] && tracked=$((tracked + 1))
+  done
+  [ "$present" -gt 0 ] || return 0
+  decl="$(docs_decl_of "$repo")"
+  dchecked=$((dchecked + 1))
+  if [ "$decl" = "none" ]; then
+    dundecl=$((dundecl + 1))
+    printf '  ⏳ %-40s [docs] 미선언 · 추적 %s/%s — 미선언 기본값은 «추적»(Issue497)\n' "$label" "$tracked" "$present"
+    [ "$STRICT" -eq 1 ] && viol=$((viol + 1))
+  elif [ "$decl" = "track" ] && [ "$tracked" -gt 0 ]; then
+    printf '  ✅ %-40s [docs] track  · 추적 %s/%s\n' "$label" "$tracked" "$present"
+  elif [ "$decl" = "ignore" ] && [ "$tracked" -eq 0 ]; then
+    printf '  ✅ %-40s [docs] ignore · 추적 0 (항목 %s)\n' "$label" "$present"
+  elif [ "$decl" = "track" ]; then
+    printf '  🚨 %-40s [docs] track 인데 추적 0 (항목 %s) — 버전이력·백업 0. 해소: .gitignore 의 docs 라인 제거 후 add\n' "$label" "$present"
+    viol=$((viol + 1))
+  else
+    printf '  🚨 %-40s [docs] ignore 인데 %s 항목이 추적 중 — 선언과 실태 불일치. gitignore 는 추적분에 효력이 없다\n' "$label" "$tracked"
+    viol=$((viol + 1))
+  fi
 }
 
 check_one() {  # $1=repo  $2=라벨
@@ -95,24 +145,26 @@ if [ "$MODE" = "all" ]; then
     p="$(cat "$PM_BASE/projects/$n" 2>/dev/null)"; p="${p/#\~/$HOME}"
     [ -n "$p" ] && [ -d "$p" ] || continue
     check_one "$p" "$n ${p/#$HOME/~}"
+    check_docs "$p" "$n ${p/#$HOME/~}"
   done
 else
   repo="${TARGET:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
   echo "[doc-base] ${repo/#$HOME/~}"
   check_one "$repo" "${repo/#$HOME/~}"
+  check_docs "$repo" "${repo/#$HOME/~}"
 fi
 
-if [ "$checked" -eq 0 ]; then
-  echo "[doc-base] 대상 없음 (_doc_base 미사용) — 무관"
+if [ "$checked" -eq 0 ] && [ "$dchecked" -eq 0 ]; then
+  echo "[doc-base] 대상 없음 (_doc_base·docs 미사용) — 무관"
   exit 0
 fi
 if [ "$viol" -gt 0 ]; then
-  echo "[doc-base] 🚨 불일치 $viol 건 / 검사 $checked 건 (미선언 $undecl) — 선언과 실태가 다르다"
+  echo "[doc-base] 🚨 불일치 $viol 건 — base 검사 $checked (미선언 $undecl) · docs 검사 $dchecked (미선언 $dundecl)"
   exit 1
 fi
-if [ "$undecl" -gt 0 ]; then
-  echo "[doc-base] ✅ 명시 선언 $((checked - undecl)) 건 전부 정합 · ⏳ 미선언 $undecl 건 (위반 아님 — 마이그레이션 잔여)"
+if [ "$undecl" -gt 0 ] || [ "$dundecl" -gt 0 ]; then
+  echo "[doc-base] ✅ 선언분 전부 정합 · ⏳ 미선언 base $undecl · docs $dundecl (위반 아님 — 마이그레이션 잔여)"
   exit 0
 fi
-echo "[doc-base] 정합 $checked 건"
+echo "[doc-base] 정합 — base $checked 건 · docs $dchecked 건"
 exit 0

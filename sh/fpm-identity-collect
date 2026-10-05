@@ -8,6 +8,8 @@
   실행: fpm-identity-collect            → $FPM_BASE/Identity.md + Identity_map.htm 재생성
         fpm-identity-collect --check    → 쓰지 않고 미기재 통계만 출력
         fpm-identity-collect --md-only  → Identity.md 만 (카드뷰 skip)
+        fpm-identity-collect --json     → 파일을 쓰지 않고 stdout 에 {"<prj id>": {필드: 값}} JSON 1개
+        그 밖의 플래그는 **파일을 쓰기 전에** rc 2 로 거부한다(미지 플래그가 무시되며 재생성되던 사고, Issue589)
 
 ⚠️ 알림을 만들지 않는다 (prj6 oracle-identity.md 조항 6).
    `⚠️ 미기재`·`🌅 시한 경과` 는 표 안의 문자열일 뿐이며 훅·스케줄로 내보내지 않는다.
@@ -17,6 +19,7 @@ SSOT: $FPM_BASE/Projects.md (id·경로·이모지·표시명) + 각 프로젝�
 """
 import datetime
 import importlib.util
+import json
 import os
 import re
 import sys
@@ -31,6 +34,8 @@ SYNC_PY     = os.path.join(PM_ROOT, 'sh', 'fpm-projects-sync')
 # L1 필드 9종 — 스키마 정본은 prj6 _doc_arch/project-identity-scheme.md
 REQUIRED = ['identity', 'not', 'goal_parent', 'lifetime', 'outcome', 'status']
 OPTIONAL = ['identity_origin', 'deadline']
+PASSTHROUGH = ['handles', 'now']   # prj6 가 더한 선택 필드(Q4 담당 판정·Q5 현황 맵) — 원문 한 줄로 싣는다
+KNOWN_FLAGS = {'--check', '--md-only', '--json'}
 LIFETIMES = {'finite', 'perpetual'}
 STATUSES  = {'active', 'maintenance', 'dormant', 'archived'}
 
@@ -73,6 +78,26 @@ def parse_frontmatter(text):
             v = re.split(r"\s+#", raw, maxsplit=1)[0].strip()
         out[k] = v
     return out
+
+
+def blocklist_keys(text):
+    """frontmatter 에서 값이 비고 다음 줄이 `- item` 인 키 — 이 수집기는 평면 값만 읽으므로 무시된다."""
+    if not text.startswith('---'):
+        return []
+    end = text.find('\n---', 3)
+    if end == -1:
+        return []
+    keys, last = [], None
+    for line in text[3:end].split('\n'):
+        m = re.match(r'^([A-Za-z_][A-Za-z0-9_]*):\s*(#.*)?$', line)
+        if m:
+            last = m.group(1)
+        elif line.lstrip().startswith('- ') and line[0] in ' \t' and last:
+            if last not in keys:
+                keys.append(last)
+        elif line.strip():
+            last = None
+    return keys
 
 
 def tree_nodes(content):
@@ -120,7 +145,7 @@ def collect():
 
     out = []
     for r in rows:
-        rec = dict(r, fields={}, note='')
+        rec = dict(r, fields={}, note='', blocklists=[])
         d = expand(r['path'])
         cm = os.path.join(d, 'CLAUDE.md')
         if not os.path.isdir(d):
@@ -129,7 +154,9 @@ def collect():
             rec['note'] = NO_CLAUDE
         else:
             try:
-                rec['fields'] = parse_frontmatter(open(cm, encoding='utf-8').read())
+                text = open(cm, encoding='utf-8').read()
+                rec['fields'] = parse_frontmatter(text)
+                rec['blocklists'] = blocklist_keys(text)
             except (OSError, UnicodeDecodeError) as e:
                 rec['note'] = f'⚠️ 읽기 실패 ({e.__class__.__name__})'
         out.append(rec)
@@ -192,19 +219,20 @@ def render(recs, nodes):
         f'* 기재 **{len(filled)}/{len(recs)}** — `⚠️ 미기재` 는 오류가 아니라 **아직 정하지 않았다는 신호**입니다',
         '* `🌅` = 시한이 지난 유한형. **표시일 뿐 일몰 발의가 아닙니다** — 발의는 prj6 `8.sunset/`, 집행은 사람',
         '',
-        '| id | 프로젝트 | 정체성 | 아닌 것 | 수명 | 기대 성과 | 시한 | 목적 | 상태 |',
-        '| :-- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |',
+        '| id | 프로젝트 | 정체성 (identity) | 아닌 것 | 수명 | 기대 성과 | 시한 | 목적 | 상태 | now |',
+        '| :-- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |',
     ]
 
     for r in recs:
         name = f"{r['emoji']} {r['name']}".strip()
         dl = field(r, 'deadline') if r['fields'].get('deadline') else ('—' if r['note'] else MISSING)
-        L.append('| {} | {} | {} | {} | {} | {} | {} | {} | {} |'.format(
+        L.append('| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |'.format(
             r['id'], cell(name),
             field(r, 'identity'), field(r, 'not'),
             field(r, 'lifetime') + sunset_flag(r, today),
             field(r, 'outcome'), dl,
             field(r, 'goal_parent', nodes), field(r, 'status'),
+            cell(r['fields'].get('now', '')),   # 값 없으면 빈 칸 — 경고 문자열이 아니다(선택 필드)
         ))
 
     drifted = [r for r in recs if r['fields'].get('identity_origin')]
@@ -365,12 +393,26 @@ def render_htm(recs, nodes):
 
 
 def main():
-    check = '--check' in sys.argv[1:]
+    argv = sys.argv[1:]
+    unknown = [a for a in argv if a not in KNOWN_FLAGS]
+    if unknown:   # 파일을 쓰기 전에 거부 — 미지 플래그가 무시되며 재생성되던 부작용의 재발 방지
+        print(f'[identity] 알 수 없는 플래그: {" ".join(unknown)} — 지원: {" ".join(sorted(KNOWN_FLAGS))}',
+              file=sys.stderr)
+        return 2
+    check = '--check' in argv
     recs, nodes = collect()
+    if '--json' in argv:
+        keys = REQUIRED + OPTIONAL + PASSTHROUGH
+        data = {str(r['id']): {k: r['fields'][k] for k in keys if k in r['fields']} for r in recs}
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return 0
     text = render(recs, nodes)
     filled = sum(1 for r in recs if r['fields'].get('identity'))
     if check:
         print(f'[identity] 기재 {filled}/{len(recs)} — 미기재 {len(recs) - filled} (쓰지 않음)')
+        bl = [f"prj{r['id']}({','.join(r['blocklists'])})" for r in recs if r['blocklists']]
+        if bl:
+            print('[identity] 블록 리스트(`- item`) 무시됨 — 인라인 `[a, b]` 로 쓰십시오: ' + ' '.join(bl))
         return 0
     with open(OUT_MD, 'w', encoding='utf-8') as f:
         f.write(text)

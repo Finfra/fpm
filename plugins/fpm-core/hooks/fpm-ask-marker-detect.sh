@@ -44,7 +44,7 @@ FPM_LIB_DIR="$HOME/.claude/hooks/lib"
 # shellcheck source=/dev/null
 . "$HOME/.claude/hooks/hook-input.sh"
 
-input=$(cat)
+input=$(< /dev/stdin)   # prj3#Issue921 — cat fork 제거(부하 시 CPU 경합 몫)
 # Stop hook 입력 schema: transcript_path / session_id / cwd / stop_hook_active
 hook_input_parse "$input"
 transcript_path="${HOOK_TRANSCRIPT:-}"
@@ -206,7 +206,7 @@ ask_ctx_server "$cwd"
 
 if [ -z "$SERVER_TOKEN" ] || [ -z "$CWD_HASH" ] || [ -z "$INBOX_DIR" ]; then
   # Issue424_2: 구분자 인용 필수 — 미인용 heredoc 에서 본문 백틱이 **명령 치환으로 실행**되어
-  #   안내문의 `/dashboard-server start`·`..hub stop` 가 통째로 증발했다(스냅샷 m05 로 실증).
+  #   안내문의 `/fpm-board-server start`·`..hub stop` 가 통째로 증발했다(스냅샷 m05 로 실증).
   #   값은 env 로 주입한다.
   HEALTH="$health" python3 <<'PYEOF'
 import json, os
@@ -215,7 +215,7 @@ reason = (
     "## htm-form:auto 마커 감지됨 — server 미가용\n\n"
     f"healthz={health} / register 실패. form 자동 회수 단일 경로 (Issue45) 라 fallback 없음.\n\n"
     "### 조치 (사용자 선택)\n"
-    "1. `/dashboard-server start` 실행 후 응답 재작성 → 마커 재처리\n"
+    "1. `/fpm-board-server start` 실행 후 응답 재작성 → 마커 재처리\n"
     "2. `..hub stop` 입력 → hub 모드 해제, 일반 채팅으로 회답 받기"
 )
 print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=False))

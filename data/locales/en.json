@@ -209,6 +209,7 @@
   "bots.d.lease": "lease",
   "bots.leaseLeft": "{m} min left",
   "bots.leaseGone": "expired — {m} min ago (crash suspected)",
+  "bots.leaseIdle": "expired — {m} min ago (idle, waiting for input · not a crash)",
   "bots.career.probation": "probation",
   "bots.career.active": "active",
   "bots.career.leave": "on leave",
@@ -216,8 +217,10 @@
   "bots.groupCount": "{a}/{n} active",
   "bots.mapTitle": "Open this bot org's delegation map (new tab)",
   "bots.mapAllTitle": "Open the full bot org chart (new tab)",
+  "bots.openBoardTitle": "Open this bot on the org board (new tab)",
   "bots.restTitle": "Checked out — still org members, just not working now",
   "bots.restMore": "+{n} more (checked out) — see org map",
+  "bots.restToggle": "{r} recent · {n} checked out",
   "bots.chipCheckout": "checked out {t} ago",
   "bots.chipLastSeen": "last run {t}"
 }

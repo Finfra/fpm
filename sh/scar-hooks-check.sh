@@ -82,6 +82,22 @@ PY
 BUNDLE="$REPO/$SRC_REL/hooks"
 ORIGIN="$HOME/$ORIGIN_REL"
 
+#   원본 = prj3 HEAD (Issue591) — 번들 writer(`scripts/fpm-bundle-sync.sh`)가 HEAD 판을 싣는다.
+#   작업트리와 비교하면 다른 세션의 진행 중 편집을 «내용 상이» 로 세어 writer 와 판정이 갈린다.
+#   원본이 git repo 안이면 hooks 경로만 `git archive HEAD` 로 떠서 비교한다(아니면 작업트리 그대로).
+SNAP=""
+trap '[ -n "$SNAP" ] && rm -rf "$SNAP"' EXIT
+if [ -d "$ORIGIN" ] && o_top="$(git -C "$ORIGIN" rev-parse --show-toplevel 2>/dev/null)"; then
+    o_pfx="$(git -C "$ORIGIN" rev-parse --show-prefix)"; o_pfx="${o_pfx%/}"
+    SNAP="$(mktemp -d "${TMPDIR:-/tmp}/scar-hooks-src.XXXXXX")"
+    mkdir -p "$SNAP/$o_pfx"
+    if git -C "$o_top" cat-file -e "HEAD:$o_pfx" 2>/dev/null \
+       && ! git -C "$o_top" archive HEAD -- "$o_pfx" | tar -x -C "$SNAP"; then
+        err "🚨 prj3 HEAD 스냅샷 추출 실패 ($o_top) — 작업트리로 대체하지 않는다"; exit 1
+    fi
+    ORIGIN="$SNAP/$o_pfx"
+fi
+
 [ "${#HOOKS[@]}" -gt 0 ] || { err "🚨 hooks[] 파싱 결과 0건 — scar-manifest.yml 형식 확인"; exit 1; }
 [ -d "$BUNDLE" ] || { err "🚨 번들 hooks 없음: $BUNDLE"; exit 1; }
 
@@ -104,7 +120,7 @@ while IFS= read -r rel; do
         *" $rel "*) ;;
         *) err "❌ 번들에 있으나 yml 미선언: $rel"; undecl=$((undecl+1)) ;;
     esac
-done < <(cd "$BUNDLE" && find . -type f -not -path './__pycache__/*' | sed 's|^\./||' | sort)
+done < <(cd "$BUNDLE" && find . -type f -not -path '*/__pycache__/*' | sed 's|^\./||' | sort)
 
 # ── C. 사본 ↔ prj3 원본 ───────────────────────────────────────
 if [ ! -d "$ORIGIN" ]; then

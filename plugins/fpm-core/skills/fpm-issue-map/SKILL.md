@@ -65,6 +65,9 @@ python3 "$BIM" --deadlock
 # 타 프로젝트를 조회하지 않음 (오프라인·속도 우선)
 python3 "$BIM" --no-cross
 
+# 핀봇 담당 배지 오버레이 (옵트인 — 배분 원장 읽기 전용 조인, Issue740)
+python3 "$BIM" --fbot
+
 # 경로 지정
 python3 "$BIM" --issue Issue.md --out Issue_map.htm
 ```
@@ -82,7 +85,7 @@ open -a Firefox "file://$PWD/Issue_map.htm"
 | 요소 | 형식 | 용도 |
 | :--- | :--- | :--- |
 | 섹션 | `# ✅ 완료` · `# 🚧 진행중` · `# 📕 중요` · `# 📙 일반` · `# 📗 선택` | 노드 색상·상태 판정 |
-| 제외 섹션 | `# ⏸️ 보류` · `# 🚫 취소` | **맵에서 제외** — 노드·표 양쪽에서 빠짐. 단 **미완료 활성 이슈가 `depends` 로 가리키는 보류·취소 이슈**는 회색 점선 유령 노드로만 남아 차단 사실을 보존 (Issue259) |
+| 제외 섹션 | `# ⏸️ 보류` · `# 🚫 취소` | **맵에서 제외** — 노드·표 양쪽에서 빠짐. 단 **미완료 활성 이슈가 `depends` 로 가리키는 보류·취소 이슈**는 회색 점선 유령 노드로만 남아 차단 사실을 보존 (Issue259) · ⏸️ 보류는 헤더 토글로 켤 수 있다 (Issue974 — 아래 «보류 포함 토글») |
 | 이슈 | `## Issue7: 제목 (등록: ...)` | 노드 생성 |
 | 서브 이슈 | `### Issue5_1: 제목` | 노드 생성 + **부모 암묵 의존**(depends 미선언 시) |
 | 선행 | `* depends: Issue3, Issue5` | 화살표 생성 |
@@ -144,6 +147,53 @@ python3 "$BIM" --all
 * `startable` = 미완료이고 미해소 선행이 0인 이슈 (`state == "startable"` 과 동치)
 * `blocked_by` = 미완료 로컬 선행 + 미완료 타 prj 선행 + **미확인** 타 prj 선행. 미확인은 `startable` 이 아니다(거짓 안전 신호 금지)
 * `held` = 보류·취소 유령 노드 — 기다려도 자동 해제되지 않음
+
+# 핀봇 담당 오버레이 `--fbot` (Issue740)
+
+*"이 이슈를 누가 맡았고 누가 시켰나"* 를 노드에 얹는다. 담당의 SSOT 는 **배분 원장**이다 — `Issue.md` 에 담당을 쓰지 않는다(정본: [fbot-org.md](../../_doc_arch/fbot-org.md) §이슈 축 연동 결정 1·3).
+
+| 항목 | 규약 |
+| :--- | :--- |
+| 옵트인 | 기본 off — `Issue_map.htm` 은 공유 산출물이라 봇 명부가 새면 안 된다 |
+| 원장 | `hooks/fbot-state.py` `aoa_dir()` 의 `registry.db` 를 `mode=ro` 로 연다(경로 해석 복제 금지 — `AOA_MEMORY_DIR` 존중) |
+| 대상 배분 | `job.kind='fbot_dispatch'` 중 **아직 안 끝난 것**(`open`·`blocked`·`logged`·`deferred`) + **최근 3일** 종결분 — hub `FBOT_RECENT_SECS` 와 같은 창 |
+| 이슈 매칭 | `payload.issue` 의 **선두 식별자**(`Issue47` · `718` · `prj5#Issue99 …`). 이슈 식별자로 시작하지 않는 topic 은 붙이지 않는다 |
+| prj 판정 | `prj<N>#` 접두 > `payload.prj`(fbot-lead 가 cwd 로 해소한 **작업 위치**) > `payload.cwd` 가 맵 루트와 같음. 같은 번호는 prj 마다 있으므로 prj 가 맞을 때만 붙인다 |
+| 노드 배지 | 봇 아이콘(`data/fbot/icons`, 없으면 색 점) + bot_id(`fbot-` 생략) + 배분 사인(⏳ ✓ ⛔ ⌇ ✕ ▪ ⏸ — hub 와 동일). 워커당 1개, 노드당 2개 + `+k` |
+| 표 | 이슈 목록에 **담당(fbot)** 열 — 사인 · 전체 bot_id · `← 배분자` · 상대시각 |
+| 원장 부재·읽기 실패 | **오류 exit 아님** — stderr 1줄(`ℹ️ fbot 오버레이 생략 — …`) 후 오버레이만 빠진 맵 생성 |
+| `--json --fbot` | 최상위 `fbot` 키만 **추가**(`{ok, reason, db, window_secs, issues: {IssueN: [{worker, owner, status, sign, created_at, dispatch_id, role, color}]}}`). `--fbot` 없는 `--json` 은 기존 4키 그대로(fbot-lead 소비 계약 불변) |
+
+## 이슈 앵커 · 딥링크 (Issue740)
+
+`--fbot` 과 무관하게 항상 붙는다 — 캐스케이드·봇 카드(prj1 M3·M4)가 특정 이슈로 착지하는 수신 계약이다.
+
+* 관계도 노드 `id="issue-<N>"` · 이슈 목록 행 `id="issue-<N>-row"` · 둘 다(임계 경로 노드 포함) `data-issue="<N>"`. `<N>` 은 `Issue` 를 뗀 나머지(`740` · `757_1`)
+* `Issue_map.htm#issue=<N>` 으로 열면 같은 `data-issue` 전부를 선택 표시(발광)하고 노드로 — 노드가 없으면(정리 완료) 표 행으로 — 스크롤한다. `<N>` 은 `Issue740` · `prj3#Issue740` 표기도 받는다. `hashchange` 도 수신
+* 이슈 목록의 번호 칸이 곧 딥링크(`#issue=<N>`)라 복사해 공유할 수 있다
+* mermaid 원래 id(`flowchart-IssueN-k`)의 순번 `k` 는 그래프가 바뀌면 흔들리므로 외부 링크 키로 쓰지 않는다
+
+## 관계도 확대 · 이동 (Issue828)
+
+노드가 많은 prj 의 관계도는 자연 폭이 화면의 몇 배라, 그대로 두면 화면 폭으로 눌려 글자를 읽을 수 없다. 관계도·임계 경로 SVG 는 확대 상자(`.zoom-box`)에 들어간다.
+
+* 도구 막대: `－`·`＋`(×1.25) · 현재 배율 · `맞춤`(화면 폭, 생성 시 캡 복원) · `1:1`(자연 폭 = 글자 판독 크기) · `⛶` 전체 화면(미지원 환경에선 숨김)
+* Ctrl/⌘+휠(트랙패드 핀치)은 커서 기준 확대 — 한 이벤트 폭은 ×0.67~×1.49 로 자른다. 휠 단독은 페이지 스크롤 그대로다
+* 드래그로 이동 — 3px 넘게 움직여야 드래그이고, 드래그 끝의 클릭은 삼킨다
+* 딥링크(`#issue=<N>`) 착지 노드가 확대 상자 안이고 1:1 미만이면 1:1 로 키운 뒤 스크롤한다(`window.__issueMapZoom`)
+* 배율 기준은 `fit_svg` 가 남기는 `data-natural-w`(mmdc `max-width`, 없으면 viewBox 폭). 작은 그래프 과확대 방지 캡(Issue251)은 그대로다
+* `ISSUE-MAP:GRAPH` 블록 안에 `<svg` 가 남는다 — hub 의 관계도 유무 판정(`_issue_map_has_graph`)은 불변
+
+## ⏸️ 보류 포함 토글 (Issue974)
+
+보류 이슈의 의존 흐름을 보고 싶을 때 헤더의 **⏸️ 보류** 버튼으로 켠다. 기본값은 **미포함**(Issue259 동작 그대로)이고, 누른 값은 `localStorage` 키 `issueMap.includeHeld` 에 저장돼 다음에 열어도 유지된다(키는 prj 공통 — hub 가 같은 origin 으로 서빙).
+
+* 생성기는 보류 이슈가 있으면 **«보류 포함» 변형을 한 번 더 렌더**해 같은 파일에 `hidden` 으로 싣는다(`.im-v[data-variant="held"]`). 보류 0건이면 변형을 만들지 않고 버튼은 비활성
+* 포함 변형의 보류 이슈는 정식 노드(⏸️ 표시·회색 점선)이고 **로컬·타 prj 선행을 모두** 그린다 — 타 prj 선행은 외부 노드·«타 프로젝트 연동» 표·교착 진단에 들어간다. 보류 선행 → 후행 화살표는 보라 점선, 임계 경로 머리로는 세지 않는다
+* 🚫 취소는 토글 대상이 아니다 — 포함 변형에서도 종전대로 제외(활성 선행일 때만 유령)
+* `ISSUE-MAP:*` 마커는 기본 변형에만 1벌 — hub 판정·`--check`·`--json`·`--deadlock` 은 기본 변형 기준 그대로
+* 포함 변형은 앵커 id 에 `held-` 접두(`held-issue-<N>`·`held-issue-<N>-row`)를 달고 mermaid SVG id 를 `my-svg-held` 로 바꾼다 — 같은 id 면 화살촉 marker 가 숨긴 변형을 가리켜 사라진다. 딥링크는 보이는 변형의 앵커로 착지한다
+* 저장소가 막힌 환경(사생활 모드 등)에서도 throw 없이 기본값으로 렌더한다
 
 # 타 프로젝트 연동 · 교착 진단 (Issue252)
 
@@ -253,6 +303,7 @@ python3 "$BIM" --deadlock
 2. 생성된 `Issue_map.htm` 에 `<svg` 2개가 인라인으로 포함되고 외부 리소스 요청(`src="http`)이 0건
 3. 이전 파일의 `ISSUE-MAP:NOTES` 내용이 보존됨
 4. `--deadlock` 이 타 prj 선행 목록 + 🔴/🟡/🟢 판정 1줄을 출력 (Issue252)
+5. `--fbot` 회귀 — `python3 skills/issue-map/tests/test-fbot-overlay.py` green (배지·3일 창·원장 부재·앵커·옵트인·`--json` 스키마, Issue740)
 
 # 제약
 

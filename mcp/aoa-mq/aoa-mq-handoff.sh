@@ -53,6 +53,62 @@ STAT=/usr/bin/stat
 NOW_ISO=$("$DATE" '+%Y-%m-%dT%H:%M:%S')
 NOW_EPOCH=$("$DATE" +%s)
 
+# ── 승격 대상 action 판정 (prj3#Issue674) ─────────────────────────────
+# handoff 는 **모든 종결에 기록**된다 — "소비 안 되면 정보성 로그로 남음"
+# (_doc_arch/aoa-mq.md §handoff). 그런데 promote-stale 은 action 을 보지 않고
+# 3일 지난 파일을 전부 승격해, 후속 행동이 없는 종결까지 이슈후보를 채웠다.
+# 실측 3건 모두 그랬다: post_executed 2(셸이 이미 spawn 됨) · dismissed 1(사용자가 드롭).
+#
+# ⚠️ 승격 자체를 없애지 않는다 — 승격은 Issue26 의 F1 "고립 우편함" 해소책이고,
+#    잡아야 할 것은 **미소비 confirmed**(확인했는데 아무도 안 이어받은 건)다.
+#    가르는 기준은 「오래됐는가」가 아니라 **「누가 이어받아야 하는가」**.
+# ⚠️ 미지 action 의 기본은 **승격(fail-open)** 이다. 이 경로의 목적이 유실 방지이므로
+#    모르는 것을 조용히 버리는 방향은 취지에 반한다. 종결 상태는 늘어나 왔다
+#    (post_delegated·post_executed 가 Issue20 에서 추가됐다) — 다음에 또 늘면
+#    **기본이 어느 쪽인가**가 결함을 가른다.
+POLICY="$MQ_DIR/policy.yml"
+pol() { # $1=key $2=default — tick.sh 와 동일 규약(값 단일 지점을 복제하지 않기 위해 형태 일치)
+  local v
+  v=$(grep -E "^[[:space:]]*$1:" "$POLICY" 2>/dev/null | head -1 \
+      | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//')
+  printf '%s' "${v:-$2}"
+}
+
+# 후속 행동이 없는 종결 — 승격하지 않고 "승격 대상 아님"으로 조용히 이관한다.
+# 유실이 아니므로 레코드는 z_consumed 에 남기고 사유를 적는다.
+NO_FOLLOWUP_ACTIONS="$(pol handoff_no_followup_actions 'post_executed,dismissed')"
+
+needs_followup() { # $1=파일 → 0=승격 대상 / 1=대상 아님
+  local a; a=$("$JQ" -r '.action // ""' "$1" 2>/dev/null)
+  [ -n "$a" ] || return 0                     # action 부재 = 미지 → fail-open(승격)
+  case ",$NO_FOLLOWUP_ACTIONS," in
+    *",$a,"*) return 1 ;;
+    *)        return 0 ;;                     # 미지 action 도 여기로 → fail-open(승격)
+  esac
+}
+
+# 승격 없이 z_consumed 로 이관 (사유 기록). audit --restore 가 되살리지 않도록
+# promoted_to 를 비워 두고 consumed_note 에 판정 근거를 남긴다.
+consume_no_promote() { # $1=파일 $2=dry(1|0) → stdout 요약 1줄
+  local f="$1" dry="${2:-0}" id a base tmp
+  id=$("$JQ" -r '.id' "$f"); a=$("$JQ" -r '.action // "-"' "$f")
+  if [ "$dry" = "1" ]; then
+    echo "DRY-SKIP $id (action=$a · 후속 행동 없음 → 승격 대상 아님)"
+    return 0
+  fi
+  mkdir -p "$CONSUMED"
+  base=$(basename "$f"); tmp="$f.tmp.$$"
+  if "$JQ" --arg ts "$NOW_ISO" --arg a "$a" \
+      '. + {consumed_ts:$ts, promoted_to:null,
+            consumed_note:("승격 대상 아님 — action=" + $a + " 은 후속 행동이 없다 (prj3#Issue674)")}' \
+      "$f" > "$tmp" 2>/dev/null; then
+    mv "$tmp" "$CONSUMED/$base"; rm -f "$f"
+  else
+    rm -f "$tmp"; die "jq 갱신 실패 — 이관 중단: $base"
+  fi
+  echo "이관 $id (action=$a · 승격 대상 아님)"
+}
+
 # 미소비 파일 목록 (오래된 순). .hold / z_consumed 는 제외
 pending_files() {
   find "$HANDOFF" -maxdepth 1 -type f -name '*.json' 2>/dev/null | sort
@@ -201,10 +257,15 @@ case "$CMD" in
     while IFS= read -r f; do
       [ -n "$f" ] || continue
       d=$(age_days "$f")
+      # 진행 3종(Issue643)은 **있는 항목만** 덧붙인다 — 소비자가 "이미 무엇을 했는지" 를 보고
+      # 같은 일을 다시 하지 않게 하는 것이 스냅샷에 실은 이유다. 없는 항목은 종전 4줄 그대로.
       "$JQ" -r --arg d "$d" '
         "── \(.id)  [\(.action)]  \($d)일 경과",
         "   메시지: \(.message)",
         "   출처: \(.source // "-")   ACK: \(.ack_ts // "-")",
+        (if .claimed_by then "   집은 주체: \(.claimed_by)" else empty end),
+        (if .progress   then "   진행: \(.progress)"       else empty end),
+        (if .result     then "   결과: \(.result)"         else empty end),
         (if .on_response then "   on_response: \(.on_response | tostring)" else empty end),
         ""' "$f"
     done < <(pending_files)
@@ -286,16 +347,23 @@ case "$CMD" in
         *) die "promote-stale: 알 수 없는 인자 $1" ;;
       esac
     done
-    n=0
+    n=0; skipped=0
     while IFS= read -r f; do
       [ -n "$f" ] || continue
-      promote_one "$f" "stale ${days}일 초과 자동 승격 (prj3#Issue26)" "$dry" || true
-      n=$((n+1))
+      # action 으로 먼저 거른다 (prj3#Issue674) — 후속 행동이 없는 종결은 이슈후보를
+      # 채우지 않고 사유와 함께 이관한다
+      if needs_followup "$f"; then
+        promote_one "$f" "stale ${days}일 초과 자동 승격 (prj3#Issue26)" "$dry" || true
+        n=$((n+1))
+      else
+        consume_no_promote "$f" "$dry" || true
+        skipped=$((skipped+1))
+      fi
     done < <(find "$HANDOFF" -maxdepth 1 -type f -name '*.json' -mtime +"$days" 2>/dev/null | sort)
-    if [ "$n" = 0 ]; then
+    if [ "$n" = 0 ] && [ "$skipped" = 0 ]; then
       echo "stale(${days}일 초과) handoff 없음 — 승격 대상 0건"
     else
-      echo "승격 ${n}건 완료 (stale ${days}일 초과). 잔여 미소비: $(pending_files | wc -l | tr -d ' ')건"
+      echo "승격 ${n}건 · 이관 ${skipped}건(후속 행동 없음) 완료 (stale ${days}일 초과). 잔여 미소비: $(pending_files | wc -l | tr -d ' ')건"
     fi
     ;;
 

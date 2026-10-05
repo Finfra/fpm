@@ -1,0 +1,10 @@
+# s2 크로스 프로젝트 위임 — DAG fan-out/fan-in. a → (b, c) → d · prj 3종 · concurrency 2
+title: s2-dag
+state: running
+on_fail: continue
+concurrency: 2
+items:
+- {id: a, prj: 1, issue: 1, depends: [], status: ready, attempts: 0, prompt: 'root FAKE: sleep=1'}
+- {id: b, prj: 2, issue: 2, depends: [a], status: blocked, attempts: 0, prompt: 'fan-out b FAKE: sleep=1'}
+- {id: c, prj: 3, issue: 3, depends: [a], status: blocked, attempts: 0, prompt: 'fan-out c FAKE: sleep=1'}
+- {id: d, prj: 1, issue: 4, depends: [b, c], status: blocked, attempts: 0, prompt: 'fan-in d'}

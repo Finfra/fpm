@@ -1,14 +1,32 @@
 # Project
 # 주의: 폴더명은 대소문자 구분 (실제 폴더는 소문자 _doc_arch)
-_doc_work/
-_doc_arch/
+
+# 원천자료 — 미선언 기본값 deny(ignore). 추적하려면 .claude/doc-base.yml 에
+#   tracking: allow + reason 을 적고 아래 한 줄을 지운다 (Issue477)
 _doc_base/
-.claude/
-CLAUDE.md
-Harness.md
-Issue.md
-noteForHuman.md
-PROMPTS.md
+
+# 런타임 산출물 — 재생성되므로 추적하지 않는다 (prj1 관행과 동일)
+_doc_work/htm/
+_doc_work/z_htm/
+_doc_work/z_done/htm/
+_doc_work/z_log/
+
+# ── docs 6항목: 자동 ignore 폐기 (Issue497, 2026-09-20) ────────────────────
+# 미선언 기본값은 **추적**이다. 신규 프로젝트도 Issue.md·CLAUDE.md·_doc_arch/ 를
+# git 이 보호한다 — 닫으면 버전이력도 원격백업도 0 이 된다.
+# 로컬 전용으로 두려면 .claude/doc-base.yml 에
+#     docs: ignore
+#     reason: "…"
+# 를 적고 **아래 블록의 주석을 해제**한다.
+# 판정 SSOT: _doc_arch/gitignore-policy.md "# docs 예외 — 명시 선언 규칙"
+# _doc_work/
+# _doc_arch/
+# .claude/
+# CLAUDE.md
+# Harness.md
+# Issue.md
+# noteForHuman.md
+# PROMPTS.md
 
 # macOS
 .DS_Store

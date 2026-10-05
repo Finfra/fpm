@@ -1,18 +1,33 @@
 # fbot 아이콘 카탈로그 — 사람 편집 가능.
-# 형식: {role}: shape=<도형> base=<#hex> label=<한글> tags=<t1|t2> [origin=<출처>] [origin_seen=<epoch>] [status=archived] [manager=true]
-# 도형 어휘: star shield hexagon triangle grid check magnifier magnet frame speech venn tag
-# origin (prj3#Issue589): agent:N | skill:N | plugin:M/N | web:URL | native — 복수는 '|'.
+# 형식: {role}: shape=<도형> base=<#hex> label=<한글> tags=<t1|t2> [origin=<출처>] [origin_seen=<epoch>] [kind=tool] [status=archived] [manager=true] [nonexec=true] [checker=true] [engine=<엔진>] [permission_mode=floor|bypass]
+# checker·engine·permission_mode (prj3#Issue859_1 — _doc_arch/fbot-org.md §선언 확장): checker=true = 검증 직능(검증선 checked_by 대상 ·
+#   향후 선택 판정 agent.checker 후보 — selection-arch.md). engine = 그 직능이 판정을 맡기는 모델, 열거값 claude|codex|agy 만
+#   ('|' 다값, 부재 = claude — origin 은 출처라 엔진 파생에 쓰지 않는다). permission_mode = 직능 권한 기본값(부재 = bypass,
+#   floor 로 바꾸는 것은 사람 결정 H:보안). 해석 단일 지점: fbot-org.py role_engines·is_checker·role_permission_default
+# nonexec (prj3#Issue757): 일을 하지 않고 시키기만 하는 관리직(총괄·팀장) — 배분 채널(지휘 지시문)·환기·
+#   인박스 발신 제한·사람 창구의 판정 단일 지점(fbot-org.is_nonexec). 쓰기 가드는 역할별 축(권한·분업)으로 따로 가른다. manager(명령 수신 — hr 포함)와 다른 축이다.
+# 도형 어휘: star shield hexagon triangle grid check magnifier magnet frame speech venn tag compass wrench broom
+# origin (prj3#Issue589) (prj3#Issue833): agent:N | skill:N | plugin:M/N | command:N | hook:N | web:URL | native — 복수는 '|'.
 #   ⚠️ 값에 공백·따옴표 불가(파서가 split() 기준). 쓰기는 훅 경유만 — 직접 Edit 금지.
 #   origin_seen = drift 판정 기준선(원본을 본 시각). 매뉴얼 mtime 을 기준선으로 쓰지 않는다.
-chief: shape=star base=#B8860B label=총괄핀봇 tags=보고|승인 manager=true origin=native
+# kind (prj3#Issue636): tool = «도구 래핑» 재분류 — 봇 계층 배분을 기대하지 않는다(배분 0 이
+#   정상). 부재 = bot(기본). 기입은 fbot-scout.py set-kind. 엔트리 삭제 금지 — 지우면 같은
+#   승격이 반복된다. 배분 자체는 막지 않는다(lead dispatch --role R 은 그대로 산다).
+chief: shape=star base=#B8860B label=총괄핀봇 tags=보고|승인 manager=true nonexec=true origin=native
 hr: shape=shield base=#2E6E4E label=인사핀봇 tags=채용|게이트 manager=true origin=native
-lead: shape=hexagon base=#3A5FA0 label=팀장핀봇 tags=배분|모니터링 manager=true origin=native
+lead: shape=hexagon base=#3A5FA0 label=팀장핀봇 tags=배분|모니터링 manager=true nonexec=true origin=native
 architect: shape=triangle base=#7A4FA0 label=설계핀봇 tags=설계|점검 origin=native
 planner: shape=grid base=#A0623A label=기획핀봇 tags=plan|task origin=native
-qa: shape=check base=#3A8A8A label=QA핀봇 tags=검증|판정 origin=native
+qa: shape=check base=#3A8A8A label=QA핀봇 tags=검증|판정 origin=native checker=true permission_mode=floor
 research: shape=magnifier base=#6E6E3A label=조사핀봇 tags=조사|선례 origin=native
 scout: shape=magnet base=#8A3A5F label=발굴핀봇 tags=직능|발굴 origin=native
-graphic: shape=frame base=#5F8A3A label=도해핀봇 tags=변환|개선 origin=agent:ig-maker
-consult: shape=speech base=#3A6E8A label=자문핀봇 tags=선례|큐레이션 origin=agent:consultant-m
-crosscheck: shape=venn base=#A03A3A label=교차검증핀봇 tags=2차의견|외부LLM origin=skill:agy-diff-reviewer|skill:agy-file-processor|skill:agy-image-describer|skill:agy-scrapper
+graphic: shape=frame base=#5F8A3A label=도해핀봇 tags=변환|개선 origin=agent:ig-maker|skill:ig-maker kind=tool origin_seen=11cf8a6b4da2d761
+consult: shape=speech base=#3A6E8A label=자문핀봇 tags=선례|큐레이션 origin=agent:consultant-m origin_seen=7e5b40c5e7285c0b
+crosscheck: shape=venn base=#A03A3A label=교차검증핀봇 tags=2차의견|외부LLM origin=skill:agy-diff-reviewer|skill:agy-file-processor|skill:agy-image-describer|skill:agy-scrapper kind=tool checker=true engine=agy permission_mode=floor origin_seen=3f8263a0f87ba451
 release: shape=tag base=#8A5A2B label=배포핀봇 tags=배포|릴리즈 origin=native
+advisor: shape=compass base=#3A3A8A label=외부자문핀봇 tags=외부검토|codex origin=skill:codex-arch-reviewer|agent:codex-diff-reviewer|agent:codex-arch-checker|agent:codex-plan-checker|agent:codex-test-auditor|agent:codex-completion-auditor|agent:agy-visual-qa checker=true engine=codex|agy permission_mode=floor origin_seen=7a775982cf5e2ce8
+contractor: shape=wrench base=#5A3A2A label=외부컨설턴트핀봇 tags=외부작업|patch origin=skill:codex-worker|agent:codex-patcher|agent:codex-migrator engine=codex origin_seen=17bdd42ec8cc215d
+fileops: shape=broom base=#7A5A6E label=파일작업핀봇 tags=정리|삭제 origin=skill:claude-project-retension|skill:doc-work-archive|skill:proj-refactor origin_seen=8c5771bd8bb459a0
+developer: shape=brackets base=#2A3A3A label=개발핀봇 tags=구현|fix origin=skill:dev-g|skill:tdd-workflow origin_seen=d1f96b3757d254bb
+manual: shape=book base=#3D2B4F label=매뉴얼핀봇 tags=매뉴얼|개정 origin=native
+deck-review: shape=grid base=#8A5A3A label=덱검수핀봇 tags=검수|보완 home=42 origin=skill:ppt-check|skill:slide-compare|agent:agy-visual-qa|agent:slide-tuner|agent:m2slide2ppt origin_seen=2ad400dc6b0848c6

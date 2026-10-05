@@ -75,14 +75,13 @@ if [[ "$DO_SCAR" -eq 1 ]]; then
     #   로그인 셸에서는 `~/.local/bin/claude` 로 정상 동작했으므로 **설치 여부가 아니라
     #   PATH 문제**였다. 관례 경로를 함께 탐색하고, 그래도 없으면 "생략" 을 성공으로
     #   말하지 않는다(prj3#Issue466 과 같은 거짓 성공 패턴).
-    CLAUDE_BIN="$(command -v claude 2>/dev/null || true)"
-    if [[ -z "$CLAUDE_BIN" ]]; then
-        for _c in "$HOME/.local/bin/claude" "$HOME/.claude/local/claude" \
-                  "/opt/homebrew/bin/claude" "/usr/local/bin/claude"; do
-            [[ -x "$_c" ]] && { CLAUDE_BIN="$_c"; break; }
-        done
-        [[ -n "$CLAUDE_BIN" ]] && info "[SCAR] claude CLI 를 PATH 밖에서 발견: $CLAUDE_BIN"
-    fi
+    #   후보·판정은 sh/fpm-claude-bin.sh 한 곳에 둔다(Issue564) — 이 자리의 관례 경로 목록이
+    #   install·check·TDD 케이스와 갈라져 거기서는 같은 거짓 생략이 그대로 남아 있었다.
+    _in_path="$(command -v claude 2>/dev/null || true)"
+    CLAUDE_BIN=""
+    # shellcheck source=sh/fpm-claude-bin.sh
+    source "$REPO_DIR/sh/fpm-claude-bin.sh" && fpm_resolve_claude && CLAUDE_BIN="$FPM_CLAUDE_BIN"
+    [[ -n "$CLAUDE_BIN" && -z "$_in_path" ]] && info "[SCAR] claude CLI 를 PATH 밖에서 발견: $CLAUDE_BIN"
     if [[ -z "$CLAUDE_BIN" ]]; then
         # ⚠️ 셸-only 환경이면 정상이지만, **비대화 셸의 PATH 결손일 수도** 있다.
         #   둘을 구분할 수단이 없으므로 단정하지 않고 확인 경로를 함께 안내한다.

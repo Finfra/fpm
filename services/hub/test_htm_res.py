@@ -48,6 +48,17 @@ check("http(s) 절대 URL 은 미변경", b'src="https://ex.com/z.png"' in out)
 check("/ 시작 절대경로는 미변경", b'src="/fpm-icon.png"' in out)
 check("extra query 전달 (cwd/token)",
       b"cwd=" in server._rewrite_relative_imgs(body, DOC, extra_query="cwd=%2Fproj&token=t1"))
+# prj3#Issue684 — <script> 안 JS 템플릿 리터럴의 src 는 URL 이 아니라 식이다. 재작성하면 식이 잘린다.
+tpl = (b'<script>h=`<img src="${esc(b0.icon_uri)}" width="18">`;</script>'
+       b'<img src="icons/a.svg">')
+out_tpl = server._rewrite_relative_imgs(tpl, DOC)
+check("JS 템플릿 placeholder src(${...}) 는 미변경",
+      b'<img src="${esc(b0.icon_uri)}" width="18">' in out_tpl)
+check("같은 본문의 일반 상대 src 는 여전히 재작성", b"rel=icons%2Fa.svg" in out_tpl)
+# 실제 보드 셸 전체를 통과시켜도 아이콘 템플릿이 살아남아야 한다(회귀 실측 지점).
+board = server._fbot_board_html().encode("utf-8")
+check("fbot 보드 셸 통과 후 /htm-res 재작성 0건",
+      b"/htm-res" not in server._rewrite_relative_imgs(board, DOC))
 
 # --- /htm-res 라우트 (_FakeHandler) ---
 class _FakeWriter:

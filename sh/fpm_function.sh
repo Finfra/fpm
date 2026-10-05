@@ -1415,9 +1415,13 @@ fpm() {
             git -C "$base" pull --ff-only || { echo "fpm: pull 실패(fast-forward 불가) — 수동 확인" >&2; return 1; }
             echo "[fpm] install.sh 재실행(멱등)…"
             bash "$base/sh/install.sh" "$@" || return 1
-            if command -v claude >/dev/null 2>&1; then
+            # Issue564: claude 해석은 sh/fpm-claude-bin.sh 가 SSOT. 대화 셸 PATH 를 건드리지 않게
+            #   CLI 모드(경로 출력)로 부른다. 구버전 checkout 이라 해석기가 없으면 PATH 로 폴백
+            local _cb
+            _cb="$(bash "$base/sh/fpm-claude-bin.sh" 2>/dev/null || command -v claude 2>/dev/null)"
+            if [[ -n "$_cb" ]]; then
                 echo "[fpm] SCAR 플러그인 갱신…"
-                claude plugin update fpm-core@f-claude-plugins 2>/dev/null \
+                "$_cb" plugin update fpm-core@f-claude-plugins 2>/dev/null \
                     || echo "[fpm] (plugin update 건너뜀 — 설치 안 됨/네트워크)"
             fi
             echo "[fpm] update 완료 → $(cat "$base/VERSION" 2>/dev/null)"
@@ -1438,7 +1442,9 @@ fpm() {
             echo "[fpm] $latest 로 체크아웃…"
             git -C "$base" checkout --quiet "$latest" || { echo "fpm: 체크아웃 실패" >&2; return 1; }
             bash "$base/sh/install.sh" "$@" || return 1
-            command -v claude >/dev/null 2>&1 && claude plugin update fpm-core@f-claude-plugins 2>/dev/null
+            local _cb   # Issue564 — 위 update 와 같은 해석
+            _cb="$(bash "$base/sh/fpm-claude-bin.sh" 2>/dev/null || command -v claude 2>/dev/null)"
+            [[ -n "$_cb" ]] && "$_cb" plugin update fpm-core@f-claude-plugins 2>/dev/null
             echo "[fpm] upgrade 완료 → $latest"
             ;;
         uninstall|remove)

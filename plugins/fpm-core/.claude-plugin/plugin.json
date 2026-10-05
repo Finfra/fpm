@@ -8,7 +8,7 @@
   },
   "homepage": "https://finfra.kr/nowage",
   "repository": "https://github.com/Finfra/fpm",
-  "license": "PolyForm-Noncommercial-1.0.0",
+  "license": "Apache-2.0",
   "keywords": [
     "project-management",
     "dashboard",
