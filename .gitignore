@@ -68,3 +68,6 @@ Projects_map.md
 #   원본에서 반출되지 않으므로 **미러에서 직접 관리**한다(.gitignore 자체가 exclude 대상).
 #   install.sh 가 hub_setting_org.yml 에서 생성하므로 소비자마다 값이 다르다.
 data/hub_setting.yml
+
+# prj3#Issue1096 — 업무 접수대장은 제품 git 이력 밖 (request-rules)
+/Request.md
