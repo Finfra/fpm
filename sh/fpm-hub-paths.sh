@@ -13,7 +13,8 @@
 #   `server.py --print-state-dir` 로 그 값을 물어본다.
 #
 # 사용:
-#   . "${FPM_BASE:?}/sh/fpm-hub-paths.sh"   # HUB_STATE_DIR · HUB_TMP_ROOT 설정
+#   . "${FPM_BASE:?}/sh/fpm-hub-paths.sh"   # HUB_STATE_DIR · HUB_TMP_ROOT · HUB_PY_ARGV 설정
+#   nohup "${HUB_PY_ARGV[@]}" "$repo/services/hub/server.py" …   # hub 기동은 같은 인터프리터로 (Issue642)
 #   env: FPM_HUB_REPO(서버 소스 위치 강제) · FPM_TMP_ROOT(루트 강제 — server.py 가 해석)
 #
 # 실패 계약: 값을 못 얻으면 HUB_STATE_DIR 을 **빈 문자열**로 두고 rc=1.
@@ -43,25 +44,32 @@ _fpm_hub_repo() {
 }
 
 fpm_hub_paths() {
-    HUB_STATE_DIR=""; HUB_TMP_ROOT=""
+    HUB_STATE_DIR=""; HUB_TMP_ROOT=""; HUB_PY_ARGV=()
     local repo py
     repo="$(_fpm_hub_repo)" || {
         printf '[fpm-hub-paths] hub 소스를 찾지 못했다 (FPM_HUB_REPO 로 지정 가능)\n' >&2
         return 1
     }
-    # 인터프리터 해석은 sh/fbot-python.sh 가 SSOT (Issue436) — 있으면 그걸 쓴다.
+    # 인터프리터 해석은 sh/fbot-python.sh 가 SSOT (Issue436) — 있으면 그것만 쓴다.
+    #   Issue642: 해석기가 멈추면(FBOT_PY_ENFORCE=1 의 하한 미달 rc 2 · 전멸 rc 1) 여기서도 멈춘다 —
+    #   맨 python3 폴백으로 같은 미달 인터프리터를 다시 집으면 정지가 무력화된다.
+    #   해석 결과는 HUB_PY_ARGV 로 내놓는다 — hub 기동부(start·restart·deploy 재기동)는 그것으로 띄운다.
     if [ -f "$repo/sh/fbot-python.sh" ]; then
         # shellcheck source=/dev/null
         . "$repo/sh/fbot-python.sh"
-        if fbot_resolve_python 2>/dev/null; then
-            HUB_STATE_DIR="$("${FBOT_PY_ARGV[@]}" "$repo/services/hub/server.py" --print-state-dir 2>/dev/null || true)"
+        if ! fbot_resolve_python 2>/dev/null; then
+            printf '[fpm-hub-paths] python 해석 실패 — %s\n' "${FBOT_PY_WARN:-후보 전멸(${FBOT_PY_REJECT:-없음})}" >&2
+            return 1
         fi
-    fi
-    if [ -z "$HUB_STATE_DIR" ]; then
+        [ -n "${FBOT_PY_WARN:-}" ] && printf '[fpm-hub-paths] ⚠️ %s\n' "$FBOT_PY_WARN" >&2
+        HUB_PY_ARGV=("${FBOT_PY_ARGV[@]}")
+        HUB_STATE_DIR="$("${HUB_PY_ARGV[@]}" "$repo/services/hub/server.py" --print-state-dir 2>/dev/null || true)"
+    else
+        # fbot-python.sh 가 없는 옛 설치만 — 이름 순 폴백
         for py in python3 python; do
             command -v "$py" >/dev/null 2>&1 || continue
             HUB_STATE_DIR="$("$py" "$repo/services/hub/server.py" --print-state-dir 2>/dev/null || true)"
-            [ -n "$HUB_STATE_DIR" ] && break
+            [ -n "$HUB_STATE_DIR" ] && { HUB_PY_ARGV=("$py"); break; }
         done
     fi
     if [ -z "$HUB_STATE_DIR" ]; then

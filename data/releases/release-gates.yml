@@ -62,3 +62,4 @@ gates:
   - { date: 2026-10-05T16:52:13+0900, suite: release-test, version: 0.8.4, branch: release/0.8.4, commit: 33e6d84d, tree: 4666f204, dirty: no, result: partial, evidence: _doc_work/_release/v0.8.4/release-test_0.8.4.md }
   - { date: 2026-10-05T20:32:42+0900, suite: release, version: 0.8.3, branch: release/0.8.3, commit: 35ec0207, tree: 2b4c84c2, dirty: no }
   - { date: 2026-10-05T20:37:10+0900, suite: release-test, version: 0.8.3, branch: release/0.8.3, commit: 35ec0207, tree: 2b4c84c2, dirty: no, result: partial, evidence: _doc_work/_release/v0.8.3/release-test_0.8.3.md }
+  - { date: 2026-10-16T09:46:59+0900, suite: release-test, version: 0.8.4, branch: release/0.8.3, commit: 812e5e56, tree: b5e2c466, dirty: no, result: fail, evidence: _doc_work/_release/v0.8.4/release-test_0.8.4.md }

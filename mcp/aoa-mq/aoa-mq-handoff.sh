@@ -18,9 +18,9 @@
 #   aoa-mq-handoff.sh hold <id> [--note "..."]   # 보류 → <id>.json.hold rename (목록에서 제외)
 #   aoa-mq-handoff.sh unhold <id>          # 보류 해제 (.hold → .json)
 #   aoa-mq-handoff.sh count                # 미소비 건수만 출력 (hook·tick 용, 숫자 1줄)
-#   aoa-mq-handoff.sh promote <id> [--note "..."] [--dry-run]   # 이슈 승격 → 대상 prj Issue.md 🌱 이슈후보 (prj3#Issue26)
+#   aoa-mq-handoff.sh promote <id> [--note "..."] [--dry-run]   # 승격 → 대상 prj Request.md 📥 접수 Req<N> (prj3#Issue26 · Issue1096)
 #   aoa-mq-handoff.sh promote-stale [--days N] [--dry-run]      # stale 초과분 일괄 승격 (tick 용, prj3#Issue26)
-#   aoa-mq-handoff.sh audit [--restore]    # 승격분이 대상 Issue.md 에 아직 있는지 감사 (유실분 재등록)
+#   aoa-mq-handoff.sh audit [--restore]    # 승격분이 대상 장부(Request.md · 옛 Issue.md)에 아직 있는지 감사 (유실분 재등록)
 #   aoa-mq-handoff.sh audit --dismiss <id> --note "..."         # 유실분 무효 판정 종결 (감사 대상 제외, prj3#Issue504)
 #
 # 보장: 큐(queue/·queue_done/)는 건드리지 않음 — handoff/ 하위만 읽기·이동.
@@ -28,12 +28,17 @@
 #
 # 승격(promote) 규약 (prj3#Issue26 — F1 "고립 우편함" 해소):
 #   handoff/ 는 어떤 워크플로우에도 편입되지 않은 우편함이라 아무도 열지 않는다. 승격은 그 항목을
-#   사람이 매일 보는 곳(대상 prj Issue.md)으로 옮겨 유실을 막는다.
+#   사람이 매일 보는 곳(대상 prj 업무 접수대장 Request.md)으로 옮겨 유실을 막는다.
+#   · handoff 는 시스템 변경이 아니라 남이 맡긴 업무다 — Issue.md 가 아니라 Request.md 로 간다 (prj3#Issue1096)
 #   · 대상 해석: source(`claude@<basename>`) → ~/_git/___pm/Projects.md 경로 basename 매칭.
-#     못 찾으면 AOA_MQ_CWD(미설정 시 ~/.claude) 의 Issue.md 로 fallback (유실 금지 — 조용한 drop 없음)
-#   · 삽입 위치: `# 🌱 이슈후보` 섹션 말미. **번호 발급·HWM 갱신 안 함** (issue-g 규칙5) —
-#     타 프로젝트 이슈 번호를 headless 로 채번하면 충돌하므로 후보 리스트까지만 올린다
-#   · 승격 후 handoff 는 z_consumed/ 이관 (promoted_to·consumed_note 기록)
+#     못 찾으면 AOA_MQ_CWD(미설정 시 ~/.claude) 의 Request.md 로 fallback (유실 금지 — 조용한 drop 없음)
+#   · 삽입 위치: `# 📥 접수` 섹션 말미에 `## Req<N>:` 블록. 번호는 `issue-tx --file Request.md alloc`
+#     원자 발급 — 종전(🌱 이슈후보, 번호 없음)의 «headless 채번 충돌» 우려는 alloc 락이 해소한다
+#   · Request.md 가 없으면 data/template/Request.md 로 만든다(접수 등록과 같은 C 등급)
+#   · Request.md 는 제품 repo git 이력 밖이다(2026-10-15 사용자 결정) — 접수할 때 대상 repo `.gitignore` 에
+#     `Request.md`·`_doc_work/request_OLD.md` 가 없으면 덧붙인다. 커밋하지 않는다
+#   · 승격 후 handoff 는 z_consumed/ 이관 (promoted_to = `<경로> 📥 접수 Req<N>` · consumed_note 기록)
+#   · audit 는 옛 형식(`<경로> 🌱 이슈후보 <n>`) 레코드도 계속 읽는다
 
 set -u
 
@@ -129,12 +134,16 @@ resolve() { # $1=id → 파일 경로 (없으면 die)
 # ── 승격 (promote) 지원 (prj3#Issue26) ──────────────────────────────────
 PROJECTS_MD="$HOME/_git/___pm/Projects.md"
 # 해석 실패 시 최후 착지점 — 유실 금지가 목적이므로 반드시 실재하는 곳이어야 한다.
-FALLBACK_ISSUE="${AOA_MQ_CWD:-$HOME/.claude}/Issue.md"
+FALLBACK_REQ="${AOA_MQ_CWD:-$HOME/.claude}/Request.md"
+# 접수대장 양식·채번 도구 — 이 스크립트가 사는 SCAR 트리 기준(HOME 을 바꿔도 같은 도구를 쓴다)
+SCAR_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+REQ_TEMPLATE="$SCAR_ROOT/data/template/Request.md"
+ISSUE_TX="$SCAR_ROOT/sh/issue-tx.py"
 
-target_issue_md() { # $1=source → 대상 Issue.md 경로 (해석 실패 시 fallback)
+target_request_md() { # $1=source → 대상 Request.md 경로 (해석 실패 시 fallback) — 파일이 아직 없어도 repo 가 있으면 그곳
   local src="$1" cand path
   cand="${src#claude@}"                       # claude@social → social
-  [ -n "$cand" ] || { printf '%s' "$FALLBACK_ISSUE"; return; }
+  [ -n "$cand" ] || { printf '%s' "$FALLBACK_REQ"; return; }
   if [ -f "$PROJECTS_MD" ]; then
     case "$cand" in
       prj[0-9]*)
@@ -156,57 +165,79 @@ target_issue_md() { # $1=source → 대상 Issue.md 경로 (해석 실패 시 fa
   fi
   if [ -n "${path:-}" ]; then
     path="${path/#\~/$HOME}"
-    [ -f "$path/Issue.md" ] && { printf '%s' "$path/Issue.md"; return; }
+    [ -d "$path" ] && { printf '%s' "$path/Request.md"; return; }
   fi
-  printf '%s' "$FALLBACK_ISSUE"
+  printf '%s' "$FALLBACK_REQ"
 }
 
-# `# 🌱 이슈후보` 섹션 말미에 한 줄 append (번호는 섹션 내 기존 최대+1).
-# 섹션이 없으면 die — 임의 섹션 신설 금지(대상 파일 구조를 헤집지 않음).
-append_candidate() { # $1=Issue.md $2=본문 1줄
-  ISSUE_MD="$1" CAND_LINE="$2" python3 - <<'PY'
-import os, re, sys
-p, line = os.environ["ISSUE_MD"], os.environ["CAND_LINE"]
-src = open(p, encoding="utf-8").read()
-lines = src.split("\n")
-start = next((i for i, l in enumerate(lines) if l.strip().startswith("# 🌱 이슈후보")), None)
+ensure_request_md() { # $1=Request.md 경로 — 없으면 양식으로 만든다
+  local p="$1" d prj
+  [ -f "$p" ] && return 0
+  d=$(dirname "$p"); [ -d "$d" ] || mkdir -p "$d" || return 1
+  [ -f "$REQ_TEMPLATE" ] || { echo "Request.md 양식 없음: $REQ_TEMPLATE" >&2; return 1; }
+  prj=$(basename "$d")
+  sed -e "s/{{프로젝트명}}/$prj/g" -e "s/{{날짜}}/$("$DATE" +%Y.%m.%d)/g" "$REQ_TEMPLATE" > "$p"
+}
+
+# 대상 repo 가 Request.md·request_OLD.md 를 무시하게 한다 — 제품 이력에 운영 접수가 섞이지 않게 (Issue1096 결정)
+#   git repo 가 아니면 할 일 없음. 이미 무시되면(전역 excludes·상위 패턴 포함) 건드리지 않는다
+ensure_request_ignored() { # $1=Request.md 경로
+  local d pat
+  d=$(dirname "$1")
+  git -C "$d" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  for pat in Request.md _doc_work/request_OLD.md; do
+    git -C "$d" check-ignore -q "$pat" 2>/dev/null && continue
+    [ -s "$d/.gitignore" ] && [ -n "$(tail -c1 "$d/.gitignore")" ] && echo >> "$d/.gitignore"
+    printf '%s\n' "/$pat" >> "$d/.gitignore"
+  done
+}
+
+# `# 📥 접수` 섹션 말미에 `## Req<N>:` 블록 — 번호는 issue-tx alloc (prj3#Issue1096).
+# 섹션이 없으면 실패 — 임의 섹션 신설 금지(대상 파일 구조를 헤집지 않음). 채번 전에 섹션부터 확인한다.
+append_request() { # $1=Request.md $2=제목 1줄 $3=요청 출처 $4=handoff id → stdout 번호
+  local p="$1" n
+  ensure_request_md "$p" || return 1
+  ensure_request_ignored "$p"
+  grep -q '^# 📥 접수' "$p" || { echo "📥 접수 섹션 없음: $p" >&2; return 3; }
+  n=$(python3 "$ISSUE_TX" --file "$p" alloc) || return 1
+  REQ_MD="$p" REQ_N="$n" REQ_TITLE="$2" REQ_SRC="$3" REQ_ID="$4" REQ_DAY="$("$DATE" +%Y.%m.%d)" python3 - <<'PY' || return 1
+import os, sys
+e = os.environ
+p = e["REQ_MD"]
+lines = open(p, encoding="utf-8").read().split("\n")
+start = next((i for i, l in enumerate(lines) if l.strip().startswith("# 📥 접수")), None)
 if start is None:
-    sys.stderr.write("이슈후보 섹션 없음: %s\n" % p); sys.exit(3)
+    sys.stderr.write("📥 접수 섹션 없음: %s\n" % p); sys.exit(3)
 end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("# ")), len(lines))
-body = lines[start + 1:end]
-nums = [int(m.group(1)) for l in body if (m := re.match(r"\s*(\d+)\.\s", l))]
-nxt = max(nums) + 1 if nums else 1
 ins = end
 while ins > start + 1 and lines[ins - 1].strip() == "":
     ins -= 1
-lines.insert(ins, "%d. %s" % (nxt, line))
+block = ["", "## Req%s: %s (접수: %s, 요청: %s · handoff %s)" % (e["REQ_N"], e["REQ_TITLE"], e["REQ_DAY"], e["REQ_SRC"], e["REQ_ID"]),
+         "* 요청: aoa-mq handoff 승격 — 전문은 `~/.claude/data/aoa/mq/handoff/z_consumed/%s.json`" % e["REQ_ID"]]
+if ins < len(lines) and lines[ins].strip() != "":
+    block.append("")
+lines[ins:ins] = block
 open(p, "w", encoding="utf-8").write("\n".join(lines))
-print("%d" % nxt)
 PY
+  printf '%s' "$n"
 }
 
-# 승격 1줄 본문 — promote_one 과 audit --restore 가 동일 문구를 쓰도록 단일화.
-# 끝의 "handoff <id>" 가 도착 검증 marker (audit 이 이 문자열로 존재를 확인)
-candidate_line() { # $1=파일 → 이슈후보 1줄
-  local f="$1" id src msg ack
-  id=$("$JQ" -r '.id' "$f"); src=$("$JQ" -r '.source // "-"' "$f")
-  ack=$("$JQ" -r '.ack_ts // "-"' "$f")
-  # 이슈후보는 한 줄 리스트 — 긴 메시지는 컷하고 전문은 z_consumed 레코드에 보존
-  msg=$("$JQ" -r '.message | gsub("\n"; " ") | if length > 150 then .[0:150] + "…" else . end' "$f")
-  printf '[mq] %s (출처 %s · ACK %s · handoff %s → 전문은 handoff/z_consumed/%s.json)' \
-    "$msg" "$src" "$ack" "$id" "$id"
+# 접수 제목 1줄 — promote_one 과 audit --restore 가 같은 문구를 쓴다
+request_title() { # $1=파일 → `[mq] <요지>`
+  local msg
+  msg=$("$JQ" -r '.message | gsub("\n"; " ") | if length > 150 then .[0:150] + "…" else . end' "$1")
+  printf '[mq] %s' "$msg"
 }
 
 promote_one() { # $1=파일 $2=note $3=dry(1|0) → stdout 요약 1줄
   local f="$1" note="${2:-}" dry="${3:-0}" id src target line num base
   id=$("$JQ" -r '.id' "$f"); src=$("$JQ" -r '.source // "-"' "$f")
-  target=$(target_issue_md "$src")
-  line=$(candidate_line "$f")
+  target=$(target_request_md "$src")
   if [ "$dry" = "1" ]; then
     echo "DRY $id → $target"
     return 0
   fi
-  num=$(append_candidate "$target" "$line") || die "이슈후보 append 실패: $id → $target"
+  num=$(append_request "$target" "$(request_title "$f")" "$src" "$id") || die "Request.md 접수 실패: $id → $target"
   # 도착 검증 (prj3#Issue26 후속): append 성공 보고를 믿지 않고 대상 파일에서 marker 를 되읽는다.
   # 실패 시 handoff 를 소비하지 않고 중단 — 도착 못 한 항목을 z_consumed 로 치우면 조용한 유실이 된다
   grep -Fq "handoff $id" "$target" \
@@ -215,14 +246,14 @@ promote_one() { # $1=파일 $2=note $3=dry(1|0) → stdout 요약 1줄
   base=$(basename "$f")
   tmp="$f.tmp.$$"
   if "$JQ" --arg ts "$NOW_ISO" --arg to "$target" --arg n "$num" --arg note "$note" \
-      '. + {consumed_ts:$ts, promoted_to:($to + " 🌱 이슈후보 " + $n),
+      '. + {consumed_ts:$ts, promoted_to:($to + " 📥 접수 Req" + $n),
             consumed_note:(if $note=="" then "prj3#Issue26 승격" else $note end)}' \
       "$f" > "$tmp" 2>/dev/null; then
     mv "$tmp" "$CONSUMED/$base"; rm -f "$f"
   else
     rm -f "$tmp"; die "jq 갱신 실패 — 승격 기록 중단: $base"
   fi
-  echo "승격 $id → $target (🌱 이슈후보 $num)"
+  echo "승격 $id → $target (📥 접수 Req$num)"
 }
 
 CMD="${1:-list}"; [ $# -gt 0 ] && shift
@@ -377,7 +408,8 @@ case "$CMD" in
     #   덮어쓰기 유실이 구분되지 않아 2026-09-01 실측에서 16건 중 10건이 오탐이었다.
     #   2단계 판별: 대상 repo git 이력에 그 마커가 **한 번이라도 커밋된 적 있으면 소비된 것**이다.
     #   덮어쓰기 유실은 append 가 커밋 전에 사라지므로 이력에 흔적이 남지 않는다.
-    # --restore 는 유실(lost)분만 재등록한다 — 소비분을 되살리면 Issue.md 가 오염된다.
+    # --restore 는 유실(lost)분만 대상 디렉터리 Request.md 로 재접수한다 — 소비분을 되살리면 장부가 오염된다.
+    #   옛 Issue.md 승격분도 Issue.md 로 되돌리지 않는다(Issue1098).
     restore=0; dismiss_id=""; dismiss_note=""
     while [ $# -gt 0 ]; do
       case "$1" in
@@ -402,8 +434,8 @@ case "$CMD" in
       exit 0
     fi
     [ -d "$CONSUMED" ] || die "z_consumed 디렉토리 없음: $CONSUMED"
-    okc=0      # 정상 잔존 — 대상 Issue.md 에 마커 그대로
-    used=0     # 소비 완료 — 마커는 없으나 git 이력에 존재 (이슈 승격·불필요 판정)
+    okc=0      # 정상 잔존 — 대상 장부(Request.md · 옛 Issue.md)에 마커 그대로
+    used=0     # 소비 완료 — 마커는 없으나 request_OLD.md 보관 · (옛 Issue.md) git 이력에 존재
     lost=0     # 유실 — 마커도 이력도 없음 (덮어쓰기 의심)
     undet=0    # 판정 불가 — 대상이 git repo 가 아니거나 파일 부재
     dism=0     # 무효 판정 종결 — 유실이나 재등록 무의미 (--dismiss 로 닫음)
@@ -416,14 +448,24 @@ case "$CMD" in
         dism=$((dism+1)); continue                   # 무효 판정 종결분 (prj3#Issue504)
       fi
       id=$("$JQ" -r '.id' "$cf")
-      tgt="${pt% 🌱 이슈후보 *}"                      # "…/Issue.md 🌱 이슈후보 3" → 경로만
+      case "$pt" in                                  # 경로만 — 새 "…/Request.md 📥 접수 Req3" · 옛 "…/Issue.md 🌱 이슈후보 3"
+        *" 📥 접수 "*) tgt="${pt% 📥 접수 *}" ;;
+        *)             tgt="${pt% 🌱 이슈후보 *}" ;;
+      esac
       if [ ! -f "$tgt" ]; then
         echo "⚠ $id  판정 불가 — 대상 파일 없음: $tgt"; undet=$((undet+1)); continue
       fi
       if grep -Fq "handoff $id" "$tgt"; then
         okc=$((okc+1)); continue
       fi
-      # 2단계 — git 이력 판별
+      # 2단계(Request.md) — git 이력 밖이라 보관 파일로 판별한다 (Issue1096 결정).
+      #   Req 블록은 지워지지 않고 완료·반려 섹션 → `_doc_work/request_OLD.md` 로만 옮겨 간다
+      if [ "$(basename "$tgt")" = "Request.md" ]; then
+        if grep -Fq "handoff $id" "$(dirname "$tgt")/_doc_work/request_OLD.md" 2>/dev/null; then
+          used=$((used+1)); continue                 # 보관됨 → 정상 소비
+        fi
+      else
+      # 2단계(옛 Issue.md 승격분) — git 이력 판별
       repo=$(dirname "$tgt")
       if ! git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
         echo "⚠ $id  판정 불가 — 마커 부재이나 대상이 git repo 아님: $tgt"; undet=$((undet+1)); continue
@@ -432,15 +474,25 @@ case "$CMD" in
       if [ "${hits:-0}" -gt 0 ]; then
         used=$((used+1)); continue                   # 커밋된 적 있음 → 정상 소비
       fi
+      fi
       lost=$((lost+1))
       if [ "$restore" = 1 ]; then
-        n=$(append_candidate "$tgt" "$(candidate_line "$cf")") \
-          || { echo "✗ $id  재등록 실패: $tgt" >&2; continue; }
-        grep -Fq "handoff $id" "$tgt" \
-          || { echo "✗ $id  재등록 후에도 marker 부재: $tgt" >&2; continue; }
-        echo "↺ $id  재등록 → $tgt (🌱 이슈후보 $n)"; fixed=$((fixed+1))
+        # 재접수는 언제나 Request.md — 옛 `Issue.md 🌱 이슈후보` 승격분도 같은 디렉터리 Request.md 로 간다
+        #   (Issue1098 · 업무는 Issue.md 에 두지 않는다 — Issue1096 경계). 옛 위치는 migrated_from 에 남긴다
+        rq="$(dirname "$tgt")/Request.md"
+        n=$(append_request "$rq" "$(request_title "$cf")" "$("$JQ" -r '.source // "-"' "$cf")" "$id") \
+          || { echo "✗ $id  재등록 실패: $rq" >&2; continue; }
+        grep -Fq "handoff $id" "$rq" \
+          || { echo "✗ $id  재등록 후에도 marker 부재: $rq" >&2; continue; }
+        tmpf="$cf.tmp.$$"
+        "$JQ" --arg pt "$rq 📥 접수 Req$n" --arg old "$pt" --arg t "$(date +%Y-%m-%dT%H:%M:%S)" \
+          '(if $old != $pt and (.migrated_from // "") == "" and ($old | test(" 🌱 이슈후보 ")) then .migrated_from = $old else . end)
+           | .promoted_to = $pt | .audit_restored = $t' "$cf" > "$tmpf" \
+          || { rm -f "$tmpf"; echo "✗ $id  레코드 갱신 실패: $cf" >&2; continue; }
+        mv "$tmpf" "$cf"
+        echo "↺ $id  재접수 → $rq (📥 접수 Req$n)"; fixed=$((fixed+1))
       else
-        echo "✗ $id  유실 (마커·git 이력 모두 부재): $tgt"
+        echo "✗ $id  유실 (마커·보관(request_OLD)/git 이력 모두 부재): $tgt"
       fi
     done < <(find "$CONSUMED" -maxdepth 1 -type f -name '*.json' 2>/dev/null | sort)
     summary="승격 감사: 잔존 ${okc}건 · 소비 ${used}건 · 유실 ${lost}건 · 무효종결 ${dism}건 · 판정불가 ${undet}건"

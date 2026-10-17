@@ -53,9 +53,9 @@ ROWS = [
 def main():
     print("[1] 원장 추출이 계보 필드를 싣는다")
     con = sqlite3.connect(":memory:")
-    con.execute("CREATE TABLE job (id TEXT, kind TEXT, owner TEXT, payload TEXT, status TEXT, created_at INT)")
+    con.execute("CREATE TABLE job (id TEXT, kind TEXT, owner TEXT, payload TEXT, status TEXT, created_at INT, attempts INT DEFAULT 0)")   # _fbot_dispatch_edges 가 attempts 열을 SELECT 한다
     for jid, owner, pl, st, ts in ROWS:
-        con.execute("INSERT INTO job VALUES (?,?,?,?,?,?)", (jid, "fbot_dispatch", owner, pl, st, ts))
+        con.execute("INSERT INTO job (id, kind, owner, payload, status, created_at) VALUES (?,?,?,?,?,?)", (jid, "fbot_dispatch", owner, pl, st, ts))
     edges = server._fbot_dispatch_edges(con)
     by = {e["job_id"]: e for e in edges}
     check("d6 parent_dispatch_id = d1 · root = d1", by["d6"].get("parent_dispatch_id") == "d1" and by["d6"].get("root_dispatch_id") == "d1")

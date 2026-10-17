@@ -1,0 +1,213 @@
+#!/usr/bin/env python3
+"""pm-group — 프로젝트 그룹 해석기 (Issue627).
+
+정본 data/groups.yml (그룹별 desc + 순서 있는 members). 설계 SSOT: ~/_git/___oracle/_doc_arch/project-group-scheme.md
+
+  pm-group <name>                     구성원 번호를 줄당 1개로 (순서 유지)
+  pm-group --of <id>                  그 번호를 담은 그룹 이름 전부
+  pm-group --list                     그룹 현황 (이름 · 구성원 · desc)
+  pm-group --check                    groups.yml 전체 스키마 검증
+  pm-group add <name> <id…> [--desc 문구]   신설
+  pm-group set <name> <id…> [--desc 문구]   구성원 교체 (desc 보존). 구성원 없이 --desc 만이면 설명만 수정
+  pm-group --json                     그룹 + 프로젝트 레지스트리를 JSON 으로 (projects-map 패널용, Issue631)
+  pm-group rm <name>                  폐기
+
+rc: 0 정상 / 1 검증·조회 실패 / 2 사용법. 실패는 항상 stderr 사유 + 비0 (침묵 실패 금지).
+쓰기는 groups.yml 한 파일만 건드린다 — 스키마 검증을 통과한 결과만 원자적으로 교체한다.
+$FPM_BASE 기반 (미설정 시 이 파일 위치의 상위).
+"""
+import json
+import os
+import re
+import sys
+import tempfile
+
+BASE = os.environ.get('FPM_BASE') or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+GROUPS = os.path.join(BASE, 'data', 'groups.yml')
+PROJECTS = os.path.join(BASE, 'Projects.md')
+
+NAME_RE = re.compile(r'^[a-z][a-z0-9-]*$')
+HEADER = ("# 프로젝트 그룹 정본 (Issue627) — 직접 편집하지 말고 `pm-group add|set|rm` 으로 바꾼다 (스키마 검증).\n"
+          "# members 는 순서가 의미를 가진다 (cdf-fapp 1-based 인덱스). 설계: ___oracle/_doc_arch/project-group-scheme.md\n")
+
+
+class Fail(Exception):
+    pass
+
+
+def registry():
+    """Projects.md 표에서 {id: name}."""
+    if not os.path.isfile(PROJECTS):
+        raise Fail(f'Projects.md 없음: {PROJECTS}')
+    reg = {}
+    with open(PROJECTS, encoding='utf-8') as f:
+        for line in f:
+            cells = [c.strip() for c in line.strip().strip('|').split('|')]
+            if line.lstrip().startswith('|') and len(cells) >= 2 and re.fullmatch(r'[0-9]+[a-z]?[0-9]*', cells[0]):
+                reg[cells[0]] = cells[1]
+    if not reg:
+        raise Fail('Projects.md 에서 프로젝트 행을 찾지 못함')
+    return reg
+
+
+def load():
+    """groups.yml → {name: {'desc': str, 'members': [str]}} (삽입 순서 유지)."""
+    if not os.path.isfile(GROUPS):
+        raise Fail(f'groups.yml 없음: {GROUPS}')
+    groups, cur = {}, None
+    with open(GROUPS, encoding='utf-8') as f:
+        for n, raw in enumerate(f, 1):
+            line = raw.rstrip('\n')
+            if not line.strip() or line.lstrip().startswith('#') or line.strip() == 'groups:':
+                continue
+            m = re.match(r'^  ([^\s:]+):\s*$', line)
+            if m:
+                cur = groups.setdefault(m.group(1), {'desc': '', 'members': None})
+                continue
+            m = re.match(r'^    (desc|members):\s*(.*)$', line)
+            if m and cur is not None:
+                key, val = m.groups()
+                if key == 'desc':
+                    cur['desc'] = json.loads(val) if val.startswith('"') else val
+                else:
+                    lm = re.fullmatch(r'\[(.*)\]', val.strip())
+                    if not lm:
+                        raise Fail(f'groups.yml:{n} members 는 [a, b] 한 줄 목록이어야 함')
+                    cur['members'] = [t.strip().strip('"\'') for t in lm.group(1).split(',') if t.strip()]
+                continue
+            raise Fail(f'groups.yml:{n} 해석 불가: {line.strip()}')
+    return groups
+
+
+def validate(groups, reg):
+    errs = []
+    names_lower = {v.lower() for v in reg.values()}
+    for name, g in groups.items():
+        if not NAME_RE.match(name):
+            errs.append(f'{name}: 이름 규칙 위반 ([a-z][a-z0-9-]*)')
+        if name.lower() in names_lower:
+            errs.append(f'{name}: 프로젝트명과 겹침 (/route 가 그룹·prj 를 못 가름)')
+        mem = g['members']
+        if mem is None:
+            errs.append(f'{name}: members 없음')
+            continue
+        if len(mem) < 2:
+            errs.append(f'{name}: 구성원 2개 이상 필요 (현재 {len(mem)})')
+        if len(set(mem)) != len(mem):
+            errs.append(f'{name}: 구성원 중복')
+        for m in mem:
+            if m not in reg:
+                errs.append(f'{name}: 구성원 {m} 이 Projects.md 에 없음')
+    return errs
+
+
+def dump(groups):
+    out = [HEADER, 'groups:\n']
+    for name, g in groups.items():
+        out.append(f'  {name}:\n    desc: {json.dumps(g["desc"], ensure_ascii=False)}\n'
+                   f'    members: [{", ".join(g["members"])}]\n')
+    return ''.join(out)
+
+
+def save(groups, reg):
+    errs = validate(groups, reg)
+    if errs:
+        raise Fail('스키마 검증 실패 — groups.yml 무변경\n  ' + '\n  '.join(errs))
+    d = os.path.dirname(GROUPS)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix='.groups-', suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(dump(groups))
+        os.replace(tmp, GROUPS)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def usage():
+    print(__doc__.split('rc:')[0].strip(), file=sys.stderr)
+    return 2
+
+
+def main(argv):
+    if not argv:
+        return usage()
+    a = argv[0]
+    reg = registry()
+    if a in ('-h', '--help'):
+        print(__doc__.strip())
+        return 0
+    if a == '--list':
+        for name, g in load().items():
+            print(f'{name}\t{" ".join(g["members"] or [])}\t{g["desc"]}')
+        return 0
+    if a == '--json':
+        print(json.dumps({'groups': load(), 'projects': reg}, ensure_ascii=False))
+        return 0
+    if a == '--check':
+        errs = validate(load(), reg)
+        if errs:
+            raise Fail('\n  '.join(errs))
+        return 0
+    if a == '--of':
+        if len(argv) != 2:
+            return usage()
+        if argv[1] not in reg:
+            raise Fail(f'id {argv[1]} 이 Projects.md 에 없음')
+        for name, g in load().items():
+            if argv[1] in (g['members'] or []):
+                print(name)
+        return 0
+    if a in ('add', 'set', 'rm'):
+        groups = load()
+        if a == 'rm':
+            if len(argv) != 2:
+                return usage()
+            if argv[1] not in groups:
+                raise Fail(f'그룹 {argv[1]} 없음')
+            del groups[argv[1]]
+            save(groups, reg)
+            return 0
+        rest, desc = argv[1:], None
+        if '--desc' in rest:
+            i = rest.index('--desc')
+            if i + 1 >= len(rest):
+                return usage()
+            desc = rest[i + 1]
+            rest = rest[:i] + rest[i + 2:]
+        name, members = (rest[0], rest[1:]) if rest else (None, [])
+        if name is None or (not members and not (a == 'set' and desc is not None)):
+            return usage()
+        if a == 'add':
+            if name in groups:
+                raise Fail(f'그룹 {name} 이미 있음 (구성원 교체는 set)')
+            groups[name] = {'desc': desc or '', 'members': members}
+        else:
+            if name not in groups:
+                raise Fail(f'그룹 {name} 없음 (신설은 add)')
+            if members:
+                groups[name]['members'] = members
+            if desc is not None:
+                groups[name]['desc'] = desc
+        save(groups, reg)
+        return 0
+    if a.startswith('-'):
+        print(f'❌ 알 수 없는 플래그: {a}', file=sys.stderr)
+        return 2
+    groups = load()
+    if a not in groups:
+        raise Fail(f'그룹 {a} 없음 (있는 그룹: {", ".join(groups) or "없음"})')
+    errs = validate({a: groups[a]}, reg)
+    if errs:
+        raise Fail('\n  '.join(errs))
+    print('\n'.join(groups[a]['members']))
+    return 0
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except Fail as e:
+        print(f'❌ pm-group: {e}', file=sys.stderr)
+        sys.exit(1)

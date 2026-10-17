@@ -59,7 +59,8 @@ TOOLS = [
             "파괴·보안·방침)은 message 머리에 '[컨펌] [H:<분류>]' 를 붙이고 due='+0d' 로 등록하면 ACK 전까지 "
             "반복 질의된다. 태그 없는 [컨펌] 은 거부된다(rc 5) — H 가 아니면 mq 에 올리지 말고 결정한다"
             "(C 총괄·L 팀장 전결, ~/.claude/_doc_arch/decision-authority.md). job 을 주면 due 시각에 선언된 스케줄 잡을 실행하고 "
-            "결과를 기록한다(message 생략 가능, kind=post 고정)."
+            "결과를 기록한다(message 생략 가능, kind=post 고정). 같은 키·같은 이슈의 미종결 항목이 있으면 병합되고, "
+            "결정된 [컨펌] 재상신은 rc 7로 거부되며 reask 로만 다시 올릴 수 있다."
         ),
         "inputSchema": {
             "type": "object",
@@ -75,6 +76,9 @@ TOOLS = [
                 "target": {"type": "string", "description": (
                     "이 항목을 수행할 프로젝트 prj<N>(Issue770). 넛지 범위(그 prj 세션만 본문 주입)·기동 cwd 의 1순위 근거. "
                     "생략하면 message 첫 prjN → source 프로젝트 순으로 판정한다")},
+                "key": {"type": "string", "description": "중복 판정 명시 키"},
+                "group": {"type": "string", "description": "같은 기한끼리 묶을 명시 그룹"},
+                "reask": {"type": "boolean", "description": "최근 결정된 [컨펌] 을 조건 변경으로 다시 상신"},
             },
             "required": [],
         },
@@ -194,21 +198,44 @@ def t_enqueue(a):
         cmd += ["--source", a["source"]]
     if a.get("target"):                                  # Issue770 — 검증(형식·매핑)은 helper 가 한다
         cmd += ["--target", a["target"]]
+    if a.get("key"):
+        cmd += ["--key", a["key"]]
+    if a.get("group"):
+        cmd += ["--group", a["group"]]
+    if a.get("reask"):
+        cmd += ["--reask"]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         return f"❌ enqueue 실패 (rc={r.returncode})\n{r.stderr.strip() or r.stdout.strip()}"
     return r.stdout.strip() or "enqueued"
 
 
+def _mq_class(item, now_str):
+    """aoa-mq-lib.sh AOA_MQ_JQ_CLASS와 같은 분류 규칙이다(prj3#Issue1046)."""
+    if item.get("status") == "waiting":
+        return "wait"
+    if item.get("status") == "watching" or (
+        item.get("status") == "pending" and (item.get("due_ts") or "") > now_str
+    ):
+        return "reserved"
+    return "action"
+
+
 def t_list(a):
-    items = _read_queue()
+    now_str = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    order = {"action": 0, "reserved": 1, "wait": 2}
+    items = sorted(_read_queue(), key=lambda item: order[_mq_class(item, now_str)])
     st = a.get("status")
     if st:
         items = [i for i in items if i.get("status") == st]
     items = items[: int(a.get("limit") or 20)]
-    if not items:
-        return "미종결 큐 0건"
-    lines = [f"미종결 {len(items)}건", ""]
+    counts = {"action": 0, "reserved": 0, "wait": 0}
+    for item in items:
+        counts[_mq_class(item, now_str)] += 1
+    lines = [
+        f"미종결 {len(items)}건 — 할 일 {counts['action']} · 예약 {counts['reserved']} · 대기 {counts['wait']}",
+        "",
+    ]
     for i in items:
         msg = (i.get("message") or "").replace("\n", " ")
         # 봇 귀속(from_bot/to_bot) 있으면 함께 표시 — 있는 항목만 (prj3#Issue436_3 s4)
@@ -224,6 +251,9 @@ def t_list(a):
         # (마이그레이션 없이 기존 항목이 그대로 렌더돼야 한다).
         if i.get("job"):                                  # prj3#Issue691 — 잡 지목 예약
             lines.append(f"    · 잡: {i['job']}" + (f" ⟨{i['job_arg']}⟩" if i.get("job_arg") else ""))
+        merged_n = len(i.get("merged") or [])
+        if i.get("group") or merged_n:
+            lines.append(f"    · 묶음/병합: {i.get('group') or '-'} · {merged_n}건")
         for label, key in (("집은 주체", "claimed_by"), ("진행", "progress"), ("결과", "result")):
             v = i.get(key)
             if v:

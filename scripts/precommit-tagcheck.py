@@ -157,7 +157,9 @@ def sync_prefixes():
 
 
 def git(*args, allow_fail=False):
-    r = subprocess.run(['git', *args], capture_output=True)
+    # prj3#Issue1057: core.quotepath=false 고정 — 기본(true)이면 `--name-only` 가 한글 경로를 `"\355…"` 로 이스케이프해
+    #   blob 조회가 실패하고 «바이너리·읽기 실패» 로 skip 됐다(fail-open). 2원 구조 — prj3 짝과 함께 고친다
+    r = subprocess.run(['git', '-c', 'core.quotepath=false', *args], capture_output=True)
     if r.returncode != 0 and not allow_fail:
         return None
     return r.stdout.decode('utf-8', 'replace')

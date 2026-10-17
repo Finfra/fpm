@@ -83,6 +83,9 @@ INTERVAL_IDLE="${INTERVAL_IDLE:-$(_bp interval_idle_supervisor 20)}"
 MAX_ATTEMPTS="${MAX_ATTEMPTS:-$(_bp max_attempts 2)}"
 NOSENT_STRIKES="${NOSENT_STRIKES:-$(_bp nosent_strikes 10)}"
 STUCK_SECS="${STUCK_SECS:-$(_bp stuck_secs 600)}"
+# 항목별 마감(Issue979_1) — 화면이 busy 로 고정되거나 .waiting 이 방치돼도 무한 대기하지 않는다.
+ITEM_DEADLINE_SECS="${ITEM_DEADLINE_SECS:-$(_bp item_deadline_secs 3600)}"
+WAIT_DEADLINE_SECS="${WAIT_DEADLINE_SECS:-$(_bp wait_deadline_secs 86400)}"
 
 LOG_FILE="$OUT_DIR/$TOPIC.supervisor.log"
 WORKERS_FILE="$OUT_DIR/$TOPIC.workers"          # 런타임 worker 맵: "<prj> <pane_id>" 줄
@@ -141,7 +144,7 @@ log() { printf '%s [supervisor] %s\n' "$(date '+%H:%M:%S')" "$*" >> "$LOG_FILE";
 # qpy <op> [args...] — queue.yaml 읽기/조작. op 별 stdout 규약은 아래 PYEOF 주석 참조.
 qpy() {
   QF="$QUEUE_FILE" python3 - "$@" <<'PYEOF'
-import sys, os, re, datetime, yaml
+import sys, os, re, datetime, time, yaml
 qf = os.environ['QF']
 
 def load():
@@ -223,6 +226,8 @@ elif op == 'mark':
     if it is not None:
         it['status'] = a[1]
         now_iso = datetime.datetime.now().isoformat(timespec='seconds')
+        if a[1] in ('running', 'waiting_input'):
+            it['phase_since'] = int(time.time())   # 마감 기산점 (Issue979_1)
         if a[1] == 'running':
             it['attempts'] = int(it.get('attempts', 0)) + 1
             if not it.get('started_at'):
@@ -237,7 +242,19 @@ elif op == 'resume':
     it = by_id.get(a[0])
     if it is not None:
         it['status'] = 'running'
+        it['phase_since'] = int(time.time())
         save(q)
+
+elif op == 'expired':
+    # expired <running_secs> <waiting_secs> — 마감 초과 항목 "<id>|<prj>|<status>|<경과초>" 줄 (Issue979_1).
+    #   phase_since 없는 레거시 항목은 기산점을 모르므로 제외한다 (오탐 kill 방지).
+    now = int(time.time())
+    lim = {'running': int(a[0]), 'waiting_input': int(a[1])}
+    for it in items:
+        st = it.get('status')
+        ps = it.get('phase_since')
+        if st in lim and isinstance(ps, int) and now - ps > lim[st]:
+            print('%s|%s|%s|%d' % (it['id'], it.get('prj', ''), st, now - ps))
 
 elif op == 'needs-approval':
     # needs-approval <id> — Issue89 T12-A 승인 게이트.
@@ -402,6 +419,24 @@ worker_drop() {
   local prj="$1" tmp="$WORKERS_FILE.tmp"
   grep -v "^$prj " "$WORKERS_FILE" > "$tmp" 2>/dev/null
   mv "$tmp" "$WORKERS_FILE"
+}
+
+enforce_deadlines() {
+  # 마감 초과 running/waiting_input 항목 → worker 중단(C-c) + failed 전이 (Issue979_1).
+  #   busy 판정은 화면 스크래핑이라 고정 화면이면 영구 busy — 시간 기준 전이가 유일한 탈출구다.
+  #   재시도 없이 failed (마감 초과는 같은 조건에서 반복될 가능성이 높다). on_fail=halt 면 큐 halted.
+  local id prj st el pane
+  while IFS='|' read -r id prj st el; do
+    [ -n "${id:-}" ] || continue
+    pane=$(worker_pane "$prj")
+    [ -n "$pane" ] && tmux send-keys -t "$pane" C-c 2>/dev/null
+    sentinel_clear "$id"
+    qpy mark "$id" failed
+    qpy set "$id" result "deadline exceeded ($st ${el}s)"
+    log "item $id: $st ${el}s 마감 초과 → failed${pane:+ (worker@prj$prj C-c)}"
+    unset "nosent[$id]" 2>/dev/null
+    [ "${Q_ONFAIL:-$(qpy meta | cut -d'|' -f2)}" = "halt" ] && qpy set-state halted
+  done < <(qpy expired "$ITEM_DEADLINE_SECS" "$WAIT_DEADLINE_SECS")
 }
 
 sentinel_clear() {
@@ -692,6 +727,8 @@ while true; do
   # ① blocked → ready 승격
   promoted=$(qpy promote)
   [ -n "$promoted" ] && log "승격 ready: $promoted"
+
+  enforce_deadlines   # ①.5 마감 초과 → failed (Issue979_1)
 
   # ② running/waiting_input 항목 완료 감지 — 완료 권위는 sentinel 파일 (Issue100)
   any_busy=0

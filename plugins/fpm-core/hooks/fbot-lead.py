@@ -3,18 +3,18 @@
 
 계약: ~/.claude/_doc_arch/fbot-arch.md §조직(팀장핀봇 임무·수요측 가드) ·
       §워크플로우 어댑터(nPTiR/칸반 — 코어 중립) · §호출 경계(스폰=HR 게이트 경유,
-      `[컨펌]` 응답 승인은 사람 전용) · §작업 기록(F4 — 봇 전용 작업 대장 금지).
+      `[컨펌]` 응답 승인은 사람 전용) · §작업 기록(F4 — 봇이 자기만 보는 작업 대장 금지 · 업무 접수는 공용 repo 장부 Request.md, Issue1096).
       어댑터 설정 위치는 s3 확정(2026-08-24): 프로젝트 `.claude/fbot.yml`
       `workflow: nptir|kanban` (파일·키 부재 = nptir). 계약 참조만 하며 재결정하지 않는다.
 
 CLI
     pending  [--cwd DIR]
         issue-map `--json` 소비 → 펜딩 큐 뷰(startable/blocked 분류) 출력.
-        펜딩 큐 = Issue.md·issue-map 의 **파생 뷰**다 — 별도 작업 대장 파일을 만들지
-        않는다(F4). `--json` 부재·실패 시 fail-loud(빈 목록으로 오독 금지).
+        펜딩 큐 = Issue.md·issue-map 의 **파생 뷰**다 — 봇 전용 작업 대장 파일을 만들지
+        않는다(F4). 남이 맡긴 업무는 repo 공용 장부 `Request.md`(`Req<N>`)에 받는다(Issue1096). `--json` 부재·실패 시 fail-loud(빈 목록으로 오독 금지).
         칸반 어댑터면 pull 안내 + WIP 잔여(= 수요측 동시 상한 그대로)를 함께 표시 —
         판정 코어는 어댑터 중립, 표시만 갈린다.
-    dispatch (--issue ID | --topic TEXT) --role ROLE [--cwd DIR] [--bot-id ID] [--loan-key KEY] [--dry-run]
+    dispatch (--issue ID | --topic TEXT) --role ROLE [--cwd DIR] [--bot-id ID [--new-bot]] [--loan-key KEY] [--dry-run]
         배분 **요청**: ① 수요측 가드 판정(동시·같은 일 반복·되풀이 속도·배분자 백스톱·연속 실패 — 단일 지점. 월 상한은 알림 전용)
         ② 통과 시 HR 게이트 `hire` 호출로 워커 봇 채용까지(스폰 집행은 fpm-do/Agent
         몫 — 여기서는 채용+배분 기록. 게이트 없는 스폰 경로 금지)
@@ -61,6 +61,26 @@ import sys
 import time
 import unicodedata
 import uuid
+
+# prj3#Issue1061 — prj id 판정 단일 지점(숫자 int · 접미 `9t` str). 지연 적재 — lib 이 없어도 fbot-lead 적재는 산다
+#   (prj3#Issue944 `lib/issue-completion.py` 와 같은 계약: 판정을 안 쓰는 서브커맨드는 lib 부재에 죽지 않는다)
+_PRJ_MOD = None
+
+
+def _prj():
+    global _PRJ_MOD
+    if _PRJ_MOD is None:
+        import importlib.util as _ilp
+        _psp = _ilp.spec_from_file_location(
+            "fbot_prj", os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib/fbot-prj.py"))
+        _PRJ_MOD = _ilp.module_from_spec(_psp)
+        _psp.loader.exec_module(_PRJ_MOD)
+    return _PRJ_MOD
+
+
+def _prj_arg(v):
+    """argparse `type=` — 판정은 lib/fbot-prj.py `prj_arg`."""
+    return _prj().prj_arg(v)
 
 # 경로 계약 (Issue450) — env 가 정식 설정. 미설정 시 제품 중립 기본(prj5 미클론 머신 대응).
 DEFAULT_AOA_DIR = os.path.join(os.path.expanduser("~"), ".claude", "data", "aoa")
@@ -146,6 +166,16 @@ UNCONF_NOTIFY_BACKOFF_DEFAULT_MIN = 30   # = sweep 주기(worker tick 30분 — 
 UNCONF_GIVEUP_STALE_MIN_S = 600
 # 포기·경보 대상 판정(`unconfirmed_notify_state`) — 상한 도달(`exhausted`) + 표지 고착 재경보(`stale`) + 경보 실패 뒤 백오프 경과(`alert_retry`)
 GIVE_UP_STATES = ("exhausted", "stale", "alert_retry")
+# prj3#Issue1013 — 쿼터로 죽은 배분의 자동 재개. 선택 키 — 부재 시 아래 기본값(정본 수치는 policy.yml).
+#   유예 = `payload.quota.resets_at` 뒤 기다리는 분(리셋 직후 한도가 아직 안 풀린 경계 회피) · 회차 상한 = sweep 1회가 재개하는 최대 건수
+#   (한꺼번에 띄워 다시 한도를 치지 않게 나눈다). 연속 사망 경보 = 같은 배분이 쿼터로 연달아 죽은 횟수
+QUOTA_RESUME_GRACE_KEY = "fbot_quota_resume_grace_minutes"
+QUOTA_RESUME_GRACE_DEFAULT_MIN = 5
+QUOTA_RESUME_BATCH_KEY = "fbot_quota_resume_batch"
+QUOTA_RESUME_BATCH_DEFAULT = 4
+QUOTA_STREAK_ALERT = 3
+QUOTA_STREAK_LIMIT_KEY = "fbot_quota_resume_streak_limit"   # prj3#Issue1016 — 연속 쿼터 사망이 이 값을 넘으면 자동 재개를 멈춘다
+QUOTA_STREAK_LIMIT_DEFAULT = 5
 # 출근으로 치는 이벤트 — 새 봇은 register 기본 state=checkin 이라 출근 훅의 checkin 전이가 막히고
 #   `state:working` 만 남는다(fbot-checkin.sh). 둘 중 하나면 세션이 떴다.
 CHECKIN_EVENTS = ("state:checkin", "state:working")
@@ -153,8 +183,17 @@ CHECKIN_EVENTS = ("state:checkin", "state:working")
 FAIL_STATUSES = ("reaped", "cancelled")
 # prj3#Issue952 — `cancel --verdict` 닫힌 라벨. gate_failed = 정상 게이트가 막아 취소한 것 — 스폰·lease 결함이 아니라
 #   서킷브레이커가 세지 않는다. cancelled_obsolete(기본값)는 명시 취소 전체라 계속 센다
-CANCEL_VERDICTS = ("cancelled_obsolete", "gate_failed")
-BREAKER_EXEMPT_VERDICTS = ("gate_failed",)
+# prj3#Issue997 ③ — cancelled_duplicate = 다른 몸체·배분과 겹친 중복 정리 취소. 워커 실패가 아니라 세지 않는다
+#   (2026-10-09 00:28 정리 취소 4건이 나래 배분을 전면 거부시켰다)
+CANCEL_VERDICTS = ("cancelled_obsolete", "gate_failed", "cancelled_duplicate")
+BREAKER_EXEMPT_VERDICTS = ("gate_failed", "cancelled_duplicate")
+# prj3#Issue997 재작업 — 재배분 상한(ⓑ 같은 일·ⓓ 되풀이·ⓔ 백스톱)도 중복 정리 취소는 세지 않는다(같은 판정 `cancelled_with`)
+COUNT_EXEMPT_VERDICTS = ("cancelled_duplicate",)
+
+
+def cancelled_with(row: dict, verdicts) -> bool:
+    """배분 행이 `verdicts` 중 하나로 취소됐는가 — 브레이커(ⓒ)와 재배분 상한 셈이 같은 판정을 쓴다(사본 금지)."""
+    return row.get("status") == "cancelled" and (row.get("result") or {}).get("verdict") in verdicts
 
 DISPATCH_NS = "fbot:dispatch"  # registry.kv 배분 원장 네임스페이스 (HR ns=fbot:budget 과 분리)
 JOB_KIND = "fbot_dispatch"     # registry.job 배분 기록 kind
@@ -271,9 +310,9 @@ def resolve_prj(cwd: str, base=None):
     막으면 가용성 손실이 더 크다. 대신 **조용히 넘어가지 않는다** — resolver 부재는 stderr
     경고를 낸다(설정 사고와 정상적인 미등록을 구분하기 위함).
 
-    ⚠️ **한계**: `bot.prj` 가 INT 라 `42a` 같은 **비숫자 prj 는 담을 수 없다.** 그런 경로는
-       상위 숫자 프로젝트로 귀속된다(실측: `42a`=Projects_deck 은 `42`=m2slide 의 하위라
-       42 로 잡힌다). 정확한 귀속이 필요해지면 스키마 축 확장이 선행 조건이다.
+    접미 prj(`9t`·`42a`)도 후보다(prj3#Issue1061 — 원장 `bot.prj` 가 ANY 로 확장됨). 하위 경로 접미 prj 는
+    최장 prefix 로 그것에 귀속된다(실측: `42a`=Projects_deck 은 `42`=m2slide 하위 → 종전 42, 이제 `42a`).
+    반환은 `fbot-prj.norm_prj` 형 — 숫자 int · 접미 str.
     """
     if base is None:
         base = pm_projects_dir()
@@ -285,8 +324,8 @@ def resolve_prj(cwd: str, base=None):
     target = os.path.realpath(os.path.expanduser(cwd))
     best_num, best_len = None, -1
     for name in os.listdir(base):
-        if not name.isdigit():
-            continue  # `42a`·README 등 — INT 컬럼에 못 담는다(위 한계 주석)
+        if not _prj().is_prj_name(name):
+            continue  # README 등 — prj id 형식 밖
         entry = os.path.join(base, name)
         if not os.path.isfile(entry):
             continue
@@ -298,7 +337,7 @@ def resolve_prj(cwd: str, base=None):
         # 경계 검사 — 순수 문자열 prefix 로 보면 `…/m2slide-other` 가 `…/m2slide` 에 걸린다
         if target == root or target.startswith(root.rstrip(os.sep) + os.sep):
             if len(root) > best_len:
-                best_num, best_len = int(name), len(root)
+                best_num, best_len = _prj().norm_prj(name), len(root)
     return best_num
 
 
@@ -562,6 +601,53 @@ def work_key(prj, ident, role) -> tuple:
     return (prj, re.sub(r"[\W_]+", " ", s).strip(), role or "")
 
 
+IDEMPOTENT_STATUSES = ("open", "deferred")   # prj3#Issue997 ② — blocked 재배분(재시도)은 막지 않는다
+
+
+def existing_dispatch(con, cwd, prj, ident, role, bot_id=None):
+    """prj3#Issue997 ② — 같은 일의 활성 배분이 있으면 그 행(dict), 없으면 None. `dispatch` 멱등의 판정 한 곳.
+
+    키 = cwd + `work_key`(prj·정규화 식별자·직능) [+ 지정 봇 `--bot-id`]. 상태는 open·deferred 만 —
+    blocked 는 재배분이 곧 재시도라 종전대로 새로 만든다. 2026-10-09 prj1 팀장 몸체 둘이 같은 prj1#Issue617 을 같은 워커에
+    동시 배분(`9a1d1572`·`e953c3eb`)한 것이 이 판정이 막는 모양이다."""
+    key = work_key(prj, ident, role)
+    for r in con.execute("SELECT id, status, owner, payload FROM job WHERE kind = ? AND status IN (%s)"
+                         " ORDER BY created_at" % ",".join("?" * len(IDEMPOTENT_STATUSES)),
+                         (JOB_KIND, *IDEMPOTENT_STATUSES)).fetchall():
+        try:
+            pl = json.loads(r["payload"] or "{}")
+        except (TypeError, ValueError):
+            continue
+        if pl.get("cwd") != cwd or work_key(pl.get("prj"), pl.get("issue"), pl.get("role")) != key:
+            continue
+        if bot_id and pl.get("worker_bot_id") != bot_id:
+            continue
+        return {"id": r["id"], "status": r["status"], "owner": r["owner"], "payload": pl}
+    return None
+
+
+def _existing_result(ex) -> dict:
+    """멱등 응답 — 새 배분을 만들지 않았다. 기동 명령(next_step)은 싣지 않는다(이중 기동 방지)."""
+    pl = ex["payload"]
+    return {"ok": True, "action": "dispatch", "verdict": "기존", "idempotent": True,
+            "job_id": ex["id"], "status": ex["status"], "issue": pl.get("issue"), "role": pl.get("role"),
+            "worker_bot_id": pl.get("worker_bot_id"), "dispatched_by": ex["owner"],
+            **({"loan_id": pl["loan_id"], "loan_from": pl.get("loan_from")} if pl.get("loan_id") else {}),
+            **({"by_session": pl["by_session"]} if pl.get("by_session") else {}),
+            "next": f"같은 일의 활성 배분 {ex['id']} 이 이미 있다 — 새로 만들지 않았다(prj3#Issue997 ②). "
+                    f"기동이 안 됐으면 `spawn --job-id {ex['id']}`"}
+
+
+def request_refs(ident, request=None) -> list:
+    """prj3#Issue997 ① — 배분이 잇는 인박스 요청 id — 명시 `--request` + topic 안 요청 id(중복 제거·순서 유지)."""
+    out = [request] if request else []
+    if "fbotreq-" in (ident or ""):                            # 요청 id 가 없으면 inbox 를 부르지 않는다
+        for x in _inbox_mod().REQ_REF_RE.findall(ident):       # 요청 id 형식은 fbot-inbox 한 곳
+            if x not in out:
+                out.append(x)
+    return out
+
+
 def _verify_breaker_ack(con, ack_id: str, counted: list) -> str:
     """prj3#Issue952 — 서킷브레이커 «원인 확정 후 해제» 증적 검증. 통과면 "", 아니면 거부 사유.
 
@@ -648,6 +734,9 @@ def judge_demand_guard(con, pol, actor: str = "", ident: str = "", prj=None, rol
         except (TypeError, ValueError):
             r["payload"] = {}
         r["result"] = _json_or_empty(r["result"])
+    # prj3#Issue997 — 중복 정리 취소는 일을 한 번 더 시킨 것이 아니다. 상한 셈(ⓑ·ⓓ·ⓔ)에서 뺀다
+    #   (prj15 Issue989 지휘 흐름: 정리 취소가 developer 4/4 를 소모해 정상 종결 배분을 거부시켰다)
+    recent = [r for r in recent if not cancelled_with(r, COUNT_EXEMPT_VERDICTS)]
 
     # prj3#Issue755 — 창 안 기록을 오래된 것부터 훑어 «되풀이»(앞선 같은 일 키가 창 안에 있음)를
     #   표시한다. 창 밖 선행은 보지 않는다 — 하루 지난 재배분은 새 라운드다(ⓑ 와 같은 창).
@@ -717,7 +806,11 @@ def judge_demand_guard(con, pol, actor: str = "", ident: str = "", prj=None, rol
             if r["status"] == "cancelled" and r["result"].get("cancelled_by") in RECLAIM_CALLERS:
                 continue
             # prj3#Issue952 — 정상 게이트 차단 취소(gate_failed)는 스폰·lease 결함 신호가 아니다
-            if r["status"] == "cancelled" and r["result"].get("verdict") in BREAKER_EXEMPT_VERDICTS:
+            if cancelled_with(r, BREAKER_EXEMPT_VERDICTS):
+                continue
+            # prj3#Issue986 — 하네스 고정 오버헤드로 난 spawn_failed 는 배분자가 고칠 수 없는 입력이 아니다(줄일 topic 이 없다)
+            if r["status"] == "cancelled" and r["result"].get("verdict") == "spawn_failed" \
+                    and r["result"].get("cause") == "harness_overhead":
                 continue
             if r["status"] == "done":
                 break
@@ -809,6 +902,14 @@ def issue_completed_in(cwd, issue):
     return _issue_completion().issue_completed_in(cwd, issue)
 
 
+def _ledger_file(issue) -> str:
+    """식별자가 사는 장부 파일 — `Req<N>` 은 Request.md, 그 밖은 Issue.md. 판정은 lib 한 곳 (prj3#Issue1096)."""
+    try:
+        return _issue_completion().ledger_file(issue or "")
+    except Exception:
+        return "Issue.md"
+
+
 def issue_done_unmarked(cwd, issue):
     """완료 섹션에 있는데 완료 표기 누락인가 — True/False/None(판독 불가). 판정은 lib 한 곳 (prj3#Issue968)."""
     return _issue_completion().issue_done_unmarked(cwd, issue)
@@ -897,7 +998,7 @@ def detect_completions(con: sqlite3.Connection) -> list:
 
 # prj3#Issue929 — blocked 하위 사유: 워커는 퇴근(세션 done)했으나 topic 배분의 산출 증적이 없다.
 #   `question`(Issue749)·`worker_died`(prj3#Issue788_2) 와 같은 축이다 — WIP 미점유(호출측 `open` 필터)·watch 적체 B 밖(open 만)·
-#   매니저 부모 보류(`CHILD_LIVE`)·`close`/`cancel` 로 정리. 증적이 뒤늦게 오면 다음 sweep 이 completed 로 올린다.
+#   매니저 부모 보류(`child_is_live`)·`close`/`cancel` 로 정리. 증적이 뒤늦게 오면 다음 sweep 이 completed 로 올린다.
 #   어휘(`unconfirmed`·보고 status)는 fbot-state 단일 지점을 읽는다 — `_unconfirmed()`·`_report_statuses()`
 REQUEST_KIND = "fbot_request"            # fbot-inbox.py KIND — 워커 상향 보고(defer)가 실리는 원장 kind
 HASH_PROBE_MAX = 12                      # 배분 1건당 커밋 대조 상한 — 미확인 배분은 sweep 마다 재평가된다
@@ -1029,6 +1130,7 @@ def topic_evidence(con: sqlite3.Connection, job: dict, since: int, closing=froze
       ⓓ 보고 본문의 커밋 해시가 대상 repo 에 있고 **커밋 시각 ≥ since** → 증적(commit). 배분 전 커밋은 선례 인용이다
       ⓔ 매니저 배분 — 하위 배분 중 증적 있는 done(또는 **이번 회차 completed** = `closing`)이 있으면 증적(children).
          자식이 남아 있으면 애초에 보류된다(Issue781). 자식이 같은 회차에 닫히면 DB 는 아직 open 이라 `closing` 이 그것을 센다
+         반려가 풀리지 않은 하위가 하나라도 있으면 증적 아님(prj3#Issue1002 ②)
     ⚠️ 본문에 적힌 **경로**는 증적이 아니다 — 실측 «미완» 보고도 `.md.draft` 를 언급했다. 산출 경로는 `--expect` 로 선언한다.
     ⚠️ `EVIDENCE_HASH_RE` 는 fbot id 의 hex 꼬리(`fbotreq-…-c59ad182`)도 잡는다 — repo 대조가 그것을 거른다.
     사유는 «git 조회 실패»(비repo·safe.directory·시간 초과)·«repo 에 없거나 배분 전 커밋»·«해시 없음» 을 가른다(검토 ⑤).
@@ -1067,10 +1169,19 @@ def topic_evidence(con: sqlite3.Connection, job: dict, since: int, closing=froze
                 if ct is not None and ct >= since:
                     return {"kind": "commit", "hash": h, "request_id": rid}, ""
     if _is_nonexec(pl.get("role")):
-        kids = [r["id"] for r in con.execute(
+        rows = con.execute(
             "SELECT id, status, payload, result FROM job WHERE kind = ?"
             " AND json_extract(payload, '$.parent_dispatch_id') = ?", (JOB_KIND, job["id"])).fetchall()
-            if r["id"] in closing or done_evidenced(r["status"], r["payload"], r["result"])]
+        # prj3#Issue1002 ② — 하위 종결은 completed 여야 하고(취소는 done_evidenced 에서 빠진다) 팀장이 반려한 채 재작업이
+        #   끝나지 않은 하위가 있으면 children 증적이 아니다. 반려 판정은 fbot-state `rejected_unresolved` 한 곳
+        rej = _state_required("반려 판정(rejected_unresolved)").rejected_unresolved
+        tree = [r["id"] for r in rows]
+        for r in rows:
+            why = rej(con, r["id"], tree)
+            if why:
+                return None, f"하위 배분 {r['id']} 보고 반려 미해소({why}) — 재작업이 끝나야 children 증적"
+        kids = [r["id"] for r in rows
+                if r["id"] in closing or done_evidenced(r["status"], r["payload"], r["result"])]
         if kids:
             return {"kind": "children", "dispatches": kids[:10]}, ""
     if not reps:
@@ -1142,7 +1253,7 @@ def detect_closures(con: sqlite3.Connection, exclude=()) -> list:
     # prj3#Issue781 — 자식이 남은 매니저 배분은 건너뛴다. 자식이 이번 회차에 닫히면 부모도 같은 회차에 닫히도록
     #   고정점까지 반복한다(사슬 깊이만큼 — 한 회차에 새로 잡히는 것이 없으면 끝).
     #   `handled` = 이번 sweep 에서 판정이 끝난 배분 · `closing` = 그중 completed — 부모 보류는 closing 만 푼다
-    #   (미확인 자식은 `CHILD_LIVE` 인 blocked 로 남으므로 부모를 닫지 않는다).
+    #   (미확인 자식은 `child_is_live` 인 blocked 로 남으므로 부모를 닫지 않는다).
     handled, closing = set(exclude), set()
     while True:
         holding = parents_with_live_children(active, closing)
@@ -1271,7 +1382,9 @@ def _detect_pass(con, active, claimed, holding, handled, closing, found, unconf_
 
 # prj3#Issue781 — 매니저 배분을 살아 있게 하는 자식 술어. 스펙은 open·blocked·deferred(`logged` 는 사후 기록이라 제외 —
 #   Issue815 그림자 행이 부모를 영구 미종결로 만들지 않게).
-CHILD_LIVE = ("open", "blocked", "deferred")
+#   술어 본체는 fbot-org `child_class`(live·held) 단일 지점 — hub 보드가 같은 분류를 빌려 쓴다(Issue1023). sweep 동작은 live·held 모두 부모 보류 그대로.
+def child_is_live(status) -> bool:
+    return bool(_org_mod().child_class(status))
 
 
 def ambiguous_parent_candidates(child: dict, dispatches: list) -> list:
@@ -1301,7 +1414,7 @@ def parents_with_live_children(active: list, closing: set = frozenset()) -> set:
     ① 총괄 동시 상한(actor)이 부모만 세어 실효 무력화 ② 부모 종결을 기다리는 상위 수합이 조기 착수 ③ 완료 통지 오판.
     매니저 배분의 «완료» 는 자식이 끝나고 결과가 상향된 뒤다 — 자식 전부 종결 후 **다음 sweep** 에서 닫힌다.
 
-    판정: `payload.parent_dispatch_id` 로 부모→자식을 잇고, 매니저 배분마다 후손을 걸어 `CHILD_LIVE` 인 것이 하나라도
+    판정: `payload.parent_dispatch_id` 로 부모→자식을 잇고, 매니저 배분마다 후손을 걸어 `child_is_live`(live·held) 인 것이 하나라도
     있으면 잡는다. 계보 기록은 fbot-state `dispatch_lineage` 단일 지점(Issue739) — 여기서는 읽기만 한다.
     구 레코드(계보 없음)는 자식으로 보이지 않으므로 종전 판정 그대로다(소급 추정 금지).
     ⚠️ 워커(비관리직) 배분은 대상이 아니다 — 워커는 배분하지 않으므로 자식이 있을 리 없고, 있어도 종전 판정.
@@ -1330,7 +1443,7 @@ def parents_with_live_children(active: list, closing: set = frozenset()) -> set:
             if k["id"] in seen:
                 continue
             seen.add(k["id"])
-            if k["status"] in CHILD_LIVE and k["id"] not in closing:
+            if child_is_live(k["status"]) and k["id"] not in closing:
                 out.add(j["id"])
                 break
             stack.extend(kids.get(k["id"], []))
@@ -1356,6 +1469,172 @@ def last_session_end(con: sqlite3.Connection, wid: str, since: int):
     return {"session_job_id": row["id"], "status": row["status"], "at": row["created_at"],
             "end_reason": pl.get("end_reason"), "resets_at": pl.get("resets_at"),
             "limit_type": pl.get("limit_type"), "error": pl.get("error")}
+
+
+def quota_since(job: dict) -> int:
+    """쿼터 종료 판정의 세션 하한 — 배분 생성·몸체 기동·자동 재개 중 **가장 늦은** 시각 (prj3#Issue1013).
+
+    세션 기록은 퇴근 때 적힌다. 재기동한 몸체가 아직 살아 있으면 «마지막 세션» 은 재기동 **전** 의 쿼터 세션이다 —
+    하한 없이 읽으면 살아 있는 몸체를 낡은 기록으로 다시 막고, 자동 재개가 표시→재개를 무한 반복한다.
+    """
+    pl = job.get("payload") or {}
+    qp = pl.get("quota_prev") or {}
+    return max(int(job.get("created_at") or 0), int(pl.get("spawned_at") or 0), int(qp.get("resumed_at") or 0))
+
+
+def _clean_session_between(con: sqlite3.Connection, wid, since: int, exclude_id: str) -> bool:
+    """`since` 이후 `exclude_id` 가 아닌 워커 세션 중 `end_reason != quota` 가 있나 — 연속 쿼터 사망의 끊김 판정 (prj3#Issue1016 ②)."""
+    if not wid or not since:
+        return False
+    for row in con.execute("SELECT payload FROM job WHERE kind = ? AND owner = ? AND created_at >= ? AND id != ?",
+                           (SESSION_JOB_KIND, wid, since, exclude_id)):
+        if _json_or_empty(row["payload"]).get("end_reason") != "quota":
+            return True
+    return False
+
+
+def quota_mark(con: sqlite3.Connection, job: dict, end: dict, now: int):
+    """open 배분 → `blocked` + `payload.quota` — 쿼터 종료 표시의 **단일 지점** (watch·sweep 공용, prj3#Issue1013).
+
+    `quota.streak` = 같은 배분이 쿼터로 연달아 죽은 횟수(직전 자동 재개의 `quota_prev` 에서 이어 센다). 경보 대상(streak ≥
+    QUOTA_STREAK_ALERT 이고 아직 안 알림)이면 `alerted_at` 을 같은 UPDATE 에 적는다 — 배분당 1회. 조건부 UPDATE(open 만)라
+    경합·재실행에 멱등이다. 반환 `(quota, alert)` · 이미 다른 상태면 None.
+    """
+    prev = dict((job.get("payload") or {}).get("quota_prev") or {})
+    if prev and _clean_session_between(con, end.get("worker") or (job.get("payload") or {}).get("worker_bot_id"),
+                                       int(prev.get("resumed_at") or 0), end["session_job_id"]):
+        prev = {}      # prj3#Issue1016 ② — 재개 뒤 쿼터 아닌 사유로 끝난 세션이 끼었다: 연속이 끊겼다(streak·경보 표지 리셋)
+    streak = int(prev.get("streak") or 0) + 1
+    quota = {"resets_at": end.get("resets_at"), "limit_type": end.get("limit_type"),
+             "session_job_id": end["session_job_id"], "detected_at": now, "streak": streak}
+    if prev.get("alerted_at"):
+        quota["alerted_at"] = prev["alerted_at"]
+    alert = streak >= QUOTA_STREAK_ALERT and not prev.get("alerted_at")
+    if alert:
+        quota["alerted_at"] = now
+    cur = con.execute(
+        "UPDATE job SET status = 'blocked', blocked_since = ?,"
+        " payload = json_set(payload, '$.quota', json(?)) WHERE id = ? AND status = 'open'",
+        (now, json.dumps(quota), job["id"]))
+    return (quota, alert) if cur.rowcount == 1 else None
+
+
+def quota_entry(job: dict, wid: str, quota: dict) -> dict:
+    """mq 묶음 알림·반환용 요약 — 수동 재위임 명령(`respawn`)을 곁들인다(자동 재개 실패 때의 백스톱)."""
+    pl = job["payload"]
+    spawn = _spawn_commands(wid, pl.get("issue") or pl.get("topic") or "", pl.get("cwd") or "",
+                            pl.get("prj"), role=pl.get("role"), disp_id=job["id"],
+                            model=pl.get("model_override"))
+    return {"job_id": job["id"], "issue": pl.get("issue") or pl.get("topic"), "worker_bot_id": wid, **quota,
+            "respawn": spawn.get(spawn.get("run", "agent"))}
+
+
+def mark_quota_dispatches(con: sqlite3.Connection, now: int, skip=(), dry_run: bool = False) -> list:
+    """open 배분 중 워커 마지막 세션이 `end_reason=quota` 인 것을 blocked 로 표시 (prj3#Issue1013 ①).
+
+    판정은 `last_session_end` 를 읽기만 한다(판정 단일 지점). 기동 대기(`spawn_pending`)·몸체 없는 배분은 대상 밖.
+    재시도·에스컬레이션은 watch 몫 그대로 — 여기는 «쿼터로 죽었다» 는 사실만 원장에 적는다. 반환 = 표시한(dry-run 은 표시할) 항목
+    `quota_entry` + `alert`(연속 사망 경보 대상).
+    """
+    out = []
+    skip = set(skip)
+    for job in [j for j in active_dispatches(con) if j["status"] == "open" and j["id"] not in skip]:
+        wid = job["payload"].get("worker_bot_id")
+        if not wid or job["payload"].get("spawn_pending"):
+            continue
+        end = last_session_end(con, wid, quota_since(job))
+        if not end or end.get("end_reason") != "quota":
+            continue
+        if dry_run:
+            out.append(dict(quota_entry(job, wid, {"resets_at": end.get("resets_at"), "limit_type": end.get("limit_type"),
+                                                   "session_job_id": end["session_job_id"]}), alert=False))
+            continue
+        marked = quota_mark(con, job, end, now)
+        if marked:
+            _ev(con, wid, "blocked", f"{job['id']}: 쿼터 소진 종료 — 해소 {_hhmm(end.get('resets_at'))}"[:120], job["id"])
+            out.append(dict(quota_entry(job, wid, marked[0]), alert=marked[1]))
+    return out
+
+
+def alert_quota_streak(entries: list) -> None:
+    """연속 사망(streak ≥ QUOTA_STREAK_ALERT) 첫 관측만 mq 경보 — 자동 재개가 헛돌고 있다는 사람 판단 이벤트 (prj3#Issue1013 ③)."""
+    for q in entries:
+        if q.get("alert"):
+            mq_alert(f"[fbot-lead] 쿼터 연속 사망 {q['streak']}회 — {q.get('issue') or '?'}({q['worker_bot_id']}) 배분 {q['job_id']}: "
+                     f"자동 재개 뒤 다시 쿼터로 종료(한도 {q.get('limit_type') or '?'}, 해소 {_hhmm(q.get('resets_at'))}). "
+                     f"한도 종류가 주간이거나 작업이 한도를 혼자 소진하는지 확인 필요")
+            q["alert"] = False   # 발신 완료 표지 — 같은 항목을 호출자가 겹쳐 경보하지 않게
+
+
+def resume_quota_blocked(now=None, dry_run: bool = False, batch=None, pol=None) -> dict:
+    """리셋이 지난 쿼터 `blocked` 배분을 `open` + `spawn_pending` 으로 되돌린다 (prj3#Issue1013 ②④).
+
+    기동은 호출자(`cmd_sweep`)가 `spawn_pending(only=…)` 로 잇는다 — 배치(wake)·동시 상한 판정은 `spawn_dispatch` 한 곳.
+    관리직(팀장) 배분도 같은 경로다(④): 배분 role 이 lead 면 `_place_worker` 가 그 팀장을 wake 한다.
+    ⚠️ 새 배분이 아니다 — 월 예산·수요측 가드(반복·배분자 시간당)를 다시 태우지 않는다(`resume`·승격과 같은 셈). 상한은 두 겹:
+      회차당 `batch` 건(정책 `fbot_quota_resume_batch`)으로 나눠 다시 한도를 치지 않게 하고, 동시 상한은 `spawn_dispatch` 가
+      `wait` 로 돌려 표지를 유지한다(다음 tick 의 `spawn --pending`).
+    대상 = `payload.quota` 가 있는 blocked 중 `resets_at + 유예 ≤ now`(resets_at 미상이면 detected_at 기준). 리셋 시각 순.
+    쿼터 기록은 `quota_prev`(+`resumed_at`)로 옮긴다 — 다음 사망의 streak 이 이어 세고, 세션 하한(`quota_since`)이 낡은 세션을 거른다.
+    반환 `{resumed: [{job_id, issue, role, worker_bot_id, resets_at}], deferred_count}` (dry-run 은 재개 예정분, 원장 무변경).
+    """
+    pol = pol if pol is not None else load_policy()
+    now = int(now if now is not None else time.time())
+    grace = int(pol.get(QUOTA_RESUME_GRACE_KEY) or QUOTA_RESUME_GRACE_DEFAULT_MIN) * 60
+    limit = int(batch or pol.get(QUOTA_RESUME_BATCH_KEY) or QUOTA_RESUME_BATCH_DEFAULT)
+    streak_limit = int(pol.get(QUOTA_STREAK_LIMIT_KEY) or QUOTA_STREAK_LIMIT_DEFAULT)
+    con = connect()
+    try:
+        ready = []
+        halted = []
+        for j in active_dispatches(con):
+            q = (j["payload"] or {}).get("quota")
+            if j["status"] != "blocked" or not isinstance(q, dict):
+                continue
+            if int(q.get("streak") or 0) > streak_limit:     # prj3#Issue1016 ① — 폭주 상한: 재개하지 않고 blocked 유지
+                if not q.get("halt_alerted_at"):
+                    halted.append((j, q))
+                continue
+            base = q.get("resets_at") or q.get("detected_at") or 0
+            if int(base) + grace <= now:
+                ready.append((int(base), j["created_at"], j))
+        ready.sort(key=lambda x: (x[0], x[1]))
+        picked = [x[2] for x in ready[:limit]]
+        rows = [{"job_id": j["id"], "issue": j["payload"].get("issue"), "role": j["payload"].get("role"),
+                 "worker_bot_id": j["payload"].get("worker_bot_id"),
+                 "resets_at": (j["payload"].get("quota") or {}).get("resets_at")} for j in picked]
+        rest = max(0, len(ready) - len(picked))
+        if not dry_run:
+            for j, q in halted:       # 사람 경보 — 배분당 1회(표지는 payload.quota.halt_alerted_at)
+                cur = con.execute(
+                    "UPDATE job SET payload = json_set(payload, '$.quota.halt_alerted_at', ?)"
+                    " WHERE id = ? AND status = 'blocked' AND json_extract(payload, '$.quota.halt_alerted_at') IS NULL",
+                    (now, j["id"]))
+                if cur.rowcount == 1:
+                    con.commit()
+                    mq_alert(f"[fbot-lead] 쿼터 자동 재개 중지 — {j['payload'].get('issue') or '?'}({j['payload'].get('worker_bot_id')}) "
+                             f"배분 {j['id']}: 연속 사망 {q.get('streak')}회가 상한 {streak_limit}회를 넘었다. blocked 유지 — "
+                             f"원인(한도 종류·작업 크기) 확인 뒤 수동 재개 필요")
+        if dry_run or not picked:
+            return {"resumed": rows, "deferred_count": rest, "mode": "dry-run" if dry_run else "apply"}
+        con.execute("BEGIN IMMEDIATE")
+        applied = []
+        for j, r in zip(picked, rows):
+            pl = dict(j["payload"])
+            pl["quota_prev"] = dict(pl.pop("quota"), resumed_at=now)
+            for k in ("spawned_at", "spawn_placed_at", "spawn_attempts", "spawn_error", "spawn_gave_up"):
+                pl.pop(k, None)       # 새 몸체로 다시 배치·기동 — 낡은 기동 기록이 spawn_pending 의 «이미 기동됨» 가드를 켜지 않게
+            pl["spawn_pending"] = True
+            _ev(con, BOT_ID, "resume", f"{j['id']}: 쿼터 리셋 뒤 자동 재개 (streak {pl['quota_prev'].get('streak')})"[:120], j["id"])
+            cur = con.execute(
+                "UPDATE job SET status = 'open', blocked_since = NULL, payload = ?"
+                " WHERE id = ? AND status = 'blocked'", (json.dumps(pl, ensure_ascii=False), j["id"]))
+            if cur.rowcount == 1:
+                applied.append(r)
+        con.execute("COMMIT")
+    finally:
+        con.close()
+    return {"resumed": applied, "deferred_count": rest, "mode": "apply"}
 
 
 def _hhmm(epoch) -> str:
@@ -1574,6 +1853,9 @@ def run_sweep(dry_run: bool = False, exclude=()) -> dict:
         sessions = [x for x in detect_session_completions(con, wm)
                     if x["session_job_id"] not in claimed_now]
         if dry_run or not (done or unconf or sessions or renotify or exhausted):
+            # prj3#Issue1013 ① — 쿼터로 죽은 open 배분 표시. 이 경로는 이번 회차에 닫을 배분이 없으니 skip 불필요
+            quota_blocked = mark_quota_dispatches(con, now, dry_run=dry_run)
+            alert_quota_streak(quota_blocked)
             # prj3#Issue861 — 선행이 close 등 sweep 밖에서 done 이 된 미룬 배분도 여기서 당긴다
             held = []
             resumed = promote_deferred(con, dry_run=dry_run, extra_done={c["job_id"] for c in done}, held_out=held)
@@ -1581,7 +1863,7 @@ def run_sweep(dry_run: bool = False, exclude=()) -> dict:
                     "unconfirmed_detected": len(unconf), "unconfirmed": unconf,
                     "unconfirmed_renotify": renotify, "unconfirmed_gave_up": exhausted,
                     "sessions_detected": len(sessions), "sessions": sessions,
-                    "resumed": resumed, "held": held,
+                    "resumed": resumed, "held": held, "quota_blocked": quota_blocked,
                     "watermark": wm, "enqueued": None,
                     "mode": "dry-run" if dry_run else "apply"}
         con.execute("BEGIN IMMEDIATE")
@@ -1631,6 +1913,9 @@ def run_sweep(dry_run: bool = False, exclude=()) -> dict:
                 (NOTIFY_NS, NOTIFY_SESSION_KEY, str(newest), now, BOT_ID),
             )
         con.execute("COMMIT")
+        # prj3#Issue1013 ① — 닫힌(완료·미확인) 배분은 제외하고 표시한다. 완료 증적이 쿼터 종료보다 우선
+        quota_blocked = mark_quota_dispatches(con, now, skip={c["job_id"] for c in done} | {c["job_id"] for c in unconf})
+        alert_quota_streak(quota_blocked)
         held = []
         resumed = promote_deferred(con, held_out=held)   # prj3#Issue861 — 이번 회차 done 을 반영한 뒤 미룬 배분 승격
     finally:
@@ -1643,6 +1928,7 @@ def run_sweep(dry_run: bool = False, exclude=()) -> dict:
             _inbox_mod().close_fulfilled([c.get("job_id") for c in done])
         except Exception as _e:
             print(f"[fbot-lead] 요청 종결 실패(배분 종결은 유지): {_e}", file=sys.stderr)
+        _notify_requesters([c.get("job_id") for c in done])   # prj3#Issue989 — 최상위 배분의 의뢰 세션에 완료 통지
     # hub SSE 는 커밋 **후** — 보드가 빈 원장을 읽지 않게(notify_hub_event 계약). best-effort 다:
     #   완료의 정본은 방금 커밋한 원장 전이이고, SSE 가 빠져도 fbot-map 은 다음 로드에 읽는다.
     for c in done:
@@ -1684,6 +1970,7 @@ def run_sweep(dry_run: bool = False, exclude=()) -> dict:
             "unconfirmed_detected": len(unconf), "unconfirmed": unconf, "unconfirmed_renotify": renotify,
             "unconfirmed_gave_up": gave_up,
             "sessions_detected": len(sessions), "sessions": sessions, "resumed": resumed, "held": held,
+            "quota_blocked": quota_blocked,
             "watermark": wm, "enqueued": None, "message": msg, "mode": "apply"}
 
 
@@ -1977,8 +2264,46 @@ def cmd_session_end(args) -> int:
 def cmd_sweep(args) -> int:
     """완료 감지 스윕 — 상태 전이 시점 통지의 진입점(tick worker 주기 편입)."""
     out = run_sweep(dry_run=args.dry_run)
+    if not args.dry_run and out.get("resumed"):
+        # prj3#Issue992 ② — 승격분은 tick 30분 주기를 기다리지 않고 이 호출이 이어 기동한다(공백 동안 몸체 없음 → 보드 오판).
+        #   tick 의 `spawn --pending` 은 실패·대기분 백스톱으로 남는다. 판정·재시도 계약은 spawn_pending 한 곳
+        ids = {r.get("job_id") for r in out["resumed"] if isinstance(r, dict) and r.get("job_id")}
+        try:
+            out["spawned_resumed"] = spawn_pending(only=ids) if ids else []
+        except Exception as _e:  # noqa: BLE001 — 기동 실패가 sweep 결과를 막지 않는다(tick 백스톱)
+            out["spawned_resumed"] = []
+            print(f"[fbot-lead] 승격분 이어 기동 실패(tick 백스톱 대기): {_e}", file=sys.stderr)
+    if out.get("mode") == "dry-run":
+        try:   # 재개 예정분만 보여준다 — 원장 무변경
+            out["quota_resume_targets"] = resume_quota_blocked(dry_run=True)["resumed"]
+        except Exception as _e:  # noqa: BLE001
+            print(f"[fbot-lead] 쿼터 재개 예정 조회 실패: {_e}", file=sys.stderr)
+    else:
+        # prj3#Issue1013 ②④ — 리셋이 지난 쿼터 blocked 배분을 open 으로 되돌리고 이어 기동한다. 사람·팀장이 watch 를 돌리지 않아도
+        #   tick 의 sweep 한 번으로 재개된다(쿼터는 감시자도 함께 죽인다). 실패는 sweep 결과를 막지 않는다 — 표지가 남아 tick `spawn --pending` 이 잇는다
+        try:
+            qr = resume_quota_blocked()
+            out["quota_resumed"] = qr["resumed"]
+            out["quota_resume_deferred"] = qr["deferred_count"]
+            qids = {r["job_id"] for r in qr["resumed"]}
+            out["quota_spawned"] = spawn_pending(only=qids) if qids else []
+        except Exception as _e:  # noqa: BLE001
+            out.setdefault("quota_resumed", [])
+            print(f"[fbot-lead] 쿼터 재개 실패(tick 백스톱 대기): {_e}", file=sys.stderr)
     emit({"ok": True, "action": "sweep", **out})
     return 0
+
+
+def _notify_requesters(job_ids, by_session=None):
+    """done 이 된 배분 중 **최상위**(사람 세션이 직접 낸 것)를 그 의뢰 세션에 알린다 (prj3#Issue989).
+    판정·전달은 fbot-inbox `notify_requester_done` 한 곳(질문 중계 Issue749 와 같은 마커·음성 경로). 실패해도 종결은 유지(stderr).
+    prj7#Issue51 실측: 팀장 상향 보고를 lease 만료 뒤 자동 기동된 총괄 몸체가 받아 사람 세션은 완료를 몰랐다."""
+    if not job_ids:
+        return
+    try:
+        _inbox_mod().notify_requester_done(job_ids, by_session=by_session)
+    except Exception as _e:
+        print(f"[fbot-lead] 의뢰 세션 완료 통지 실패(배분 종결은 유지): {_e}", file=sys.stderr)
 
 
 def _close_requests(applied, by):
@@ -2087,7 +2412,7 @@ def cmd_cancel(args) -> int:
                 cur = con.execute(
                     "UPDATE job SET status = 'done', blocked_since = NULL, result = ? WHERE id = ? AND status = ?",
                     (json.dumps({"verdict": "completed_external",
-                                 "evidence": f"{_canon_issue(r['issue'] or '')} 완료 섹션(Issue.md)",
+                                 "evidence": f"{_canon_issue(r['issue'] or '')} 완료 섹션({_ledger_file(_canon_issue(r['issue'] or ''))})",
                                  "reason": args.reason, "detected_by": "reclaim:%s" % args.by,
                                  "from_status": r["from_status"], "closed_at": now}, ensure_ascii=False),
                      r["job_id"], r["from_status"]))
@@ -2244,6 +2569,11 @@ def cmd_defer(args) -> int:
       `defer_history` 로 옮기고 `blocked_since` 를 비운다 — 재개(`resume`) 뒤 증거 시작 시각은 `resumed_at`(`_dispatch_since`)이라
       낡은 incomplete 보고·세션은 자연히 증거에서 빠진다. 그 «완료 미확인» 통지는 `close_fulfilled(by=defer)` 로 종결한다.
       다른 blocked(사람 ACK·질문·쿼터)는 여전히 받지 않는다 — 사건이 다르다.
+    🔧 prj3#Issue1055 — **선행 대기 `deferred`(`deferred_until_job`)도 받아 수동 보류로 바꾼다.** 순차 배분으로 미룬 행에
+      매니저가 보류를 결정해도 원장에 걸 수단이 없어 `decide` 기록에만 남았고, 선행 done 에 sweep 이 자동 재개·기동했다
+      (Issue1049 `a1534e0d`). 선행 대기·옛 사유는 `defer_history`(`deferred_from: until_job`·`held_by`)로 옮긴다 —
+      `promote_deferred` 는 `deferred_until_job` 있는 행만 보므로 재개 판정이 원장 한 곳에서 끝난다. 이미 수동 보류인
+      `deferred` 는 대상 아님(사유 덮어쓰기 금지).
     """
     reason = (args.reason or "").strip()
     if not reason:
@@ -2253,11 +2583,13 @@ def cmd_defer(args) -> int:
         uc = _unconfirmed()
         targets = [j for j in active_dispatches(con)
                    if (j["status"] == "open"
-                       or (j["status"] == "blocked" and j["payload"].get("blocked_by") == uc))   # prj3#Issue953 ②
+                       or (j["status"] == "blocked" and j["payload"].get("blocked_by") == uc)   # prj3#Issue953 ②
+                       or (j["status"] == "deferred" and j["payload"].get("deferred_until_job")))   # prj3#Issue1055
                    and ((args.job_id and j["id"] == args.job_id)
                         or (args.issue and j["payload"].get("issue") == args.issue))]
         if not targets:
-            raise FbotError(f"보류 대상 없음: {args.job_id or args.issue} — `open`·`blocked(unconfirmed)` 배분이 아니다")
+            raise FbotError(f"보류 대상 없음: {args.job_id or args.issue} — "
+                            "`open`·`blocked(unconfirmed)`·선행 대기(`deferred_until_job`) 배분이 아니다")
         rows = [{"job_id": j["id"], "issue": j["payload"].get("issue"),
                  "role": j["payload"].get("role"),
                  "worker_bot_id": j["payload"].get("worker_bot_id"),
@@ -2276,12 +2608,20 @@ def cmd_defer(args) -> int:
             if from_unconf:   # prj3#Issue953 ② — 미확인 사유·통지 기록은 이력으로(재개 뒤 새 미확인이 깨끗이 시작한다)
                 hist = {"blocked_by": pl.pop("blocked_by"), uc: pl.pop(uc, None), "deferred_from": "blocked", "at": now}
                 pl.setdefault("defer_history", []).append(hist)
+            if pl.get("deferred_until_job"):   # prj3#Issue1055 — 선행 대기 → 수동 보류. 선행 대기를 지워야 sweep 이
+                #   선행 done 에 자동 재개하지 않는다(promote_deferred 는 deferred_until_job 있는 행만 본다 — 판정은 원장 한 곳)
+                hist = {k[len("deferred_"):]: pl.pop(k) for k in
+                        ("deferred_reason", "deferred_until", "deferred_by", "deferred_at") if k in pl}
+                hist.update({"until_job": pl.pop("deferred_until_job"), "deferred_from": "until_job",
+                             "held_by": args.by or BOT_ID, "held_at": now})
+                pl.pop("promote_held_by", None)
+                pl.setdefault("defer_history", []).append(hist)
             pl.update({"deferred_reason": reason, "deferred_until": args.until,
                        "deferred_by": args.by, "deferred_at": now})
             _ev(con, args.by or BOT_ID, "defer", f"{r['job_id']}: {reason}"[:120], r["job_id"])
             cur = con.execute(
                 "UPDATE job SET status = 'deferred', blocked_since = NULL, payload = ? WHERE id = ?"
-                " AND status IN ('open','blocked')",
+                " AND status IN ('open','blocked','deferred')",
                 (json.dumps(pl, ensure_ascii=False), r["job_id"]))
             if cur.rowcount == 1:
                 applied.append({k: v for k, v in r.items() if k != "payload"})
@@ -2357,7 +2697,7 @@ def cmd_resume(args) -> int:
 # ── 서브커맨드 ──────────────────────────────────────────────────────────────
 
 def cmd_pending(args) -> int:
-    """펜딩 큐 뷰 — Issue.md·issue-map 파생 뷰(F4: 별도 작업 대장 파일 생성 금지)."""
+    """펜딩 큐 뷰 — Issue.md·issue-map 파생 뷰(F4: 봇 전용 작업 대장 파일 생성 금지 — 업무 접수는 Request.md, Issue1096)."""
     cwd = os.path.abspath(os.path.expanduser(args.cwd))
     if not os.path.isdir(cwd):
         raise FbotError(f"디렉토리 아님: {cwd}")
@@ -2455,33 +2795,37 @@ def default_worker_id(con, prj, role: str, ident: str) -> str:
     return base
 
 
-# prj3#Issue786_1 — 워커 fpm-do 프롬프트 바이트 예산 (팀장 L 결정 `fbotev-1790626491-8dc4e0d4`).
-#   fpm-do 차단 임계 1000B(`PM_DO_PROMPT_HARD`) − 규약 꼬리 435B(Issue399) − 변환 오버헤드 약 100B
-#   (`/issue-fix-m N` + « — [원본 지시 원문 …] » 79B — 변환되면 원문이 한 번 더 붙는다) − 여유 65B.
-#   종전엔 topic 을 120자에서 잘라 실었다 — 제약(빌드·pkill·push 금지)이 통째로 유실됐다(`fbotdisp-1790609651-9530bdbf`).
+# prj3#Issue786_1 — 워커 fpm-do 프롬프트 바이트 예산. 종전 400B 는 fpm-do 기동 줄 한도(MAX_CANON 1024B)에서 역산한 값이었다.
+#   prj3#Issue1047 로 기동 줄이 파일로 넘어가 그 한도가 사라졌다(prj3#Issue1047_1) — 이제는 **가독 상한**이다: 이보다 긴 지시만
+#   자르고 전문 조회 줄을 남긴다. 종전엔 topic 을 120자·400B 에서 잘라 제약(빌드·pkill·push 금지)이 유실됐다(`fbotdisp-1790609651-9530bdbf`).
 #   topic 전문 정본은 배분 원장 `payload.issue` — 잘리면 조회 명령 한 줄을 남긴다(대상 repo 에 파일을 쓰지 않는다).
-PROMPT_BUDGET = 400
+PROMPT_BUDGET = 4000
 TOPIC_CMD = "~/.claude/hooks/fbot-lead.py topic"   # Issue824 — 실행 비트 있음, `python3 ` 접두는 기동 줄 예산만 먹는다
 
 
 PROMPT_MIN_BODY = 24   # prj3#Issue965 — 절단 뒤 본문 하한(B). 미만이면 본문을 비운다
 _ID_CHAR_RE = re.compile(r"[A-Za-z0-9#_]")
 _ID_TAIL_RE = re.compile(r"[A-Za-z0-9#_]+$")
-# 식별자(`prj<N>#Issue<N>_<N>`)의 앞부분 조각 — 이 모양으로 끝난 채 잘렸으면 번호가 바뀐다
-_ID_PART_RE = re.compile(r"^(?:p(?:r(?:j\d*#?)?)?)?(?:I(?:s(?:s(?:u(?:e)?)?)?)?)?\d*(?:_\d*)?$")
+# 식별자(`prj<N>#Issue<N>_<N>`·`Req<N>` — Issue1096)의 앞부분 조각 — 이 모양으로 끝난 채 잘렸으면 번호가 바뀐다
+_ID_PART_RE = re.compile(r"^(?:p(?:r(?:j\d*#?)?)?)?(?:I(?:s(?:s(?:u(?:e)?)?)?)?|R(?:e(?:q)?)?)?\d*(?:_\d*)?$")
 
 
-def fit_prompt(text: str, ref=None, budget: int = PROMPT_BUDGET) -> str:
+def fit_prompt(text: str, ref=None, budget: int = PROMPT_BUDGET, hint=None) -> str:
     """fpm-do 프롬프트 본문을 바이트 예산에 맞춘다 — 판정 단일 지점 (prj3#Issue786_1).
 
     한 줄로 편다(send-keys 는 개행을 그대로 흘린다). 넘치면 UTF-8 경계에서 자르고 전문 조회 한 줄을 붙인다 —
-    `ref`(배분 id)가 있으면 `topic <배분id>`, 없으면(resume) 원장 질문·답변을 가리킨다.
+    `ref`(배분 id)가 있으면 `topic <배분id>`, `hint`(조회 명령)가 있으면(wake 인박스) 그 명령, 없으면(resume) 원장 질문·답변을 가리킨다.
     ⚠️ 셸 이스케이프는 호출자가 **자른 뒤** 한다 — 역순이면 `'\\''` 가 잘려 인용이 깨진다.
     """
     s = " ".join((text or "").split())
     if len(s.encode("utf-8")) <= budget:
         return s
-    note = f" — topic 잘림: {TOPIC_CMD} {ref}" if ref else " — 잘림 — 전문은 원장 질문·답변(fbot-inbox.py qa)"
+    if ref:
+        note = f" — topic 잘림: {TOPIC_CMD} {ref}"
+    elif hint:      # prj3#Issue1026 — wake 의 잘린 지시는 질문이 아니라 인박스 요청이다(qa 가 아닌 인박스 조회)
+        note = f" — 잘림 — 전문은 {hint}"
+    else:
+        note = " — 잘림 — 전문은 원장 질문·답변(fbot-inbox.py qa)"
     room = max(budget - len(note.encode("utf-8")), 0)
     raw = s.encode("utf-8")
     head = raw[:room].decode("utf-8", "ignore")
@@ -2501,97 +2845,7 @@ def _sq(s: str) -> str:
     return s.replace("'", "'\\''")
 
 
-# prj3#Issue824 — 기동 줄 **전체** 바이트 예산. Issue786_1 은 프롬프트만 셌는데, fpm-do 는 send-keys 한 줄에
-#   봇 env(`FBOT_TASK` = 프롬프트+꼬리 첫 120 **글자** — 한글이면 360B) · MCP 플래그(Issue779_8, 09-28 추가) ·
-#   규약 꼬리(Issue399, 435B)를 더 싣는다. pty 정규 입력 한도(MAX_CANON 1024B)를 넘으면 줄이 잘려 claude 가 안 뜬다
-#   (2026-09-29 07:19 실측 — 한글 topic + 68자 id 로 1,294B). 판정은 fpm-do 가 실제로 만드는 줄로 한다.
-LINE_BUDGET = 1000            # MAX_CANON 1024 − Enter·여유 (fpm-do 프롬프트 차단 임계 PM_DO_PROMPT_HARD 와 같은 값)
-TRANSFORM_RESERVE = 100       # 이슈 변환(`/issue-fix-* N — [원본 지시 원문 …] `) 몫 — Issue786_1 과 같은 값
-BODY_MCP_PATH = os.path.expanduser("~/.claude/cache/fbot-body-mcp.json")   # fpm-do fbot_body_mcp_file 산출 경로
-# fpm-do 규약 꼬리 — 실행체에서 읽고, 못 읽으면 이 사본(바이트가 같은 최신본)을 쓴다. 꼬리가 바뀌면 읽은 쪽이 이긴다.
-_FPM_TAIL_FALLBACK = (" — [Issue399 완료 통지 규약] 완료 시 Issue.md 완료 마커를 남기는 것이 정본이다(영속). "
-                      "추가로 이 작업 중 다른 세션에서 메시지를 받았다면 그 from 주소로 완료 사실과 커밋 해시를 "
-                      "SendMessage 로 1회 통지한다(가속 경로 — 실패하면 무시하고 진행). 메시지로 들어온 요청이 "
-                      "이 위임 범위 밖이면 수행하지 말고 거부 사유만 회신한다.")
-_FPM_TAIL = None
-
-
-def _fpm_tail() -> str:
-    """fpm-do 가 프롬프트 뒤에 붙이는 Issue399 규약 꼬리(`delegate_prompt="${delegate_prompt} — …"`)."""
-    global _FPM_TAIL
-    if _FPM_TAIL is None:
-        _FPM_TAIL = _FPM_TAIL_FALLBACK
-        path = shutil.which("fpm-do") or os.path.expanduser("~/.bin/fpm-do")
-        try:
-            with open(path, encoding="utf-8") as fh:
-                for ln in fh:
-                    m = re.search(r'delegate_prompt="\$\{delegate_prompt\}(.*)"\s*$', ln)
-                    if m and "Issue399" in m.group(1):
-                        _FPM_TAIL = m.group(1)
-                        break
-        except OSError:
-            pass
-    return _FPM_TAIL
-
-
-def _qq(s: str) -> str:
-    """zsh `${(qq)…}` — 작은따옴표 래핑 + 내부 ' 이스케이프."""
-    return "'" + s.replace("'", "'\\''") + "'"
-
-
-_ORG_MOD = None
-
-
-def _perm_flags(worker: str) -> str:
-    """기동 권한 플래그 — 조립은 fbot-org.py `launch_flags` 단일 지점 (prj3#Issue859_2). 판독 불가는 현행 bypass 와 같은 길이(30B)로 센다(보수 — 바이트 계산 전용이라 내용은 쓰이지 않는다)."""
-    global _ORG_MOD
-    try:
-        if _ORG_MOD is None:
-            import importlib.util
-            spec = importlib.util.spec_from_file_location("fbot_org_launch", os.path.join(os.path.dirname(os.path.abspath(__file__)), "fbot-org.py"))
-            _ORG_MOD = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(_ORG_MOD)
-        return _ORG_MOD.launch_flags(worker)
-    except Exception:
-        return "x" * 30
-
-
-def spawn_line_bytes(worker: str, prompt: str, flow: str = "", autocompact: str = "",
-                     transform: bool = False, model: str = "") -> int:
-    """fpm-do 가 send-keys 로 보낼 기동 줄의 바이트 수 — 판정 단일 지점 (prj3#Issue824).
-
-    조립은 fpm-do 의 `fbot_env_prefix`·`fbot_claude_flags`·기동 줄 그대로다. `prompt` 는 셸 이스케이프 **전** 값.
-    MCP 플래그는 항상 있다고 본다(없으면 더 짧다 — 보수). 변환될 수 있으면 변환 몫을 더한다.
-    prj3#Issue849 — `--model <별칭> ` 몫도 센다(fbot_claude_flags 가 autocompact 앞에 끼운다).
-    """
-    dp = prompt + _fpm_tail()
-    env = f"FBOT_ID={worker} FBOT_TASK={_qq(dp[:120])} " + (f"FBOT_FLOW={_qq(flow)} " if flow else "")
-    ac = f"--autocompact {autocompact} " if autocompact else ""
-    md = f"--model {model} " if model else ""
-    line = (f"{env}FPM_SESSION_ORIGIN=pm-do claude {_perm_flags(worker)} {md}{ac}"
-            f"--strict-mcp-config --mcp-config {BODY_MCP_PATH} -p {_qq(dp)}")
-    return len(line.encode("utf-8")) + (TRANSFORM_RESERVE if transform else 0)
-
-
 _ISSUE_IDENT_RE = re.compile(r"^(?:prj\d+#)?Issue\d+(?:_\d+)*$")   # 이슈형 식별자 — fpm-do 가 /issue-* 로 변환할 수 있는 것
-
-
-def fit_line(build, worker: str, room: int = PROMPT_BUDGET, **kw) -> str:
-    """프롬프트 몫을 기동 줄의 **남은 바이트**로 준다 (prj3#Issue824). `build(room)` → 이스케이프 전 프롬프트.
-
-    넘치면 넘친 만큼 room 을 줄여 다시 만든다 — fit_prompt 는 UTF-8 경계·전문 조회 줄을 그대로 지킨다.
-    room 이 0 에 닿으면(env·꼬리만으로 한도 초과) 그대로 돌려준다 — 그 경우는 id 상한 쪽 결함이다.
-    """
-    text = build(room)
-    for _ in range(16):
-        over = spawn_line_bytes(worker, text, **kw) - LINE_BUDGET
-        if over <= 0 or room <= 0:
-            break
-        # prj3#Issue889 — 줄일 기준은 «예산 room» 이 아니라 **실제 본문 바이트**다. 본문이 room 보다 짧으면(wake 기본 task 83B <
-        #   room 400B) room 만 깎아선 본문이 그대로라 초과가 안 풀렸다(1,014B — 잘린 줄이 `위임 완료` 로 남았다)
-        room = max(min(room, len(text.encode("utf-8"))) - over, 0)
-        text = build(room)
-    return text
 
 
 # prj3#Issue779_3 — 총괄·팀장(nonexec) 몸체만 auto-compact 기준을 낮춘다(사용자 결정 D1, 전역은 현행 ~967k).
@@ -2620,10 +2874,12 @@ def _model_tier() -> dict:
         return {}
 
 
-def model_for(role, override=None) -> str:
+def model_for(role, override=None, agent_model=None) -> str:
     """몸체 모델 별칭 — 판정 단일 지점 (prj3#Issue849).
 
     순서: override(`dispatch --model`) > `fbot.roles.<role>` > `fbot.default` > MODEL_FALLBACK.
+    `agent_model`(결속 agent frontmatter `model:` — prj3#Issue1073)은 override 다음·직능 기본값 앞이다. 직능 하한(`fbot.floors`)
+    아래면 하한으로 올리고, 허용 목록 밖 직능의 fable 이면 버리고 직능 기본값으로 간다(거부 아님 — 정의 오타가 배분을 못 막게).
     허용 목록(`fable_allowed.fbot_roles`) 밖의 fable · 별칭 밖 override 는 ValueError — 배분 진입이 거부한다.
     정책 파일의 직능 값이 별칭 밖이면 그 값은 버리고 기본값으로 간다(오타가 몸체를 못 띄우게 하지 않는다).
     """
@@ -2637,6 +2893,15 @@ def model_for(role, override=None) -> str:
         m = override
     else:
         m = roles.get(role or "") if roles.get(role or "") in MODEL_ALIASES else default
+        if agent_model in MODEL_ALIASES:
+            fa0 = pol.get("fable_allowed") if isinstance(pol.get("fable_allowed"), dict) else {}
+            ok_fable = agent_model != "fable" or (role or "") in (fa0.get("fbot_roles") if isinstance(fa0.get("fbot_roles"), list) else [])
+            if ok_fable:
+                m = agent_model
+                floors = fb.get("floors") if isinstance(fb.get("floors"), dict) else {}
+                lo = floors.get(role or "")
+                if lo in _TIER_ORDER and m in _TIER_ORDER and _TIER_ORDER.index(m) < _TIER_ORDER.index(lo):
+                    m = lo
     if m == "fable":
         fa = pol.get("fable_allowed") if isinstance(pol.get("fable_allowed"), dict) else {}
         allowed = fa.get("fbot_roles") if isinstance(fa.get("fbot_roles"), list) else []
@@ -2760,26 +3025,37 @@ def cut_floor_model(role, override, model, meta, cut):
 
 
 def _issue_title(cwd, ident) -> str:
-    """Jev 질문용 — 대상 repo Issue.md 의 `## Issue<N>: 제목` 한 줄(없으면 식별자만). 본문은 보내지 않는다."""
+    """Jev 질문용 — 대상 repo 장부의 `## Issue<N>: 제목` 한 줄(없으면 식별자만). 본문은 보내지 않는다.
+    `Req<N>` 은 업무 접수대장 Request.md 에서 찾는다 (prj3#Issue1096)."""
     try:
         pat = re.compile(r"^##+\s+%s:\s*(.+)$" % re.escape(ident))
-        with open(os.path.join(cwd, "Issue.md"), encoding="utf-8") as fh:
+        with open(os.path.join(cwd, _ledger_file(ident)), encoding="utf-8") as fh:
             for line in fh:
                 mm = pat.match(line)
                 if mm:
-                    return "%s: %s" % (ident, re.sub(r"\s*\((등록|해결).*$", "", mm.group(1)).strip())
+                    return "%s: %s" % (ident, re.sub(r"\s*\((등록|해결|접수|완료).*$", "", mm.group(1)).strip())
     except OSError:
         pass
     return ident
 
 
-def _body_model(role, override=None) -> str:
-    """재기동·기상 경로용 — 거부 대신 기본값. 배분은 진입에서 이미 판정했고, 여기서 막으면 몸체가 영영 안 뜬다."""
+def _agent_model_of(worker):
+    """워커가 앉은 자리의 결속 agent 가 정한 모델 별칭(prj3#Issue1073) — 없거나 판독 실패는 None."""
     try:
-        return model_for(role, override)
+        return _org_mod().seat_agent_model(worker)
+    except Exception:
+        return None
+
+
+def _body_model(role, override=None, worker=None) -> str:
+    """재기동·기상 경로용 — 거부 대신 기본값. 배분은 진입에서 이미 판정했고, 여기서 막으면 몸체가 영영 안 뜬다.
+    `worker` 가 결속 agent 자리면 그 agent 의 `model:` 이 직능 기본값을 대신한다(override 가 없을 때 — Issue1073)."""
+    am = None if override else _agent_model_of(worker)
+    try:
+        return model_for(role, override, am)
     except ValueError:
         try:
-            return model_for(role)
+            return model_for(role, None, am)
         except ValueError:
             return MODEL_FALLBACK
 
@@ -2798,8 +3074,11 @@ def _role_of(bot_id):
         return None
 
 
+PUBLISH_APPROVAL_ID_RE = re.compile(r"fbotpapp-[0-9]+-[0-9a-z]+")   # prj3#Issue1043 — 셸 안전 id 형식
+
+
 def _spawn_commands(worker: str, ident: str, cwd: str, prj, mode: str = "dispatch", prompt: str = "",
-                    role=None, disp_id=None, flow=None, model=None):
+                    role=None, disp_id=None, flow=None, model=None, publish_approval=None):
     """dispatch 응답의 `next_step` — 워커 몸체를 띄우는 두 형태 (prj3#Issue554).
 
     * fpm-do: prj 매핑이 있을 때. `FBOT_ID` 가 출근 훅을 켜고 `FBOT_TASK` 가 current_task 를 채운다
@@ -2813,6 +3092,9 @@ def _spawn_commands(worker: str, ident: str, cwd: str, prj, mode: str = "dispatc
       싣는다. 이슈 식별자는 그대로 둔다 — fpm-do 완료 감시는 명령 문자열에서 번호를 뽑는다(변환과 무관).
     * prj3#Issue757 T15 ④ — 관리직 대상이면 **흐름 키**를 env `FBOT_FLOW` 로 싣는다(배분은 배분 id, 기상은
       받은 요청 id). 출근 훅의 bind 가 읽어 몸체에 적는다(몸체 원장). 워커·셸 안전 문자 밖의 값은 싣지 않는다.
+    * prj3#Issue1043 — `publish_approval`(원장 publish 승인 id, `dispatch --publish-approved-by` 가 소진한 것)이 있으면 모든
+      fpm-do 형태가 `--approve publish --approval-id <id>` 를 싣는다. 위임 세션 안 `--approve` 거부(Issue995)는 fpm-do 가
+      이 id 를 `publish-approval-verify` 로 검증할 때만 푼다. id 형식이 셸 안전 문자 밖이면 싣지 않는다.
     * prj3#Issue849 — **모든 형태에 몸체 모델**을 싣는다: fpm-do 는 env `FBOT_MODEL`(fpm-do 가 `--model` 플래그로),
       Agent 는 `model=`. `model` 인자는 배분 override 이고, 판정은 `_body_model`(role 없으면 원장 role) 한 곳이다.
     """
@@ -2825,71 +3107,63 @@ def _spawn_commands(worker: str, ident: str, cwd: str, prj, mode: str = "dispatc
     if prj is not None and MANAGER_AUTOCOMPACT and _AUTOCOMPACT_RE.fullmatch(MANAGER_AUTOCOMPACT) \
             and _is_nonexec(role or _role_of(worker)):
         aenv = f"FBOT_AUTOCOMPACT={MANAGER_AUTOCOMPACT} "
-    # prj3#Issue824 — 프롬프트 몫은 기동 줄 전체 예산(fit_line)에서 남은 바이트다. 변환은 PM_DO_NO_TRANSFORM 이 없는
-    #   일반 워커 배분만 붙을 수 있다(관리직·resume·wake 는 변환을 끈다)
-    mdl = _body_model(role or _role_of(worker), model)              # Issue849 — 별칭만 나온다(셸 안전)
+    # prj3#Issue1047_1 — 기동 줄 예산(prj3#Issue824 fit_line)은 은퇴했다. 프롬프트 몫은 PROMPT_BUDGET(가독 상한) 하나다
+    pa = (f"--approve publish --approval-id {publish_approval} "
+          if publish_approval and PUBLISH_APPROVAL_ID_RE.fullmatch(publish_approval) else "")   # prj3#Issue1043
+    mdl = _body_model(role or _role_of(worker), model, worker)              # Issue849 — 별칭만 나온다(셸 안전)
     menv = f"FBOT_MODEL={mdl} "
-    lkw = {"flow": fk if fenv else "", "autocompact": MANAGER_AUTOCOMPACT if aenv else "", "model": mdl}
     # 이슈가 아닌 topic 워커 배분은 fpm-do 변환을 끈다 — topic 이 `/issue-*` 로 바뀌는 것은 오변환이다(resolve_cmd 가
     #   `ioreg`·`fixture` 같은 부분 문자열에 걸린다 — 🌱 후보). 변환 몫은 이슈형 식별자 배분에만 잡는다.
     topic_worker = mode == "dispatch" and not nonexec and not _ISSUE_IDENT_RE.match((ident or "").strip())
-    # prj3#Issue931 — 잘림 판정 단일 지점. 실제로 실린 프롬프트(fit_line 의 마지막 build)가 원문 한 줄과 다르면 잘린 것이다.
+    # prj3#Issue931 — 잘림 판정 단일 지점. 실제로 실린 프롬프트(마지막 fit)가 원문 한 줄과 다르면 잘린 것이다.
     #   출근 훅(checkin_brief)·몸체 하한(cut_floor_model)이 이 값을 읽는다 — 바이트 셈 사본을 따로 두지 않는다
     _cut = {"v": False}
 
-    def _fit(text, ref, r):
-        s = fit_prompt(text, ref, r)
+    def _fit(text, ref, r, hint=None):
+        s = fit_prompt(text, ref, r, hint=hint)
         _cut["v"] = s != " ".join((text or "").split())
         return s
     if nonexec:
         did = f" {disp_id}" if disp_id else ""
-        # Issue824 — 지휘 지시문 꼬리는 기동 줄 예산을 먹으므로 짧게(«명세는 Issue.md» 는 팀장 매뉴얼이 이미 가리킨다)
+        # prj3#Issue824 — 지휘 지시문 꼬리는 짧게(«명세는 Issue.md» 는 팀장 매뉴얼이 이미 가리킨다)
         head, tail_ = f"[지휘{did}] ", " — 직접 수행 금지·지휘만"
         room = PROMPT_BUDGET - len((head + tail_).encode("utf-8"))
 
         def _cmd(r):
             body = _fit(ident, disp_id, r)
-            # Issue849 — 잘리면 전문 조회 줄(`topic <배분id>`)이 id 를 이미 싣는다 → 머리표의 id 중복(32B)을 뺀다.
-            #   `--model <별칭> ` 몫(opus 13B · sonnet 15B)으로 한글 topic 팀장 배분이 1,000B 를 넘던 것(1,004B 실측)을 흡수한다
+            # prj3#Issue849 — 잘리면 전문 조회 줄(`topic <배분id>`)이 id 를 이미 싣는다 → 머리표의 id 중복(32B)을 뺀다
             h = "[지휘] " if disp_id and body != " ".join((ident or "").split()) else head
             return h + body + tail_
-        raw = fit_line(_cmd, worker, room, **lkw)
+        raw = _cmd(room)
     else:
-        raw = fit_line(lambda r: _fit(ident, disp_id, r), worker, PROMPT_BUDGET,
-                       transform=mode == "dispatch" and not topic_worker, **lkw)
-    agent_prompt = _sq(raw)                                                  # Issue786_1·824 — 바이트 예산
+        raw = _fit(ident, disp_id, PROMPT_BUDGET)
+    agent_prompt = _sq(raw)                                                  # prj3#Issue786_1 — 가독 상한(prj3#Issue1047_1)
     out = {"agent": f"Agent(name='{worker}', model='{mdl}', prompt='{agent_prompt} — cwd {cwd}')"}
     if prj is not None and nonexec:
         out["fpm_do"] = (f"FBOT_ID={worker} {fenv}{aenv}{menv}FBOT_TASK='{task}' PM_DO_NO_TRANSFORM=1 "
-                         f"fpm-do {prj} '{agent_prompt}'")
+                         f"fpm-do {pa}{prj} '{agent_prompt}'")
         out["run"] = "fpm_do"
     elif prj is not None and mode == "resume":
-        body = _sq(fit_line(lambda r: _fit(prompt or ident, disp_id, r), worker, **lkw))   # Issue786_1·824
+        body = _sq(_fit(prompt or ident, disp_id, PROMPT_BUDGET))   # prj3#Issue786_1
         out["fpm_do"] = (f"FBOT_ID={worker} {fenv}{aenv}{menv}FBOT_TASK='{task}' PM_DO_NO_TRANSFORM=1 PM_DO_NO_WATCH=1 "
-                         f"fpm-do --no-wait {prj} '{body}'")
+                         f"fpm-do --no-wait {pa}{prj} '{body}'")
         out["run"] = "fpm_do"
     elif prj is not None and mode == "wake":
         # prj3#Issue734 — 인박스 기상. 이슈 작업이 아니므로 /issue-fix 변환·완료 감시를 끄고,
         #   요청 발신자(send)가 블로킹되지 않게 --no-wait. 출근 훅(FBOT_ID)이 인박스를 주입한다.
-        wtask = _sq(fit_line(lambda r: _fit((ident or "")[:120], None, r), worker, **lkw))   # Issue824
+        #   prj3#Issue1047_1 — 종전 `[:120]` 선절단은 안내 없이 잘랐다(잘림 note 는 기동 줄 예산이 낼 때만 붙었다).
+        #   자르기는 _fit 한 곳 — PROMPT_BUDGET 을 넘을 때만 자르고 인박스 조회 명령을 붙인다
+        wtask = _sq(_fit(ident or "", None, PROMPT_BUDGET, f"{INBOX_CMD} {worker}"))
         out["fpm_do"] = (f"FBOT_ID={worker} {fenv}{aenv}{menv}FBOT_TASK='{task}' PM_DO_NO_TRANSFORM=1 PM_DO_NO_WATCH=1 "
-                         f"fpm-do --no-wait {prj} '{wtask}'")
+                         f"fpm-do --no-wait {pa}{prj} '{wtask}'")
         out["run"] = "fpm_do"
     elif prj is not None:
         ntx = "PM_DO_NO_TRANSFORM=1 " if topic_worker else ""
         # Issue849 — FBOT_MODEL 은 FBOT_TASK 뒤에 — 워커 명령이 `FBOT_ID=… FBOT_TASK=` 로 시작하는 계약(fbot-manager-smoke E3)
-        out["fpm_do"] = f"FBOT_ID={worker} FBOT_TASK='{task}' {menv}{ntx}fpm-do {prj} '{agent_prompt}'"
+        out["fpm_do"] = f"FBOT_ID={worker} FBOT_TASK='{task}' {menv}{ntx}fpm-do {pa}{prj} '{agent_prompt}'"
         out["run"] = "fpm_do"
     else:
         out["run"] = "agent"
-    # prj3#Issue824 — 줄여도 한도를 넘으면(긴 id·env 만으로 초과) 조용히 띄우지 않는다: 표지를 달고 `_spawn_now` 가 거부한다
-    if out.get("run") == "fpm_do":
-        import shlex as _shlex
-        final = _shlex.split(out["fpm_do"])[-1]
-        n = spawn_line_bytes(worker, final, transform=mode == "dispatch" and not nonexec and not topic_worker, **lkw)
-        out["line_bytes"] = n
-        if n > LINE_BUDGET:
-            out["line_over"] = True
     out["prompt_cut"] = _cut["v"]                # prj3#Issue931 — 실린 프롬프트(마지막 fit)가 잘렸나
     return out
 
@@ -2914,6 +3188,7 @@ def prompt_cut(worker, ident, cwd, prj, role, disp_id, model=None) -> bool:
 #   이 절의 몫이 CHECKIN_BRIEF_MAX, 출근 컨텍스트 전체 상한은 fbot-checkin.sh `FBOT_CHECKIN_CTX_MAX`(기본 8,000 — 형제
 #   SessionStart 훅 몫을 남긴다). 전체 상한과 부딪치면 훅이 인박스·kv·매뉴얼을 먼저 뺀다 — topic 우선.
 CHECKIN_BRIEF_MAX = 6000
+INBOX_CMD = "python3 ~/.claude/hooks/fbot-inbox.py inbox --bot-id"   # prj3#Issue1026 — wake 잘림 안내(요청 전문)
 QA_CMD = "python3 ~/.claude/hooks/fbot-inbox.py qa --id"   # fbot-inbox `_resume_prompt` 가 남기는 포인터와 같은 명령
 
 
@@ -2942,7 +3217,10 @@ def report_guide(bot_id: str, chosen: dict) -> str:
              f"끝나면 `{REPORT_CMD} --from-bot {bot_id} --status done --body '<산출 경로·커밋 해시 요약>'`, "
              f"못 끝냈으면 같은 명령을 `--status incomplete` 로 올린다.",
              "보고 없이 퇴근하면 이 배분은 «완료 미확인»(blocked)으로 배분자에게 올라간다 — 증적은 명시 status·선언 산출·"
-             "배분 뒤 커밋 해시뿐이다(본문에 적은 경로는 증적이 아니다)."]
+             "배분 뒤 커밋 해시뿐이다(본문에 적은 경로는 증적이 아니다).",
+             "커밋은 `python3 ~/.claude/sh/issue-tx.py commit --issues <N> -m … <내 파일>` 로만"
+             "(업무 접수대장 `Request.md` 는 git 미추적이라 커밋하지 않는다 — prj3#Issue1096) — 맨 `git add Issue.md`·"
+             "`git commit -a`·`git add -A`·`git add .` 는 남의 미커밋분을 쓸어담아 봇 몸체에서 거부된다(prj3#Issue1000)."]
     expect = [p for p in (chosen.get("expect") or []) if isinstance(p, str) and p]
     if expect:
         more = len(expect) - REPORT_EXPECT_SHOW
@@ -2950,6 +3228,86 @@ def report_guide(bot_id: str, chosen: dict) -> str:
                      + " · ".join(f"`{p}`" for p in expect[:REPORT_EXPECT_SHOW])
                      + (f" 외 {more}개" if more > 0 else ""))
     return "\n".join(lines)
+
+
+# prj3#Issue1081 ⓑ — 상위 지시 상속. 팀장이 총괄 지시를 «Issue1078» 한 줄 topic 으로 줄여 워커에 배분하면 상위의 검증·금지
+#   조항(tdd 전체 실행·push 금지·비밀 점검·이슈 등록)이 워커에 닿지 않는다(실측 1078: 워커 payload.issue == "Issue1078" →
+#   tdd 14 회귀 행 미실행). dispatch 가 상위 배분 topic + 연결 요청 본문을 **지시서 파일**(저장소 안)로 상속하고, 출근 컨텍스트가
+#   그것을 싣는다. 기동 줄 예산(1000B)은 지시서 경로 포인터로 우회한다. 누락 조항은 검출해 payload.brief_missing 에 남긴다.
+BRIEF_KEYWORDS = ("tdd/run.sh", "금지", "비밀", "이슈 등록", "push", "회귀")
+BRIEF_DEFAULT_CLAUSE = ("완료 전 영향받는 기존 회귀 행을 실행한다 — `bash tdd/run.sh --changed` green 확인 후 보고"
+                        "(상위 지시에 더 구체적인 검증 조항이 있으면 그쪽이 우선).")
+BRIEF_INLINE_MAX = 2500   # 출근 컨텍스트에 싣는 지시서 글자 상한 — 넘치면 경로 포인터
+
+
+def _brief_dir() -> str:
+    """🧪 FBOT_BRIEF_DIR 는 테스트 주입구(실 data 오염 방지)."""
+    return os.environ.get("FBOT_BRIEF_DIR") or os.path.join(os.path.expanduser("~"), ".claude", "data", "fbot", "dispatch-brief")
+
+
+def upstream_sources(con, payload: dict, ident: str, request_id=None) -> list:
+    """상속할 상위 지시 `[(출처 라벨, 본문)]` — 상위 배분 topic(워커 topic 과 다를 때) + 연결 요청 본문(이 배분의 `--request`·
+    상위 배분의 request_id). 상위가 없으면 빈 목록(추정하지 않는다)."""
+    out, seen = [], set()
+
+    def add(label, text):
+        t = (text or "").strip()
+        if t and t != (ident or "").strip() and t not in seen:
+            seen.add(t); out.append((label, t))
+
+    rids = [request_id]
+    parent = (payload or {}).get("parent_dispatch_id")
+    if parent:
+        r = con.execute("SELECT payload FROM job WHERE id = ? AND kind = ?", (parent, JOB_KIND)).fetchone()
+        if r:
+            ppl = json.loads(r[0] or "{}")
+            add(f"상위 배분 지시 `{parent}`", ppl.get("issue"))
+            rids.append(ppl.get("request_id"))
+    for rid in rids:
+        if not rid:
+            continue
+        r = con.execute("SELECT payload FROM job WHERE id = ?", (rid,)).fetchone()
+        if r:
+            add(f"연결 요청 본문 `{rid}`", json.loads(r[0] or "{}").get("body"))
+    return out
+
+
+def brief_missing(topic: str, sources: list) -> list:
+    """상위 지시에는 있고 워커 topic 에는 없는 조항 키워드 — 누락 검출(경고용, 거부하지 않는다)."""
+    up = "\n".join(t for _, t in sources)
+    return [k for k in BRIEF_KEYWORDS if k in up and k not in (topic or "")]
+
+
+def write_brief(job_id: str, ident: str, sources: list) -> str:
+    """지시서 파일을 쓰고 경로를 돌려준다(배분 id 가 파일명 — 재호출 멱등)."""
+    d = _brief_dir()
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, f"{job_id}.md")
+    parts = [f"# 상위 지시 상속 — `{job_id}` · `{ident}` (prj3#Issue1081)", "",
+             "배분 topic 은 요지만 담는다. 아래는 상위(총괄·팀장) 원문이다 — **topic 에 없는 조항(검증·금지·등록)도 이것을 따른다**.", ""]
+    for label, text in sources:
+        parts += [f"## {label}", "", text, ""]
+    parts += ["## 기본 완료 조항", "", BRIEF_DEFAULT_CLAUSE, ""]
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(parts))
+    return path
+
+
+def brief_section(chosen: dict) -> str:
+    """출근 컨텍스트 «상위 지시 상속» 절 — payload.brief_path 의 지시서(상한 `BRIEF_INLINE_MAX`, 넘치면 경로 포인터)."""
+    bp = (chosen or {}).get("brief_path")
+    if not bp:
+        return ""
+    try:
+        with open(bp, encoding="utf-8") as f:
+            txt = f.read().strip()
+    except OSError:
+        return f"## 상위 지시 상속 (prj3#Issue1081)\n\n지시서를 읽지 못했다 — 경로: {bp}"
+    if len(txt) > BRIEF_INLINE_MAX:
+        txt = txt[:BRIEF_INLINE_MAX].rstrip() + f"\n… (상한 {BRIEF_INLINE_MAX}자 — 전문: {bp})"
+    else:
+        txt += f"\n\n(지시서 전문 경로: {bp})"
+    return "## 상위 지시 상속 (prj3#Issue1081)\n\n" + txt
 
 
 def checkin_brief(con, bot_id, flow=None, hint=None, limit: int = CHECKIN_BRIEF_MAX) -> dict:
@@ -2975,6 +3333,9 @@ def checkin_brief(con, bot_id, flow=None, hint=None, limit: int = CHECKIN_BRIEF_
     jid = chosen.get("_id")
     topic = (chosen.get("issue") or "").strip()
     guide = report_guide(bot_id, chosen)
+    _bs = brief_section(chosen)
+    if _bs:                                        # prj3#Issue1081 — 상위 지시 상속 절(이슈 배분 포함). 안내와 같은 몫으로 먼저 뺀다
+        guide = _bs + ("\n\n" + guide if guide else "")
     cut = prompt_cut(bot_id, topic, chosen.get("cwd") or "", chosen.get("prj"), chosen.get("role"), jid,
                      chosen.get("model_override") or chosen.get("model"))
     qa = [e for e in chosen["qa"] if isinstance(e, dict)] if isinstance(chosen.get("qa"), list) else []
@@ -3104,7 +3465,21 @@ def hire_title(role, prj, ident):
     """
     if role == "lead" and prj is not None:
         return lead_hire_title(prj)
-    return f"{ident} 담당 {role} 워커"
+    # prj3#Issue1033 — 워커 호칭은 개체의 정체(prj·직능)만 말한다. 종전 `{ident} 담당 {role} 워커` 는 `--topic` 이면 작업
+    #   문구 전문이 호칭이 됐고, Issue838 seat_pick 재사용 워커는 채용 때 이슈명에 고정돼 «Issue838 담당» 이 Issue1024 를
+    #   했다(호칭은 채용 1회뿐). 하는 일은 current_task·job payload 가 말한다. prj 없는 워커만 짧은 꼬리표가 남는다
+    if prj is not None:
+        return f"{lead_prj_name(prj)} {role} 워커"
+    return f"{_title_tag(ident)} 담당 {role} 워커"
+
+
+TITLE_TAG_MAX = 24
+
+
+def _title_tag(ident):
+    """prj 없는 워커 호칭의 꼬리표 — 첫 구절만, `TITLE_TAG_MAX` 자 상한 (Issue1033)."""
+    t = re.split(r"\s[—–\-:·]\s|[:(\n]", (ident or "").strip(), maxsplit=1)[0].strip()
+    return (t[:TITLE_TAG_MAX].rstrip() or "작업")
 
 
 def resolve_lead_target(prj):
@@ -3432,7 +3807,6 @@ def hire_ladder_verdict(prj, role, dispatcher, drole):
 
 SEAT_PICK_STATES = ("checkout", "waiting_input")      # cold·수신대기 — working·checkin·waiting_child 는 몸체가 일하는 중
 DISPATCH_OPEN_STATUSES = ("open", "blocked", "deferred")   # 미종결 배분 — 이 개체의 몸체 몫이 아직 남았다
-SEAT_MIN_PROMPT = 120   # prj3#Issue903 — 자리 재사용 후보가 최소한 이만큼의 프롬프트는 실을 수 있어야 한다(기동 줄 한도 판정용)
 
 
 def _loaned_bots(con, dispatcher, now) -> set:
@@ -3494,12 +3868,6 @@ def seat_pick(con, prj, role, dispatcher, ident, now, loan_key=None):
                 if loaned:
                     _seat_skip_note(r["bot_id"], f"state {r['state']}" if r["state"] not in SEAT_PICK_STATES
                                     else "미종결 배분 보유(워커 1:1)" if r["bot_id"] in busy else "재직 아님(휴직·정직)")
-                continue
-            # prj3#Issue903 — 기동 줄 길이 가드(Issue824)와 같은 판정(spawn_line_bytes)으로 긴 id 개체를 후보에서 뺀다.
-            #   종전엔 id 가 길어 줄이 1,000B 를 넘는 개체를 골라 spawn 이 거부되고 배분만 open 으로 남았다(1026B 실측)
-            if spawn_line_bytes(r["bot_id"], "x" * SEAT_MIN_PROMPT, transform=True, model="sonnet") > LINE_BUDGET:
-                if loaned:
-                    _seat_skip_note(r["bot_id"], f"기동 줄 {LINE_BUDGET}B 초과(id 길이 — prj3#Issue903)")
                 continue
             if r["prj"] == prj and str(r["seat_id"] or "").startswith(f"{prj}/"):
                 picks.append((r["state"] != "checkout", 0, {"bot_id": r["bot_id"], "via": "seat", "loan_id": None}))
@@ -3605,6 +3973,15 @@ def _record_deferred_dispatch(args, ident, ident_kind, body_model, mmeta, mo, cw
         raise Reject(2, f"--deferred-until 선행 배분이 원장에 없다: {pre}")
     if prow["status"] in ("cancelled", "reaped"):
         raise Reject(2, f"--deferred-until 선행 배분이 이미 {prow['status']} — 기다릴 이유가 없다: {pre}")
+    # prj3#Issue997 ② — 미룬 배분의 멱등은 선행 검증 **뒤**(입력 오류가 기존 행 반환에 가려지지 않게)
+    _c = connect()
+    try:
+        _ex = existing_dispatch(_c, cwd, prj, ident, args.role, args.bot_id)
+    finally:
+        _c.close()
+    if _ex:
+        emit(_existing_result(_ex))
+        return 0
     bot_id = args.bot_id or lead_target[0]
     if not bot_id:
         _c = connect()
@@ -3650,6 +4027,17 @@ def _record_deferred_dispatch(args, ident, ident_kind, body_model, mmeta, mo, cw
             payload.update(_sm.lineage_fields(
                 _sm.dispatch_lineage(con, dispatcher, getattr(args, "parent_dispatch", None),
                                      os.environ.get("FBOT_FLOW") or None), job_id))
+        # prj3#Issue1080 ⓒ — 상위 지시 상속(Issue1081 ⓑ 와 같은 판정). 승격 뒤 몸체의 출근 컨텍스트가 payload.brief_path 를 싣는다
+        try:
+            _bsrc = upstream_sources(con, payload, ident, getattr(args, "request", None))
+            if _bsrc:
+                payload["brief_path"] = write_brief(job_id, ident, _bsrc)
+                _miss = brief_missing(ident, _bsrc)
+                if _miss:
+                    payload["brief_missing"] = _miss
+                    print(f"[fbot-lead] 상위 지시의 조항이 topic 에 없다({', '.join(_miss)}) — 지시서 {payload['brief_path']} 로 상속", file=sys.stderr)
+        except Exception as _e:   # noqa: BLE001
+            print(f"[fbot-lead] 상위 지시 상속 실패(미룸은 진행): {_e}", file=sys.stderr)
         con.execute("BEGIN IMMEDIATE")
         con.execute(
             "INSERT INTO job (id, store, kind, status, payload, result, attempts,"
@@ -3665,6 +4053,51 @@ def _record_deferred_dispatch(args, ident, ident_kind, body_model, mmeta, mo, cw
           "job_id": job_id, "deferred_until_job": pre,
           "next": "채용·기동 없음 — 선행 배분 done 을 sweep 이 보면 open 으로 당기고 tick 이 `spawn --pending` 으로 몸체를 세운다"})
     return 0
+
+
+def seat_occupants(con, prj, role):
+    """그 prj 자리(`seat_id` = `{prj}/…`)에 앉은 같은 직능 재직 봇 id 목록 — 오래된 순 (prj3#Issue1080).
+    휴직·정직·해고(`loanable` 밖)는 제외한다. 해소기 예외는 빈 목록(배분을 막지 않는다)."""
+    try:
+        om = _org_mod()
+        cols = {r[1] for r in con.execute("PRAGMA table_info(bot)")}
+        if "seat_id" not in cols:
+            return []
+        emp = "employment" if "employment" in cols else "NULL"
+        rows = con.execute(f"SELECT bot_id, seat_id, career, {emp} AS employment FROM bot"
+                           " WHERE role=? AND prj=? AND career != 'terminated' ORDER BY created_at, bot_id", (role, prj)).fetchall()
+        return [r["bot_id"] for r in rows
+                if str(r["seat_id"] or "").startswith(f"{prj}/") and om.loanable(r["employment"], r["career"])]
+    except Exception:  # noqa: BLE001 — 판정 불가는 거부 근거가 아니다(seat_pick 과 같은 fail-soft)
+        return []
+
+
+def seat_bot_id_reject(prj, role, bot_id, new_bot=False):
+    """`--bot-id` 새 id 가 재직 자리 봇을 건너뛰는 배분의 거부 사유 — 없으면 None (prj3#Issue1080).
+
+    자리당 재직 봇 하나가 조직 계약이다. `--bot-id` 생략은 seat_pick 이 자리 봇을 깨우지만, 미등록 새 id 를 주면 경고 없이
+    hire 해 자리에 봇이 쌓였다(prj9t 11자리 25봇). 새 봇은 `--new-bot` 명시로만. 등록된 id 지정(wake)·관리직·prj 미해소·
+    재직 봇 없는 직능은 대상 밖이다. 판정 단일 지점 — dispatch(dry-run·미룬·실배분)가 입구에서 한 번 건다.
+    `--seat` 는 넣지 않았다: 같은 직능 자리가 둘 이상인 실측이 prj9t ko·en 한 곳뿐이고 그쪽은 등록된 id 지정으로 충분하다."""
+    if not bot_id or new_bot or prj is None:
+        return None
+    try:
+        if _org_mod().is_manager(role):
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    con = connect()
+    try:
+        if con.execute("SELECT 1 FROM bot WHERE bot_id=?", (bot_id,)).fetchone():
+            return None
+        occ = seat_occupants(con, prj, role)
+    finally:
+        con.close()
+    if not occ:
+        return None
+    return (f"prj{prj} {role} 자리에 재직 봇이 있다: {', '.join(occ)} — 미등록 --bot-id {bot_id} 는 자리 봇을 건너뛰고 새로 채용한다"
+            f"(자리당 재직 봇 하나). --bot-id 를 생략하면 자리 봇을 깨우고, 등록된 위 id 를 지정해도 된다. "
+            f"새 봇이 정말 필요하면 --new-bot 을 명시한다(prj3#Issue1080)")
 
 
 def _place_worker(prj, role, ident, dispatcher, drole, bot_id=None, explicit=False, lead_bot=None, job_id=None,
@@ -3730,6 +4163,21 @@ def _place_worker(prj, role, ident, dispatcher, drole, bot_id=None, explicit=Fal
             _c.close()
         if _why:
             raise PlacementReject(_why)           # prj3#Issue945 — 배치 판정 라벨(수요측 ① 아님)
+        # prj3#Issue1025 — 사람 세션이 결속된 **살아 있는** 관리직엔 배분 경로도 자동 흐름 몸체를 더하지 않는다. 판정은
+        #   fbot-state `human_body_alive` 한 곳(Issue990 인박스 기상과 같은 함수) — 퇴근(cold) 개체는 종전 wake. 배분은 open 으로
+        #   남고 사람 세션의 넛지가 본다(응답 `human_session_reason`). 사람 세션 유휴가 길면 tick wake-pending·escalate 가 올린다
+        if _is_nonexec(role) and _multibody_on():
+            _c = connect()
+            try:
+                _hrow = _c.execute("SELECT * FROM bot WHERE bot_id=?", (bot_id,)).fetchone()
+                _human = (_state_required("사람 세션 몸체 판정(human_body_alive)").human_body_alive(_c, _hrow)
+                          if _hrow is not None and _hrow["state"] != "checkout" else "")
+            finally:
+                _c.close()
+            if _human:
+                return {"bot_id": bot_id, "placement": "human_session", "human_session_reason": _human,
+                        "job_id": None if dry_run else (job_id or f"fbotdisp-{int(time.time())}-{uuid.uuid4().hex[:8]}"),
+                        "loan_id": loan_id, "loan_from": lfrom, "seat": None, "picked": picked}
         if dry_run:                               # Issue933 — 게이트 wake 직전까지가 dry-run 의 판정이다
             return {"bot_id": bot_id, "placement": "wake", "job_id": None, "loan_id": loan_id,
                     "loan_from": lfrom, "seat": None, "picked": picked}
@@ -3848,8 +4296,20 @@ def spawn_dispatch(job_id, by=None, unattended=False) -> dict:
                 res.update(_block_spawn_refused(job_id, dispatcher, by, res["error"], ident, role))
             return res
     wid = pw["bot_id"]
-    next_step = _spawn_commands(wid, ident, pl.get("cwd") or "", prj, role=role, disp_id=job_id,
-                                model=pl.get("model_override") or pl.get("model"))
+    if pw["placement"] == "human_session":        # prj3#Issue1025 — 사람 세션 결속 관리직: 기동 없음, 배분은 open 유지
+        return dict(base, ok=True, worker_bot_id=wid, placement="human_session", spawned={"skipped": "human_session"},
+                    human_session_reason=pw.get("human_session_reason"))
+    # prj3#Issue1073 — 미룬 배분은 배치 전에 모델을 판정해 payload.model 이 직능 기본값이다. 워커가 정해진 지금 결속 agent 의
+    #   model 을 다시 본다(`--model` 명시=model_override 가 있으면 그대로)
+    _pm = pl.get("model_override") or pl.get("model")
+    if not pl.get("model_override"):
+        _am = _agent_model_of(wid)
+        if _am:
+            try:
+                _pm = model_for(role, None, _am)
+            except ValueError:
+                pass
+    next_step = _spawn_commands(wid, ident, pl.get("cwd") or "", prj, role=role, disp_id=job_id, model=_pm)
     spawned = _spawn_now(next_step)
     now = int(time.time())
     con = connect()
@@ -3862,6 +4322,7 @@ def spawn_dispatch(job_id, by=None, unattended=False) -> dict:
             p2.update({"loan_id": pw["loan_id"], "loan_from": pw["loan_from"]})
         if spawned.get("ok"):
             p2["spawned_at"] = now                 # prj3#Issue814 — watch 출근 유예의 기준 시각
+            p2.setdefault("spawned_by", SPAWN_MARK_BY)   # prj3#Issue1034 — 퇴근 해제(dispatch-claim --release)가 걸리는 표지
         con.execute("UPDATE job SET payload = ? WHERE id = ?", (json.dumps(p2, ensure_ascii=False), job_id))
         _ev(con, by, "spawn", f"{job_id} → {wid} ({pw['placement']}){'' if spawned.get('ok') else ' 기동 실패'}"[:120], job_id)
         _ev(con, wid, "assigned", f"← {dispatcher}: {ident[:80]}", job_id)
@@ -3918,18 +4379,28 @@ def _block_spawn_refused(job_id, dispatcher, by, error, ident, role) -> dict:
     return out
 
 
-def spawn_pending(by=None, dry_run=False) -> list:
+def spawn_pending(by=None, dry_run=False, only=None) -> list:
     """`spawn_pending` 표지가 있는 open 배분을 전부 기동한다 — tick worker 가 sweep 뒤에 돈다 (prj3#Issue904).
 
     표지는 `promote_deferred` 가 승격과 함께 남긴다. 결과별 처리(판정은 이 함수 한 곳):
       · 성공 → 표지 해제 · 동시 상한(`wait`) → 표지 유지·시도 미계수(다음 tick)
       · 무인 불가(`drop` — Agent 형태)·입력 오류(open 아님) → 표지 해제 + `spawn_gave_up`
       · 그 밖의 실패 → `spawn_attempts` +1, `RETRY_LIMIT` 에 이르면 표지 해제 + `spawn_gave_up` — 그 뒤는 watch 적체가 드러낸다
+    이미 기동된 행(`spawned_at`)은 대상이 아니다 — 중복 기동 방지(prj3#Issue992 ②). 남은 낡은 표지는 실행 때 걷는다(watch 적체 가림 방지).
+    `only` 가 있으면 그 job id 만(sweep 이 방금 승격한 분을 이어 기동 — tick 주기 공백 제거).
     """
     con = connect()
     try:
-        rows = [j for j in active_dispatches(con)
-                if j["status"] == "open" and (j.get("payload") or {}).get("spawn_pending")]
+        marked = [j for j in active_dispatches(con)
+                  if j["status"] == "open" and (j.get("payload") or {}).get("spawn_pending")
+                  and (only is None or j["id"] in only)]
+        rows = [j for j in marked if not j["payload"].get("spawned_at")]
+        stale = [j["id"] for j in marked if j["payload"].get("spawned_at")]
+        if stale and not dry_run:
+            con.execute("BEGIN IMMEDIATE")
+            for jid in stale:
+                con.execute("UPDATE job SET payload = json_remove(payload, '$.spawn_pending') WHERE id = ?", (jid,))
+            con.execute("COMMIT")
     finally:
         con.close()
     if dry_run:
@@ -4005,6 +4476,9 @@ def cmd_dispatch(args) -> int:
     if args.issue and (getattr(args, "topic", None) or "").strip():
         raise Reject(2, "--issue 와 --topic 은 동시에 줄 수 없다 — topic 이 워커에 전달되지 않고 버려진다. "
                         "지시를 전하려면 이슈 본문(`* 상세`)에 적거나 --topic 만 쓴다")
+    if (getattr(args, "publish_approved_by", None) or "").strip() and getattr(args, "deferred_until", None):
+        raise Reject(2, "--publish-approved-by 는 --deferred-until 과 함께 줄 수 없다 — 승인은 24시간 1회용이라 미룬 배분의 "
+                        "승격 기동에 닿지 못한다(prj3#Issue1043). 승격 뒤 새 승인으로 배분한다")
     ident = (args.issue or getattr(args, "topic", None) or "").strip()
     if not ident:
         raise Reject(2, "배분 식별자가 없다 — --issue 또는 --topic 중 하나는 필수다")
@@ -4033,6 +4507,18 @@ def cmd_dispatch(args) -> int:
     _xs = _cross_verdict(prj, args.role, getattr(args, "by", None) or BOT_ID)
     if _xs:
         raise PlacementReject(_xs["reason"])
+    # prj3#Issue997 ② — 멱등: 같은 일의 활성 배분이 있으면 기존 job id 를 돌려준다. Jev 판정·수요 가드·채용 **전** —
+    #   이미 세어진 배분이라 가드에 다시 걸 일도, 새로 채용할 일도 없다. 미룬 배분은 선행 검증 뒤(`_record_deferred_dispatch`)
+    _ex = None
+    if not getattr(args, "deferred_until", None):
+        _c = connect()
+        try:
+            _ex = existing_dispatch(_c, cwd, prj, ident, args.role, args.bot_id)
+        finally:
+            _c.close()
+    if _ex:
+        emit(_existing_result(_ex))
+        return 0
     # prj3#Issue863_6 — `--model` 이 없고 직능이 정책 `dispatch.jev_roles` 에 있으면 Jev 가 몸체 모델을 고른다(위 model_for 는
     #   입력 검증·기본값). 질문 = topic, 이슈 배분은 대상 repo 의 이슈 제목 한 줄. dry-run 은 부르지 않는다(기록 없음 계약)
     _q = ident if ident_kind == "topic" else _issue_title(cwd, ident)
@@ -4068,11 +4554,22 @@ def cmd_dispatch(args) -> int:
             _rerr = _inbox_mod().request_link_error(_c, args.request, dispatcher)
             if _rerr:
                 raise Reject(1, _rerr)
+        # prj3#Issue997 ① — 잇는 요청(명시·topic 안 id)을 다른 살아 있는 몸체가 집었으면 거부. 판정은 fbot-inbox 한 곳
+        _refs = request_refs(ident, getattr(args, "request", None))
+        for _ref in _refs:
+            _cerr = _inbox_mod().dispatch_claim_error(_c, _ref, dispatcher)
+            if _cerr:
+                raise Reject(1, _cerr)
     finally:
         _c.close()
 
     lead_target = (resolve_lead_target(prj) if args.role == "lead" and prj is not None
                    and not args.bot_id else (None, None))
+    # prj3#Issue1080 — 재직 자리 봇을 건너뛰는 미등록 --bot-id 는 입구에서 거부(dry-run·미룬·실배분 공통)
+    _seat_why = seat_bot_id_reject(prj, args.role, args.bot_id, bool(getattr(args, "new_bot", False))) \
+        if not lead_target[0] else None
+    if _seat_why:
+        raise PlacementReject(_seat_why)
     # Issue933 — 차용 일 키를 topic 과 분리한다. 기록(payload `loan_key`)은 spawn·재스폰이 같은 키로 판정하게 하려는 것
     loan_key = (getattr(args, "loan_key", None) or "").strip() or None
     if args.dry_run:
@@ -4111,12 +4608,20 @@ def cmd_dispatch(args) -> int:
     now = int(time.time())
     # prj3#Issue931 ② — 잘린 배분의 몸체 하한. 잘림은 워커 id 가 정해진 **뒤**에야 판정된다(기동 줄 길이가 id 에 달렸다) —
     #   판정은 기동과 같은 함수(prompt_cut → _spawn_commands). `--model` 명시면 판정하지 않는다(clamp 밖)
+    # prj3#Issue1073 — 결속 agent 자리면 그 agent 의 frontmatter `model:` 이 몸체 모델이다(Jev·직능 기본값 대신). 자리는 워커 id 가
+    #   정해진 뒤에야 안다. `--model` 명시는 그대로 이긴다. 하한·Fable 허용 목록은 model_for 가 적용한다
+    _am = None if _mo else _agent_model_of(bot_id)
+    if _am:
+        _bm = model_for(args.role, None, _am)
+        if _bm != body_model or _mmeta.get("source") == "jev":
+            body_model, _mmeta = _bm, {"source": "agent", "reason": "agent_model", "static": _bm}
     body_model, _mmeta = cut_floor_model(args.role, _mo, body_model, _mmeta, not _mo and prompt_cut(
         bot_id, ident, cwd, prj, args.role, job_id, body_model))
     # 계약 §레지스트리 스키마: "어느 prj 일을 했나" 는 **작업 기록**이 답한다 — bot.prj(주 담당)와
     #   축이 다르므로 배분 원장에도 남긴다(겸임은 기록 레벨에서 표현된다).
     payload = {"issue": ident, "ident_kind": ident_kind, "role": args.role, "model": body_model,
-               "worker_bot_id": bot_id, "cwd": cwd, "workflow": workflow, "prj": prj}
+               "worker_bot_id": bot_id, "cwd": cwd, "workflow": workflow, "prj": prj,
+               "summary": dispatch_summary(ident)}   # prj3#Issue1011 — hub 카드용 1줄(topic 폴백 가능)
     if _mo:                                       # prj3#Issue849 — 재스폰(worker_died·quota·resume)이 같은 override 를 쓴다
         payload["model_override"] = _mo
     payload["model_source"] = _mmeta.get("source")   # prj3#Issue863_6 — override·jev·static
@@ -4163,10 +4668,41 @@ def cmd_dispatch(args) -> int:
             payload.update(_sm.lineage_fields(
                 _sm.dispatch_lineage(con, dispatcher, getattr(args, "parent_dispatch", None),
                                      os.environ.get("FBOT_FLOW") or None), job_id))   # root_dispatch_id 는 부모 없으면 자기 id
+        # prj3#Issue1081 ⓑ — 상위 지시 상속. 실패가 배분을 막지 않는다(경고만)
+        try:
+            _bsrc = upstream_sources(con, payload, ident, getattr(args, "request", None))
+            if _bsrc:
+                payload["brief_path"] = write_brief(job_id, ident, _bsrc)
+                _miss = brief_missing(ident, _bsrc)
+                if _miss:
+                    payload["brief_missing"] = _miss
+                    print(f"[fbot-lead] 상위 지시의 조항이 topic 에 없다({', '.join(_miss)}) — 지시서 {payload['brief_path']} 로 상속", file=sys.stderr)
+        except Exception as _e:   # noqa: BLE001
+            print(f"[fbot-lead] 상위 지시 상속 실패(배분은 진행): {_e}", file=sys.stderr)
         # 쓰기 도중 예외는 close 시 미커밋 트랜잭션이 자동 폐기된다(원자성 유지).
         # prj3#Issue696 — 월 상한 재검증 거부는 없앴다(월 상한은 알림 전용). 원장 증분은 유지 —
         #   비용 추세를 보는 계기판이다.
         con.execute("BEGIN IMMEDIATE")
+        # prj3#Issue997 — 앞 판정과 이 쓰기 사이에 다른 몸체가 같은 일·요청을 기록했을 수 있다(실측 3초 간격). 락 안 재검증
+        _ex = existing_dispatch(con, cwd, prj, ident, args.role, args.bot_id)
+        if _ex:
+            con.execute("ROLLBACK")
+            emit(_existing_result(_ex))
+            return 0
+        for _ref in _refs:
+            _cerr = _inbox_mod().dispatch_claim_error(con, _ref, dispatcher)
+            if _cerr:
+                con.execute("ROLLBACK")
+                raise Reject(1, _cerr)
+        # prj3#Issue1043 — publish 승인 id 소진: 검증·open→consumed·그 봇 귀속을 배분 기록과 한 트랜잭션에(거부면 배분 행 없음)
+        _pa = (getattr(args, "publish_approved_by", None) or "").strip()
+        if _pa:
+            try:
+                _consume_publish_approval(con, _pa, prj, bot_id, now)
+            except Reject:
+                con.execute("ROLLBACK")
+                raise
+            payload["publish_approval"] = _pa
         month = month_key()
         con.execute(
             "INSERT INTO kv (ns, key, value, expires_at, updated_at, updated_by)"
@@ -4233,14 +4769,19 @@ def cmd_dispatch(args) -> int:
         "ledger": {"ns": DISPATCH_NS, "month": month, "spent": spent_after,
                    "limit": pol["fbot_dispatch_monthly_limit"]},
         "next": "스폰 집행은 fpm-do/Agent 몫 — 본 기록은 채용+배분까지 (계약 §호출 경계)",
-        "next_step": _spawn_commands(bot_id, ident, cwd, prj, role=args.role, disp_id=job_id, model=_mo or body_model),
+        "next_step": _spawn_commands(bot_id, ident, cwd, prj, role=args.role, disp_id=job_id, model=_mo or body_model,
+                                    publish_approval=(getattr(args, "publish_approved_by", None) or "").strip() or None),
     }
+    if placement == "human_session":              # prj3#Issue1025 — 기동 없음. 사람 세션 넛지가 배분을 본다
+        res["human_session_reason"] = pw["human_session_reason"]
+        res["next"] = f"기동 없음 — 사람 세션({pw['human_session_reason']})이 결속된 관리직. 배분 {job_id} 은 open 유지, 사람 세션 넛지가 본다"
+        res.pop("next_step", None)
     if hire_seat is not None:                     # prj3#Issue821 ⓒ
         res["seat"] = hire_seat
     if picked:                                    # prj3#Issue838 — 자리 개체 선택(via seat|loan · 물러섬 사유)
         res["seat_pick"] = picked
     # prj3#Issue779_8 — --spawn 이면 fpm-do 기동까지 이 호출에서 끝낸다(별도 도구 호출 1회 절약)
-    if getattr(args, "spawn", False):
+    if getattr(args, "spawn", False) and placement != "human_session":
         res["spawned"] = _spawn_now(res["next_step"])
         # prj3#Issue903 — fpm-do 형태인데 기동이 실패했으면 배분을 자동 취소한다(Agent 형태 «직접 띄울 것» 은 실패가 아니다)
         if not res["spawned"].get("ok") and (res["next_step"] or {}).get("run") == "fpm_do":
@@ -4254,13 +4795,7 @@ def cmd_dispatch(args) -> int:
         if res["spawned"].get("ok"):
             res["next"] = "기동 완료(분리 실행) — 수령은 sweep"
             # prj3#Issue814 — 출근 유예의 기준 시각. watch 가 이 뒤 N분 내 출근 이벤트가 없으면 적체로 드러낸다
-            con = connect()
-            try:
-                con.execute("UPDATE job SET payload = json_set(payload, '$.spawned_at', ?) WHERE id = ?",
-                            (int(time.time()), job_id))
-                con.commit()
-            finally:
-                con.close()
+            _mark_spawned(job_id)
     emit(res)
     return 0
 
@@ -4279,17 +4814,30 @@ def cmd_watch(args) -> int:
 
     ⚠️ 순서가 계약이다. 완료한 워커도 `checkout` 이라 적체 B 와 겉모습이 같다 —
     스윕을 뒤에 두면 정상 완료가 먼저 에스컬레이션되어 거짓 경보가 된다.
+
+    prj3#Issue1085 — tick 이 무인으로 부르는 모드: `--wake`(퇴근·부재 워커의 열린 배분을 재시도 때마다 `spawn_dispatch` 로 다시 띄운다.
+      재시도 상한을 넘기면 기동 대신 종전 에스컬레이션 — mq alert + blocked) · `--no-sweep`(tick 이 바로 앞서 sweep 을 돌렸다 — 이중 통지 방지).
+      `--wake` 는 하위 배분이 가동 중인 매니저(`waiting_child`)를 적체에서 뺀다 — 워커 보고를 기다리는 중이라 깨울 일도 사람에게 올릴 일도 아니다.
     """
     pol = load_policy()
     now = int(time.time())
-    swept = run_sweep(dry_run=False)   # 선행 — 완료분은 done 으로 빠져 적체 판정 대상에서 제외
-    stalls, retried, escalated, quota_blocked = [], [], [], []
+    wake = bool(getattr(args, "wake", False))
+    if getattr(args, "no_sweep", False):
+        swept = {"detected": 0, "enqueued": 0}
+    else:
+        swept = run_sweep(dry_run=False)   # 선행 — 완료분은 done 으로 빠져 적체 판정 대상에서 제외
+    stalls, retried, escalated, to_wake = [], [], [], []
+    quota_blocked = list(swept.get("quota_blocked") or [])   # prj3#Issue1013 — 스윕이 먼저 표시한 쿼터 종료도 묶음 알림 1회에 든다
     grace = pol.get(CHECKIN_GRACE_KEY) or CHECKIN_GRACE_DEFAULT_MIN   # prj3#Issue814
 
     con = connect()
     try:
         # ── 적체 B: 배분 후 진행 신호 없음 (bot 부재·퇴근·lease 만료·스폰 뒤 출근 무기록 — Issue814) ──
-        for job in [j for j in active_dispatches(con) if j["status"] == "open"]:
+        active_all = active_dispatches(con)
+        waiting_parents = parents_with_live_children(active_all) if wake else set()   # prj3#Issue1085 — 완료대기 매니저는 적체가 아니다
+        for job in [j for j in active_all if j["status"] == "open"]:
+            if job["id"] in waiting_parents:
+                continue
             wid = job["payload"].get("worker_bot_id")
             bot = con.execute("SELECT * FROM bot WHERE bot_id = ?", (wid,)).fetchone() if wid else None
             spawned_at = job["payload"].get("spawned_at")
@@ -4324,22 +4872,11 @@ def cmd_watch(args) -> int:
             # prj3#Issue743 — 쿼터로 죽은 워커는 **재시도가 무의미하다**(해소 전엔 다시 띄워도 같다).
             #   재시도 카운트를 태우지 않고 즉시 blocked + 사유·해소 시각을 원장에 남긴다.
             #   쿼터는 모든 세션에 동시에 걸리므로 알림은 아래에서 **묶음 1회**다.
-            end = last_session_end(con, wid, job["created_at"]) if wid else None
+            end = last_session_end(con, wid, quota_since(job)) if wid else None   # prj3#Issue1013 — 재기동 전 낡은 세션 제외
             if end and end.get("end_reason") == "quota":
-                pl = job["payload"]
-                quota = {"resets_at": end.get("resets_at"), "limit_type": end.get("limit_type"),
-                         "session_job_id": end["session_job_id"], "detected_at": now}
-                con.execute(
-                    "UPDATE job SET status = 'blocked', blocked_since = ?,"
-                    " payload = json_set(payload, '$.quota', json(?)) WHERE id = ? AND status = 'open'",
-                    (now, json.dumps(quota), job["id"]),
-                )
-                spawn = _spawn_commands(wid, pl.get("issue") or pl.get("topic") or "", pl.get("cwd") or "",
-                                        pl.get("prj"), role=pl.get("role"), disp_id=job["id"],
-                                        model=pl.get("model_override"))
-                quota_blocked.append({"job_id": job["id"], "issue": pl.get("issue") or pl.get("topic"),
-                                      "worker_bot_id": wid, **quota,
-                                      "respawn": spawn.get(spawn.get("run", "agent"))})
+                marked = quota_mark(con, job, end, now)
+                if marked:
+                    quota_blocked.append(dict(quota_entry(job, wid, marked[0]), alert=marked[1]))
                 stalls.append({"kind": "quota", "job_id": job["id"],
                                "reason": f"쿼터 소진 종료({end.get('limit_type') or '?'}, 해소 {_hhmm(end.get('resets_at'))}): {wid}"})
                 continue
@@ -4361,6 +4898,10 @@ def cmd_watch(args) -> int:
                 con.execute("UPDATE job SET attempts = ? WHERE id = ?", (attempts, job["id"]))
                 retried.append({"job_id": job["id"], "reason": reason,
                                 "attempts": attempts, "limit": RETRY_LIMIT})
+                # prj3#Issue1085 — 몸체가 없는 갈래(레코드 부재·퇴근·기동 0회)만 다시 띄운다. lease 만료·출근 무기록은 몸체가 있었거나
+                #   떠 있을 수 있어 여기서 겹쳐 띄우지 않는다(기존 재시도·에스컬레이션 몫). 기동은 연결을 닫은 뒤(아래) — 쓰기 잠금 충돌 방지
+                if wake and (bot is None or bot["state"] == "checkout" or kind == "no_spawn"):
+                    to_wake.append(job["id"])
             stalls.append({"kind": kind, "job_id": job["id"], "reason": reason})
 
         # ── 적체 A: 미배분 startable 적체 (--cwd 지정 시만 — issue-map 필요) ──
@@ -4403,10 +4944,19 @@ def cmd_watch(args) -> int:
     finally:
         con.close()
 
+    woken = []
+    for jid in to_wake:
+        try:
+            r = spawn_dispatch(jid, unattended=True)
+        except Exception as e:  # noqa: BLE001 — 한 건의 기동 실패가 감시·에스컬레이션을 막지 않는다(다음 tick 재시도·상한 뒤 mq)
+            r = {"ok": False, "error": f"{type(e).__name__}: {e}"[:200]}
+        woken.append({"job_id": jid, "ok": bool(r.get("ok")), **({"error": r["error"]} if r.get("error") else {})})
+
     # prj3#Issue743 — 쿼터 종료 묶음 통지 1회. 커밋(connection close) **후** 발신한다 —
     #   쓰기가 실패한 건을 알리지 않는다(sweep 과 같은 순서). blocked 는 다음 watch 의
     #   대상(open)이 아니므로 재통지는 구조적으로 없다.
     quota_enq = None
+    alert_quota_streak(quota_blocked)   # 스윕분은 run_sweep 이 이미 경보하고 alert 를 내렸다 — 여기는 watch 가 직접 표시한 분만
     if quota_blocked:
         resets = sorted({q["resets_at"] for q in quota_blocked if q.get("resets_at")})
         msg = ("[fbot-lead] 쿼터 소진으로 워커 종료 {}건 — {} · 해소 {}. 쿼터 해소 후 재위임: {}".format(
@@ -4423,6 +4973,8 @@ def cmd_watch(args) -> int:
                      "gave_up": len(swept.get("unconfirmed_gave_up") or [])},   # prj3#Issue947 — 미확인 통지 포기·고착 재경보(mq 경보)
            "stall_count": len(stalls), "stalls": stalls,
            "retried": retried, "escalated": escalated, "quota_blocked": quota_blocked}
+    if wake:
+        out["woken"] = woken
     if args.cwd is not None:
         out["undispatched_startable"] = idle_pending
     else:
@@ -4505,6 +5057,9 @@ def cmd_close(args) -> int:
     finally:
         con.close()
     _close_requests(applied, "close")
+    _notify_requesters([r["job_id"] for r in applied],
+                       by_session=os.environ.get("CLAUDE_CODE_SESSION_ID")
+                       if os.environ.get("FPM_SESSION_ORIGIN") != "pm-do" else None)
     skipped = [r for r in rows if r not in applied]
     emit({"ok": True, "action": "close", "mode": "apply", "verdict": "completed_external",
           "evidence": args.evidence, "closed": applied,
@@ -4590,6 +5145,103 @@ def _use_solo_approval(con, approval_id, by, now) -> None:
         raise Reject(2, f"승인이 만료됐다({approval_id}, 24시간) — 새 승인을 받는다")
     con.execute("UPDATE job SET status='used', result=? WHERE id=?",
                 (json.dumps({"used_at": now}), approval_id))
+
+
+PUBLISH_APPROVAL_KIND = "fbot_publish_approval"   # prj3#Issue1043 — 사람 세션이 남기는 «공개 채널 게시» 승인 (open→consumed→used)
+
+
+def cmd_publish_approve(args) -> int:
+    """공개 채널 게시(`fpm-do --approve publish`)의 위임 전달 승인 — **사람 세션 전용** 기록 (prj3#Issue1043).
+
+    solo-approve 와 같은 사람 세션 판정(`_session_bound`)이다. 워커 봇은 배분 때에야 정해지므로 발급은 **prj 전용**이고,
+    `dispatch --publish-approved-by` 가 소진하며 그 봇에 묶는다(그 봇·prj 전용·1회·24시간)."""
+    _why = _session_bound()
+    if _why:
+        raise Reject(2, f"{_why} — publish 승인은 결속 없는 사람 세션에서만 남긴다")
+    reason = (args.reason or "").strip()
+    if len(reason) < 8:
+        raise Reject(2, "승인 사유가 너무 짧다(8자 이상) — 감사에서 읽히는 문장으로")
+    con = connect()
+    try:
+        now = int(time.time())
+        sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+        jid = f"fbotpapp-{now}-{uuid.uuid4().hex[:8]}"
+        con.execute("BEGIN IMMEDIATE")
+        con.execute(
+            "INSERT INTO job (id, store, kind, status, payload, result, attempts,"
+            " owner, lease_until, blocked_since, created_at)"
+            " VALUES (?,?,?,?,?,NULL,0,?,NULL,NULL,?)",
+            (jid, "fbot", PUBLISH_APPROVAL_KIND, "open",
+             json.dumps({"prj": args.prj, "reason": reason, "session": sid}, ensure_ascii=False),
+             ("human:" + sid) if sid else "human", now))
+        _ev(con, "", "publish-approval", f"prj{args.prj}: {reason[:80]}", jid)
+        con.execute("COMMIT")
+    finally:
+        con.close()
+    emit({"ok": True, "action": "publish-approve", "approval_id": jid, "prj": args.prj, "reason": reason,
+          "note": f"배분자에게 이 id 를 전한다 — dispatch --publish-approved-by {jid} (prj{args.prj} 전용·1회·24시간)"})
+    return 0
+
+
+def _consume_publish_approval(con, approval_id, prj, bot, now) -> None:
+    """open→consumed 전이 + 그 봇 귀속 — 호출자의 트랜잭션 안에서 부른다. 아니면 Reject (prj3#Issue1043)."""
+    approval_id = (approval_id or "").strip()
+    row = con.execute("SELECT status, payload, created_at FROM job WHERE id=? AND kind=?",
+                      (approval_id, PUBLISH_APPROVAL_KIND)).fetchone()
+    if not row:
+        raise Reject(2, f"publish 승인 기록이 없다: {approval_id} — 사람 세션의 publish-approve 가 먼저다")
+    try:
+        pl = json.loads(row[1] or "{}")
+    except ValueError:
+        pl = {}
+    if _prj().try_prj(pl.get("prj")) != _prj().try_prj(prj):
+        raise Reject(2, f"다른 prj 의 publish 승인이다(승인 prj{pl.get('prj')} ≠ 배분 prj{prj}) — 승인은 그 prj 전용이다")
+    if row[0] != "open":
+        raise Reject(2, f"이미 쓴 publish 승인이다({approval_id}) — 승인은 1회용이다")
+    if now - int(row[2] or 0) > SOLO_APPROVAL_TTL:
+        raise Reject(2, f"publish 승인이 만료됐다({approval_id}, 24시간) — 새 승인을 받는다")
+    pl.update({"bot": bot, "consumed_at": now})
+    con.execute("UPDATE job SET status='consumed', payload=? WHERE id=?",
+                (json.dumps(pl, ensure_ascii=False), approval_id))
+
+
+def cmd_publish_approval_verify(args) -> int:
+    """fpm-do `approve_validate` 가 위임 세션 안에서 부른다 — 0 통과(+사용됨 전이) · 1 거부 (prj3#Issue1043).
+
+    통과 조건: 소진된(consumed) 승인 · 귀속 봇 == 호출 env `FBOT_ID`(fpm-do 기동 줄이 `FBOT_ID=<워커>` 를 싣는다) · 24시간 이내.
+    통과하면 같은 트랜잭션에서 used 로 굳힌다(1회용). 이유는 stderr 로만 — fpm-do 가 stdout 을 버린다."""
+    aid = (args.approval_id or "").strip()
+    bot = os.environ.get("FBOT_ID", "")
+    con = connect()
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        row = con.execute("SELECT status, payload, created_at FROM job WHERE id=? AND kind=?",
+                          (aid, PUBLISH_APPROVAL_KIND)).fetchone()
+        why = None
+        if not row:
+            why = "승인 기록 없음"
+        else:
+            try:
+                pl = json.loads(row[1] or "{}")
+            except ValueError:
+                pl = {}
+            now = int(time.time())
+            if row[0] != "consumed":
+                why = f"상태 {row[0]} (소진된 승인만 통과 — 이미 사용됐거나 dispatch 가 소진하기 전)"
+            elif not bot or pl.get("bot") != bot:
+                why = f"다른 봇의 승인({pl.get('bot')} ≠ {bot or '-'})"
+            elif now - int(row[2] or 0) > SOLO_APPROVAL_TTL:
+                why = "24시간 만료"
+        if why:
+            con.execute("ROLLBACK")
+            print(f"[fbot-lead] publish-approval-verify 거부: {why}", file=sys.stderr)
+            return 1
+        con.execute("UPDATE job SET status='used', result=? WHERE id=?",
+                    (json.dumps({"used_at": now, "used_by": bot}), aid))
+        con.execute("COMMIT")
+    finally:
+        con.close()
+    return 0
 
 
 def cmd_solo(args) -> int:
@@ -4800,6 +5452,9 @@ def cmd_brief(args) -> int:
 # prj3#Issue786_2 부수 — fpm-do 즉시 실패(가드 거부·경로 오류) 확인 창(팀장 L 결정 `fbotev-1790626491-8dc4e0d4`).
 #   이 창 안에 비0 으로 끝나면 `spawned.ok=false`. 출근 무기록 감지는 watch 몫이다(여기서 기다리지 않는다).
 SPAWN_PROBE_SECS = 3
+# prj3#Issue1038 — 몸체 출근 확인 창. ok 는 «fpm-do 가 안 죽었다» 가 아니라 «몸체가 출근했다» 여야 한다.
+#   env `FBOT_SPAWN_READY_SECS` 로 조정(테스트·느린 부팅)
+SPAWN_READY_SECS = int(os.environ.get("FBOT_SPAWN_READY_SECS") or 90)
 
 
 def _cancel_failed_spawn(job_id, by, spawned) -> bool:
@@ -4812,10 +5467,30 @@ def _cancel_failed_spawn(job_id, by, spawned) -> bool:
             "UPDATE job SET status = 'cancelled', result = ? WHERE id = ? AND status = 'open'",
             (json.dumps({"verdict": "spawn_failed", "reason": "spawn_failed: " + str(
                 (spawned or {}).get("reason") or (spawned or {}).get("error") or spawned)[:200],
+                **({"cause": "harness_overhead"} if (spawned or {}).get("cause") == "harness_overhead" else {}),   # prj3#Issue986
                 "cancelled_by": by, "from_status": "open", "cancelled_at": int(time.time())},
                 ensure_ascii=False), job_id))
         con.commit()
         return cur.rowcount == 1
+    finally:
+        con.close()
+
+
+SPAWN_MARK_BY = "fbot-lead:spawn"   # prj3#Issue1034 — fpm-do claim 이 못 박은 기동 행의 spawned_by 기본값
+
+
+def _mark_spawned(job_id, by=SPAWN_MARK_BY) -> None:
+    """기동 표지 단일 지점 (prj3#Issue1034) — `spawned_at` 과 `spawned_by` 를 함께 남긴다.
+
+    `spawned_by` 가 없으면 퇴근 훅의 `dispatch-claim --release` 가 그 행을 지나쳐 잠금·`claim_history` 가 비게 된다.
+    fpm-do 의 선점(dispatch-claim)이 이미 박은 `spawned_by` 는 덮어쓰지 않는다.
+    """
+    con = connect()
+    try:
+        con.execute("UPDATE job SET payload = json_set(payload, '$.spawned_at', ?, '$.spawned_by', "
+                    "COALESCE(NULLIF(json_extract(payload, '$.spawned_by'), ''), ?)) WHERE id = ?",
+                    (int(time.time()), by, job_id))
+        con.commit()
     finally:
         con.close()
 
@@ -4830,13 +5505,36 @@ def _spawn_now(next_step) -> dict:
     """
     if (next_step or {}).get("run") != "fpm_do":
         return {"ok": False, "reason": "Agent 형태 — next_step.agent 를 Agent 도구로 띄울 것"}
-    if next_step.get("line_over"):   # prj3#Issue824 — 잘릴 줄을 send-keys 하면 claude 가 안 뜬 채 무신호로 남는다
-        return {"ok": False, "reason": f"기동 줄 {next_step.get('line_bytes')}B > 한도 {LINE_BUDGET}B — "
-                                       "topic·워커 id 를 줄여 다시 배분할 것 (prj3#Issue824)"}
     try:
-        return _inbox_mod()._run_spawn(next_step["fpm_do"], probe_secs=SPAWN_PROBE_SECS)
+        wid = (re.match(r"FBOT_ID=([A-Za-z0-9._-]+)\s", next_step["fpm_do"]) or [None, None])[1]
+        t0 = int(time.time())
+
+        def _ready():   # 출근 이벤트(CHECKIN_EVENTS)가 기동 시각 이후 원장에 있는가
+            con = connect()
+            try:
+                return _checked_in_since(con, wid, t0)
+            finally:
+                con.close()
+        return _inbox_mod()._run_spawn(next_step["fpm_do"], probe_secs=SPAWN_PROBE_SECS,
+                                       ready=_ready if wid else None, ready_secs=SPAWN_READY_SECS if wid else 0)
     except Exception as e:
         return {"ok": False, "error": str(e)[:200]}
+
+
+SUMMARY_MAX = 100   # prj3#Issue1011 — hub 카드 1줄 상한(글자)
+_SUMMARY_TAIL_RE = re.compile(r"\s+—\s+(?:\[Issue399 완료 통지 규약\]|topic 잘림:|잘림 —).*", re.S)
+_SUMMARY_SENT_RE = re.compile(r"(?<=[.!?。])\s")
+
+
+def dispatch_summary(ident: str) -> str:
+    """배분 식별자 → hub 카드용 사람 1줄 (prj3#Issue1011). 규약 꼬리·«topic 잘림» 안내·개행 뒤·둘째 문장을 뺀다.
+
+    전문 정본은 payload.issue(`topic <배분id>`) — summary 는 표시용이라 기동 프롬프트에는 쓰지 않는다.
+    """
+    t = _SUMMARY_TAIL_RE.sub("", (ident or "").strip()).strip()
+    t = t.splitlines()[0].strip() if t else ""
+    t = _SUMMARY_SENT_RE.split(t, maxsplit=1)[0].strip()
+    return t if len(t) <= SUMMARY_MAX else t[:SUMMARY_MAX - 1].rstrip() + "…"
 
 
 def cmd_topic(args) -> int:
@@ -4850,7 +5548,8 @@ def cmd_topic(args) -> int:
         raise Reject(1, f"배분 없음: {args.job_id}")
     pl = json.loads(r[0] or "{}")
     emit({"ok": True, "action": "topic", "job_id": args.job_id,
-          "ident_kind": pl.get("ident_kind"), "topic": pl.get("issue")})
+          "ident_kind": pl.get("ident_kind"), "topic": pl.get("issue"),
+          "summary": pl.get("summary") or dispatch_summary(pl.get("issue") or "")})
     return 0
 
 
@@ -4887,6 +5586,7 @@ def cmd_status(args) -> int:
         "active_dispatches": [
             {"job_id": j["id"], "status": j["status"], "attempts": j["attempts"],
              "issue": j["payload"].get("issue"), "role": j["payload"].get("role"),
+             "summary": j["payload"].get("summary") or dispatch_summary(j["payload"].get("issue") or ""),   # Issue1011
              "worker_bot_id": j["payload"].get("worker_bot_id"),
              "created_at": j["created_at"], "blocked_since": j["blocked_since"],
              "deferred_reason": j["payload"].get("deferred_reason"),   # Issue686
@@ -4955,7 +5655,10 @@ def build_parser() -> argparse.ArgumentParser:
                          "--parent 는 채용의 부모 봇이라 이름을 가른다 (prj3#Issue739 M1-2)")
     sp.add_argument("--role", required=True, help="워커 role (카탈로그 등재값 — HR 게이트가 검증)")
     sp.add_argument("--cwd", default=os.getcwd(), help="대상 프로젝트 루트(기본 현재 디렉토리)")
-    sp.add_argument("--bot-id", default=None, help="워커 bot_id 지정(생략 시 fbot-{role}-{issue} 자동)")
+    sp.add_argument("--bot-id", default=None, help="워커 bot_id 지정(생략 시 자리 봇을 깨우거나 fbot-{role}-{issue} 자동). "
+                    "그 prj 자리에 같은 직능 재직 봇이 있는데 미등록 id 면 거부 — --new-bot 명시 필요 (Issue1080)")
+    sp.add_argument("--new-bot", action="store_true",
+                    help="재직 자리 봇이 있어도 --bot-id 새 봇을 채용한다(자리당 재직 봇 하나 계약의 명시 예외 — Issue1080)")
     sp.add_argument("--deferred-until", default=None, metavar="JOB_ID",
                     help="미룬 배분 — 채용·기동 없이 deferred 로 적고, sweep 이 선행 배분 JOB_ID 의 done 을 보고 open 으로 당긴다 (Issue861)")
     sp.add_argument("--loan-key", default=None,
@@ -4978,6 +5681,9 @@ def build_parser() -> argparse.ArgumentParser:
                          "완료로 닫는다. 없으면 «완료 미확인» (prj3#Issue929)")
     sp.add_argument("--spawn", action="store_true",
                     help="next_step 이 fpm-do 면 이 호출에서 분리 실행까지 한다 — 별도 호출 불요 (prj3#Issue779_8)")
+    sp.add_argument("--publish-approved-by", dest="publish_approved_by", default=None,
+                    help="사람 세션이 publish-approve 로 남긴 승인 id — 기동 줄이 fpm-do --approve publish 를 싣는다 "
+                         "(그 prj·1회·24시간, prj3#Issue1043)")
     sp.add_argument("--model", default=None,
                     help="이번 배분만 몸체 모델을 바꾼다 — 별칭(haiku·sonnet·opus). 생략 시 직능 기본값"
                          "(data/model-tier.yml). fable 은 허용 목록 밖이면 거부 (prj3#Issue849)")
@@ -4993,6 +5699,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("watch", help="진행 감시 — 적체 2종 → 재시도 → 에스컬레이션(mq alert)")
     sp.add_argument("--cwd", default=None, help="지정 시 미배분 startable 적체(A)도 판정")
+    sp.add_argument("--wake", action="store_true", help="퇴근·부재 워커의 열린 배분을 다시 띄운다(상한 뒤 mq) — tick 무인 모드 (prj3#Issue1085)")
+    sp.add_argument("--no-sweep", action="store_true", help="선행 sweep 생략 — 방금 sweep 을 돌린 호출자(tick)용 (prj3#Issue1085)")
     sp.set_defaults(func=cmd_watch)
 
     sp = sub.add_parser("session-end", help="워커 마지막 세션의 종료 사유(quota·api_error·interrupted·normal) 조회 — fpm-do 감시용 (Issue743)")
@@ -5022,7 +5730,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--issue", default=None, help="이슈 ID 로 지정 (ex: Issue329 — 동일 이슈 전건)")
     sp.add_argument("--reason", required=True, help="취소 사유(필수) — 근거 없는 원장 정리 금지")
     sp.add_argument("--verdict", default="cancelled_obsolete", choices=CANCEL_VERDICTS,
-                    help="판정 라벨(기본 cancelled_obsolete). gate_failed = 정상 게이트 차단 취소 — 서킷브레이커가 세지 않는다 (prj3#Issue952)")
+                    help="판정 라벨(기본 cancelled_obsolete). gate_failed = 정상 게이트 차단 취소 (prj3#Issue952) · "
+                         "cancelled_duplicate = 다른 몸체·배분과 겹친 중복 정리 (prj3#Issue997) — 둘 다 서킷브레이커가 세지 않는다")
     sp.add_argument("--reclaim", action="store_true",
                     help="회수 모드 — 이슈 완료면 done·미완료+워커 퇴근이면 blocked(worker_died) (prj3#Issue819, hub 원클릭은 기본)")
     sp.add_argument("--by", default=os.environ.get("FBOT_ID", "human"), help="취소 주체 bot_id(기본 $FBOT_ID)")
@@ -5040,7 +5749,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--dry-run", action="store_true", help="대상 조회까지만 — 갱신 없음")
     sp.set_defaults(func=cmd_reopen)
 
-    sp = sub.add_parser("defer", help="명시 보류 — open·blocked(unconfirmed) 배분을 deferred 로(WIP·정체 판정 제외, sweep 완료 아님) (Issue686·953)")
+    sp = sub.add_parser("defer", help="명시 보류 — open·blocked(unconfirmed)·선행 대기(deferred_until_job) 배분을 수동 보류 deferred 로(WIP·정체 판정 제외, sweep 완료·자동 재개 아님) (Issue686·953·1055)")
     g = sp.add_mutually_exclusive_group(required=True)
     g.add_argument("--job-id", default=None, help="배분 job id 지정")
     g.add_argument("--issue", default=None, help="이슈 ID 로 지정 (동일 이슈의 open 배분 전건)")
@@ -5085,7 +5794,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("staff-create", help="생성 — 요청 prj 자리 추가 + HR 게이트 채용(parent=요청 팀장) (prj3#Issue757 T13)")
     sp.add_argument("--by", default=os.environ.get("FBOT_ID", ""))
-    sp.add_argument("--prj", type=int, required=True)
+    sp.add_argument("--prj", type=_prj_arg, required=True)
     sp.add_argument("--role", required=True)
     sp.add_argument("--to", required=True, help="요청 팀장 bot_id(채용 parent)")
     sp.add_argument("--dept", default="dev")
@@ -5096,6 +5805,15 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--bot", required=True, help="승인 대상 bot_id (그 봇만 쓸 수 있다)")
     sp.add_argument("--reason", required=True, help="승인 사유(필수·8자 이상)")
     sp.set_defaults(func=cmd_solo_approve)
+
+    sp = sub.add_parser("publish-approve", help="공개 채널 게시 위임 승인 기록 — 사람 세션 전용 (prj3#Issue1043)")
+    sp.add_argument("--prj", type=_prj_arg, required=True, help="게시를 맡길 prj 번호 (그 prj 배분만 소진할 수 있다)")
+    sp.add_argument("--reason", required=True, help="승인 사유(필수·8자 이상)")
+    sp.set_defaults(func=cmd_publish_approve)
+
+    sp = sub.add_parser("publish-approval-verify", help="fpm-do 전용 — publish 승인 id 검증·사용 처리 (prj3#Issue1043)")
+    sp.add_argument("approval_id")
+    sp.set_defaults(func=cmd_publish_approval_verify)
 
     sp = sub.add_parser("status", help="이번 달 배분 수·상한·활성 배분 목록 + 취소 집계(완료와 분리)")
     sp.set_defaults(func=cmd_status)

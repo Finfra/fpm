@@ -10,7 +10,8 @@
 #   다음 턴 경계에 1블록 주입. 매니저가 `reply --status accepted|rejected|done` 하면 그친다.
 #   + 핀봇 질문(prj3#Issue749): 이 세션이 **의뢰 세션**인 질문(`q-<sid>`) 또는 공용 질문(`q-any`)이
 #   있으면 결속 여부와 무관하게 1블록 — AskUserQuestion 으로 묻고 `reply` 로 답하라는 지시.
-# no-op: 결속 마커(`.fbot-handoff/sid-<sid>.id`)·질문 마커(`q-<sid>`·`q-any`) 모두 부재 → 첫 블록 exit 0, fork 0회.
+#   + 배분 완료 통지(prj3#Issue989): 이 세션이 **낸** 최상위 배분이 done 이면(마커 `d-<sid>`) 1회 블록 — 사용자에게 결과 보고.
+# no-op: 결속 마커(`.fbot-handoff/sid-<sid>.id`)·질문 마커(`q-<sid>`·`q-any`)·완료 마커(`d-<sid>`) 모두 부재 → 첫 블록 exit 0, fork 0회.
 #   마커가 있어도 헬퍼 부재·매니저 아님·요청 0건이면 무출력 exit 0. pm-do `-p` 몸체에는 질문을 싣지 않는다
 #   (물을 사람이 없다 — 그 몸체의 질문은 거꾸로 이쪽으로 중계되는 쪽이다).
 #
@@ -36,21 +37,35 @@ _SID="${CLAUDE_CODE_SESSION_ID:-}"
 #   파라미터 확장뿐이라 fork 0 — 격리 원장 테스트가 운영 마커에 반응하지 않는다
 _QD="${FBOT_HANDOFF_DIR:-${FBOT_REGISTRY_DB:+${FBOT_REGISTRY_DB%/*}/.fbot-questions}}"
 _QD="${_QD:-$HOME/.claude/.fbot-handoff}"
-_BOUND=0; _ASK=0
+_BOUND=0; _ASK=0; _DONE=0
 [ -f "$HOME/.claude/.fbot-handoff/sid-$_SID.id" ] && _BOUND=1
 if [ "${FPM_SESSION_ORIGIN:-}" != "pm-do" ] && { [ -f "$_QD/q-$_SID" ] || [ -f "$_QD/q-any" ]; }; then _ASK=1; fi
-[ "$_BOUND$_ASK" = "00" ] && exit 0
+# prj3#Issue989 — 이 세션이 낸 배분의 완료 통지(마커 `d-<sid>` — fbot-inbox `notify_requester_done`). pm-do 몸체는 의뢰 세션이 아니다
+if [ "${FPM_SESSION_ORIGIN:-}" != "pm-do" ] && [ -f "$_QD/d-$_SID" ]; then _DONE=1; fi
+[ "$_BOUND$_ASK$_DONE" = "000" ] && exit 0
 
 _HOOKS_SELF="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 INBOX_PY="$_HOOKS_SELF/fbot-inbox.py"
 [ -f "$INBOX_PY" ] || exit 0              # 헬퍼 부재 = 배관 미완 → 조용히 no-op
 
 # 한 번의 python3 로 조회+조립까지 끝낸다 — jq 로 다시 풀면 프로세스가 하나 더 든다
-MSG="$(python3 - "$INBOX_PY" "$_SID" "$_BOUND" "$_ASK" <<'PY' 2>/dev/null
+MSG="$(python3 - "$INBOX_PY" "$_SID" "$_BOUND" "$_ASK" "$_DONE" <<'PY' 2>/dev/null
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("fbot_inbox", sys.argv[1])
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 blocks = []
+if sys.argv[5] == "1":
+    # prj3#Issue989 — 이 세션이 낸(최상위) 배분이 끝났다. 1회 표시 후 소비 — 답할 것은 없고 사람에게 결과를 전한다
+    ds = m.done_notices_for(sys.argv[2]).get("items") or []
+    if ds:
+        dl = [f"[핀봇 배분 완료 {len(ds)}건 — 이 세션이 낸 배분] 이번 응답에서 사용자에게 결과를 먼저 보고한다"
+              "(완료 감시를 걸지 않았어도 sweep 이 알려 온 것). 상세는 아래 마지막 보고·원장(`fbot-lead.py` 배분 id)을 본다."]
+        for d in ds:
+            prj = f" prj{d['prj']}" if d.get("prj") else ""
+            dl.append(f"- `{d['id']}` {d.get('what') or '?'}{prj} ← {d.get('worker') or '?'}({d.get('role') or '?'}) 완료")
+            if d.get("last_report"):
+                dl.append("  마지막 보고: " + " ".join(d["last_report"].split())[:400])
+        blocks.append("\n".join(dl))
 if sys.argv[4] == "1":
     # prj3#Issue749 — 핀봇 질문: 이 세션이 사람에게 물어 답을 돌려준다(-p 몸체는 AskUserQuestion 이 없다)
     qs = m.questions_for(sys.argv[2]).get("items") or []
@@ -73,12 +88,33 @@ if not items:
     if blocks:
         print("\n\n".join(blocks))
     sys.exit(0)
+# prj3#Issue1092 — 총괄은 prj 횡단 신원이지만 이 세션은 cwd prj 에 귀속된다. 타 prj 의 정보성 보고(defer)는 한 줄로 접는다 —
+#   «이 세션 몫 아님». 결정이 필요한 것(ask·question·decision)은 어느 prj 것이든 편다. 세션 prj 를 못 정하면 접지 않는다(종전)
+def fold_line(folded):
+    by = {}
+    for it in folded:
+        k = str(it.get("prj"))
+        by[k] = by.get(k, 0) + 1
+    ids = ", ".join(f"`{it['id']}`" for it in folded[:3]) + (f" 외 {len(folded) - 3}건" if len(folded) > 3 else "")
+    return (f"🔀 타 prj 정보성 보고 {len(folded)}건({'·'.join('prj' + k for k in sorted(by))}) — 이 세션 몫 아님: "
+            f"그 prj 세션·팀장이 처리한다. 열람은 `fbot-inbox.py inbox --status open` ({ids})")
+
+
+folded = []
+if any(it.get("prj") is not None and it.get("kind") in m.FOLDABLE_KINDS for it in items):
+    items, folded = m.partition_by_scope(items, m.session_prj(sys.argv[2]))
+    if not items and folded:                  # 전개할 것이 없으면 헤더(답하라는 지시) 없이 접힘 줄만
+        blocks.append(fold_line(folded))
+        print("\n\n".join(blocks))
+        sys.exit(0)
 who = ",".join(r.get("managers") or [])
 lines = [f"[핀봇 인박스 — {who}] 미처리 요청 {len(items)}건. 결속·현재 작업과 무관하게 **매니저로서 판단**한다 — 받을지(accepted)·거절할지(rejected)·바로 끝낼지(done)를 `python3 ~/.claude/hooks/fbot-inbox.py reply --id <id> --status <s> --body '<응답>'` 로 답한다. 직접 하지 말고 부하에게 배분할 일이면 `fbot-lead.py dispatch --by {who}` 로 넘긴다. 답하기 전까지 매 턴 다시 뜬다."]
 for it in items:
     src = it.get("from") or it.get("from_session") or "?"
     prj = f" prj{it['prj']}" if it.get("prj") else ""
     lines.append(f"- `{it['id']}` ← {src}{prj} [{it.get('kind') or 'ask'}]: {(it.get('body') or '').strip()[:200]}")
+if folded:
+    lines.append(fold_line(folded))
 if any(it.get("kind") == "question" for it in items):
     # prj3#Issue757 — 팀원 질문은 사람이 아니라 팀장이 받는다. 팀원은 작업을 멈추고 답을 기다린다
     # prj3#Issue831 ① — 팀장의 질문은 총괄이 받는다(사람 결정은 팀장 → 총괄 → 사람). 팀장이 올린 질문은 총괄에게 간다

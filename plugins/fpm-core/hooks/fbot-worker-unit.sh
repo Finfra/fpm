@@ -60,18 +60,12 @@ TICK="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/fbot-tick.sh"
 # 스케줄 판정 TZ — 함정 ①. launchd(로컬 TZ=Asia/Seoul)와 동작을 일치시킨다.
 FBOT_TZ="${FBOT_TZ:-Asia/Seoul}"
 
-# python3 해석 — 생성 시점에 절대경로 확정. 실패는 fail-loud.
-resolve_python() {
-    local c
-    if [[ -n "${FBOT_PYTHON:-}" ]]; then printf '%s' "$FBOT_PYTHON"; return 0; fi
-    c="$(command -v python3 2>/dev/null || true)"
-    [[ -n "$c" ]] && { printf '%s' "$c"; return 0; }
-    for c in /usr/bin/python3 /usr/local/bin/python3 /opt/homebrew/bin/python3; do
-        [[ -x "$c" ]] && { printf '%s' "$c"; return 0; }
-    done
-    return 1
-}
-PY_BIN="$(resolve_python)" || die "python3 미발견 — FBOT_PYTHON 을 절대경로로 지정하고 재실행하라"
+# python3 해석 — 단일 지점 hooks/lib/py-resolve.sh (prj3#Issue1117) — 생성 시점에 절대경로 확정. 실패는 fail-loud, 3.14 미만은 경고만.
+#   관례 절대경로는 이 생성기에만 남긴다(PY_RESOLVE_EXTRA). fg1 22.04 는 맨 python3 = 3.10 — python3.14(deadsnakes)가 PATH 에 있으면 그쪽이 이긴다.
+PY_RESOLVE_EXTRA="${PY_RESOLVE_EXTRA:-/usr/local/bin/python3.14 /usr/bin/python3.14 /usr/bin/python3 /usr/local/bin/python3 /opt/homebrew/bin/python3}"
+# shellcheck source=lib/py-resolve.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/lib/py-resolve.sh"
+PY_BIN="$(py_resolve)" || die "python3 미발견 — FBOT_PYTHON 을 절대경로로 지정하고 재실행하라"
 
 PATH_BASE="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 PY_DIR="$(dirname "$PY_BIN")"

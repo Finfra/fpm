@@ -51,11 +51,12 @@ transcript_path="${HOOK_TRANSCRIPT:-}"
 cwd="${HOOK_CWD:-}"
 
 # Issue283: cwd 스코프 플래그 + effective 재판정 (전역 플래그 세션 간 누수 차단)
-FLAG_MODE=$(hub_flag_file "$cwd")
-if [ ! -f "$FLAG_MODE" ]; then
+# prj3#Issue975: effective 먼저 · 플래그는 조상까지(hub_flag_find) — intercept 와 같은 판정
+if [ "$(hub_effective "$cwd")" = "off" ]; then
   exit 0
 fi
-if [ "$(hub_effective "$cwd")" = "off" ]; then
+FLAG_MODE=$(hub_flag_find "$cwd")
+if [ ! -f "$FLAG_MODE" ]; then
   exit 0
 fi
 

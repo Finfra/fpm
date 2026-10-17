@@ -103,6 +103,12 @@ open(DOC2, "w").write("<html><body>x</body></html>")
 PNG = os.path.join(DOCWORK, "capture", "img.png")
 open(PNG, "wb").write(b"\x89PNG-fake")
 open(os.path.join(TMP, "proj", "secret.py"), "w").write("top=1")
+# prj1#Issue617 — _doc_work 밖(프로젝트 루트 하위) 이미지: tdd/*/evidence/*.png
+os.makedirs(os.path.join(TMP, "proj", "tdd", "x", "evidence"))
+EVID = os.path.join(TMP, "proj", "tdd", "x", "evidence", "e.png")
+open(EVID, "wb").write(b"\x89PNG-evid")
+open(os.path.join(TMP, "proj", ".hidden.png"), "wb").write(b"\x89PNG-dot")
+open(os.path.join(TMP, "outside.png"), "wb").write(b"\x89PNG-out")
 
 # registry 픽스처 — HTM_REGISTRY 를 임시 파일로 교체
 server.HTM_REGISTRY = os.path.join(TMP, "htm-registry.json")
@@ -127,7 +133,20 @@ check("미등록 doc → 403",
       r.json_responses and r.json_responses[0][0] == 403)
 
 r = _get(f"/htm-res?doc={quote(DOC2, safe='')}&rel={quote('../../secret.py', safe='')}")
-check("jail(_doc_work) 탈출 rel → 403",
+check("프로젝트 루트 하위여도 확장자 비허용(.py) → 403",
+      r.json_responses and r.json_responses[0][0] == 403)
+
+# --- prj1#Issue617: jail = 프로젝트 루트(_doc_work 상위) ---
+r = _get(f"/htm-res?doc={quote(DOC2, safe='')}&rel={quote('../../tdd/x/evidence/e.png', safe='')}")
+check("_doc_work 밖·프로젝트 안 상대 이미지(tdd/*/evidence) → 200",
+      r._status == 200 and r.raw == b"\x89PNG-evid")
+
+r = _get(f"/htm-res?doc={quote(DOC2, safe='')}&rel={quote('../../../outside.png', safe='')}")
+check("프로젝트 루트 탈출 rel → 403",
+      r.json_responses and r.json_responses[0][0] == 403)
+
+r = _get(f"/htm-res?doc={quote(DOC2, safe='')}&rel={quote('../../.hidden.png', safe='')}")
+check("프로젝트 안 dotfile → 403 (Issue393 게이트 유지)",
       r.json_responses and r.json_responses[0][0] == 403)
 
 r = _get(f"/htm-res?doc={quote(DOC2, safe='')}&rel={quote('../capture/none.png', safe='')}")
@@ -155,7 +174,7 @@ check("원격 file://host/… 는 미변경",
       b'src="file://otherhost/Users/x/c.png"' in out2)
 
 HOME = os.path.realpath(os.path.expanduser("~"))
-HOME_PNG = os.path.join(HOME, ".htm-res-test-abs.png")
+HOME_PNG = os.path.join(HOME, "htm-res-test-abs-617.png")
 open(HOME_PNG, "wb").write(b"\x89PNG-abs")
 try:
     r = _get(f"/htm-res?doc={quote(DOC2, safe='')}&abs={quote(HOME_PNG, safe='')}")

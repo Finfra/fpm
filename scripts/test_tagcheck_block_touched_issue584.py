@@ -61,9 +61,12 @@ def case(name, head_issue, idx_issue, files, want, stage_issue=True, env=None, a
         run(tmp, 'git', 'init', '-q')
         run(tmp, 'git', 'config', 'user.email', 't@t')
         run(tmp, 'git', 'config', 'user.name', 't')
+        # prj3#Issue1057: git 기본값을 repo 에 명시 — 사용자 전역 core.quotepath=false 가 한글 경로 재현을 가리지 않게
+        run(tmp, 'git', 'config', 'core.quotepath', 'true')
         with open(f'{tmp}/Issue.md', 'w', encoding='utf-8') as f:
             f.write(head_issue)
         for path in files:
+            os.makedirs(os.path.dirname(f'{tmp}/{path}'), exist_ok=True)
             with open(f'{tmp}/{path}', 'w', encoding='utf-8') as f:
                 f.write('# 빈 파일\n')
         run(tmp, 'git', 'add', 'Issue.md', *files)
@@ -229,6 +232,17 @@ case('949 회귀: live 본문 항목은 아카이브에도 있어도 ② 를 건
 case('949 ④ 거부 안내에 부모 번호·prjX# 접두·### 서브 헤딩 등록 안내가 있다',
      BASE_S, TOUCH10_S, {'code.sh': f'# ({I}10_7)\n'}, 1,
      err_has=('부모 번호', 'prjX#', f'### {I}N_M:'))
+
+# prj3#Issue1057: core.quotepath=true(기본)면 staged 경로가 `"\353\254…"` 로 나와 blob 조회가 실패 → skip(fail-open)
+TOUCH10 = issue_md([('🚧 진행중', [(11, B11)]), ('📕 중요', [(10, B10 + ['    - 진행']), (12, B12)])])
+case('1057 한글 경로 파일의 미등록 번호도 거부',
+     BASE, TOUCH10, {'문서/코드.sh': f'# ({I}99)\n'}, 1)
+
+case('1057 한글 경로 파일의 다루지 않은 번호도 거부',
+     BASE, TOUCH10, {'문서/코드.sh': f'# ({I}12)\n'}, 1)
+
+case('1057 회귀: 한글 경로 파일의 다룬 번호는 통과',
+     BASE, TOUCH10, {'문서/코드.sh': f'# ({I}10)\n'}, 0)
 
 
 def e2e(name, cmd, want):

@@ -103,7 +103,7 @@ for path in BUILDERS:
     check("요약 줄: 미할당 1건 · 숨김 2건", "미할당 편입 1건" in r.stdout and "숨김 2건" in r.stdout)
     check("htm: 다이어그램 아래 접힘 목록 «숨김 2건»(링크 유지)",
           'id="hidden"' in htm and "숨김 2건" in htm and "/open-prj?id=0" in htm)
-    check("htm: 미할당 상자에 숨긴 id 가 없다", "#0<" not in htm.split('id="misc"', 1)[-1].split("</div>", 1)[0])
+    check("htm: 미할당 상자에 숨긴 id 가 없다", "#0<" not in htm.split('id="misc"', 1)[-1].split("</details>", 1)[0])   # 미할당 상자는 <details> 접힘
     check("md: «# 숨김 2건» 절", "# 숨김 2건" in md)
     r2, htm2, _ = run_main(path, TABLE + MAP_BOTH)
     check("숨김과 맵에 동시에 적힌 id 는 그리고 경고한다", "P5[" in htm2 and "숨김" in (r2.stderr + r2.stdout) and "5" in r2.stderr)

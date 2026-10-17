@@ -92,7 +92,7 @@ CREATE TABLE IF NOT EXISTS bot(
   career TEXT NOT NULL,
   icon TEXT,
   color TEXT,
-  prj INT,
+  prj ANY,                 -- prj3#Issue1061 — 숫자 int · 접미 id(`9t`) text. 쓰기는 fbot-prj.norm_prj 경유
   current_task TEXT,
   parent_bot_id TEXT,
   lease_expires INT,

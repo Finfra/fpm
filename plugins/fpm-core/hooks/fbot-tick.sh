@@ -22,26 +22,26 @@ export TZ="${FBOT_TZ:-Asia/Seoul}"
 
 AOA_DIR="${AOA_MEMORY_DIR:-$HOME/.claude/data/aoa}"
 SRC="${AOA_HOME:-$HOME/.claude/mcp/aoa-memory}"
-# python3 해석 (Issue451 ①) — 절대경로 하드코딩 금지.
-#   `/opt/homebrew/bin/python3` 는 macOS Homebrew 전용이라 Linux 소비자에서 그대로 죽는다.
-#   순서: ① FBOT_PYTHON(정식 설정 — plist 가 생성 시점 해석값을 박아 준다)
-#         ② PATH 의 python3   ③ 관례 경로 3종   ④ 없으면 fail-loud(exit 127)
-#   ⚠️ launchd 는 셸 프로파일을 읽지 않는다 — ②가 성립하려면 plist 의 PATH env 가 필요하다.
-#      그래서 fbot-worker-plist.sh 가 FBOT_PYTHON 을 **절대경로로 박아** ①에서 끝나게 한다.
-resolve_python() {
-  local c
-  if [ -n "${FBOT_PYTHON:-}" ]; then printf '%s' "$FBOT_PYTHON"; return 0; fi
-  c="$(command -v python3 2>/dev/null || true)"
-  [ -n "$c" ] && { printf '%s' "$c"; return 0; }
-  for c in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
-    [ -x "$c" ] && { printf '%s' "$c"; return 0; }
-  done
-  return 1
-}
-PY="$(resolve_python)" || {
-  printf '[fbot-tick] 🚨 python3 미발견 — FBOT_PYTHON 을 절대경로로 설정하라 (PATH=%s)\n' "${PATH:-}" >&2
-  exit 127
-}
+# python3 해석 — 단일 지점 hooks/lib/py-resolve.sh (prj3#Issue1117, 종전 Issue451 ① 의 사본 3벌 통합)
+#   순서: ① FBOT_PYTHON(plist 가 생성 시점 해석값을 박아 준다) ② ~/.local/bin/python3.14 ③ ~/.local/bin/python3
+#         ④ PATH python3.14 ⑤ py -3.14 ⑥ PATH python3 — 3.14 미만이면 stderr 경고(비차단), 아무것도 없으면 fail-loud(127)
+#   ⚠️ launchd 는 셸 프로파일을 읽지 않는다 — 그래서 fbot-worker-plist.sh 가 FBOT_PYTHON 을 **절대경로로 박아** ①에서 끝나게 한다.
+#   ⚠️ 번들(플러그인) 사본에 lib 가 아직 없을 수 있다 — 없으면 최소 해석(FBOT_PYTHON → PATH python3)으로 내려간다. 이 hook 은 죽으면 안 된다.
+_TICK_LIB="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/lib/py-resolve.sh"
+if [ -r "$_TICK_LIB" ]; then
+  # shellcheck source=lib/py-resolve.sh
+  . "$_TICK_LIB"
+  PY="$(py_resolve)" || {
+    printf '[fbot-tick] 🚨 python3 미발견 — FBOT_PYTHON 을 절대경로로 설정하라 (PATH=%s)\n' "${PATH:-}" >&2
+    exit 127
+  }
+else
+  PY="${FBOT_PYTHON:-$(command -v python3 2>/dev/null || true)}"
+  [ -n "$PY" ] || {
+    printf '[fbot-tick] 🚨 python3 미발견 — FBOT_PYTHON 을 절대경로로 설정하라 (PATH=%s)\n' "${PATH:-}" >&2
+    exit 127
+  }
+fi
 
 # 형제 hook 경로 (Issue451) — `$HOME/.claude/hooks` 하드코딩이었다.
 #   소비자는 SCAR 를 **플러그인**으로 받는다(~/.claude/plugins/marketplaces/…/fpm-core/hooks/).
@@ -273,8 +273,8 @@ OUTBOX_ROOT="$HOME/.claude/data/fbot/outbox"
 inbox_escalate_gate() {
   [ -f "$HOME/.claude/hooks/fbot-inbox.py" ] || return 0     # ← 무비용 가드
   local out n
-  out="$(python3 "$HOME/.claude/hooks/fbot-inbox.py" escalate --apply 2>/dev/null || true)"
-  n="$(printf '%s' "$out" | python3 -c 'import json,sys;print(len(json.load(sys.stdin).get("alerted") or []))' 2>/dev/null || echo 0)"
+  out="$("$PY" "$HOME/.claude/hooks/fbot-inbox.py" escalate --apply 2>/dev/null || true)"
+  n="$(printf '%s' "$out" | "$PY" -c 'import json,sys;print(len(json.load(sys.stdin).get("alerted") or []))' 2>/dev/null || echo 0)"
   [ "${n:-0}" -gt 0 ] && log "inbox-escalate — 매니저 미응답 요청 $n 건 alert"
   return 0
 }
@@ -316,7 +316,7 @@ remote_msg_pull_gate() {
   [ "$n" -gt 0 ] && log "remote-msg-pull — $n 건 회수"
   # 접수는 로컬 처리다 — 당겨온 것 + 이전에 남은 것을 함께 소화한다
   if [ -x "$HOME/.claude/hooks/fbot-outbox.py" ] || [ -f "$HOME/.claude/hooks/fbot-outbox.py" ]; then
-    python3 "$HOME/.claude/hooks/fbot-outbox.py" consume --apply >/dev/null 2>&1 \
+    "$PY" "$HOME/.claude/hooks/fbot-outbox.py" consume --apply >/dev/null 2>&1 \
       || log "remote-msg-consume 실패(다음 tick 재시도)"
   fi
   return 0
@@ -344,10 +344,16 @@ case "$unit" in
     "$PY" "$HOOKS_DIR/fbot-lead.py" sweep >/dev/null || {
       src=$?; log "⚠️ sweep 실패 rc=$src — tick 계속(fail-soft)"; }
     # maint: 승격된 미룬 배분 몸체 기동 (prj3#Issue904) — sweep 이 open 으로 당기며 spawn_pending 을 남긴 행만.
-    #   sweep 에 싣지 않는다(최소 부작용 단위 유지) — 배치 판정은 dispatch 와 같은 HR 게이트 경유
+    #   승격분은 sweep 호출이 이어 기동한다(prj3#Issue992 ②) — 여기는 실패·동시 상한 대기분 백스톱. 배치 판정은 dispatch 와 같은 HR 게이트 경유
     log "tick worker — deferred spawn"
     "$PY" "$HOOKS_DIR/fbot-lead.py" spawn --pending >/dev/null || {
       src=$?; log "⚠️ spawn --pending 실패 rc=$src — tick 계속(fail-soft)"; }
+    # maint: 열린 배분의 퇴근·부재 대상 재기상 + 정체 mq 에스컬레이션 (prj3#Issue1085)
+    #   종전엔 tick 이 watch 를 부르지 않아, 워커가 중도 종료한 열린 배분이 재기동도 알림도 없이 방치됐다(2026-10-10 실측 2.1h).
+    #   sweep·spawn --pending 을 방금 돌렸으므로 --no-sweep(이중 통지 방지). 시도마다 attempts 를 태워 상한(RETRY_LIMIT) 뒤 mq alert + blocked
+    log "tick worker — dispatch watch (wake)"
+    "$PY" "$HOOKS_DIR/fbot-lead.py" watch --wake --no-sweep >/dev/null || {
+      src=$?; log "⚠️ watch --wake 실패 rc=$src — tick 계속(fail-soft)"; }
     # maint: 매뉴얼 개정 루프 (계약 §매뉴얼 체계 — 산출은 draft 까지, 정본 반영은 사람 승인 후)
     manual_review_gate
     # maint: instinct 승격 초안 → 총괄 결정 티어 (prj3#Issue853 — 주 1회, 매뉴얼 개정 루프와 같은 주기)

@@ -19,6 +19,7 @@
 """
 import argparse
 import importlib.util
+import glob
 import json
 import os
 import re
@@ -28,6 +29,10 @@ import time
 import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# prj3#Issue1061 — prj id 판정 단일 지점(숫자 int · 접미 `9t` str)
+_psp = importlib.util.spec_from_file_location("fbot_prj", os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib/fbot-prj.py"))
+_PRJ = importlib.util.module_from_spec(_psp)
+_psp.loader.exec_module(_PRJ)
 REGISTRY_DB = os.environ.get("FBOT_REGISTRY_DB") or os.path.join(
     # prj3#Issue559 — fbot-state.py 와 같은 해석(AOA_MEMORY_DIR → ~/.claude/data/aoa). 개인 경로 하드코딩은
     #   번들로 나가는 순간 타 머신에서 "DB 없음" 이 된다.
@@ -87,7 +92,7 @@ def _con(readonly=False):
 
 def _bot(con, bot_id):
     con.row_factory = sqlite3.Row
-    return con.execute("SELECT bot_id, role, state, career FROM bot WHERE bot_id=?",
+    return con.execute("SELECT bot_id, role, state, career, prj FROM bot WHERE bot_id=?",
                        (bot_id,)).fetchone()
 
 
@@ -163,16 +168,37 @@ def _wakeable(row):
     return v == "dead", v
 
 
-def _run_spawn(cmd, probe_secs=0):
+def _scratch_ledger():
+    """이 호출이 보는 원장이 임시 디렉터리 안인가 — 테스트 픽스처다 (prj3#Issue993).
+
+    운영 원장은 임시 경로에 없다. 판정 재료는 호출 시점 env 와 모듈 상수 둘 다다 — 테스트가 모듈 적재 뒤에 env 를 바꿔도 잡는다."""
+    import tempfile
+    roots = {os.path.realpath(tempfile.gettempdir()), os.path.realpath("/tmp")}
+    for p in (os.environ.get("FBOT_REGISTRY_DB"), os.environ.get("AOA_MEMORY_DIR"), REGISTRY_DB):
+        if p and any(os.path.realpath(os.path.expanduser(p)).startswith(r + os.sep) for r in roots):
+            return True
+    return False
+
+
+def _run_spawn(cmd, probe_secs=0, ready=None, ready_secs=0):
     """스폰 명령 집행 — 분리 실행(발신자를 블로킹하지 않는다). 상속 봇 env 는 끊는다:
     발신자가 봇 세션이면 `FBOT_ID` 가 새 몸체로 새어 인격이 섞인다(hook-smoke 상속 env 사고와 같은 경로).
 
     `probe_secs`(prj3#Issue786_2 부수) — 그 창 안에 비0 으로 끝나면 즉시 실패(fpm-do 가드 거부·경로 오류)로
-    `ok=false`. 창을 넘겨 살아 있거나 0 으로 끝나면(--no-wait) 기동으로 본다. 0 이면 종전대로 기다리지 않는다."""
+    `ok=false`. 창을 넘겨 살아 있거나 0 으로 끝나면(--no-wait) 기동으로 본다. 0 이면 종전대로 기다리지 않는다.
+
+    `ready`·`ready_secs`(prj3#Issue1038) — 몸체 출근 확인. `ready()` 가 참이 될 때까지 최대 `ready_secs` 초 기다린다:
+    그 안에 비0 종료면 `ok=false`(rc), 끝내 못 보면 `ok=false`·`reason=body_not_started`. 창만 보면 fpm-do 가 아직 claim 전인데
+    ok 가 나가고, 호출자가 곧바로 남기는 기동 표지가 fpm-do 의 claim 을 «이미 스폰됨» 으로 막아 몸체가 안 떴다."""
     import subprocess
     if SPAWN_SH:
         p = subprocess.run([SPAWN_SH, cmd], capture_output=True, text=True, timeout=20)
         return {"ok": p.returncode == 0, "rc": p.returncode}
+    # prj3#Issue993 — 임시 원장(테스트)이 실 fpm-do 를 띄우지 못하게 **집행 단일 지점**에서 막는다. prj3#Issue986 테스트가
+    #   `_spawn_now` 로 실 `fbot-qa-issue989` 몸체를 띄워 종결된 이슈의 QA 보고가 2시간에 20회 넘게 반복됐다(테스트마다
+    #   막는 것은 해법이 아니다 — 새 테스트가 같은 구멍을 다시 판다). 기동 명령 관측은 `FBOT_SPAWN_SH` 주입구로 한다
+    if "fpm-do" in cmd and _scratch_ledger():
+        return {"ok": False, "error": "임시 원장에서 실 fpm-do 기동 금지 — 테스트는 FBOT_SPAWN_SH 로 명령만 관측한다 (prj3#Issue993)"}
     home = os.path.expanduser("~")
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("FBOT_", "CLAUDE_CODE_", "PM_DO_"))}
@@ -195,6 +221,22 @@ def _run_spawn(cmd, probe_secs=0):
         if rc not in (None, 0):
             return {"ok": False, "pid": p.pid, "rc": rc,
                     "error": f"기동 즉시 실패 rc={rc} — 사유는 {WAKE_LOG}"}
+    if ready is not None and ready_secs > 0:
+        deadline = time.time() + ready_secs
+        while True:
+            rc = p.poll()
+            if rc not in (None, 0):
+                return {"ok": False, "pid": p.pid, "rc": rc, "error": f"기동 실패 rc={rc} — 사유는 {WAKE_LOG}"}
+            try:
+                if ready():
+                    break
+            except Exception:  # noqa: BLE001 — 확인 실패는 «못 봄» 으로 센다
+                pass
+            if time.time() >= deadline:
+                return {"ok": False, "pid": p.pid, "reason": "body_not_started",
+                        "error": f"body_not_started — {ready_secs}s 안에 몸체 출근 없음(분리 프로세스 "
+                                 f"{'생존' if p.poll() is None else '종료'}) — 사유는 {WAKE_LOG}"}
+            time.sleep(1)
     return {"ok": True, "pid": p.pid}
 
 
@@ -263,6 +305,17 @@ def wake_and_spawn(bot_id, reason="", spawn=True, lock_since=None, flow=None):
         if not ok and not fk:
             # alive·idle — 몸이 있다. 결속 중 넛지(③)가 다음 턴에 본다
             return {"skipped": verdict}, {"skipped": "not_woken"}
+        if fk and not ok:
+            # prj3#Issue990 — 사람 세션이 결속된 살아 있는 관리직엔 자동 흐름 몸체를 더하지 않는다. 요청은 적재됐고 사람
+            #   세션의 넛지(다음 턴 경계)가 본다 — 자동 몸체가 사람 몰래 다른 판정을 내려 판정이 갈린다(prj7#Issue57 실측).
+            #   사람 세션 유휴가 길면 tick wake-pending·escalate 가 흐름 없이 올린다(그 경로는 여기를 타지 않는다)
+            con = _con()
+            try:
+                human = _state().human_body_alive(con, row)
+            finally:
+                con.close()
+            if human:
+                return {"skipped": "human_session", "judged": verdict, "reason": human}, {"skipped": "human_session"}
         if not spawn:
             return {"skipped": "no_spawn", "judged": verdict}, {"skipped": "no_spawn"}
         # prj3#Issue859_3 typing-guard — 사람이 쓰는 pane 에 몸체를 끼워 넣지 않는다. 게이트·잠금 **앞**에서 막는다(보류가
@@ -328,9 +381,8 @@ def wake_and_spawn(bot_id, reason="", spawn=True, lock_since=None, flow=None):
         nxt = _mod("fbot_lead", "fbot-lead.py")._spawn_commands(bot_id, task, "", prj, mode="wake",
                                                                  role=row["role"], flow=fk)
         cmd = nxt["fpm_do"]
-        # prj3#Issue889 — 줄여도 한도를 넘는 기동 줄은 잘려 `quote>` 로 멈춘다 — 띄우지 않고 실패로 드러낸다(침묵 실패 금지)
-        res = ({"ok": False, "error": f"기동 줄 {nxt.get('line_bytes')}B 가 한도 초과 — 잘림 방지로 기동 거부"}
-               if nxt.get("line_over") else _run_spawn(cmd))
+        # prj3#Issue1047_1 — 기동 줄 한도 거부(prj3#Issue889)는 은퇴했다: fpm-do 가 기동 줄을 파일로 넘겨 절단이 없다
+        res = _run_spawn(cmd)
         sp = dict(res, prj=prj, cmd=cmd)
         con = _con()
         try:
@@ -386,9 +438,11 @@ def rewake(bot_id, wait_secs=None):
         if not since:
             return {"ok": True, "action": "rewake", "bot_id": bot_id, "skipped": "no_checkin"}
         n = con.execute("SELECT COUNT(*) FROM job WHERE kind=? AND owner=? AND status='open'"
-                        " AND result IS NULL AND created_at>=?" + Q_NOT, (KIND, bot_id, int(since))).fetchone()[0]
+                        " AND result IS NULL AND created_at>=?" + Q_UNANSWERED,   # Issue978 배분 중 요청 제외 · Issue980 단일 술어
+                        (KIND, bot_id, int(since))).fetchone()[0]
+        # 팀원 질문 셈 — Q_NOT 은 질문을 빼므로 쓰지 않고 Q_NOT_DISPATCHING 만 (Issue980)
         n += con.execute("SELECT COUNT(*) FROM job WHERE kind=?" + Q_TO_LEAD + " AND status='open'"   # Issue757 팀원 질문
-                         " AND result IS NULL AND created_at>=?", (KIND, bot_id, int(since))).fetchone()[0]
+                         " AND result IS NULL AND created_at>=?" + Q_NOT_DISPATCHING, (KIND, bot_id, int(since))).fetchone()[0]
         tmux_target = row["tmux_target"]
     finally:
         con.close()
@@ -416,8 +470,7 @@ def wake_pending(apply=False):
     con.row_factory = sqlite3.Row
     try:
         owners = [r[0] for r in con.execute(
-            "SELECT DISTINCT owner FROM job WHERE kind=? AND status='open' AND result IS NULL" + Q_NOT
-            + Q_NOT_DISPATCHING, (KIND,))]
+            "SELECT DISTINCT owner FROM job WHERE kind=? AND status='open' AND result IS NULL" + Q_UNANSWERED, (KIND,))]
         owners += [r[0] for r in con.execute(   # prj3#Issue757 — 팀원 질문을 받은 팀장
             "SELECT DISTINCT json_extract(payload,'$.to_lead') FROM job WHERE kind=? AND status='open'"
             " AND result IS NULL AND json_extract(payload,'$.kind')='question'"
@@ -466,6 +519,15 @@ def send(to, body, from_bot="", from_session="", req_kind="ask", prj=None, corr_
                 sender = _bot(con, bs[0][0])
             ambiguous = len(bs) > 1
         human = sender is None and not ambiguous and not from_bot and bool(from_session)
+        # prj3#Issue1092 ③ — payload.prj 는 `norm_prj` 단일 입력(문자 '9' 와 정수 9 가 갈리지 않는다). defer(보고)의 prj 는
+        #   «이 보고가 어느 prj 의 것인가» = 발신 봇 prj 라 호출자가 달리 줘도 봇 prj 로 고정한다(수동 `send --kind defer --prj 9`
+        #   가 fTyping(9t) 팀장 보고에 prj 9 를 달아 같은 팀장의 14초 간격 보고가 두 prj 로 갈린 실측)
+        try:
+            prj = _PRJ.norm_prj(prj)
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+        if req_kind == "defer" and sender is not None and sender["prj"] is not None:
+            prj = _PRJ.try_prj(sender["prj"])
         # ⓐ 총괄 ↔ 비관리직 양방향 거부(prj3#Issue757 F) · ⓒ 인사핀봇은 팀장 발신만(prj3#Issue831 ③) — 판정은 _talk_error 한 곳
         terr = _talk_error(org, sender, row) if sender else None
         if terr:
@@ -571,6 +633,9 @@ UNCONF_OPEN_STATES = ("open", "blocked", "logged")
 Q_NOT_DISPATCHING = (" AND NOT EXISTS (SELECT 1 FROM job d WHERE d.kind='fbot_dispatch' AND d.status IN (%s)"
                      " AND json_extract(d.payload,'$.request_id')=job.id)"
                      % ",".join("'%s'" % s for s in DISPATCH_ACTIVE))
+# prj3#Issue980 — «미응답 요청» 술어 단일 지점(질문 제외 + 배분 중 제외). 넛지 3곳(pending·wake_pending·rewake 1번 셈)이 이것을 부른다
+#   Q_NOT_DISPATCHING 만 쓰는 자리: rewake 2번 셈(팀원 질문 — Q_TO_LEAD)·escalate(질문 행을 읽어 공용 확대해야 하므로 SQL 에서 못 뺌)
+Q_UNANSWERED = Q_NOT + Q_NOT_DISPATCHING
 
 
 def last_assistant_text(transcript_path, limit=DEFER_BODY_MAX):
@@ -600,6 +665,25 @@ def last_assistant_text(transcript_path, limit=DEFER_BODY_MAX):
     except OSError:
         return ""
     return _clip(last, limit)
+
+
+def _defer_full_dir():
+    """잘린 defer 본문의 전문 보존처 — 🧪 FBOT_DEFER_FULL_DIR 는 테스트 주입구(실 data 오염 방지)."""
+    return os.environ.get("FBOT_DEFER_FULL_DIR") or os.path.join(os.path.expanduser("~"), ".claude", "data", "fbot", "defer")
+
+
+def _save_defer_full(from_bot, text):
+    """잘림이 일어난 defer 의 **전문**을 원장 밖 파일에 둔다(prj3#Issue1078). 파일명은 내용 해시 — 같은 본문 재전송은 멱등.
+    반환 `(경로, sha256)`. 쓰기 실패는 예외를 올린다 — 전문 없이 «잘렸다» 만 알리면 /tmp 우회가 되살아난다(침묵 잘림 금지)."""
+    import hashlib
+    sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    d = _defer_full_dir()
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, f"{re.sub(r'[^A-Za-z0-9._-]', '_', from_bot)}-{sha[:16]}.md")
+    if not os.path.exists(path):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+    return path, sha
 
 
 def _clip(text, limit):
@@ -704,7 +788,7 @@ def notify_unconfirmed(dispatch_id, body, extra=None):
     return out
 
 
-def defer(from_bot="", from_session="", body="", transcript="", spawn=True, status=None, note=""):
+def defer(from_bot="", from_session="", body="", transcript="", spawn=True, status=None, note="", dispatch=""):
     """응답 대기 봇의 응답을 **배분 체인 위로** 올린다. 반환 dict 는 `send` 의 것 + route.
 
     수신자: ① 그 일을 받은 매니저 — **흐름이 가리키는 기원 인박스 요청의 발신자**(prj3#Issue791) 또는 활성 배분의
@@ -717,6 +801,9 @@ def defer(from_bot="", from_session="", body="", transcript="", spawn=True, stat
     `status`(prj3#Issue929) — 워커가 **명시**하는 배분 결과 `done`·`incomplete`. 요청 payload `report_status` 로 싣고, sweep 이
       topic 배분의 완료 증적으로 읽는다(마지막 명시 status 가 done 이 아니면 «완료 미확인»). 명시 보고는 질문 판정·질문 덧붙임을
       타지 않는다 — 결과 선언이지 결정 요구가 아니다. 활성 배분이 있으면 `dispatch_id` 를 함께 단다(요청자 경로로 가도 짝이 남게).
+    `dispatch`(prj3#Issue982) — 보고가 귀속될 배분 id. 종전엔 `_active_dispatch` 의 **최신** 배분으로 정해져 열린 배분이 ≥2 인 워커의
+      완료 보고가 엉뚱한 배분에 붙었다(미완 배분이 «완료» 로 보이는 침묵 실패). 존재·소유(worker_bot_id)가 어긋나면 fail-loud.
+      `status` 를 주는데 열린(open·blocked) 배분이 ≥2 이고 `dispatch` 가 없으면 거부하고 후보 id 를 낸다. 1개 이하면 현행.
     `note`(prj3#Issue951) — 본문 **앞**에 붙이는 표지. Stop 가드가 «미완 백그라운드를 남기고 퇴근» 을 알릴 때 쓴다 — 몸체의
       마지막 말(«끝나면 알림이 온다»)만 올라가면 매니저는 진행 중으로 읽는다(2026-10-05 prj8 실발생). 마지막 말이 없어도 표지만으로 보낸다.
     """
@@ -740,14 +827,45 @@ def defer(from_bot="", from_session="", body="", transcript="", spawn=True, stat
         # prj3#Issue749 — 질문 판정은 **자르기 전 원문**(줄 구조 보존)으로 한다. 선택지는 줄머리에 있다
         full = text or (_qjudge().last_assistant_text(transcript) if transcript else "")
         if not text and transcript:
-            text = last_assistant_text(transcript)
+            text = last_assistant_text(transcript, limit=1 << 30)    # 자르기는 아래 한 곳에서 — 전문 보존을 위해 여기선 안 자른다
         if (note or "").strip():
             text = note.strip() + ("\n\n" + text if text else "")
         if not text:
             return {"ok": False, "error": "위임할 응답 본문이 없다 — --body 또는 --transcript(마지막 assistant 텍스트) 필요",
                     "from_bot": from_bot}
-        text = _clip(text, DEFER_BODY_MAX)
+        # prj3#Issue1078 — 잘리면 전문을 원장 밖에 두고 경로·해시·원래 크기를 원장·응답에 싣는다(조용한 잘림 금지)
+        trunc = {"truncated": len(text) > DEFER_BODY_MAX}
+        if trunc["truncated"]:
+            try:
+                fpath, fsha = _save_defer_full(from_bot, text)
+            except OSError as e:
+                return {"ok": False, "from_bot": from_bot, "truncated": True,
+                        "error": f"본문이 {DEFER_BODY_MAX}자를 넘는데 전문 보존 실패 — {e}"}
+            trunc.update({"original_size": len(text.encode("utf-8")), "full_path": fpath, "sha256": fsha})
+            # 안내 줄까지 합쳐 DEFER_BODY_MAX 이하 — 상한은 인박스 오염 방지 계약이다(smoke M8-⑦)
+            notice = f"\n\n[본문 잘림 — 전문 {trunc['original_size']}B: {fpath}]"
+            text = _clip(text, max(DEFER_BODY_MAX - len(notice), 0)) + notice
         disp = _active_dispatch(con, from_bot)
+        if dispatch:
+            disp = next((d for d in _worker_dispatches(con, from_bot) if d["id"] == dispatch), None)
+            if not disp:
+                return {"ok": False, "error": f"--dispatch {dispatch!r} 는 {from_bot} 가 워커로 받은 활성 배분이 아니다(없음·소유 불일치·종결)",
+                        "from_bot": from_bot,
+                        "candidates": [d["id"] for d in _worker_dispatches(con, from_bot) if d["status"] in ("open", "blocked")]}
+        elif status:
+            opened = [d["id"] for d in _worker_dispatches(con, from_bot) if d["status"] in ("open", "blocked")]
+            if len(opened) >= 2:
+                return {"ok": False, "from_bot": from_bot, "candidates": opened,
+                        "error": f"열린 배분이 {len(opened)}개라 --status 보고의 귀속 대상을 정할 수 없다 — "
+                                 f"--dispatch <id> 로 지정: {', '.join(opened)}"}
+        # prj3#Issue1041 — status 없는 defer(Stop 경로)는 «어느 배분의 일인가» 를 말하지 않았다. 열린 배분이 ≥2 인데
+        #   정렬 1순위(ds[0])를 corr 로 잡으면 sweep 이 그 본문의 커밋 해시를 무관한 배분의 증적으로 쓴다(Issue982 는 --status 만 막았다).
+        #   수신자 판정(disp)은 그대로 두고 귀속(attrib)만 비운다. 명시 --dispatch·열린 배분 1개는 종전대로.
+        attrib = disp
+        if not dispatch and not status and disp:
+            opened_n = sum(1 for d in _worker_dispatches(con, from_bot) if d["status"] in ("open", "blocked"))
+            if opened_n >= 2:
+                attrib = None
         origin = _origin_request(con, from_bot, from_session)
         # prj3#Issue749 ⑤ — 미종결 질문이 있으면 새 인계를 만들지 않고 그 질문에 덧붙인다.
         #   2차 Stop(«도구 없음» 등)이 질문을 덮는 두 번째 요청이 되어 사람이 엉뚱한 것에 답했다.
@@ -773,14 +891,19 @@ def defer(from_bot="", from_session="", body="", transcript="", spawn=True, stat
         con.close()
     if is_q:
         # 끝난 말(defer)이 아니라 **진행 중 결정 요구**다 — 매니저 인박스가 아니라 사람이 있는 세션으로
-        return ask_question(from_bot, from_session, text, is_q.get("options") or [], disp, spawn=spawn)
+        qout = ask_question(from_bot, from_session, text, is_q.get("options") or [], disp, spawn=spawn)
+        qout.update({k: v for k, v in trunc.items() if k in ("truncated", "original_size", "full_path")})
+        return qout
     # 상관 id 는 보고가 «어느 일» 의 것인가 — 요청자에게 가면 그 요청, 그 밖은 활성 배분(Issue791)
-    corr = origin["id"] if route == "requester" else (disp["id"] if disp else None)
+    corr = origin["id"] if route == "requester" else (attrib["id"] if attrib else None)
     extra = dict(_state().body_stamp() or {})         # prj3#Issue757 T15 ⑥ — 어느 몸체(세션·흐름)가 올렸나
-    if disp:
-        extra["dispatch_id"] = disp["id"]              # prj3#Issue929 — 요청자 경로(corr=요청 id)로 가도 배분과 짝이 남는다
+    if attrib:
+        extra["dispatch_id"] = attrib["id"]              # prj3#Issue929 — 요청자 경로(corr=요청 id)로 가도 배분과 짝이 남는다
     if status:
         extra["report_status"] = status                # prj3#Issue929 — sweep 의 topic 배분 완료 증적
+    if trunc["truncated"]:                             # prj3#Issue1078 — 수신측이 전문을 복원하는 경로
+        extra.update({"body_full_path": trunc["full_path"], "body_sha256": trunc["sha256"],
+                      "body_original_size": trunc["original_size"]})
     out = send(to, text, from_bot, from_session, req_kind="defer", prj=prj,
                corr_id=corr, spawn=spawn, extra=extra or None)
     if out.get("ok"):
@@ -790,7 +913,10 @@ def defer(from_bot="", from_session="", body="", transcript="", spawn=True, stat
         finally:
             con.close()
     out.update({"action": "defer", "from_bot": from_bot, "route": route, "to": to,
-                "dispatch": disp["id"] if disp else None, "origin": origin["id"] if origin else None})
+                "dispatch": attrib["id"] if attrib else None, "origin": origin["id"] if origin else None,
+                "truncated": trunc["truncated"]})
+    if trunc["truncated"]:
+        out.update({"original_size": trunc["original_size"], "full_path": trunc["full_path"]})
     return out
 
 
@@ -1160,19 +1286,121 @@ def questions_for(session_id):
     return {"ok": True, "action": "questions", "session_id": session_id, "count": len(items), "items": items}
 
 
+# 🔧 prj3#Issue989 — 배분 완료를 **의뢰 세션**에 알린다(질문 중계 Issue749 의 완료 짝).
+#   prj7#Issue51 실측(2026-10-08): 사람 세션이 총괄 명의로 낸 배분이 끝났는데 그 세션은 몰랐다 — 팀장 상향 보고는
+#   lease 만료 뒤 자동 기동된 총괄 `-p` 몸체들이 받아 처리했고, sweep 은 done 전이와 hub SSE 만 했다.
+#   대상은 **최상위** 배분뿐이다 — 의뢰 세션이 상속이 아니라 직접 기록된 것(`requester_via` session·explicit·request).
+#   하위 배분(dispatch·lineage 상속)까지 알리면 팬아웃마다 사람 세션이 울린다(Issue438 mq 범람과 같은 꼴).
+#   전달은 질문과 같은 두 갈래 — 마커 `d-<sid>` → 넛지가 다음 턴 경계에 1회 주입 · 유휴 세션 대비 음성 1회. mq 는 쓰지 않는다
+#   (완료는 사람 조치가 필요 없는 로그 — Issue438). 표지 `payload.requester_notice`(`at` 통지 · `shown_at` 표시)가 멱등을 진다.
+NOTICE_TOP_VIA = ("session", "explicit", "request")
+
+
+def _dmark(sid, present):
+    if not (sid and all(c.isalnum() or c in "-_" for c in sid)):
+        return
+    p = os.path.join(_handoff_dir(), f"d-{sid}")
+    try:
+        if present:
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            open(p, "a").close()
+        elif os.path.exists(p):
+            os.remove(p)
+    except OSError:
+        pass
+
+
+def notify_requester_done(dispatch_ids, by_session=None):
+    """done 이 된 최상위 배분을 의뢰 세션에 통지 표지 + 마커 + 음성 1회. sweep(done)·`close` 가 부른다.
+    `by_session` = 종결한 세션 — 의뢰 세션 자신이 닫았으면 이미 아는 일이라 건너뛴다. 실패는 호출측이 stderr 로 드러낸다."""
+    ids = [i for i in (dispatch_ids or []) if i]
+    if not ids:
+        return {"ok": True, "notified": []}
+    now = int(time.time())
+    notified = []
+    con = _con()
+    try:
+        for jid in ids:
+            r = con.execute("SELECT status, payload FROM job WHERE id=? AND kind='fbot_dispatch'", (jid,)).fetchone()
+            if not r or r["status"] != "done":
+                continue
+            pl = _pl(r["payload"])
+            sid = pl.get("requester_session") or ""
+            if not sid or pl.get("requester_via") not in NOTICE_TOP_VIA or pl.get("requester_notice"):
+                continue
+            if by_session and by_session == sid:
+                continue
+            # 조건부 UPDATE 가 선점이다 — 동시 sweep·close 가 같은 배분을 두 번 알리지 않는다
+            cur = con.execute("UPDATE job SET payload = json_set(payload, '$.requester_notice', json(?))"
+                              " WHERE id=? AND json_extract(payload, '$.requester_notice') IS NULL",
+                              (json.dumps({"at": now}), jid))
+            if cur.rowcount == 1:
+                notified.append({"id": jid, "session": sid, "what": pl.get("issue") or pl.get("topic") or jid,
+                                 "prj": pl.get("prj"), "worker": pl.get("worker_bot_id")})
+    finally:
+        con.close()
+    for sid in {n["session"] for n in notified}:
+        _dmark(sid, True)
+    if notified:
+        _say_alert("핀봇 배분 완료 — " + ", ".join(str(n["what"])[:30] for n in notified[:3]))
+    return {"ok": True, "notified": notified}
+
+
+def done_notices_for(session_id, consume=True, limit=10):
+    """이 세션이 받을 배분 완료 통지 — 넛지 hook 의 조회. `consume` 이면 표시 표지(`shown_at`)를 남기고 남은 것이 없을 때
+    마커를 지운다(1회 표시 — 질문과 달리 답할 것이 없다). 각 항목에 워커의 **마지막 상향 보고** 본문을 싣는다(corr_id = 배분 id)."""
+    if not session_id:
+        return {"ok": True, "items": []}
+    con = _con()
+    try:
+        rows = con.execute(
+            "SELECT id, payload, result FROM job WHERE kind='fbot_dispatch' AND status='done'"
+            " AND json_extract(payload,'$.requester_session')=?"
+            " AND json_extract(payload,'$.requester_notice.at') IS NOT NULL"
+            " AND json_extract(payload,'$.requester_notice.shown_at') IS NULL"
+            " ORDER BY created_at LIMIT ?", (session_id, limit)).fetchall()
+        items = []
+        for r in rows:
+            pl, res = _pl(r["payload"]), _pl(r["result"])
+            last = con.execute("SELECT json_extract(payload,'$.body') FROM job WHERE kind=?"
+                               " AND json_extract(payload,'$.corr_id')=? AND json_extract(payload,'$.from')=?"
+                               " ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                               (KIND, r["id"], pl.get("worker_bot_id") or "")).fetchone()
+            items.append({"id": r["id"], "what": pl.get("issue") or pl.get("topic") or "", "prj": pl.get("prj"),
+                          "worker": pl.get("worker_bot_id"), "role": pl.get("role"),
+                          "evidence": res.get("evidence"), "last_report": (last[0] if last else "") or ""})
+        if consume and items:
+            now = int(time.time())
+            con.execute("BEGIN IMMEDIATE")
+            for it in items:
+                con.execute("UPDATE job SET payload = json_set(payload, '$.requester_notice.shown_at', ?) WHERE id=?",
+                            (now, it["id"]))
+            con.execute("COMMIT")
+        left = con.execute(
+            "SELECT 1 FROM job WHERE kind='fbot_dispatch' AND status='done'"
+            " AND json_extract(payload,'$.requester_session')=?"
+            " AND json_extract(payload,'$.requester_notice.at') IS NOT NULL"
+            " AND json_extract(payload,'$.requester_notice.shown_at') IS NULL LIMIT 1", (session_id,)).fetchone()
+    finally:
+        con.close()
+    if consume and not left:
+        _dmark(session_id, False)   # 소비 완료·낡은 마커 자가 치유
+    return {"ok": True, "action": "done-notices", "session_id": session_id, "count": len(items), "items": items}
+
+
 def _resume_prompt(task, q, a, status, disp_id, qid=""):
-    """재기동 프롬프트 — **한 줄·짧게**. fpm-do send-keys 는 약 1,100바이트에서 조용히 잘린다(Issue416 실측,
-    한글 1자 = 3바이트)에 규약 꼬리(~450바이트)가 붙는다. 그래서 답 요지만 싣고 전문은 원장 조회 명령으로 넘긴다."""
+    """재기동 프롬프트 — **한 줄**(생존 봇 창 주입은 개행을 제출로 읽는다). 종전엔 fpm-do send-keys 1KB 절단 때문에
+    답을 100자로 잘랐다 — prj3#Issue1047 로 한도가 사라져(prj3#Issue1047_1) 답을 넉넉히 싣는다. 상한은 fbot-lead PROMPT_BUDGET 이 건다."""
     one = lambda t, n: " ".join((t or "").split())[:n]
-    ans = f"사람 답: «{one(a, 100)}»" if status == "done" else \
-        f"사람이 답하지 않기로 함: «{one(a, 60)}» — 질문 없이 가능한 범위만 하고 보고"
-    return (f"[질문 답변 재개 — prj3#Issue749] 원 작업: {one(task, 50) or '(미기록)'}. {ans}. "
+    ans = f"사람 답: «{one(a, 1000)}»" if status == "done" else \
+        f"사람이 답하지 않기로 함: «{one(a, 500)}» — 질문 없이 가능한 범위만 하고 보고"
+    return (f"[질문 답변 재개 — prj3#Issue749] 원 작업: {one(task, 300) or '(미기록)'}. {ans}. "
             + (f"질문·답 전문: python3 ~/.claude/hooks/fbot-inbox.py qa --id {qid} — " if qid else "")
             + "답을 반영해 원 작업을 이어서 끝낸다.")
 
 
 def qa(req_id):
-    """질문·답 전문 조회 — 재기동된 봇이 짧은 프롬프트 너머의 원문을 읽는 자리."""
+    """질문·답·요청 전문 조회 — 재기동된 봇이 짧은 프롬프트 너머의 원문을 읽는 자리."""
     con = _con(readonly=True)
     try:
         r = con.execute("SELECT status, payload, result FROM job WHERE id=? AND kind=?", (req_id, KIND)).fetchone()
@@ -1182,7 +1410,9 @@ def qa(req_id):
         return {"ok": False, "error": f"질문 없음: {req_id}"}
     pl, res = _pl(r[1]), (_pl(r[2]) if r[2] else {})
     if pl.get("kind") != "question":
-        return {"ok": False, "error": f"질문이 아니다: {req_id} (kind={pl.get('kind')})"}
+        # prj3#Issue1026 — 잘림 안내(fit_prompt)가 요청 id 로도 이 명령을 가리킨다 → 요청은 전문(body·from·status·result)을 낸다
+        return {"ok": True, "action": "qa", "id": req_id, "status": r[0], "from": pl.get("from"), "kind": pl.get("kind"),
+                "body": pl.get("body"), "prj": pl.get("prj"), "corr_id": pl.get("corr_id"), "result": res or None}
     return {"ok": True, "action": "qa", "id": req_id, "status": r[0], "from": pl.get("from"),
             "task": pl.get("task"), "dispatch": pl.get("dispatch"), "question": pl.get("body"),
             "options": pl.get("options") or [], "followups": pl.get("followups") or [],
@@ -1250,22 +1480,107 @@ def inbox(bot_id, status="open", limit=20):
             "SELECT id, status, payload, result, created_at FROM job WHERE kind=?" + Q_TO_LEAD +
             (" AND status=?" if status else "") + " ORDER BY created_at",
             [KIND, bot_id] + ([status] if status else [])).fetchall()
-        rows = sorted(rows, key=lambda r: r["created_at"])[:limit]
+        rows = sorted(rows, key=lambda r: r["created_at"])
     finally:
         con.close()
+    # prj3#Issue1027 — 절단은 최신 쪽을 남긴다(종전엔 오래된 앞 limit 건만 → 새 요청이 사라졌다). 표시는 시간순,
+    #   잘렸으면 total·truncated·oldest_id 로 알린다. limit<=0 은 전체
+    total = len(rows)
+    oldest_id = rows[0]["id"] if rows else None
+    truncated = bool(limit and limit > 0 and total > limit)
+    if truncated:
+        rows = rows[-limit:]
     out = []
     for r in rows:
         try:
             pl = json.loads(r["payload"] or "{}")
         except ValueError:
             pl = {}
-        out.append({"id": r["id"], "status": r["status"], "from": pl.get("from"),
-                    "kind": pl.get("kind"), "body": pl.get("body"),
-                    "prj": pl.get("prj"), "corr_id": pl.get("corr_id"),
-                    "created_at": r["created_at"],
-                    "result": json.loads(r["result"]) if r["result"] else None})
-    return {"ok": True, "action": "inbox", "bot_id": bot_id, "count": len(out),
-            "items": out}
+        item = {"id": r["id"], "status": r["status"], "from": pl.get("from"),
+                "kind": pl.get("kind"), "body": pl.get("body"),
+                "prj": pl.get("prj"), "corr_id": pl.get("corr_id"),
+                "created_at": r["created_at"],
+                "result": json.loads(r["result"]) if r["result"] else None}
+        # 열린 요청의 사람 결정 대기 마커가 종결된 mq 를 가리키면 표지 — 결정을 못 받았을 수 있다(stale_decisions 와 같은 판정)
+        if r["status"] == "open" and _needs_human_stale(((item["result"] or {}).get("needs_human"))):
+            item["needs_human_stale"] = True
+        out.append(item)
+    res = {"ok": True, "action": "inbox", "bot_id": bot_id, "count": len(out), "total": total,
+           "truncated": truncated, "oldest_id": oldest_id, "items": out}
+    if truncated:
+        res["note"] = f"{total}건 중 {len(out)}건(최신) — 전체는 --limit 0"
+    return res
+
+
+REPLY_WINDOW_SECS = 7 * 86400      # 회신 표시 창 — 이보다 오래된 회신은 출근 brief 에 싣지 않는다
+
+
+def replies(bot_id, consume=True, limit=10):
+    """내가 **보낸** 요청(`payload.from`)에 달린 회신 — 상신자의 출근 brief 조회.
+
+    회신은 받는 쪽 요청의 `job.result` 에 붙는다(`reply`). 상신자 쪽에는 «내 앞 미처리»(`pending`)만 실려서 팀장이 자기
+    상신이 done 으로 닫힌 것을 어디서도 못 봤다(prj9t fbot-lead-ftyping 이 done 회신된 상신 4건을 계속 «H 대기» 로 보고).
+    `consume` 이면 표시 표지(`result.seen_at`)를 남겨 한 번만 싣는다 — `--peek` 은 남기지 않는다.
+    질문(kind=question)은 답이 곧 재개 신호라 제외한다."""
+    if not bot_id:
+        return {"ok": False, "error": "--bot-id 필요"}
+    now = int(time.time())
+    con = _con()
+    try:
+        rows = con.execute(
+            "SELECT id, owner, payload, result FROM job WHERE kind=? AND status IN ('done','rejected')"
+            " AND result IS NOT NULL AND json_extract(payload,'$.from')=?"
+            " AND COALESCE(json_extract(payload,'$.kind'),'')<>'question'"
+            " AND json_extract(result,'$.seen_at') IS NULL"
+            " AND COALESCE(json_extract(result,'$.at'),0)>=?"
+            " ORDER BY json_extract(result,'$.at') DESC, created_at DESC LIMIT ?",
+            (KIND, bot_id, now - REPLY_WINDOW_SECS, limit if limit and limit > 0 else -1)).fetchall()
+        items = []
+        for r in sorted(rows, key=lambda x: _pl(x["result"]).get("at", 0)):
+            pl, res = _pl(r["payload"]), _pl(r["result"])
+            items.append({"id": r["id"], "to": r["owner"], "kind": pl.get("kind"), "corr_id": pl.get("corr_id"),
+                          "prj": pl.get("prj"), "asked": (pl.get("body") or "")[:160],
+                          "status": res.get("status"), "by": res.get("by"), "at": res.get("at"),
+                          "body": res.get("body") or ""})
+        if consume and items:
+            con.execute("BEGIN IMMEDIATE")
+            for it in items:
+                con.execute("UPDATE job SET result=json_set(result,'$.seen_at',?) WHERE id=?", (now, it["id"]))
+            con.execute("COMMIT")
+    finally:
+        con.close()
+    return {"ok": True, "action": "replies", "bot_id": bot_id, "count": len(items), "items": items}
+
+
+def stale_decisions(bot_id, limit=10):
+    """사람 결정을 기다린다던 요청인데 **마커가 지목한 mq 가 이미 종결된** 것 — owner 의 출근 brief 조회.
+
+    묶음 mq 를 세션이 첫 항목만 처리해 confirmed 로 닫으면, 같은 mq 를 가리키던 나머지 요청은 `result.needs_human` 마커만 남은
+    채 열려 있다 — «대기 중» 으로 보이지만 아무도 묻지 않고 결정도 없다(2026-10-10 prj9t 사운드 예산, 총괄이 우연히 알아챘다).
+    닫는 쪽(ack)에서 묶음 항목 수를 문장으로 가늠하지 않고 **이쪽 상태**로 잡는다: 열린 요청 ∧ 마커 mq 종결(`_needs_human_stale`).
+    표시 표지를 남기지 않는다 — 재상신(`reply --needs-human … --reask`)하거나 done|rejected 로 닫을 때까지 매 출근 보인다."""
+    if not bot_id:
+        return {"ok": False, "error": "--bot-id 필요"}
+    con = _con(readonly=True)
+    con.row_factory = sqlite3.Row
+    try:
+        rows = con.execute(
+            "SELECT id, payload, result, created_at FROM job WHERE kind=? AND owner=? AND status='open'"
+            " AND result IS NOT NULL" + Q_NOT + " ORDER BY created_at", (KIND, bot_id)).fetchall()
+    finally:
+        con.close()
+    items = []
+    for r in rows:
+        nh = _pl(r["result"]).get("needs_human")
+        if not _needs_human_stale(nh):
+            continue
+        pl = _pl(r["payload"])
+        items.append({"id": r["id"], "from": pl.get("from"), "prj": pl.get("prj"), "asked": (pl.get("body") or "")[:160],
+                      "category": nh.get("category"), "mq": nh.get("mq"), "closed": _mq_closure(nh.get("mq"))})
+    total = len(items)
+    if limit and limit > 0:
+        items = items[:limit]
+    return {"ok": True, "action": "stale-decisions", "bot_id": bot_id, "count": len(items), "total": total, "items": items}
 
 
 STAFFING_KIND = "staffing"                     # prj3#Issue757 T13 — 팀장 → 총괄 인력 요청
@@ -1320,7 +1635,8 @@ def _status_after_reply(status):
     return "open" if status == "accepted" else "done"
 
 
-def reply(req_id, status, body="", by="", spawn=True, verdict=None, session=None, needs_human=None, same_mq=None):
+def reply(req_id, status, body="", by="", spawn=True, verdict=None, session=None, needs_human=None, same_mq=None,
+          defer_to_mq=False, reask=False):
     """응답은 **요청 레코드에 붙인다**(`job.result`). 새 kind 를 만들면 응답이 또
     하나의 요청처럼 보여 인박스가 오염된다 — *"처리할 것"* 과 *"처리된 것"* 이
     구분되지 않는다.
@@ -1361,16 +1677,24 @@ def reply(req_id, status, body="", by="", spawn=True, verdict=None, session=None
         # prj3#Issue773 — 수락하며 사람 결정을 기다리면 **같은 호출에서** 결정 채널에 올린다. 산문 «사용자 확인 후» 는
         #   hub 도 인박스도 해석하지 않는다(09-27 나래 18건이 open·accepted 로 굳었다). 등록이 실패하면 응답도 남기지 않는다
         nh = None
+        if reask and needs_human is None:
+            return {"ok": False, "error": "--reask 는 --needs-human 과 함께 쓴다 — 조건이 바뀐 사람 결정 재질의에만 쓴다",
+                    "id": req_id}
+        if reask and same_mq not in (None, "new"):
+            return {"ok": False, "error": "--reask 와 기존 --same-mq 는 모순이다 — 재질의는 새 mq 이므로 --same-mq 를 빼거나 new 를 쓴다",
+                    "id": req_id}
         if same_mq is not None and needs_human is None:
             return {"ok": False, "error": "--same-mq 는 --needs-human 과 함께 쓴다 — 사람 결정 대기를 기존 mq 에 잇는 인자다",
                     "id": req_id}
         if needs_human is not None:
             err = _needs_human_precheck(con, req_id, row, status, body, session)
+            if not err and not defer_to_mq:
+                err = _human_session_ask_first(con, row["owner"], session)
             if not err:
                 # prj3#Issue972 — 같은 결정이 이미 mq 에 걸려 있으면 잇는다(새 [컨펌]·총괄 상신 없음)
                 nh, err = _same_decision(needs_human, body, qpl, same_mq)
             if not err and nh is None:
-                nh, err = _raise_to_human(con, req_id, row["owner"], qpl, needs_human, body, spawn)
+                nh, err = _raise_to_human(con, req_id, row["owner"], qpl, needs_human, body, spawn, reask)
             if err:
                 return {"ok": False, "error": err, "id": req_id}
         res = {"status": status, "body": body, "by": by or row[0], "at": int(time.time())}
@@ -1387,7 +1711,7 @@ def reply(req_id, status, body="", by="", spawn=True, verdict=None, session=None
             try:
                 cur = con.execute("SELECT result FROM job WHERE id=?", (req_id,)).fetchone()
                 prev = _pl(cur["result"]) if cur and cur["result"] else {}
-                err = _claim_error(scope, req_id, session, prev)
+                err = _claim_error(scope, req_id, session, prev, con)
                 if err:
                     con.execute("ROLLBACK")
                     return {"ok": False, "error": err, "id": req_id}
@@ -1434,15 +1758,60 @@ def _reply_identity_error(owner, qpl, by):
     return None
 
 
-def _claim_error(scope, req_id, session, prev):
-    """몸체 claim 판정(prj3#Issue757 T15 ⑤) — 거부 사유 또는 None. reply 트랜잭션과 상신 사전 판정(Issue773)이 같이 쓴다."""
+def _claim_error(scope, req_id, session, prev, con=None):
+    """몸체 claim 판정(prj3#Issue757 T15 ⑤) — 거부 사유 또는 None. reply 트랜잭션·상신 사전 판정(Issue773)·
+    dispatch(Issue997)가 같이 쓴다. 집은 몸체 판정은 `request_claimer` 한 곳."""
     owner_flow = next((b for b in scope if b["flow"] == req_id and b["session_id"] != session), None)
-    claimer = prev.get("by_session")
     if owner_flow:
         return f"이 요청은 다른 몸체({(owner_flow['session_id'] or '')[:8]})의 흐름이다 — 그 몸체가 처리한다"
-    if claimer and claimer != session and any(b["session_id"] == claimer for b in scope):
-        return f"다른 몸체({claimer[:8]})가 이미 집은 요청이다 — 요청 하나에 몸체 하나(prj3#Issue757 T15)"
+    claimer = request_claimer(con, req_id, scope, session, prev)
+    if claimer:
+        return f"다른 몸체({claimer[:8]})가 이미 집은 요청이다 — 요청 하나에 몸체 하나(prj3#Issue757 T15·Issue997)"
     return None
+
+
+REQ_REF_RE = re.compile(r"fbotreq-\d+-[0-9a-f]{8}")
+
+
+def request_claimer(con, req_id, scope, session, prev=None):
+    """요청을 집은 **다른** 살아 있는 몸체의 세션 — 없으면 None (prj3#Issue997 ① claim 판정 한 곳).
+
+    집음 = accepted 등 응답의 `result.by_session` **또는** 활성 배분이 그 요청을 처리 중 — `payload.request_id`
+    (`dispatch --request`) 이거나 topic 에 요청 id 를 실었고(`--request` 없이 배분한 실측 2026-10-09) 그 배분의
+    `by_session` 이 살아 있는 몸체. 2026-10-09 나래 사람 결속 몸체 둘이 같은 요청을 3초 간격으로 각자 배분했다 —
+    가드가 `reply` 에만 있어 accepted 없이 dispatch 한 몸체를 아무도 막지 못했다. `requester_ref` 는 보지 않는다
+    (배분자 인박스의 임의 요청을 가리킬 수 있어 거짓 claim 이 된다). con 이 없으면 응답 기록만 본다."""
+    live = {b["session_id"] for b in scope if b.get("session_id") and b["session_id"] != session}
+    if not live:
+        return None
+    if prev is None and con is not None:
+        cur = con.execute("SELECT result FROM job WHERE id=?", (req_id,)).fetchone()
+        prev = _pl(cur[0]) if cur and cur[0] else {}
+    if (prev or {}).get("by_session") in live:
+        return prev["by_session"]
+    if con is None:
+        return None
+    for (sid,) in con.execute(
+            "SELECT json_extract(payload,'$.by_session') FROM job WHERE kind='fbot_dispatch' AND status IN (%s)"
+            " AND (json_extract(payload,'$.request_id')=? OR instr(COALESCE(json_extract(payload,'$.issue'),''), ?) > 0)"
+            " ORDER BY created_at" % ",".join("?" * len(DISPATCH_ACTIVE)), (*DISPATCH_ACTIVE, req_id, req_id)).fetchall():
+        if sid in live:
+            return sid
+    return None
+
+
+def dispatch_claim_error(con, req_id, by, session=None):
+    """배분이 잇는 요청(명시 `--request` 또는 topic 안 요청 id)을 다른 몸체가 집었으면 거부 사유 (prj3#Issue997 ①).
+    `by` 앞 요청이 아니거나 몸체 아닌 세션·스위치 꺼짐이면 None(종전) — 연결 자격은 `request_link_error` 가 본다."""
+    session = session if session is not None else os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    r = con.execute("SELECT owner, result FROM job WHERE id=? AND kind=?", (req_id, KIND)).fetchone()
+    if not r or r[0] != by:
+        return None
+    scope = _body_scope(con, by, session)
+    if scope is None:
+        return None
+    err = _claim_error(scope, req_id, session, _pl(r[1]) if r[1] else {}, con)
+    return f"요청 {req_id}: {err}" if err else None
 
 
 # ── 사람 결정 대기 (prj3#Issue773) ──────────────────────────────────────────────
@@ -1474,23 +1843,86 @@ def _needs_human_precheck(con, req_id, row, status, body, session):
         return f"이미 닫힌 요청: {req_id}"
     cur = con.execute("SELECT result FROM job WHERE id=?", (req_id,)).fetchone()
     prev = _pl(cur[0]) if cur and cur[0] else {}
-    if prev.get("needs_human"):
+    if prev.get("needs_human") and not _needs_human_stale(prev["needs_human"]):
         return f"이미 사람 결정 대기 중인 요청이다: {json.dumps(prev['needs_human'], ensure_ascii=False)}"
     scope = _body_scope(con, row["owner"], session)
-    return _claim_error(scope, req_id, session, prev) if scope is not None else None
+    return _claim_error(scope, req_id, session, prev, con) if scope is not None else None
+
+
+def _human_session_ask_first(con, owner, session):
+    """사람 세션이 `--needs-human` 을 부르면 mq 등록 전에 «이 세션에서 먼저 물어라» 로 돌려보낸다 — 거부 사유 또는 None (prj3#Issue1014).
+
+    «사람에게 지금 물을 수 있는 세션인가» 판정 **단일 지점**: 호출 세션이 사람 세션(`FPM_SESSION_ORIGIN≠pm-do` + 세션 id)이고
+    상신 봇의 결속 슬롯이 `form=session` 이면 사용자가 이 세션에서 응답 중이다 — mq 로만 올리면 같은 세션의 사용자를 건너뛴다
+    (2026-10-09 mq 20261009-105849-001). `-p` 몸체(origin=pm-do)·결속 없는 호출은 종전대로 mq. 부재 대비 기록이 필요하면
+    호출자가 `--defer-to-mq` 로 명시한다. 수면 플래그는 «지금 답하고 있는가» 를 말해 주지 않아 판정에 쓰지 않는다."""
+    if not session or os.environ.get("FPM_SESSION_ORIGIN") == "pm-do":
+        return None
+    r = con.execute("SELECT form FROM bot WHERE bot_id=?", (owner,)).fetchone()
+    if r is None or r[0] != "session":
+        return None
+    return ("사람 세션 호출이다 — mq 에 올리기 전에 **이 세션에서 먼저** 사용자에게 묻는다(평문 번호 목록 또는 AskUserQuestion). "
+            "답을 받으면 `--needs-human` 없이 `reply --status done|rejected` 로 닫는다. 사용자 부재로 결정 기록만 남겨야 하면 "
+            "`--defer-to-mq` 를 명시해 다시 부른다(prj3#Issue1014 — 응답을 기록하지 않았다)")
 
 
 MQ_ID_RE = re.compile(r"(?<!\d)(\d{8}-\d{6}-\d{3})(?!\d)")
 
 
-def _mq_open_confirm(mid, tag):
-    """미종결(`queue/<id>.json` 잔존) `[컨펌]` 항목이고 메시지에 `tag`(`[H:분류]`)가 있는가. 읽기 실패는 False.
-    큐 경로는 aoa-mq 서버와 같은 계약 — `AOA_MQ_DIR` 우선, 없으면 `~/.claude/data/aoa/mq` (prj3#Issue450)."""
+def _mq_queue_file(mid):
+    """미종결 mq 의 큐 파일 경로 — aoa-mq 서버와 같은 계약: `AOA_MQ_DIR` 우선, 없으면 `~/.claude/data/aoa/mq` (prj3#Issue450).
+    «미종결 = `queue/<id>.json` 잔존» 판정이 한 곳에서 나오게 `_mq_open_confirm`·`_mq_closed` 가 함께 쓴다."""
+    mq = os.environ.get("AOA_MQ_DIR") or os.path.join(os.path.expanduser("~"), ".claude", "data", "aoa", "mq")
+    return os.path.join(mq, "queue", f"{mid}.json")
+
+
+def _mq_closed(mid):
+    """mq 가 종결됐는가 — 큐 디렉토리는 있는데 `queue/<id>.json` 만 **없을 때** True. 단정하지 않는 쪽으로 기운다:
+    id 형식 불량·큐 디렉토리 부재(AOA_MQ_DIR 오설정)·권한 등 읽기 실패는 False."""
     if not mid or not MQ_ID_RE.fullmatch(str(mid)):
         return False
-    mq = os.environ.get("AOA_MQ_DIR") or os.path.join(os.path.expanduser("~"), ".claude", "data", "aoa", "mq")
+    path = _mq_queue_file(mid)
+    if not os.path.isdir(os.path.dirname(path)):
+        return False
     try:
-        with open(os.path.join(mq, "queue", f"{mid}.json"), encoding="utf-8") as fh:
+        os.stat(path)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
+def _mq_closure(mid):
+    """종결된 mq 의 마지막 상태 — `queue_done/<id>.json` 의 status·ack_ts·result 요약. 없거나 못 읽으면 None."""
+    if not mid or not MQ_ID_RE.fullmatch(str(mid)):
+        return None
+    path = os.path.join(os.path.dirname(os.path.dirname(_mq_queue_file(mid))), "queue_done", f"{mid}.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            d = json.load(fh) or {}
+    except (OSError, ValueError):
+        return None
+    if not isinstance(d, dict):
+        return None
+    return {"status": d.get("status"), "ack_ts": d.get("ack_ts"), "result": _clip(str(d.get("result") or ""), 240)}
+
+
+def _needs_human_stale(nh):
+    """요청에 남은 사람 결정 대기 마커가 낡았는가 — 마커가 지목한 mq 가 이미 종결됐으면 True.
+    묶음 mq 가 다른 결과(이슈 등록 등)로만 confirmed 종결되면 결정은 못 받았는데 마커는 종결된 mq 를 계속 지목해
+    재상신이 «이미 대기 중» 으로 막히고 `--reask` 도 그 앞에서 무효였다(총괄 fbotreq-1791634643-dfb638cb, 2026-10-10).
+    mq 를 지목하지 않는 마커(팀장 상신 `via` = 총괄 인박스 요청)는 종결 신호가 없어 낡았다고 보지 않는다."""
+    return isinstance(nh, dict) and _mq_closed(nh.get("mq"))
+
+
+def _mq_open_confirm(mid, tag):
+    """미종결(`queue/<id>.json` 잔존) `[컨펌]` 항목이고 메시지에 `tag`(`[H:분류]`)가 있는가. 읽기 실패는 False.
+    큐 경로는 `_mq_queue_file` (aoa-mq 서버와 같은 계약)."""
+    if not mid or not MQ_ID_RE.fullmatch(str(mid)):
+        return False
+    try:
+        with open(_mq_queue_file(mid), encoding="utf-8") as fh:
             msg = str((json.load(fh) or {}).get("message") or "")
     except (OSError, ValueError, AttributeError):
         return False
@@ -1525,7 +1957,7 @@ def _same_decision(category, body, qpl, same_mq):
     return None, None
 
 
-def _raise_to_human(con, req_id, owner, qpl, category, body, spawn):
+def _raise_to_human(con, req_id, owner, qpl, category, body, spawn, reask=False):
     """결정 채널에 올린다 → (needs_human 기록, 오류). 오류면 호출자가 응답을 기록하지 않는다."""
     cat = (category or "").strip()
     cats = _h_categories()
@@ -1539,10 +1971,18 @@ def _raise_to_human(con, req_id, owner, qpl, category, body, spawn):
         msg = (f"[컨펌] [H:{cat}] {_clip(body, 400)} — {owner} 가 인박스 요청 {req_id} 를 수락하고 사람 결정을 기다린다. "
                f"결정 뒤 총괄이 `fbot-inbox.py reply --id {req_id} --status done|rejected` 로 닫는다")
         try:
-            mid = _mq_confirm(msg, owner)
+            mid = _mq_confirm(msg, owner, reask, subject=prj)
+        except MqDecidedError as e:
+            return None, (f"mq [컨펌] 재상신 거부 — 이미 결정된 mq id={e.mid}, 결정 시각(ack_ts)={e.ack}. "
+                          "응답을 기록하지 않았다. 같은 결정이면 `reply --status done|rejected` 로 닫는다. "
+                          "조건이 바뀐 재질의면 `--reask` 를 붙여 다시 부른다. 자동 키는 이슈+H 분류 단위라 "
+                          "분류가 다르면 이 거부는 나지 않는다.")
         except RuntimeError as e:
             return None, f"mq [컨펌] 등록 실패 — 응답을 기록하지 않았다: {e}"
         return {"grade": "H", "category": cat, "mq": mid, "at": now}, None
+    if reask:
+        return None, ("--reask 는 mq [컨펌] 을 직접 올리는 총괄에만 쓴다 — 팀장은 총괄 상신 본문에 재질의임을 적는다. "
+                      "응답을 기록하지 않았다")
     chief = _chief_bot(con)
     if not chief:
         return None, "총괄 개체가 없다 — 봇의 H 는 총괄이 상신한다(decision-authority). 응답을 기록하지 않았다"
@@ -1576,32 +2016,54 @@ def close_fulfilled(dispatch_ids, by="sweep"):
     """닫힌 배분들 → 연결된 요청 종결. R 에 걸린 배분이 하나라도 살아 있거나 `done` 이 하나도 없으면(전부 취소) 둔다.
     반환 {"closed": [...], "kept": [...]} — 이미 닫힌 요청은 어느 쪽에도 넣지 않는다(멱등).
     `by` — 배분을 닫은 경로(sweep·close·cancel). 배분 종결 경로마다 부른다 — sweep 만 부르면 수동 `close` 로
-    끝난 요청이 accepted 로 굳는다(prj3#Issue816 실측 `fbotreq-1790627807-31b16ac3`)."""
+    끝난 요청이 accepted 로 굳는다(prj3#Issue816 실측 `fbotreq-1790627807-31b16ac3`).
+    prj3#Issue1002 — 연결 배분 계보에 재작업·reopen·풀리지 않은 반려가 남으면 둔다(`kept_why` 에 사유). 닫힌 배분의 조상에
+    걸린 요청도 판정한다 — 재작업 배분이 끝나면 반려로 열어 둔 조상 요청이 그때 닫힌다."""
     out = {"closed": [], "kept": []}
     ids = [d for d in (dispatch_ids or []) if d]
     if not ids:
         return out
     con = _con()
     try:
+        # prj3#Issue1002 — 닫힌 배분의 **조상** 배분에 걸린 요청도 본다. 재작업 배분은 반려된 하위 밑에 생겨 요청이 없다 —
+        #   재작업이 끝날 때 조상 요청을 다시 판정하지 않으면 반려로 열어 둔 요청이 accepted 로 굳는다
         reqs = []
         for d in ids:
-            r = con.execute("SELECT json_extract(payload,'$.request_id') FROM job WHERE id=? AND kind='fbot_dispatch'",
-                            (d,)).fetchone()
-            if r and r[0] and r[0] not in reqs:
-                reqs.append(r[0])
+            cur, hops = d, 0
+            while cur and hops < 20:
+                r = con.execute("SELECT json_extract(payload,'$.request_id'), json_extract(payload,'$.parent_dispatch_id'),"
+                                " json_extract(payload,'$.requester_ref') FROM job WHERE id=? AND kind='fbot_dispatch'",
+                                (cur,)).fetchone()
+                if not r:
+                    break
+                # prj3#Issue1017 ① — `requester_ref` 만 요청 id 인 배분도 그 요청의 연결 배분이다(범위가 여러 배분인 요청).
+                #   requester_ref 는 요청 id 가 아닐 수도 있다(지휘 배분 id 등) — 아래 `q` 조회가 요청 job 인지 거른다
+                for x in (r[0], r[2]):
+                    if x and x not in reqs:
+                        reqs.append(x)
+                cur, hops = r[1], hops + 1
+        st = _state() if reqs else None
         for rid in reqs:
             con.execute("BEGIN IMMEDIATE")
             try:
                 q = con.execute("SELECT owner, status, result FROM job WHERE id=? AND kind=?", (rid, KIND)).fetchone()
                 links = con.execute("SELECT id, status FROM job WHERE kind='fbot_dispatch'"
-                                    " AND json_extract(payload,'$.request_id')=? ORDER BY created_at, id",
-                                    (rid,)).fetchall()
+                                    " AND (json_extract(payload,'$.request_id')=? OR json_extract(payload,'$.requester_ref')=?)"
+                                    " ORDER BY created_at, id", (rid, rid)).fetchall()
                 if not q or q["status"] != "open":
                     con.execute("ROLLBACK")
                     continue
                 if any(l["status"] in DISPATCH_ACTIVE for l in links) or not any(l["status"] == "done" for l in links):
                     con.execute("ROLLBACK")
                     out["kept"].append(rid)
+                    continue
+                # prj3#Issue1002 ① — 연결 배분이 completed 여도 계보에 재작업·reopen·풀리지 않은 반려가 있으면 accepted 유지.
+                #   «하위 배분이 끝났다» 가 아니라 «요청이 끝났다» — 판정은 fbot-state `rework_pending` 한 곳
+                why = st.rework_pending(con, [l["id"] for l in links])
+                if why:
+                    con.execute("ROLLBACK")
+                    out["kept"].append(rid)
+                    out.setdefault("kept_why", {})[rid] = why
                     continue
                 prev = _pl(q["result"]) if q["result"] else {}
                 res = {"status": "done", "body": f"배분 {len(links)}건 완료로 종결", "by": by,
@@ -1703,6 +2165,57 @@ def _reply_question(con, req_id, asker, qpl, status, body, by, spawn):
     return out
 
 
+# ── 이 세션 몫 판정 (prj3#Issue1092) ───────────────────────────────────────────
+# 총괄은 prj 에 속하지 않는 단일 신원인데 세션은 cwd 로 prj 에 귀속된다. «이 세션 몫» 의 판정이 면마다 따로여서(hub·mq·보고)
+#   인박스 넛지만 그 판정이 없었다 — 타 prj 팀장 보고가 prj 구분 없이 매 턴 전개됐다. 판정은 아래 3개 함수 한 곳.
+#   재료가 없으면 접지 않는다(unknown → 전개 = 종전). 접는 것은 «정보성 보고(defer)» 뿐 — 결정이 필요한 것은 어느 prj 것이든 편다.
+FOLDABLE_KINDS = ("defer",)
+
+
+def prj_scope(item_prj, my_prj):
+    """요청의 prj 와 이 세션 prj 비교 → "mine" | "foreign" | "unknown". 표기는 `norm_prj` 로 맞춘다('9'·9·'prj9' 동일)."""
+    a, b = _PRJ.try_prj(item_prj), _PRJ.try_prj(my_prj)
+    if a is None or b is None:
+        return "unknown"
+    return "mine" if a == b else "foreign"
+
+
+def partition_by_scope(items, my_prj):
+    """인박스 항목을 (전개할 것, 접을 것) 으로 가른다. 접는 것 = 타 prj 의 정보성 보고(`defer`) 뿐, 순서 보존."""
+    shown, folded = [], []
+    for it in items:
+        if it.get("kind") in FOLDABLE_KINDS and prj_scope(it.get("prj"), my_prj) == "foreign":
+            folded.append(it)
+        else:
+            shown.append(it)
+    return shown, folded
+
+
+def session_prj(session_id, cwd_fallback=None):
+    """이 세션의 prj — **기동 cwd**(하네스 세션 파일 `sessions/<pid>.json`, session-inbox.sh 와 같은 근거 · Issue1076 ②)를
+    `_prj_of_cwd`(최장 접두)에 넣는다. 세션 파일이 없으면 `cwd_fallback`(기본 프로세스 cwd). 못 정하면 None."""
+    cwd = ""
+    sd = os.environ.get("CLAUDE_SESSIONS_DIR") or os.path.join(os.path.expanduser("~"), ".claude", "sessions")
+    best, best_m = None, -1.0
+    try:
+        for f in glob.glob(os.path.join(sd, "*.json")):
+            try:
+                d = json.load(open(f, encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(d, dict) and d.get("sessionId") == session_id and d.get("cwd"):
+                m = os.path.getmtime(f)
+                if m > best_m:
+                    best, best_m = d["cwd"], m
+    except OSError:
+        pass
+    cwd = best or (cwd_fallback if cwd_fallback is not None else os.getcwd())
+    if not cwd:
+        return None
+    prj, _why = _prj_of_cwd(cwd)
+    return _PRJ.try_prj(prj)
+
+
 def pending(bot_id=None, session_id=None, limit=10, viewer=None):
     """소비 3경로(출근·tick·결속 중)의 **공용 조회**. *"이 매니저(들) 앞에 아직 안 본 요청"*.
 
@@ -1738,10 +2251,11 @@ def pending(bot_id=None, session_id=None, limit=10, viewer=None):
         mgrs = [b["bot_id"] for b in bots if org.is_manager(b["role"])]
         items = []
         dispatching = []
+        claimed = []          # prj3#Issue997 ① — 다른 몸체가 집은 요청(조회자가 몸체일 때만)
         for m in mgrs:
             rows = con.execute(
                 "SELECT id, payload, created_at FROM job WHERE kind=? AND owner=?"
-                " AND status='open' AND result IS NULL" + Q_NOT + Q_NOT_DISPATCHING + " ORDER BY created_at",
+                " AND status='open' AND result IS NULL" + Q_UNANSWERED + " ORDER BY created_at",
                 (KIND, m)).fetchall()
             # prj3#Issue816 — 넛지에서 뺀 «배분 중» 요청은 따로 드러낸다(무엇에 걸려 있는지). ACK 여부 무관
             dispatching += [{"id": x[0], "to": m, "dispatch": x[1]} for x in con.execute(
@@ -1759,6 +2273,20 @@ def pending(bot_id=None, session_id=None, limit=10, viewer=None):
             if scope is not None:
                 theirs = {b["flow"] for b in scope if b["session_id"] != viewer_sid}
                 rows = [r for r in rows if r["id"] not in theirs]
+                # prj3#Issue997 ① — 다른 살아 있는 몸체가 집은 요청(accepted·처리 중 배분)은 넛지에서 빼고 그 몸체를 보인다
+                kept = []
+                for r in rows:
+                    sid = request_claimer(con, r["id"], scope, viewer_sid, {})
+                    if sid:
+                        claimed.append({"id": r["id"], "to": m, "by_session": sid})
+                    else:
+                        kept.append(r)
+                rows = kept
+                for x in con.execute("SELECT id, result FROM job WHERE kind=? AND owner=? AND status='open'"
+                                     " AND result IS NOT NULL ORDER BY created_at", (KIND, m)).fetchall():
+                    sid = request_claimer(con, x["id"], scope, viewer_sid, _pl(x["result"]))
+                    if sid:
+                        claimed.append({"id": x["id"], "to": m, "by_session": sid})
             rows = rows[:limit]
             for r in rows:
                 try:
@@ -1772,7 +2300,7 @@ def pending(bot_id=None, session_id=None, limit=10, viewer=None):
     finally:
         con.close()
     return {"ok": True, "action": "pending", "managers": mgrs, "count": len(items),
-            "items": items, "dispatching": dispatching}
+            "items": items, "dispatching": dispatching, "claimed": claimed}
 
 
 def escalate(older_than_min=30, apply=False):
@@ -1790,6 +2318,7 @@ def escalate(older_than_min=30, apply=False):
     con = _con()
     widened = []
     try:
+        # 질문 행도 읽어 공용 확대(widened_at, Issue749)해야 하므로 Q_NOT 은 SQL 에 안 쓰고 루프의 kind=="question" 분기에서 mq alert 만 제외 (Issue980)
         rows = con.execute(
             "SELECT id, owner, payload, created_at FROM job WHERE kind=? AND status='open'"
             " AND result IS NULL AND created_at<=?" + Q_NOT_DISPATCHING + " ORDER BY created_at", (KIND, cut)).fetchall()
@@ -1858,14 +2387,27 @@ def _mq_alert(message, from_bot="fbot-lead"):
     return p.stdout.strip()
 
 
+def _prj_of_cwd(cwd):
+    """cwd → `prjN` (aoa-mq-lib `aoa_mq_project_of_cwd` — 최장 접두). 실패면 ("", 사유). prj 귀속 판정의 **단일 지점**
+    (prj3#Issue1092 ① — 상신 target·세션 몫 판정·넛지가 같은 함수를 쓴다. 면마다 따로 파싱하지 않는다)."""
+    import subprocess
+    try:
+        p = subprocess.run(["bash", "-c", '. "$1" && aoa_mq_project_of_cwd "$2" && printf "%s" "$MQ_C_PRJ"',
+                            "_", MQ_LIB_SH, cwd], capture_output=True, text=True, timeout=10)
+        if p.returncode == 0:
+            return (p.stdout or "").strip(), ""
+        return "", f"lib rc={p.returncode} {(p.stderr or '').strip()[-120:]}"
+    except (OSError, subprocess.SubprocessError) as e:
+        return "", f"{type(e).__name__}: {e}"
+
+
 def _home_prj():
     """상신하는 봇 몸체의 거처 prj(`prjN`) — 해소 실패면 None + stderr 경고 (prj3#Issue925).
 
     판정은 **넛지 쪽과 같은 함수** aoa-mq-lib `aoa_mq_project_of_cwd`(최장 접두)다 — session-inbox 가 «내 prj»
-    를 그것으로 정하므로, 다른 판정(`fbot-lead.resolve_prj` 는 숫자 이름만·realpath)을 쓰면 `42a` 같은 거처에서
+    를 그것으로 정하므로, 다른 판정(`fbot-lead.resolve_prj` 는 realpath)을 쓰면 `42a` 같은 거처에서
     target 과 세션 prj 가 갈린다. lib 은 realpath 없이 비교하므로 논리 경로(`PWD`)를 우선 넘긴다.
     판정 수단이 깨져도(lib 부재·bash 실패) 상신은 막지 않는다 — 결정 채널이 닫히는 피해가 더 크다."""
-    import subprocess
     cwd = os.getcwd()
     pwd = os.environ.get("PWD")
     try:
@@ -1873,14 +2415,7 @@ def _home_prj():
             cwd = pwd
     except OSError:
         pass
-    prj, why = "", ""
-    try:
-        p = subprocess.run(["bash", "-c", '. "$1" && aoa_mq_project_of_cwd "$2" && printf "%s" "$MQ_C_PRJ"',
-                            "_", MQ_LIB_SH, cwd], capture_output=True, text=True, timeout=10)
-        prj = (p.stdout or "").strip() if p.returncode == 0 else ""
-        why = "" if p.returncode == 0 else f"lib rc={p.returncode} {(p.stderr or '').strip()[-120:]}"
-    except (OSError, subprocess.SubprocessError) as e:
-        why = f"{type(e).__name__}: {e}"
+    prj, why = _prj_of_cwd(cwd)
     if not prj:
         print(f"[fbot-inbox] ⚠️ 거처 prj 해소 실패(cwd={cwd}{' · ' + why if why else ''}) — mq [컨펌] 을 --target 없이"
               " 올린다(판정이 message·source 로 폴백 — 본문 첫 prjN 으로 갈 수 있다)", file=sys.stderr)
@@ -1888,7 +2423,17 @@ def _home_prj():
     return prj
 
 
-def _mq_confirm(message, bot):
+class MqDecidedError(RuntimeError):
+    """최근 결정된 mq 재상신 거부 정보 (Issue1059)."""
+
+    def __init__(self, mid, ack, raw):
+        self.mid = mid
+        self.ack = ack
+        self.raw = raw
+        super().__init__(raw)
+
+
+def _mq_confirm(message, bot, reask=False, subject=None):
     """봇 명의 mq `[컨펌]` 등록 (prj3#Issue773) — helper **호출만**(큐 직접 Write 금지). 반환 mq id.
     `source=<bot_id>@<cwd 이름>` — hub «사람 결정 대기»(prj1#Issue570)가 `@` 앞 전체 일치로 그 봇 카드에 싣는다.
     helper 의 `[H:분류]` 게이트(exit 5)가 등급 판정 단일 지점이다.
@@ -1902,13 +2447,24 @@ def _mq_confirm(message, bot):
         raise RuntimeError(f"aoa-mq enqueue helper 없음: {MQ_ENQUEUE_SH}")
     cmd = [MQ_ENQUEUE_SH, "--message", message, "--due", "+0d",
            "--source", f"{bot}@{os.path.basename(os.getcwd()) or 'fbot'}", "--from-bot", bot, "--json"]
+    if reask:
+        cmd.append("--reask")
     home = _home_prj()
     if home is not None:
         cmd += ["--target", home]
+    # prj3#Issue1092 ④ — 주제 prj(요청의 prj)를 필드로 보존. 본문 머리에 prjN 토큰이 없는 상신(20261010-212211-001 형태)도
+    #   hub «프로젝트» 열에서 주제를 잃지 않는다. 본문은 건드리지 않는다
+    sj = _PRJ.try_prj(subject)
+    if sj is not None:
+        cmd += ["--subject", f"prj{sj}"]
     p = subprocess.run(cmd, capture_output=True, text=True)
     if p.returncode != 0:
+        raw = (p.stderr or p.stdout).strip()[-300:]
+        if p.returncode == 7:
+            m = re.search(r"이미 있다: (\S+) \(ack_ts=([^)]*)\)", raw)
+            raise MqDecidedError(m.group(1) if m else "?", m.group(2) if m else "?", raw)
         why = "H 등급 게이트 거부" if p.returncode == 5 else f"exit {p.returncode}"
-        raise RuntimeError(f"{why}: {(p.stderr or p.stdout).strip()[-300:]}")
+        raise RuntimeError(f"{why}: {raw}")
     # 출력 계약 = `--json` 1줄(prj3#Issue811) — id 는 helper 가 채번값 그대로 준다. 종전 산문 «enqueued: <경로>» 를
     #   정규식·splitext 로 자르던 경로는 cwd 이름의 `.`(`.claude`)에 걸리는 함정이라 쓰지 않는다
     try:
@@ -1930,7 +2486,7 @@ def main(argv=None):
     s1.add_argument("--from-bot", default=os.environ.get("FBOT_ID", ""))   # prj3#Issue757 — 봇 몸체가 생략해도 발신자가 선다(defer 와 같은 기본값)
     s1.add_argument("--from-session", default=os.environ.get("CLAUDE_CODE_SESSION_ID", ""))
     s1.add_argument("--kind", default="ask", help="요청 종류(ask·staffing·role·defer …)")
-    s1.add_argument("--prj", type=int, default=None)
+    s1.add_argument("--prj", type=_PRJ.prj_arg, default=None)
     s1.add_argument("--corr-id", default=None)
     s1.add_argument("--no-spawn", action="store_true", help="적재만 — 퇴근 매니저 자동 기상 생략 (Issue734)")
     s7 = sub.add_parser("defer", help="응답 대기 봇의 응답을 배분 체인 위로 — 기원 요청 발신자·배분자 → 부모 매니저 → 총괄 (Issue736·791)")
@@ -1944,6 +2500,8 @@ def main(argv=None):
     s7.add_argument("--status", default=None,
                     help="받은 배분의 결과를 명시 — done(산출 완료)·incomplete(못 끝냄). sweep 이 topic 배분 완료 증적으로 "
                          "읽는다. 마지막 명시 status 가 done 이 아니면 «완료 미확인» (prj3#Issue929)")
+    s7.add_argument("--dispatch", default="",
+                    help="보고가 귀속될 배분 id — 열린 배분 ≥2 인데 --status 를 주면 필수 (prj3#Issue982)")
     s7.add_argument("--note", default="",
                     help="본문 앞에 붙일 표지 — Stop 가드의 «미완 백그라운드 퇴근» 알림 등 (prj3#Issue951)")
     s8 = sub.add_parser("rewake", help="퇴근 재기상 — 출근 후 도착 미응답이 남으면 다시 깨운다 (퇴근 훅, Issue748)")
@@ -1954,6 +2512,7 @@ def main(argv=None):
     s2 = sub.add_parser("inbox", help="인박스 조회")
     s2.add_argument("--bot-id", required=True)
     s2.add_argument("--status", default="open", help="빈 문자열이면 전체")
+    s2.add_argument("--limit", type=int, default=20, help="최신 N건만(0=전체, prj3#Issue1027)")
     s3 = sub.add_parser("reply", help="요청에 응답")
     s3.add_argument("--id", required=True)
     s3.add_argument("--status", required=True, help="accepted|rejected|done")
@@ -1967,13 +2526,17 @@ def main(argv=None):
     s3.add_argument("--same-mq", default=None, metavar="MQ_ID|new",
                     help="--needs-human 과 함께 — 같은 결정이 이미 걸린 미종결 [컨펌] mq 에 잇는다(새 mq 없음) · "
                          "new = 별개 결정 명시 신규. 본문이 같은 분류 미종결 [컨펌] 을 가리키면 둘 중 하나가 필수 (prj3#Issue972)")
+    s3.add_argument("--defer-to-mq", action="store_true",
+                    help="--needs-human 과 함께 — 사람 세션이어도 이 세션에서 묻지 않고 mq 에 올린다(사용자 부재 시 기록용, prj3#Issue1014)")
+    s3.add_argument("--reask", action="store_true",
+                    help="--needs-human 과 함께 — 조건이 바뀐 결정을 mq 에 명시 재상신한다 (Issue1059)")
     s3.add_argument("--session-id", default=None,
                     help="응답하는 몸체 세션(기본 env CLAUDE_CODE_SESSION_ID) — 관리직 다중 몸체 claim (prj3#Issue757 T15 ⑤)")
     sst = sub.add_parser("staffing", help="팀장 → 총괄 인력 요청 — 자리 밖 직능 (prj3#Issue757 T13)")
     sst.add_argument("--by", default=os.environ.get("FBOT_ID", ""))
     sst.add_argument("--role", required=True)
     sst.add_argument("--body", required=True)
-    sst.add_argument("--prj", type=int, default=None)
+    sst.add_argument("--prj", type=_PRJ.prj_arg, default=None)
     sst.add_argument("--no-spawn", action="store_true")
     s10 = sub.add_parser("qa", help="질문·답 전문 — 재기동된 봇이 읽는다 (Issue749)")
     s10.add_argument("--id", required=True)
@@ -1985,6 +2548,13 @@ def main(argv=None):
     s4.add_argument("--session-id", default=None)
     s4.add_argument("--viewer-session", default=os.environ.get("CLAUDE_CODE_SESSION_ID") or None,
                     help="조회자 세션(기본 env) — 관리직 몸체면 다른 몸체의 흐름 요청을 숨긴다 (prj3#Issue757 T15 ⑤)")
+    s8 = sub.add_parser("replies", help="내가 보낸 요청(상신·defer …)에 달린 회신 — 출근 brief 조회, 1회 표시")
+    s8.add_argument("--bot-id", default=os.environ.get("FBOT_ID", ""))
+    s8.add_argument("--peek", action="store_true", help="표시 표지를 남기지 않는다")
+    s8.add_argument("--limit", type=int, default=10)
+    s9 = sub.add_parser("stale-decisions", help="사람 결정을 기다린다던 요청인데 마커 mq 가 이미 종결된 것 — 출근 brief 조회(표지 없음)")
+    s9.add_argument("--bot-id", default=os.environ.get("FBOT_ID", ""))
+    s9.add_argument("--limit", type=int, default=10)
     s5 = sub.add_parser("escalate", help="임계 초과 미처리 요청을 aoa-mq alert (tick 경로)")
     s5.add_argument("--older-than-min", type=int,
                     default=int(os.environ.get("FBOT_INBOX_ESCALATE_MIN") or 30))
@@ -1994,15 +2564,19 @@ def main(argv=None):
     if a.cmd == "send":
         out = send(a.to, a.body, a.from_bot, a.from_session, a.kind, a.prj, a.corr_id, spawn=not a.no_spawn)
     elif a.cmd == "defer":
-        out = defer(a.from_bot, a.from_session, a.body, a.transcript, spawn=not a.no_spawn, status=a.status, note=a.note)
+        out = defer(a.from_bot, a.from_session, a.body, a.transcript, spawn=not a.no_spawn, status=a.status, note=a.note, dispatch=a.dispatch)
     elif a.cmd == "wake-pending":
         out = wake_pending(a.apply)
     elif a.cmd == "rewake":
         out = rewake(a.bot_id, a.wait)
     elif a.cmd == "inbox":
-        out = inbox(a.bot_id, a.status)
+        out = inbox(a.bot_id, a.status, a.limit)
     elif a.cmd in ("pending", "list"):
         out = pending(a.bot_id, a.session_id, viewer=a.viewer_session)
+    elif a.cmd == "replies":
+        out = replies(a.bot_id, consume=not a.peek, limit=a.limit)
+    elif a.cmd == "stale-decisions":
+        out = stale_decisions(a.bot_id, limit=a.limit)
     elif a.cmd == "escalate":
         out = escalate(a.older_than_min, a.apply)
     elif a.cmd == "questions":
@@ -2013,7 +2587,7 @@ def main(argv=None):
         out = staffing(a.by, a.role, a.body, a.prj, spawn=not a.no_spawn)
     else:
         out = reply(a.id, a.status, a.body, a.by, spawn=not a.no_spawn, verdict=a.verdict, session=a.session_id,
-                    needs_human=a.needs_human, same_mq=a.same_mq)
+                    needs_human=a.needs_human, same_mq=a.same_mq, defer_to_mq=a.defer_to_mq, reask=a.reask)
     print(json.dumps(out, ensure_ascii=False, indent=2))
     return 0 if out.get("ok") else 1
 

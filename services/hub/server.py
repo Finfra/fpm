@@ -1040,6 +1040,66 @@ def _normalize_mermaid_runtime(body: bytes) -> bytes:
 #   와 동일 철학으로 서버가 단일 권위로 강제한다: `<header>` 엘리먼트는 있는데 그것을
 #   스타일하는 `header{` 규칙이 없으면 canonical 헤더 CSS 를 `<head>` 에 주입한다.
 #   (이미 `header{` 규칙이 있으면 저작본을 존중하고 no-op.)
+# Issue616_6: 표시 계층 경로 축약 — 사용자 홈 절대경로(`/Users/<이름>/…`)가 화면에 그대로 나가면
+#   사용자 이름이 제품 표면에 노출된다. 표시 문자열에서만 `~` 로 줄인다(링크·기능이 쓰는 값은 건드리지 않는다).
+def _tilde_home(text):
+    """문자열 속 홈 디렉토리 접두를 `~` 로. 형제 접두(`/Users/xx` vs `/Users/xxy`)는 경계로 거른다."""
+    if not isinstance(text, str) or not text:
+        return text
+    home = os.path.expanduser("~").rstrip("/")
+    if not home or home == "/":
+        return text
+    return re.sub(re.escape(home) + r"(?![\w.-])", "~", text)
+
+
+_HTML_RAW_BLOCK_RE = re.compile(rb"(<script\b.*?</script>|<style\b.*?</style>)", re.IGNORECASE | re.DOTALL)
+_HTML_TEXT_NODE_RE = re.compile(rb">([^<>]+)<")
+
+
+def _tilde_home_html(body: bytes) -> bytes:
+    """HTML 의 **보이는 텍스트 노드**만 홈 경로를 `~` 로. 속성(href·title·data-*)과 script·style 은 보존 —
+    링크·복사·에디터 열기가 실제 경로를 쓰기 때문이다."""
+    home = os.path.expanduser("~").rstrip("/").encode("utf-8")
+    if not home or home == b"/" or home not in body:
+        return body
+    pat = re.compile(re.escape(home) + rb"(?![\w.-])")
+    out = []
+    for part in _HTML_RAW_BLOCK_RE.split(body):
+        if part[:7].lower() == b"<script" or part[:6].lower() == b"<style":
+            out.append(part)
+        else:
+            out.append(_HTML_TEXT_NODE_RE.sub(lambda m: b">" + pat.sub(b"~", m.group(1)) + b"<", part))
+    return b"".join(out)
+
+
+# Issue616_9: 초기 로드 무게 — /hub 228KB·/boards 712KB 는 거의 텍스트라 gzip 으로 1/4~1/5 이다.
+#   1KB 미만은 압축 이득이 헤더 비용보다 작아 그대로 둔다. 클라이언트가 gzip 을 받는다고 밝힌 경우만.
+_GZIP_MIN_BYTES = 1024
+
+
+def _maybe_gzip(body: bytes, accept_encoding: str):
+    """(본문, Content-Encoding|None). Accept-Encoding 에 gzip 이 있고 본문이 충분히 클 때만 압축."""
+    import gzip as _gz
+    if len(body) < _GZIP_MIN_BYTES:
+        return body, None
+    if not re.search(r"(^|[\s,])gzip(\s*;\s*q=(?!0(\.0*)?\b)[0-9.]+)?\s*(,|$)", accept_encoding or "", re.IGNORECASE):
+        return body, None
+    return _gz.compress(body, compresslevel=5), "gzip"
+
+
+# Issue616_5: 핀봇 카드 본문 — 사람용 한 줄. prj3#Issue1011 이 배분 payload 에 `summary` 를 기록하면 그것을 우선,
+#   없으면(옛 배분·옛 hooks) topic 에서 위임 규약 꼬리와 «topic 잘림» 안내를 걷어 폴백한다.
+_FBOT_TOPIC_NOISE_RE = re.compile(r"\s*(?:—\s*)?topic 잘림:.*$|\s*\[Issue\d+ [^\]]*규약\].*$", re.DOTALL)
+
+
+def _fbot_task_line(text, summary=None) -> str:
+    s = str(summary or "").strip()
+    if s:
+        return s
+    t = _FBOT_TOPIC_NOISE_RE.sub("", str(text or "")).strip()
+    return t
+
+
 _HEADER_EL_RE = re.compile(rb"<header\b", re.IGNORECASE)
 _HEADER_CSS_RE = re.compile(rb"header\s*\{", re.IGNORECASE)
 HUB_HEADER_CSS = (
@@ -1054,6 +1114,12 @@ HUB_HEADER_CSS = (
     b"  display: inline-flex; align-items: center; line-height: 1; color: #1a1a1a;"
     b"  text-decoration: none; cursor: pointer; white-space: nowrap; background: rgba(0,0,0,0.08);"
     b"  border: 1px solid rgba(0,0,0,0.15); padding: 0.2rem 0.6rem; border-radius: 6px; font-size: 0.85rem; }"
+    b"header .hub-nav { display: flex; align-items: center; gap: 0.3rem; flex: 0 0 auto; flex-wrap: wrap; }"
+    b"header .hub-nav a { display: inline-flex; align-items: center; line-height: 1; color: #1a1a1a;"
+    b"  text-decoration: none; white-space: nowrap; background: rgba(0,0,0,0.05);"
+    b"  border: 1px solid rgba(0,0,0,0.12); padding: 0.2rem 0.55rem; border-radius: 6px; font-size: 0.8rem; }"
+    b"header .hub-nav a:hover { background: rgba(0,0,0,0.16); text-decoration: underline; }"
+    b"header .hub-nav a[aria-current=page] { background: rgba(0,0,0,0.18); font-weight: 600; }"
     b"header .copy-link, header .close-btn { justify-content: center; padding: 0.2rem 0.5rem; }"
     b"header .close-btn { margin-left: 0.6rem; }"
     b"header .close-btn:hover { background: rgba(200,0,0,0.18); }"
@@ -2439,6 +2505,67 @@ ISSUE_MAP_NAME = "Issue_map.htm"
 #   gitignore 대상(재생성물)이라 부재가 정상 상태일 수 있어 404 는 재생성 안내로 응답한다.
 PROJECTS_MAP_NAME = "Projects_map.htm"
 PROJECTS_MAP_BUILDER = ".claude/skills/projects-map/build_projects_map.py"
+
+
+# Issue631: projects-map «프로젝트 그룹» 패널 — 정본은 `data/groups.yml` 하나, 읽기·쓰기 모두 `sh/pm-group`
+#   (스키마 검증·원자 교체)을 경유한다. 서버가 groups.yml 을 직접 쓰지 않는다 — 검증이 갈라지지 않게.
+_PMG_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
+_PMG_ID_RE = re.compile(r"^[0-9]+[a-z]?[0-9]*$")
+
+
+def _pm_group_run(base: str, args: list) -> tuple:
+    """pm-group 1회 실행 → (rc, stdout, stderr 사유). 타임아웃·실행 실패는 rc 124/127."""
+    exe = os.path.join(base, "sh", "pm-group")
+    if not os.path.isfile(exe):
+        return 127, "", f"pm-group 없음: {exe}"
+    try:
+        r = subprocess.run([sys.executable, exe, *args], capture_output=True, text=True,
+                           timeout=10, env=dict(os.environ, FPM_BASE=base))
+    except subprocess.TimeoutExpired:
+        return 124, "", "pm-group 타임아웃(10s)"
+    except OSError as e:
+        return 127, "", f"pm-group 실행 실패: {e}"
+    err = (r.stderr or "").strip().replace("❌ pm-group: ", "")
+    return r.returncode, r.stdout, err
+
+
+def projects_map_groups_read(base: str = None) -> tuple:
+    """GET /projects-map/groups → (status, {groups:{name:{desc,members}}, projects:{id:name}})."""
+    rc, out, err = _pm_group_run(base or REPO_ROOT, ["--json"])
+    if rc != 0:
+        return 500, {"error": err or "pm-group --json 실패"}
+    try:
+        return 200, json.loads(out)
+    except ValueError as e:
+        return 500, {"error": f"pm-group 출력 해석 실패: {e}"}
+
+
+def projects_map_groups_apply(base: str, body: dict) -> tuple:
+    """POST /projects-map/groups — op=add|set|rm. 입력은 pm-group 인자로 가기 전에 형태만 거르고,
+    성립 기준(이름 규칙·구성원 2개 이상·레지스트리 존재)은 pm-group 이 판정한다."""
+    base = base or REPO_ROOT
+    op = body.get("op") if isinstance(body, dict) else None
+    name = body.get("name") if isinstance(body, dict) else None
+    if op not in ("add", "set", "rm"):
+        return 400, {"error": "op 는 add|set|rm 중 하나"}
+    if not isinstance(name, str) or not _PMG_NAME_RE.match(name):
+        return 400, {"error": "그룹 이름 규칙 위반 — 소문자로 시작하는 [a-z0-9-] (kebab)"}
+    if op == "rm":
+        args = ["rm", name]
+    else:
+        members = body.get("members")
+        desc = body.get("desc")
+        if not isinstance(members, list) or not all(isinstance(m, str) and _PMG_ID_RE.match(m) for m in members):
+            return 400, {"error": "members 는 프로젝트 번호 문자열 목록"}
+        if desc is not None and (not isinstance(desc, str) or len(desc) > 300 or "\n" in desc):
+            return 400, {"error": "desc 는 300자 이하 한 줄"}
+        args = [op, name, *members]
+        if desc is not None:
+            args += ["--desc", desc]
+    rc, _out, err = _pm_group_run(base, args)
+    if rc != 0:
+        return 400, {"error": err or f"pm-group rc={rc}"}
+    return 200, {"status": "ok"}
 # Issue472: 아이덴티티 카드뷰(`Identity_map.htm`) — 각 프로젝트 CLAUDE.md frontmatter 의
 #   L1 필드를 `sh/fpm-identity-collect` 가 렌더한 산출물. projects-map 과 같은 등급
 #   (___pm 루트 1개 고정·클라이언트 입력면 0)이라 게이트도 같다.
@@ -2451,19 +2578,8 @@ _ISSUE_MAP_MAX_UP = 6
 _ISSUE_MAP_TTL = 30.0            # 탐지 결과 캐시 수명(초) — /hub 폴링 5s 대비 stat 6배 절감
 _issue_map_cache: dict = {}      # cwd(str) -> (expire_ts, path|None, has_graph: bool, stale: bool)
 _issue_map_lock = threading.Lock()
-# Issue284_3: 이슈 헤더(`## Issue1: …` / `### Issue1_2: …`) 줄이 `✅` 로 끝나면 완료 —
-#   issue-map 스킬(build_issue_map.py)의 done 판정과 동일 신호(섹션명 하드코딩 없음).
-_ISSUE_HEADER_RE = re.compile(r"^#{2,3}\s+Issue")
-# Issue290: 섹션 헤딩(`# 📙 일반` 등) 인식 — 정규식은 build_issue_map.py parse_issue_md() 미러.
-_ISSUE_SECTION_RE = re.compile(r"^#\s+(.+?)\s*$")
-# Issue290: issue-map 이 관계도에서 통째로 빼는 섹션(build_issue_map.py `EXCLUDED_SECTIONS` 미러).
-#   화이트리스트가 아닌 블랙리스트인 이유 — 완료 섹션명은 프로젝트마다 다를 수 있어
-#   (ex: `🏁 완료-해결순`, issue-g.md 참고) 포함 섹션을 열거하면 그런 프로젝트에서 판정이 죽는다.
-_ISSUE_EXCLUDED_SECTIONS = {"⏸️ 보류", "🚫 취소"}
-# Issue361: 완료 섹션(build_issue_map.py `DONE_SECTIONS` 미러). 헤더 접미사 `✅` 만으로는
-#   구식 이슈(접미사 없이 `✅ 완료` 섹션 소속만으로 완료 표시)를 놓친다 — 빌더 자신이
-#   `section in DONE_SECTIONS or 헤더 끝 ✅` 로 판정하므로 여기도 두 신호를 함께 본다.
-_ISSUE_DONE_SECTIONS = {"✅ 완료"}
+# Issue623: 서버가 `Issue.md` 를 직접 세던 섹션·헤더 미러(Issue284_3·290·361)는 제거했다 —
+#   완료 판정은 생성기(`build_issue_map.py`) 한 곳이다. 배지는 맵 집계를 읽는다(`_issue_open_count`).
 
 # ── Issue363: 판정 소스를 **서빙될 맵 파일 자신**으로 둔다 ──────────────────────────
 #   카드 🗺️ 는 "누르면 관계도가 보인다"는 약속이다. 그러니 판정이 답해야 할 질문은
@@ -2587,6 +2703,30 @@ def _issue_map_within(target: str, roots) -> bool:
     """at-or-under 판정 — 세션 cwd 가 하위 폴더로 드리프트해도(Issue282) 링크가 살아야 한다."""
     return any(target == root or target.startswith(root.rstrip(os.sep) + os.sep)
                for root in roots)
+
+
+# Issue634: 이슈맵 embed 판 — «그림만»: `.im-v`(변형 본문) 밖 전부·첫 figure 밖 전부·확대 툴바·캡션을 숨긴다.
+#   `:has` 가드 — `.im-v` 가 없는 구 builder 맵을 통째로 빈 화면으로 만들지 않는다.
+ISSUE_MAP_EMBED_CSS = (
+    '<style id="im-embed">'
+    # `html > body` — 뒤에 붙는 HUB_BODY_CSS(`body{padding:0 1.4rem 3rem !important}`)를 특이도로 이긴다
+    "html, html > body { margin: 0 !important; padding: 0 !important; }"
+    "body:has(> .im-v) > *:not(.im-v) { display: none !important; }"
+    ".im-v > *:not(figure:first-of-type) { display: none !important; }"
+    ".im-v figure { margin: 0 !important; }"
+    ".im-v .zoom-bar, .im-v figcaption { display: none !important; }"
+    # 맵의 `.zoom-vp{max-height:75vh}` 는 iframe 안에서 vh = iframe 높이 → 풍선이 iframe 을 그림에 맞춰 줄이면
+    #   그림도 같이 잘리는 순환. embed 판은 높이 제한을 풀고 스크롤은 풍선(iframe)이 맡는다.
+    ".im-v .zoom-vp { max-height: none !important; overflow: visible !important; }"
+    "</style>"
+).encode("utf-8")
+
+
+def _issue_map_cwd_for(proj_cwd: str) -> str:
+    """Issue634: md 셸 헤더 🗺️ 버튼 재료 — 모든 md 셸 문서(`/md-doc`·`/mq-doc`·`/sched-*`·라이브 뷰)가 이 하나를 탄다.
+
+    판정은 `_issue_map_openable`(봇 카드 🗺·`/issue-map` 과 같은 단일 지점) — `Issue_map.htm` 존재가 아니다."""
+    return (_issue_map_openable(proj_cwd) or "") if proj_cwd else ""
 
 
 def _issue_map_openable(cwd: str, roots=None) -> str | None:
@@ -2766,18 +2906,20 @@ def _issue_map_stale(cwd: str) -> bool:
 
 
 # Issue316: 카드 배지 — "활성 세션 수" 대신 "미완료 이슈 수"를 보여준다(세션 수는 카드 바디의
-#   live-list 에 이미 목록으로 표시되어 정보 손실 없음). Issue_map.htm 존재 여부와 무관하게
-#   Issue.md 자체 경로가 필요하므로 `_issue_map_scan`(맵 파일 기준)과 별도 탐색을 둔다.
-_ISSUE_OPEN_COUNT_TTL = 30.0     # _issue_map_cache 와 동일 TTL — /hub 폴링 5s 대비 stat 절감
-_issue_open_count_cache: dict = {}  # cwd(str) -> (expire_ts, count)
-_issue_open_count_lock = threading.Lock()
-# 완료 판정은 `_ISSUE_DONE_SECTIONS`(위, `_ISSUE_EXCLUDED_SECTIONS` 옆) 를 공유한다 —
-# 섹션 판정이 1차 신호, 헤더 접미사 `✅` 가 보강 신호. 구식 이슈(Issue230/232/236 등)는
-# 접미사 없이 섹션 소속만으로 완료 표시되므로 두 신호가 모두 필요하다.
-# ⚠️ Issue363 정정: 카드 **아이콘**은 이제 `Issue.md` 를 아예 보지 않고 맵 파일만 본다.
-#   여기 **배지**(미완료 수)는 `Issue.md` 자체 순회다 — 축이 다르지만 묻는 질문도 다르다
-#   ("볼 관계도가 있는가" vs "미완료가 몇 건인가"). 같은 값을 낼 이유가 없으므로 미러가 아니다.
-#   (구 주석 "두 벌로 두지 않는다"(Issue361)는 depends 판정이 사라져 대상 자체가 없어졌다)
+#   live-list 에 이미 목록으로 표시되어 정보 손실 없음).
+# Issue623: 그 수는 **프로젝트 이슈맵(`Issue_map.htm`)이 보여 주는 집계**다 — 서버가 `Issue.md` 를
+#   따로 세지 않는다. 종전 자체 순회는 완료 섹션을 `{"✅ 완료"}` 하나로만 알아봐, 완료 섹션명이
+#   `🏁 완료-해결순` 인 fSnippet 이 미완료 0건인데 배지 20 을 냈다(2026-10-09 실측). 생성기는
+#   정규화 접두 일치(Issue390)로 같은 Issue.md 를 맞게 셌다 — 판정이 두 벌로 갈라진 것이었다.
+#   계약: 생성기가 맵 머리 `<div class="meta">` 에 쓰는 기본 변형 집계
+#   `<span class="im-v" data-variant="base">이슈 N건 · 완료 M건</span>` → 미완료 = N − M.
+#   변형 span 이 없는 구버전 맵(Issue974 이전)은 첫 집계 문구로 폴백한다.
+#   ⚠️ 생성기는 prj3(글로벌 SCAR) 자산 — 문구를 바꾸면 `test_issue_badge_map_issue623.py` 가 깨진다.
+_ISSUE_MAP_COUNT_BASE_RE = re.compile(
+    r'data-variant="base"[^>]*>\s*이슈\s*(\d+)건\s*·\s*완료\s*(\d+)건')
+_ISSUE_MAP_COUNT_ANY_RE = re.compile(r"이슈\s*(\d+)건\s*·\s*완료\s*(\d+)건")
+_issue_map_count_cache: dict = {}  # map_path -> (mtime, open_count|None)
+_issue_map_count_lock = threading.Lock()
 
 
 def _find_issue_md(cwd: str) -> str | None:
@@ -2802,45 +2944,36 @@ def _find_issue_md(cwd: str) -> str | None:
     return None
 
 
-def _count_open_issues(issue_md: str) -> int:
-    """Issue.md 의 미완료 이슈 개수 — 완료(헤더 줄 끝 ✅)·⏸️ 보류·🚫 취소 섹션을 제외한
-    이슈 헤더(`## Issue1:` / `### Issue1_2:`) 개수."""
-    count = 0
+def _issue_map_open_count(map_path: str):
+    """맵 파일 머리의 집계 문구 → 미완료 수. 문구가 없거나 읽기 실패면 None(거짓 0 금지).
+    맵 mtime 을 키로 캐시한다 — 재생성되면 즉시 새 값."""
     try:
-        section_done = False
-        excluded_section = False
-        with open(issue_md, encoding="utf-8", errors="replace") as f:
-            for line in f:
-                m_sec = _ISSUE_SECTION_RE.match(line)
-                if m_sec:
-                    sec = m_sec.group(1)
-                    section_done = sec in _ISSUE_DONE_SECTIONS
-                    excluded_section = sec in _ISSUE_EXCLUDED_SECTIONS
-                    continue
-                if _ISSUE_HEADER_RE.match(line):
-                    done = section_done or line.rstrip().endswith("✅")
-                    if not done and not excluded_section:
-                        count += 1
-                    continue
+        mtime = os.path.getmtime(map_path)
     except OSError:
-        return 0
-    return count
-
-
-def _issue_open_count(cwd: str) -> int:
-    """cwd 기준 미완료 이슈 개수. Issue.md 없으면 0. TTL 캐시."""
-    if not cwd:
-        return 0
-    now = time.time()
-    with _issue_open_count_lock:
-        hit = _issue_open_count_cache.get(cwd)
-        if hit and hit[0] > now:
+        return None
+    with _issue_map_count_lock:
+        hit = _issue_map_count_cache.get(map_path)
+        if hit and hit[0] == mtime:
             return hit[1]
-    issue_md = _find_issue_md(cwd)
-    count = _count_open_issues(issue_md) if issue_md else 0
-    with _issue_open_count_lock:
-        _issue_open_count_cache[cwd] = (now + _ISSUE_OPEN_COUNT_TTL, count)
+    count = None
+    try:
+        with open(map_path, encoding="utf-8", errors="replace") as f:
+            head = f.read(_ISSUE_MAP_HEAD_BYTES)
+        m = _ISSUE_MAP_COUNT_BASE_RE.search(head) or _ISSUE_MAP_COUNT_ANY_RE.search(head)
+        if m:
+            count = max(int(m.group(1)) - int(m.group(2)), 0)
+    except OSError:
+        count = None
+    with _issue_map_count_lock:
+        _issue_map_count_cache[map_path] = (mtime, count)
     return count
+
+
+def _issue_open_count(cwd: str):
+    """cwd 기준 미완료 이슈 수 — 이슈맵 집계(Issue623). 맵이 없으면 None(카드 배지 `–`).
+    맵 탐색·30초 TTL 은 `_issue_map_scan` 을 공유한다(아이콘·stale 과 같은 파일을 본다)."""
+    path = _issue_map_scan(cwd)[0]
+    return _issue_map_open_count(path) if path else None
 
 
 # Issue352: .hub-state 디렉토리 스캔 결과 단기 캐시. collect(5초 polling)가 프로젝트 수만큼
@@ -3141,6 +3274,44 @@ def _transcript_headless(sid):
             or head.get("session_kind") in _HEADLESS_SESSION_KINDS)
 
 
+# Issue624: «할 일 / 예약 / 대기» 분류 본체는 prj3 aoa-mq MCP 서버의 `_mq_class` 다
+#   (jq 짝은 `aoa-mq-lib.sh` AOA_MQ_JQ_CLASS — prj3#Issue1046). 🔴 여기에 규칙을 옮겨 적지 않는다 —
+#   세 번째 해석이 생기면 넛지·MCP list 와 화면의 숫자가 갈린다. 파일을 로드해 함수만 빌려 쓴다
+#   (`_org_mod` 와 같은 방식, mtime 이 바뀌면 다시 로드). 못 찾으면 None → 수집이 error 로 올린다.
+_MQ_CLASS_PATHS = tuple(p for p in (
+    os.environ.get("AOA_MQ_SERVER_PY"),
+    os.path.expanduser("~/.claude/mcp/aoa-mq/server.py"),   # candidate — 정본(prj3)
+) if p)
+_MQ_CLASS_MOD: dict = {}    # path -> (mtime, fn)
+_MQ_CLASS_LOCK = threading.Lock()
+
+
+def _mq_classifier():
+    """prj3 `_mq_class(item, now_str)` 를 돌려준다. 어느 후보에도 없으면 None."""
+    import importlib.util
+    for path in _MQ_CLASS_PATHS:
+        try:
+            mt = os.stat(path).st_mtime
+        except OSError:
+            continue
+        with _MQ_CLASS_LOCK:
+            hit = _MQ_CLASS_MOD.get(path)
+            if hit and hit[0] == mt:
+                return hit[1]
+            try:
+                spec = importlib.util.spec_from_file_location("aoa_mq_server", path)
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)     # 최상위는 상수 정의뿐 — main() 은 __main__ 가드 안
+            except Exception:
+                continue
+            fn = getattr(mod, "_mq_class", None)
+            if not callable(fn):
+                continue
+            _MQ_CLASS_MOD[path] = (mt, fn)
+            return fn
+    return None
+
+
 def _mq_collect():
     """미종결 + 최근 종결분. 수집 실패는 숨기지 않고 error 로 올린다(조용한 0 금지).
 
@@ -3178,9 +3349,34 @@ def _mq_collect():
         sc = _mq_claimed_session(it.get("claimed_by"))
         if sc:
             it["_claimed_session"] = sc
+    # prj3#Issue1060_1: 항목의 주제 prj(`subject_prj` — prj3 enqueue 가 본문 머리에서 뽑는다)를
+    #   «prjN · 폴더명» 표시값으로 붙인다. 총괄 [컨펌] 은 source 가 `봇@.claude` 라 «프로젝트» 열이
+    #   `.claude` 로만 보였다(2026-10-10). 원 필드는 건드리지 않는다(위 docstring 계약). 매핑이 없으면 번호만.
+    names = None
+    for it in q + d:
+        sp = it.get("subject_prj")
+        if not isinstance(sp, str) or not sp.startswith("prj"):
+            continue
+        if names is None:
+            names = {pid: os.path.basename(path) for pid, path in _registered_project_entries()}
+        nm = names.get(sp[3:])
+        it["_subject_label"] = "%s · %s" % (sp, nm) if nm else sp
+    # Issue624: 미종결분만 분류한다 — 종결분은 «할 일» 이 아니다. 시각 형식은 prj3 t_list 와 같다.
+    counts = {"action": None, "reserved": None, "wait": None}
+    cls = _mq_classifier()
+    if cls is None:
+        err = "; ".join(x for x in (err, "분류 함수 없음: prj3 aoa-mq server.py `_mq_class` (AOA_MQ_SERVER_PY 확인)") if x)
+    else:
+        counts = {"action": 0, "reserved": 0, "wait": 0}
+        now_str = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now))
+        for it in q:
+            c = cls(it, now_str)
+            it["_class"] = c
+            counts[c] = counts.get(c, 0) + 1
     return {
-        "ok": err is None, "error": err, "mq_dir": MQ_DIR,
+        "ok": err is None, "error": err, "mq_dir": _tilde_home(MQ_DIR),   # Issue616_6 — 표시용
         "items": q + d, "open_count": len(q), "done_count": len(d),
+        "action_count": counts["action"], "reserved_count": counts["reserved"], "wait_count": counts["wait"],
         "wip_stale_hours": stale_h,      # 임계 정본은 prj3 policy — 화면은 받아 쓰기만 한다
         "ts": now,
     }
@@ -3697,7 +3893,7 @@ def _sched_log_md(label, data, run=None):
     if job.get("desc"):
         md += ["> %s" % job["desc"], ""]
     md += ["| 항목 | 값 |", "| :-- | :-- |",
-           "| 로그 폴더 | `%s` |" % d,
+           "| 로그 폴더 | `%s` |" % _tilde_home(d),
            "| 스텝 | %d |" % len(steps), ""]
 
     # 회차 — 원장(최신이 앞)에서 그 pid 를 찾는다. 자르지는 않는다
@@ -3753,9 +3949,12 @@ def _sched_log_md(label, data, run=None):
     else:
         md += ["> ℹ️ **회차 구분 불가** — 누적 로그의 끝부분이다. 회차 경계 표식이 없어 회차별로 자르지 않는다", ""]
 
+    # Issue616_7: 로그 속 `— rc=0 279s —` 줄은 한 회차의 끝 표식인데 설명이 없어 로그 내용으로 읽혔다
+    md += ["> 📌 로그 중간의 `— rc=0 279s —` 같은 줄은 **회차 구분선**이다 — 한 번의 실행이 끝났다는 표식으로, "
+           "`rc` 는 종료 코드(0=성공)·뒤 숫자는 소요 초.", ""]
     md += sections
     if not any_file:
-        md += ["> ⚠️ **로그 파일 없음** — 아직 실행되지 않았거나 로그 폴더가 다르다(`%s`)" % d, ""]
+        md += ["> ⚠️ **로그 파일 없음** — 아직 실행되지 않았거나 로그 폴더가 다르다(`%s`)" % _tilde_home(d), ""]
     return "\n".join(md), first
 
 
@@ -3878,6 +4077,12 @@ _MQ_PAGE_HTML = r"""<!DOCTYPE html>
 body{margin:0;padding:1rem 1.2rem;background:var(--bg);color:var(--fg);
  font:14px/1.55 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",sans-serif}
 h1{font-size:1.15rem;margin:0 0 .2rem}
+/* Issue616_4: 공통 내비 — md 셸 헤더와 같은 마크업(md_shell.hub_nav) */
+.hub-nav{display:flex;flex-wrap:wrap;gap:.35rem;margin:0 0 .6rem}
+.hub-nav a{padding:.18rem .6rem;border:1px solid var(--line);border-radius:6px;font-size:.8rem;
+ color:var(--fg);text-decoration:none;background:var(--card)}
+.hub-nav a:hover{border-color:var(--accent);color:var(--accent)}
+.hub-nav a[aria-current=page]{border-color:var(--accent);color:var(--accent);font-weight:600}
 .sub{color:var(--dim);font-size:.82rem;margin-bottom:.9rem}
 .bar{display:flex;flex-wrap:wrap;gap:.45rem;align-items:center;margin-bottom:.8rem;
  padding:.6rem;background:var(--card);border:1px solid var(--line);border-radius:8px}
@@ -3911,6 +4116,7 @@ td.due2 i{display:block;font-style:normal;font-size:.7rem;color:var(--dim);opaci
 /* Issue501: `nowrap` 은 유지한다 — 줄바꿈은 srcCell() 이 넣은 <br> 로만 일어나야 하고,
    조각 **안쪽**(`fbot-lead-sremsa`)이 임의 위치에서 깨지면 오히려 읽기 어렵다 */
 td.srcq{white-space:nowrap}
+td.srcq .from{font-size:.72rem;color:var(--dim)}
 td.srcq .q{display:block;margin-top:.22rem;font-size:.72rem;color:var(--dim)}
 /* Issue498: 상태·유형은 늘 같이 읽히고 값이 짧다 — 열을 합쳐 2줄로 쌓는다 */
 td.stty{white-space:nowrap}
@@ -3945,6 +4151,9 @@ ul.need li{display:flex;gap:.4rem;align-items:center;padding:.12rem 0}
    wip_stale_hours) 초과·미상만 경고색으로 튀어나오게 한다 — 모두가 빨가면 아무것도 안 보인다 */
 .wip{margin-left:.28rem;padding:.1rem .34rem;border-radius:4px;font-size:.68rem;white-space:nowrap;
  background:var(--card);color:var(--dim);border:1px solid var(--line)}
+/* Issue624: 병합 배지 — 본문 위 한 줄, 경과 배지처럼 흐리게 */
+.mrg{display:inline-block;margin-bottom:.15rem;padding:.05rem .34rem;border-radius:4px;font-size:.68rem;
+ background:var(--card);color:var(--dim);border:1px solid var(--line);cursor:help}
 .wip.stale,.wip.warn{background:#c0392b22;color:#c0392b;border-color:transparent;font-weight:600}
 /* Issue506: 진행 3종(claimed_by·progress·result — prj3#Issue643 스키마)은 **내용 열 아래로**
    쌓는다. 열을 새로 늘리지 않는 이유는 Issue501 에서 본문에 잉여 폭을 몰아준 결정이 그대로
@@ -3965,7 +4174,8 @@ td.msg .prog code{font-family:ui-monospace,Menlo,monospace;font-size:.72rem;
  background:var(--card);padding:.02rem .26rem;border-radius:3px}
 td.msg .prog a{color:var(--accent)}
 /* Issue565: 내용 본문 = 문서 뷰(/mq-doc) 진입점. 누른다는 것이 보이되 표 전체가 링크처럼 번쩍이지 않게 hover 만 */
-td.msg .mbody{cursor:pointer;border-radius:4px;margin:-.1rem -.25rem;padding:.1rem .25rem}
+td.msg .mbody{cursor:pointer;border-radius:4px;margin:-.1rem -.25rem;padding:.1rem .25rem;
+ display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;line-clamp:3;overflow:hidden}   /* Issue616_7: 긴 본문은 3줄까지 — 전문은 클릭(문서 보기) */
 td.msg .mbody:hover{background:var(--card);box-shadow:inset 0 0 0 1px var(--line)}
 /* Issue565: 큐 행 📋 는 액션 묶음 왼쪽 — .acts 는 grid 블록이라 flex 로 한 줄에 세운다(Issue558 잡 행과 같은 자리) */
 .qacts{display:flex;gap:.3rem;align-items:flex-start;justify-content:flex-end}
@@ -3976,7 +4186,7 @@ button.a:hover{border-color:var(--accent);color:var(--accent)}
 button.a[disabled]{opacity:.45;cursor:default}
 /* Issue565: 처리 버튼도 스케줄·잡 탭(.mini.danger)처럼 — 파괴적 액션(✕ 취소)만 붉은 hover */
 button.a.danger:hover{border-color:#c0392b;color:#c0392b}
-.note{margin-top:.9rem;padding:.6rem .7rem;background:var(--card);border-left:3px solid var(--accent);
+.note{margin:0 0 .8rem;padding:.6rem .7rem;background:var(--card);border-left:3px solid var(--accent);
  border-radius:0 6px 6px 0;font-size:.8rem;color:var(--dim)}
 .err{background:#c0392b18;border-left-color:#c0392b;color:#c0392b}
 tr.acked{opacity:.5}
@@ -4142,7 +4352,14 @@ tr.paused td{opacity:.62}
  border-radius:4px;background:var(--bg);color:var(--fg)}
 .form .stepr input{flex:none}
 .stepr .sn{width:1.4rem;color:var(--dim);font-size:.72rem;text-align:right}
+/* Issue616_3: 375px 가로 넘침 — 표는 자체 가로 스크롤, 검색창 최소 폭 해제 */
+@media(max-width:600px){
+body{padding:.6rem .7rem}
+.bar input[type=search]{min-width:0;width:100%}
+table{display:block;max-width:100%;overflow-x:auto}
+}
 </style></head><body>
+<!--HUB_NAV-->
 <h1>📮 aoa-mq — 예약 큐</h1>
 <div class="sub" id="sub">불러오는 중…</div>
 
@@ -4167,20 +4384,22 @@ tr.paused td{opacity:.62}
   <span class="cnt" id="cnt"></span>
 </div>
 
-<table><thead><tr>
-  <th data-k="id" title="클릭 → 정렬 (다시 누르면 방향 반전)">ID<i class="si"></i></th>
-  <th data-k="status" title="클릭 → 정렬 (다시 누르면 방향 반전)">상태<i class="si"></i> <span class="k2" data-k="type">/ 유형<i class="si"></i></span></th>
-  <th data-k="due_ts" title="클릭 → 정렬 (다시 누르면 방향 반전)">마감<i class="si"></i></th>
-  <th data-k="source" title="클릭 → 정렬 (다시 누르면 방향 반전)">출처<i class="si"></i> <span class="k2" data-k="ask_count">/ 질의<i class="si"></i></span></th>
-  <th data-k="message" title="클릭 → 정렬 (다시 누르면 방향 반전)">내용<i class="si"></i></th>
-  <th class="nosort">처리</th>
-</tr></thead><tbody id="rows"></tbody></table>
-
 <div class="note" id="note">
   <b>진행</b>=지금 착수(in_progress) — <b>종결이 아니다.</b> 세션 넛지에 작업 지시로 올라가고 큐에 남는다 ·
   <b>완료</b>=다 했음(confirmed) · <b>확인</b>=통지를 봤음 — 후속 없이 닫음(acked_done) · <b>연기</b>=마감만 미룸(큐 유지) ·
   <b>취소</b>=하지 않음(dismissed). 진행 외에는 누르면 목록에서 빠진다.
 </div>
+
+<table><thead><tr>
+  <th data-k="id" title="클릭 → 정렬 (다시 누르면 방향 반전)">ID<i class="si"></i></th>
+  <th data-k="status" title="클릭 → 정렬 (다시 누르면 방향 반전)">상태<i class="si"></i> <span class="k2" data-k="type">/ 유형<i class="si"></i></span></th>
+  <th data-k="due_ts" title="클릭 → 정렬 (다시 누르면 방향 반전)">마감<i class="si"></i></th>
+  <th data-k="source" title="클릭 → 정렬 (다시 누르면 방향 반전)">프로젝트 / 보낸 곳<i class="si"></i> <span class="k2" data-k="ask_count">/ 질의<i class="si"></i></span></th>
+  <th data-k="message" title="클릭 → 정렬 (다시 누르면 방향 반전)">내용<i class="si"></i></th>
+  <th class="nosort">처리</th>
+</tr></thead><tbody id="rows"></tbody></table>
+
+
 </div><!-- /pane-q -->
 
 <div id="pane-s" hidden>
@@ -4230,9 +4449,18 @@ function idCell(id){
 //   분절점이 이미 `@` 뒤와 ` (` 앞에 있으므로 거기서만 접는다. 그러면 열 폭이 30자에서
 //   최장 조각 하나로 수렴하고, 남은 폭은 auto layout 이 본문 열로 넘긴다.
 //   ⚠️ 표시 계층에서만 끊는다 — 필터·검색은 원본 `x.source` 를 그대로 쓴다.
-function srcCell(v){
+function srcCell(v,subj){
   const t=String(v==null||v===""?"-":v);
-  return esc(t).replace(/@/g,"@<br>").replace(/ \(/g,"<br>(");
+  if(t==="-") return "-";
+  // Issue616_7: `계정@프로젝트 (역할)` 을 «프로젝트 / 보낸 곳» 두 줄로 — 계정·역할은 둘 다 «누가 보냈나» 이다.
+  //   프로젝트가 비면(봇이 홈에서 보낸 것) 대시. 원문은 title 로 남긴다.
+  const m=t.match(/^([^@]*)@([^ (]*)(?:\s*\(([^)]*)\))?\s*$/);
+  if(!m) return `<span title="${esc(t)}">${esc(t)}</span>`;
+  const acct=m[1].trim(), proj=m[2].trim(), role=(m[3]||"").trim();
+  const from=[acct,role].filter(Boolean).join(" · ")||"-";
+  // prj3#Issue1060_1: 주제 prj 가 있으면 그것이 «프로젝트» 다 — source 의 프로젝트는 «보낸 곳» 쪽 정보로 내린다.
+  if(subj) return `<span title="${esc(t)}"><b>${esc(subj)}</b><br><span class="from">보낸 곳 ${esc(from)}${proj?" @"+esc(proj):""}</span></span>`;
+  return `<span title="${esc(t)}"><b>${esc(proj||"–")}</b><br><span class="from">보낸 곳 ${esc(from)}</span></span>`;
 }
 // Issue500: `2026-09-19 09:00:00` → 날짜(진함) / 시각(흐림) 2줄. 마감 없는 alert 는
 //   빈 문자열이 아니라 `–` 한 줄로 — 빈 칸은 "값이 안 실렸다" 로도 읽힌다.
@@ -4427,8 +4655,15 @@ function mqDocClick(ev,el){
   if(sel.trim()) return;
   openView(mqDocUrl(el.dataset.id),"📮 "+el.dataset.id);   // Issue602: 셸 임베드면 내부 탭
 }
+// Issue624: 등록 시점 병합(prj3#Issue1046 `merged[]`·`group`)을 드러낸다 — 한 행이 여러 건을 품었다는 표시.
+function mergedBadge(x){
+  const m=Array.isArray(x.merged)?x.merged:[];
+  if(!m.length) return "";
+  const tip=(x.group?`묶음 ${x.group}\n`:"")+m.map(e=>`${e.ts||""} ${e.source||""}`).join("\n");
+  return `<span class="mrg" title="${esc(tip)}">➕ 병합 ${m.length}</span>`;
+}
 function msgCell(x){
-  return `<div class="mbody" data-id="${esc(x.id)}" onclick="mqDocClick(event,this)" title="클릭 → 문서로 보기">${esc(x.message||"")}</div>`
+  return mergedBadge(x)+`<div class="mbody" data-id="${esc(x.id)}" onclick="mqDocClick(event,this)" title="클릭 → 문서로 보기">${esc(x.message||"")}</div>`
     + progLine("who","집은 주체",x.claimed_by,x.claimed_ts,whoHtml(x))
     + progLine("now","진행",x.progress,x.progress_ts,null)
     + progLine("res","결과",x.result,x.result_ts,resultHtml(x.result))
@@ -4481,7 +4716,11 @@ async function load(){
   const d=await r.json();
   DATA=d.items||[];
   STALE_H=(typeof d.wip_stale_hours==="number")?d.wip_stale_hours:null;   // Issue504
-  $("sub").textContent=`미종결 ${d.open_count} · 종결(최근) ${d.done_count} · ${d.mq_dir}`;
+  // Issue624: 셋 분리 숫자는 서버가 prj3 분류로 센 것을 그대로 쓴다(여기서 다시 세지 않는다).
+  //   null 이면 분류 함수를 못 찾은 것 — 종전 한 숫자로 두고 사유는 아래 note 가 띄운다.
+  $("sub").textContent=(d.action_count==null?`미종결 ${d.open_count}`
+    :`할 일 ${d.action_count} · 예약 ${d.reserved_count} · 대기 ${d.wait_count}`)
+    +` · 종결(최근) ${d.done_count} · ${d.mq_dir}`;
   if(!d.ok){ const n=$("note"); n.className="note err"; n.textContent="⚠️ "+(d.error||"수집 실패"); }
   fillOpts("f-status","status"); fillOpts("f-type","type"); fillOpts("f-source","source");
   // Issue509: 그리기 **전에** 맞춘다. 순서가 뒤집히면 이미 반영된 항목이 한 프레임 동안
@@ -4579,11 +4818,11 @@ function render(){
     // Issue565: mq ID 메뉴 — 스케줄(Issue540)·잡(Issue558) 탭 📋 와 같은 꼴. 종결·처리 중 행에도 단다(복사는 상태와 무관)
     const mqIdBtn=`<button class="mini sid-copy" data-kind="mq" data-id="${esc(x.id)}" onclick="mqMenuOpen(this)" aria-haspopup="menu" aria-label="mq ID 메뉴">📋</button>`;
     return `<tr class="${ak?'acked':''}">
-      <td class="id2">${idCell(x.id)}</td>
+      <td class="id2" title="${esc(x.id)} — 위: 등록 시각-순번 · 아래: 등록 날짜">${idCell(x.id)}</td>
       <td class="stty">${ballCell(x)||`<span class="st st-${esc(x.status||'')}">${esc(x.status||'-')}</span>${wipCell(x)}`}
         <span class="ty">${esc(x.type||'-')}</span></td>
       <td class="due2">${dueCell(x.due_ts)}</td>
-      <td class="srcq">${srcCell(x.source)}
+      <td class="srcq">${srcCell(x.source,x._subject_label)}
         <span class="q">질의 ${x.ask_count||0}</span></td>
       <td class="msg">${msgCell(x)}</td>
       <td><div class="qacts">${mqIdBtn}${acts}</div></td></tr>`;
@@ -5429,6 +5668,7 @@ function jfCancel(){
   else $("j-form").innerHTML="";
 }
 </script></body></html>"""
+_MQ_PAGE_HTML = _MQ_PAGE_HTML.replace("<!--HUB_NAV-->", md_shell.hub_nav("mq"))   # Issue616_4
 
 
 def _projects_list_with_htm() -> list:
@@ -5710,6 +5950,33 @@ def _fbot_last_seen(con) -> dict:
     return {r[0]: int(r[1]) for r in rows if r[1]}
 
 
+def _fbot_block_reason(pl: dict) -> str:
+    """배분 payload 에서 막힘 사유 원문 — 사유 dict 는 `payload[blocked_by]` 에 산다(Issue620)."""
+    d = pl.get(pl.get("blocked_by") or "")
+    return str(d.get("reason") or "") if isinstance(d, dict) else ""
+
+
+# Issue620 — 막힘 종류 문구. 판정은 원장(prj3 sweep·reap·spawn)이 이미 했다 — 여기는 이름만 붙인다
+_FBOT_BLOCK_LABEL = {
+    "unconfirmed": "완료 미확인",      # prj3#Issue929·968 — 워커 퇴근, 산출 증적 없음. 매니저가 close·cancel·defer 로 확정
+    "question": "질문 답 대기",        # Issue561
+    "worker_died": "워커 강제 퇴근",   # lease 만료 reap
+    "spawn_refused": "스폰 거부",
+}
+
+
+def _fbot_block_note(e: dict) -> str:
+    """blocked 배분의 사유 문구 단일 지점(Issue620) — 보드 jobs·작업 상세·그래프 툴팁이 같은 문구를 읽는다.
+
+    blocked 가 아니면 빈 문자열. 종류를 모르는 blocked 는 원문 키를 그대로 보인다(침묵하지 않는다)."""
+    if (e.get("status") or "") != "blocked":
+        return ""
+    by = e.get("blocked_by") or ""
+    lab = _FBOT_BLOCK_LABEL.get(by) or by or "막힘"
+    why = e.get("block_reason") or ""
+    return f"{lab}: {why}" if why else lab
+
+
 def _fbot_dispatch_edges(con) -> list:
     """배분 원장(`job.kind='fbot_dispatch'`) → (owner, worker, issue, status, ts) 엣지.
 
@@ -5718,13 +5985,13 @@ def _fbot_dispatch_edges(con) -> list:
     """
     try:
         rows = con.execute(
-            "SELECT id, owner, payload, status, created_at FROM job"
+            "SELECT id, owner, payload, status, created_at, attempts FROM job"
             " WHERE kind='fbot_dispatch' ORDER BY created_at").fetchall()
     except sqlite3.Error as e:
         log(f"_fbot_dispatch_edges skipped: {e}", "WARNING")
         return []
     out = []
-    for jid, owner, payload, status, ts in rows:
+    for jid, owner, payload, status, ts, attempts in rows:
         if not owner:
             continue
         try:
@@ -5742,9 +6009,20 @@ def _fbot_dispatch_edges(con) -> list:
                     "issue": (pl or {}).get("issue") or "",
                     "role": _fbot_role_alias((pl or {}).get("role") or ""),
                     "status": status or "", "ts": int(ts or 0),
+                    # prj1#Issue630 — tick 무인 재기상 시도 횟수(prj3#Issue1085 `watch --wake` 가 +1). 자동 경로 안/밖 판정 재료
+                    "attempts": int(attempts or 0),
                     # prj3#Issue573 — 스폰 집행자 잠금(Issue555)의 흔적. 방금 스폰된 배분을 "대상 퇴근" 으로 오판하지 않기 위해
                     "spawned_at": int((pl or {}).get("spawned_at") or 0),
                     "spawned_by": (pl or {}).get("spawned_by") or "",
+                    # 잠금 해제(퇴근) 시 spawned_at 은 claim_history 로 옮겨진다 — 마지막 해제 시각. 있으면 몸체는 이미 떴다 갔다
+                    "released_at": max([int(h.get("released_at") or 0) for h in ((pl or {}).get("claim_history") or []) if isinstance(h, dict)] or [0]),
+                    # prj3#Issue992 — 재개(sweep promote_deferred) 뒤 몸체 기동 대기 표지·재개 시각. 몸체는 다음 tick 이 세운다
+                    "spawn_pending": bool((pl or {}).get("spawn_pending")),
+                    "resumed_at": max([int(h.get("resumed_at") or 0) for h in ((pl or {}).get("defer_history") or []) if isinstance(h, dict)] or [0]),
+                    # Issue620 — 원장이 정한 막힘 종류·사유(prj3#Issue968: `blocked_by='unconfirmed'` + `payload.unconfirmed.reason`).
+                    #   사유 dict 는 `payload[blocked_by]` 에 산다(worker_died·spawn_refused 도 같은 꼴). 문구는 `_fbot_block_note`
+                    "blocked_by": str((pl or {}).get("blocked_by") or ""),
+                    "block_reason": _fbot_block_reason(pl or {}),
                     # prj3#Issue502 ⓑ: 원클릭 종결이 taskmgr cancel --job-id 로 가리킬 대상.
                     "job_id": str(jid or ""),
                     # Issue545 — prj3#Issue739 배분 계보. `lineage` = 계보 필드를 가진 기록인가(옛 기록은 False —
@@ -5925,7 +6203,7 @@ def _collect_bots() -> dict:
                          or _fbot_icon_data_uri(f"data/fbot/icons/{r['role']}.svg"
                                                 if r["role"] else "")),
             "prj": r["prj"],
-            "current_task": r["current_task"] or "",
+            "current_task": _fbot_task_line(r["current_task"]),   # Issue616_5 — 규약 꼬리 제거
             "parent_bot_id": parent,
             # Issue445: 카드 **표면**이 쓸 지시자 호칭. 부모가 레지스트리에서 사라졌으면
             #   빈 값 — 없는 이름을 지어내지 않고 소비처가 ID 로 폴백한다.
@@ -6151,6 +6429,28 @@ def _org_mod():
         spec.loader.exec_module(mod)
         _ORG_MOD, _ORG_MOD_MTIME = mod, mt
         return mod
+
+
+_FBOT_PRJ_RE = re.compile(r"^\d+(?:[a-z][a-z0-9]*)?$")   # 해소기 부재 폴백 — prj3 `hooks/lib/fbot-prj.py` PRJ_TOKEN 과 같은 형식
+
+
+def _fbot_prj(raw):
+    """핀봇 prj id 파싱 단일 지점 (prj3#Issue1061·1062) — 숫자 → int · 접미 id(`9t`) → 소문자 str · 형식 밖 None.
+    판정은 해소기(`fbot-org.py`)의 `try_prj` 를 빌린다(prj3 와 hub 가 갈라지지 않게). 해소기가 없으면 같은 형식 폴백.
+    종전 `int(x) if x.isdigit()` 은 `9t` 를 «prj 없음» 으로 떨어뜨려 필터가 전체 뷰가 됐다."""
+    mod = _org_mod()
+    if mod is not None and hasattr(mod, "try_prj"):
+        return mod.try_prj(raw)
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw if raw >= 0 else None
+    s = str(raw).strip().lower()
+    if s.startswith("prj"):
+        s = s[3:]
+    if not _FBOT_PRJ_RE.match(s):
+        return None
+    return int(s) if s.isdigit() else s
 
 
 def _fbot_org_seats_compute(prj=None) -> dict:
@@ -6403,7 +6703,8 @@ def _fbot_org_data(root_filter: str = "", org_prj=None) -> dict:
     오류를 세워야 한다(Issue400 이 `bots_error` 를 분리한 것과 같은 이유).
     """
     db = os.path.join(FBOT_AOA_DIR, "registry.db")
-    empty = {"error": "", "nodes": [], "hires": [], "dispatch": [], "roots": [],
+    empty = {"error": "", "nodes": [], "hires": [], "dispatch": [], "roots": [], "leads": [],
+             "lead_tree": {}, "whole": None,
              "org": {"seats": [], "available": False, "reason": "레지스트리 없음"},
              "root_filter": root_filter, "unknown_root": False}
     if not os.path.exists(db):
@@ -6417,11 +6718,13 @@ def _fbot_org_data(root_filter: str = "", org_prj=None) -> dict:
             bind = _fbot_bind_cols(con)
             # prj3#Issue538: 조직 결속 컬럼도 실재할 때만 — 같은 fail-soft 취지다.
             #   컬럼이 없다고(구 스키마) 조직도가 통째로 죽으면 안 된다.
-            _has_seat_id = "seat_id" in {r[1] for r in con.execute("PRAGMA table_info(bot)")}
+            _bot_cols = {r[1] for r in con.execute("PRAGMA table_info(bot)")}
+            _has_seat_id = "seat_id" in _bot_cols
             rows = con.execute(
                 "SELECT bot_id, title, role, state, career, icon, color, prj,"
                 " current_task, parent_bot_id"
                 + (", seat_id" if _has_seat_id else ", '' AS seat_id")
+                + (", last_active_at" if "last_active_at" in _bot_cols else "")
                 + ("".join(", " + c for c in bind)) + " FROM bot").fetchall()
             # 같은 커넥션에서 원장까지 읽는다 — 봇 상태와 위임 이력이 서로 다른 스냅샷을
             #   보면 "없는 봇에게 방금 배분" 같은 자기모순 그림이 나온다(Issue400 동일 원칙).
@@ -6483,7 +6786,7 @@ def _fbot_org_data(root_filter: str = "", org_prj=None) -> dict:
             "career": r["career"] or "",
             "color": r["color"] or "",
             "prj": r["prj"],
-            "current_task": r["current_task"] or "",
+            "current_task": _fbot_task_line(r["current_task"]),   # Issue616_5 — 규약 꼬리 제거
             "seat_id": (r["seat_id"] if _has_seat_id else "") or "",
             "parent": parents[bid] if parents[bid] in parents else "",
             # Issue491 — 상비봇 표지. 🔴 판정 재료는 **원장 원본** `r["parent_bot_id"]` 다.
@@ -6496,6 +6799,8 @@ def _fbot_org_data(root_filter: str = "", org_prj=None) -> dict:
             "root": root_of.get(bid, bid),
             "sessions": int(sessions.get(bid, 0)),
             "orphan": False,
+            # 스폰 대기 판정(`_fbot_deadlocks._spawn_ref`)의 «몸체 도착» 재료 — 구 스키마면 0(종전 판정)
+            "last_active_at": int(_rowval(r, "last_active_at") or 0),
             # Issue445: 명부에서 봇 ↔ Claude 세션을 잇는다. mermaid 라벨에는 싣지 않는다 —
             #   UUID 는 노드 폭만 키우고, 대조는 표에서 하는 편이 검색까지 된다.
             "session_id": _rowval(r, "session_id") or "",
@@ -6545,10 +6850,44 @@ def _fbot_org_data(root_filter: str = "", org_prj=None) -> dict:
         if n["root"] == bid and not n["orphan"]:
             roots.append(bid)
     roots.sort(key=lambda b: nodes[b]["title"])
+    # Issue615 — 팀장 칩. 루트가 총괄 하나뿐이라 칩이 `전체·나래` 둘이면 프로젝트별로 볼
+    #   길이 없다(사용자 지적 2026-10-08). prj 소속·비퇴역 팀장핀봇을 칩 후보로 싣는다 —
+    #   «구성 중» 판정(Issue689)은 렌더가 org.scope_info 로 거른다(판정을 여기 복제하지 않는다).
+    leads = sorted((b for b, n in nodes.items()
+                    if n["role"] == "lead" and n["prj"] is not None and not n["orphan"]
+                    and not _fbot_retired(n["career"])),
+                   key=lambda b: (_org_scope_key(nodes[b]["prj"]), nodes[b]["title"]))
 
-    unknown_root = bool(root_filter) and root_filter not in roots
+    # 칩 표지(호칭·prj)는 **필터 전**에 떠 둔다 — 필터 뒤 노드에서 찾으면 잘려나간 루트·팀장
+    #   칩이 id·prjNone 으로 떨어진다(실측: 팀장 보기에서 다른 칩 전부)
+    chip_meta = {b: {"title": nodes[b]["title"], "prj": nodes[b]["prj"]} for b in roots + leads}
+    unknown_root = bool(root_filter) and root_filter not in roots and root_filter not in leads
     _seat_src = dict(nodes)          # 필터 전 스냅샷 (자리 점유 조인용)
-    if root_filter and not unknown_root:
+    # 팀장 하위 트리 = 채용 자손 + 배분 대상(고아 포함). 배분을 따라가지 않으면 명부에
+    #   없는 대상에게 건 일이 팀장 보기에서 사라진다(Issue402 2원천 합성과 같은 이유).
+    #   칩 활성 판정(«이 보기에서 그릴 봇이 있나»)도 같은 트리를 쓰므로 필터 전에 전원 계산한다.
+    _down = {}
+    for e in hires + dispatch:
+        _down.setdefault(e["src"], set()).add(e["dst"])
+
+    def _subtree(top):
+        acc, todo = {top}, [top]
+        while todo:
+            for c in _down.get(todo.pop(), ()):
+                if c not in acc:
+                    acc.add(c)
+                    todo.append(c)
+        return acc
+    lead_tree = {b: sorted(_subtree(b)) for b in leads}
+    # 필터 전 전수 — 다른 팀장을 보는 중에도 칩 판정은 원장 전체 기준이어야 한다
+    whole = {"nodes": list(nodes.values()), "hires": list(hires), "dispatch": list(dispatch)}
+    if root_filter and not unknown_root and root_filter in leads:
+        keep = set(lead_tree[root_filter])
+        # 그룹 머리도 팀장으로 — 루트(총괄)는 잘려나가 그룹 라벨이 id 로 떨어진다(실측)
+        nodes = {b: dict(n, root=root_filter) for b, n in nodes.items() if b in keep}
+        hires = [e for e in hires if e["src"] in nodes and e["dst"] in nodes]
+        dispatch = [e for e in dispatch if e["src"] in nodes and e["dst"] in nodes]
+    elif root_filter and not unknown_root:
         keep = {b for b, n in nodes.items() if n["root"] == root_filter}
         nodes = {b: n for b, n in nodes.items() if b in keep}
         hires = [e for e in hires if e["src"] in nodes and e["dst"] in nodes]
@@ -6586,8 +6925,9 @@ def _fbot_org_data(root_filter: str = "", org_prj=None) -> dict:
         st["vacant"] = occ is None
     org["unseated"] = [n["bot_id"] for n in node_list if not (n.get("seat_id") or "")]
     return {"error": "", "nodes": node_list, "hires": hires, "dispatch": dispatch,
-            "roots": roots, "root_filter": root_filter, "unknown_root": unknown_root,
-            "org": org}
+            "roots": roots, "leads": leads, "chip_meta": chip_meta, "lead_tree": lead_tree,
+            "whole": whole, "root_filter": root_filter,
+            "unknown_root": unknown_root, "org": org}
 
 
 def nodes_root_title(nodes, n) -> str:
@@ -6667,6 +7007,31 @@ def _fbot_filter_active(data: dict, hist: bool = False) -> dict:
     out["dispatch"] = [e for e in shown if e["src"] in keep and e["dst"] in keep]
     return out
 
+
+
+def _fbot_view_filter(data: dict, show_all: bool, show_hist: bool) -> dict:
+    """그래프 표시 필터 **단일 지점** — 조직도 그림과 팀장 칩 활성 판정(Issue615)이 같이 쓴다.
+    둘이 다른 식을 쓰면 «칩은 살아 있는데 눌러 보니 빈 그림» 이 된다(사용자 지적 2026-10-08)."""
+    # prj1#Issue451: show_all 도 퇴역(휴직·해고)은 그래프에서 뺀다 — 전수는 명부 표가 담당.
+    out = (_fbot_filter_career(data, show_hist) if show_all
+           else _fbot_filter_active(data, show_hist))
+    # prj1#Issue454: 기본 그래프는 **열린 배분만** 그린다 — done·cancelled 엣지와
+    #   원장에만 남은 고아 노드는 hist=1 에서만. 열린 배분의 고아 끝점은 남긴다
+    #   (교착 경고의 대상 — 지우면 경고가 가리킬 노드가 사라진다). 표 2종(명부·원장)은
+    #   전수 그대로라 기록이 사라지는 것이 아니라 **그림에서 물러나는 것**이다.
+    if not show_hist:
+        # prj3#Issue556 — 열린 배분 + **최근 3일 종결 배분**. 종결은 사인(✓·✕·⌇)이
+        #   말한다 — 기본 뷰에서 사라지면 사인을 만든 이유가 없다.
+        _open_ends = set()
+        for _e in out["dispatch"]:
+            if _e["status"] == "open" or _fbot_edge_recent(_e):
+                _open_ends.add(_e["src"]); _open_ends.add(_e["dst"])
+        out = {**out,
+               "dispatch": [e for e in out["dispatch"]
+                            if e["status"] == "open" or _fbot_edge_recent(e)],
+               "nodes": [n for n in out["nodes"]
+                         if not n["orphan"] or n["bot_id"] in _open_ends]}
+    return out
 
 
 def _fbot_retired(career) -> bool:
@@ -6769,6 +7134,9 @@ _FBOT_SSE_TOKEN = _fbot_sse_token_load()   # prj3#Issue575·591 — 보드 SSE �
 
 def _fbot_sse_token() -> str:
     return _FBOT_SSE_TOKEN
+FBOT_SPAWN_PENDING_SECS = 2700   # prj3#Issue992 — 재개 뒤 `spawn_pending` 배분의 기동 유예 = tick 주기(30분)+여유(15분). 넘기면 tick 정지·기동 실패 = 진짜 정체
+FBOT_AUTO_WAKE_LIMIT = 2   # prj1#Issue630 — prj3 `fbot-lead.py` RETRY_LIMIT 와 같은 값(tick 재기상 상한, 초과 시 mq alert + blocked). 어긋나면 이쪽을 맞춘다
+FBOT_AUTO_WAKE_FIRST_SECS = 3600   # 퇴근 뒤 첫 tick(30분 주기)을 기다리는 유예 — attempts 0 이라도 이 안이면 자동 경로 안으로 본다
 FBOT_SPAWN_GRACE_SECS = 600   # prj3#Issue573 — 배분 뒤 워커 출근까지의 유예(스폰·기동·출근 훅). 넘기면 "대상이 퇴근함"
 
 
@@ -6791,9 +7159,80 @@ def _fbot_deadlocks(data: dict, stale_hours: float = FBOT_STALE_HOURS,
     nodes = {n["bot_id"]: n for n in data["nodes"]}
     now = time.time() if now is None else now
     open_edges = [e for e in data["dispatch"] if e["status"] == "open"]
-    orphaned, stale, spawning = [], [], []
+    orphaned, stale, spawning, waiting_child, child_held, auto_wake = [], [], [], [], [], []
+    # prj3#Issue991 — 하위 배분 계보(`parent_dispatch_id`). 팀장은 워커에 배분만 하고 턴을 끝내 `checkout` 이다(prj3#Issue734 —
+    #   워커 보고가 인박스로 오면 기상). 그 사이를 "대상이 퇴근함 → 원장 종결" 로 안내하면 사람이 진행 중인 일을 닫는다.
+    kids = {}
+    for _e in data["dispatch"]:
+        _pid = _e.get("parent_dispatch_id")
+        if _pid and _e.get("job_id") and _pid != _e["job_id"]:
+            kids.setdefault(_pid, []).append(_e)
+
+    def _spawn_ref(e):
+        """스폰 유예 기준 시각 — 판정 단일 지점. 0 이면 유예 대상 아님.
+        잠금 해제 기록(`released_at`)이 있고 재스폰(`spawned_at`)이 없으면 몸체가 이미 떴다 퇴근한 것이다 — 출근 대기가 아니다
+        (2026-10-09 실측: 팀장 3회 출근·완료 보고 뒤 배분 ts 로 떨어져 «스폰 대기 413초»)."""
+        _sa = int(e.get("spawned_at") or 0)
+        if not _sa and int(e.get("released_at") or 0) >= int(e.get("ts") or 0) > 0:
+            return 0
+        _r = _sa or int(e.get("ts") or 0)
+        # 잠금 해제 기록이 없어도(`dispatch --spawn` 은 spawned_by 를 남기지 않아 퇴근 해제가 안 된다) 대상 봇이 기준 시각 뒤에
+        #   상태 전이를 했으면(last_active_at — 출근·퇴근마다 갱신) 몸체는 이미 왔다 갔다(2026-10-09 실측: 44초 출근·보고 뒤 10분 «스폰 대기»)
+        _d = nodes.get(e.get("dst")) or {}
+        if _r and int(_d.get("last_active_at") or 0) > _r:
+            return 0
+        return _r
+
+    _om = _org_mod()
+    _cclass = getattr(_om, "child_class", None) or (lambda st: {"open": "live", "blocked": "held", "deferred": "held"}.get(st or "", ""))
+
+    def _child_state(c):
+        """하위 상태 3분류 — 분류 본체는 prj3 `fbot-org.child_class` 단일 지점(sweep `child_is_live` 와 같은 표, prj3#Issue1023).
+        live: 미종결(open) 이고 받은 봇이 일하고 있거나(state != checkout) 스폰 유예 안이다 — 이 보드만 대상 가동 여부를 덧본다.
+        held: 명시 보류·정체(deferred·blocked) — sweep 은 부모를 보류하지만 보드는 «하위 보류» 로 따로 보인다. 그 밖(종결·사후 기록)은 ''."""
+        k = _cclass(c.get("status"))
+        if k == "held":
+            return "held"
+        if k != "live":
+            return ""
+        d = nodes.get(c["dst"])
+        if d is None or d.get("orphan"):
+            return ""
+        if d.get("state") != "checkout":
+            return "live"
+        _r = _spawn_ref(c)
+        return "live" if (_r and (now - _r) < FBOT_SPAWN_GRACE_SECS) else ""
+
+    def _descendant_state(e):
+        """후손(손자 포함) 중 가장 강한 분류: 하나라도 live 면 "live", 아니고 held 가 있으면 "held", 아니면 ''."""
+        stack, seen, held = list(kids.get(e.get("job_id"), [])), set(), False
+        while stack:                                   # 손자 포함 — 반복 순회라 원장이 순환을 담아도 멈춘다
+            c = stack.pop()
+            if c.get("job_id") in seen:
+                continue
+            seen.add(c.get("job_id"))
+            st = _child_state(c)
+            if st == "live":
+                return "live"
+            held = held or st == "held"
+            stack.extend(kids.get(c.get("job_id"), []))
+        return "held" if held else ""
+
+    def _pending_wait(e):
+        """prj3#Issue992 — 재개 뒤 기동 대기(`spawn_pending`) 배분이 tick 기동 유예 안이면 그 기준 시각, 아니면 0.
+        몸체는 다음 tick(`spawn --pending`)이 세우므로 그 전까지 대상이 명부에 없거나 퇴근인 것이 설계상 정상이다.
+        기준 시각 = 마지막 재개 시각(없으면 배분 시각). 이미 기동된 행(`spawned_at`)은 표지가 걷혀 대상이 아니다."""
+        if not e.get("spawn_pending") or e.get("spawned_at"):
+            return 0
+        _r = int(e.get("resumed_at") or 0) or int(e.get("ts") or 0)
+        return _r if _r and (now - _r) < FBOT_SPAWN_PENDING_SECS else 0
+
     for e in open_edges:
         dst = nodes.get(e["dst"])
+        _pw = _pending_wait(e)
+        if _pw:
+            spawning.append(dict(e, why="스폰 대기", since=_pw))
+            continue
         if dst is None or dst.get("orphan"):
             orphaned.append(dict(e, why="명부에 없음"))
             continue
@@ -6802,9 +7241,24 @@ def _fbot_deadlocks(data: dict, stale_hours: float = FBOT_STALE_HOURS,
             #   claude 가 뜨고 출근 훅이 도는 데 수십 초~수 분이 걸린다. 그 사이를 "대상이 퇴근함 → 원장 종결"
             #   로 안내하면 사람이 멀쩡한 배분을 닫는다(2026-09-07 실측: 배분 15초 뒤 미종결 배너·교착 1).
             #   판정 재료는 원장 자신 — `spawned_at`(잠금 시각) 또는 배분 시각이 유예 안이면 "스폰 대기".
-            _ref = int(e.get("spawned_at") or 0) or int(e.get("ts") or 0)
+            _ref = _spawn_ref(e)
             if _ref and (now - _ref) < FBOT_SPAWN_GRACE_SECS:
                 spawning.append(dict(e, why="스폰 대기", since=_ref))
+                continue
+            _ds = _descendant_state(e)
+            if _ds == "live":
+                waiting_child.append(dict(e, why="하위 진행 중"))
+                continue
+            if _ds == "held":
+                # prj3#Issue1023 — 하위가 보류뿐: 유실도 진행 중도 아니다. 미종결 수에는 남기되 종결 버튼은 내지 않는다(하위가 풀리면 보고로 기상)
+                child_held.append(dict(e, why="하위 보류"))
+                continue
+            # prj1#Issue630 — tick 이 곧(또는 이미) 깨우는 건은 사람이 닫을 일이 아니다. 근거 = attempts>=1(tick 이 만졌다)
+            #   또는 퇴근 후 첫 tick 전. 상한(attempts>=LIMIT: mq 로 올라감)·근거 없이 오래된 attempts 0(자동 경로 미작동)은 사람 몫
+            _att = int(e.get("attempts") or 0)
+            _off = int(dst.get("last_active_at") or 0) or int(e.get("released_at") or 0) or int(e.get("ts") or 0)
+            if _att < FBOT_AUTO_WAKE_LIMIT and (_att >= 1 or (_off and (now - _off) < FBOT_AUTO_WAKE_FIRST_SECS)):
+                auto_wake.append(dict(e, why="자동 재기상 대기"))
                 continue
             orphaned.append(dict(e, why="대상이 퇴근함"))
             continue
@@ -6819,11 +7273,12 @@ def _fbot_deadlocks(data: dict, stale_hours: float = FBOT_STALE_HOURS,
     hard_orphans = [e for e in orphaned if e["why"] == "명부에 없음"]
     soft_orphans = [e for e in orphaned if e["why"] != "명부에 없음"]
     return {"orphaned": orphaned, "cycles": cycles, "stale": stale, "spawning": spawning,
+            "waiting_child": waiting_child, "child_held": child_held, "auto_wake": auto_wake,
             "stale_hours": stale_hours,
-            "count": len(orphaned) + len(cycles) + len(stale),
+            "count": len(orphaned) + len(cycles) + len(stale) + len(child_held),
             "hard_orphans": hard_orphans, "soft_orphans": soft_orphans,
             "hard_count": len(cycles) + len(hard_orphans),
-            "soft_count": len(soft_orphans) + len(stale)}
+            "soft_count": len(soft_orphans) + len(stale) + len(child_held)}
 
 
 # prj3#Issue538 s4: 배분 상태 기호 — 완료와 취소·회수는 **다른 사건**이라 같은 기호를
@@ -6933,6 +7388,10 @@ button.fb-go{cursor:pointer;font:inherit;font-size:.82em}button.fb-go:hover,butt
 .fb-tl{list-style:none;padding:0;margin:.3rem 0}
 .fb-tl li{padding:.18rem .3rem;border-bottom:1px dashed var(--line,#e3e3e3);display:flex;gap:.4rem;align-items:baseline}
 .fb-tl li .k{flex:0 0 auto}.fb-tl li .t{color:var(--dim,#666);font-size:.8em;margin-left:auto;flex:0 0 auto}
+.fb-gloss{margin:.3rem 0;font-size:.85em}.fb-gloss summary{cursor:pointer;color:var(--accent,#3b6fd4)}
+.fb-gloss dl{margin:.4rem 0 0;display:grid;grid-template-columns:max-content 1fr;gap:.2rem .8rem}
+.fb-gloss dt{font-weight:600}.fb-gloss dd{margin:0}
+.fb-more{margin:.2rem 0 .4rem}
 .fb-stream{max-height:12rem;overflow:auto;margin:.3rem 0;border:1px solid var(--line,#e3e3e3);border-radius:8px;padding:.3rem .5rem;background:var(--card,#fafafa)}
 .fb-stream summary{cursor:pointer;font-weight:600;font-size:.85em}
 .fb-stream li{list-style:none;padding:.15rem .2rem;border-bottom:1px dashed var(--line,#e3e3e3);cursor:pointer;font-size:.85em}
@@ -7090,10 +7549,11 @@ _FBOT_BOARD_JS = r"""
     const parts=STATE_KEYS.map(k=>go(k,`${esc(E[k]||"")} ${esc(N[k]||k)} ${s[k]||0}`,"",`${N[k]||k} 봇 목록 펼치기`));
     parts.push(go("open_dispatch",`열린 배분 ${s.open_dispatch||0}`,"","미종결 배분 목록 펼치기 (오래 기다린 순)"));
     if(s.spawning) parts.push(go("spawning",`🚀 스폰 대기 ${s.spawning}`,"","배분 직후 워커 기동 대기 목록"));
+    if(s.waiting_child_dispatch) parts.push(go("waiting_child_dispatch",`🔵 하위 진행 중 ${s.waiting_child_dispatch}`,"","하위 진행 중 = 팀장이 맡긴 일을 하위 봇이 하는 동안 기다리는 배분 — 정상, 종결 대상 아님"));
     if(s.unsettled) parts.push(go("unsettled",`미종결 ${s.unsettled}`," warn","미종결 원장 목록으로 이동"));
-    parts.push(go("inbox",`인박스 ${s.inbox_open||0}`,(s.inbox_open||0)?" warn":"","매니저별 미처리 요청 펼치기"));
-    parts.push(go("deadlocks",`교착 ${s.deadlocks||0}`,(s.deadlocks||0)?" bad":"","⛔ 교착 목록 — 명부에 없는 대상 · 순환 대기"));
-    parts.push(go("seats",`자리 ${s.seats||0}·공석 ${s.vacant||0}`,"","공석 자리 목록 펼치기"));
+    parts.push(go("inbox",`인박스 ${s.inbox_open||0}`,(s.inbox_open||0)?" warn":"","사람·다른 봇이 매니저에게 보낸 요청 중 아직 처리 안 된 것 — 눌러서 목록 보기"));
+    parts.push(go("deadlocks",`교착 ${s.deadlocks||0}`,(s.deadlocks||0)?" bad":"","교착 = 스스로 풀리지 않는 막힘(받을 봇이 명부에 없음 · 서로 기다리는 순환) — 눌러서 목록 보기"));
+    parts.push(go("seats",`자리 ${s.seats||0}·공석 ${s.vacant||0}`,"","자리 = 조직도의 정해진 직책 · 공석 = 맡은 봇이 없는 자리 — 눌러서 목록 보기"));
     return parts.join(" "); }
   function summary(){ const s=state.data.summary||{};
     // 같은 내용이면 버튼을 교체하지 않는다 — 폴링·SSE 마다 갈아 끼우면 누르는 순간 요소가 바뀐다(prj1#Issue557 실측 5초 1회)
@@ -7122,17 +7582,19 @@ _FBOT_BOARD_JS = r"""
       .concat((dl.cycles||[]).map(c=>{ const b=c.find(x=>bots[x])||"";
         return {kind:"cycle", sign:"⟳", bot:b, job:"", addr:addrOf(b), label:c.map(T).join(" → "), sub:"", meta:"순환 대기", ts:0, bad:true}; }));
     if(key==="spawning") return (dl.spawning||[]).map(e=>Object.assign(edge(e,"🚀","스폰 대기"),{ts:+(e.since||e.ts)||0}));
+    if(key==="waiting_child_dispatch") return (dl.waiting_child||[]).map(e=>edge(e,"🔵","하위 진행 중"));
     if(key==="seats") return seats.filter(st=>st.vacant).map(st=>({kind:"seat", sign:"▢", bot:"", job:"", addr:st.addr, label:st.addr,
                 sub:"", meta:[st.role, st.dept].filter(Boolean).join(" · "), ts:0, grp:st.scope}));
     if(key==="inbox") return (d.inbox||[]).map(x=>({kind:"request", sign:"✉", bot:bots[x.owner]?x.owner:"", job:x.id||"", addr:addrOf(x.owner),
                 label:String(x.from||"?").slice(0,24), sub:x.body||"", meta:x.escalated?"에스컬":"", ts:x.ts||0, grp:x.owner_title||x.owner, bad:!!x.escalated}));
     return []; }
-  const CHIP_TITLE={open_dispatch:"⏳ 열린 배분", deadlocks:"⛔ 교착", spawning:"🚀 스폰 대기", seats:"▢ 공석 자리", inbox:"✉ 인박스 — 매니저별 미처리 요청"};
+  const CHIP_TITLE={open_dispatch:"⏳ 열린 배분", deadlocks:"⛔ 교착", spawning:"🚀 스폰 대기", waiting_child_dispatch:"🔵 하위 진행 중", seats:"▢ 공석 자리", inbox:"✉ 인박스 — 매니저별 미처리 요청"};
   const CHIP_NOTE={
     inbox:'처리: 매니저가 결속돼 있으면 다음 턴에 뜨고, 퇴근이면 요청 도착 시 자동 기상한다(prj3#Issue734). 수동 조회 <code>fbot-inbox.py pending --bot-id &lt;봇&gt;</code>',
     deadlocks:'⛔ = 스스로 안 풀리는 것(명부에 없는 대상 · 순환 대기). 대상 퇴근·정체는 「미종결」 로 따로 센다(prj3#Issue502).',
     spawning:'배분 직후 워커가 뜨는 중 — 유예가 지나도 퇴근이면 「미종결」 로 옮겨 간다(prj3#Issue573).'};
   // 공용 목록 패널 — 한 번에 한 배지만 펼친다(배지마다 패널을 두면 여러 개가 쌓여 바가 밀린다). 항목 클릭 = 조직도 착지
+  const FB_LIST_CAP=15;   // Issue616_5
   function chipPanel(){ const box=el("fb-chip-panel"); if(!box) return; const k=state.chip;
     box.hidden=!k; if(!k){ box._html=""; return; }
     const L=state.data.labels||{}, rows=chipRows(state.data,k);
@@ -7140,11 +7602,14 @@ _FBOT_BOARD_JS = r"""
     let h=`<div class="fb-chip-h"><b>${esc(title)}</b> <small>${rows.length}건</small><button class="fb-btn fb-chip-x" title="접기">✕</button></div>`;
     if(!rows.length) h+='<div class="fb-empty">해당 없음</div>';
     else { const by=new Map(); rows.forEach(r=>{ const g=r.grp||""; if(!by.has(g)) by.set(g,[]); by.get(g).push(r); });
-      for(const [g,xs] of by){ if(g) h+=`<div class="fb-memgrp">${esc(g)} <small>${xs.length}건</small></div>`;
+      // Issue616_5: 긴 목록이 페이지를 7,700px 로 늘렸다 — 그룹당 FB_LIST_CAP 건만 먼저 보이고 «더 보기» 로 연다
+      for(const [g,xsAll] of by){ if(g) h+=`<div class="fb-memgrp">${esc(g)} <small>${xsAll.length}건</small></div>`;
+        const xs=state.chipMore?xsAll:xsAll.slice(0,FB_LIST_CAP);
         h+='<ul class="fb-list">'+xs.map(r=>`<li class="${r.bad?"problem":""}${r.bot&&r.bot===state.focus?" sel":""}" data-kind="${esc(r.kind)}" data-bot="${esc(r.bot)}" data-job="${esc(r.job)}" data-addr="${esc(r.addr)}" title="${esc(r.sub||r.label)}">`
           +(r.kind==="bot"?`<span class="fb-dot ${esc(r.st)}"></span>`:`<span class="sign">${r.sign}</span>`)+` ${esc(r.label)}`
           +(r.meta?` <span class="meta">${esc(r.meta)}</span>`:"")+(r.ts?` <span class="meta">${esc(ago(r.ts))}</span>`:"")
-          +(r.sub?`<span class="meta">${esc(String(r.sub).slice(0,90))}</span>`:"")+`</li>`).join("")+'</ul>'; } }
+          +(r.sub?`<span class="meta">${esc(String(r.sub).slice(0,90))}</span>`:"")+`</li>`).join("")+'</ul>'
+          +(xsAll.length>xs.length?`<button class="fb-btn fb-more" title="나머지 ${xsAll.length-xs.length}건 펼치기">더 보기 (${xsAll.length-xs.length})</button>`:""); } }
     if(CHIP_NOTE[k]) h+=`<div class="fb-empty">${CHIP_NOTE[k]}</div>`;
     if(box._html!==h){ box.innerHTML=h; box._html=h; } }
   function botUnread(b){ const tl=(state.data.timeline||{})[b]||[]; return tl.some(j=>{const e=state.data.jobs[j]; return e && e.kind==="event" && e.ts>state.seenTs;}); }
@@ -7273,7 +7738,7 @@ _FBOT_BOARD_JS = r"""
   //   여기는 **보기(기간·범위)만** 정한다. 판정을 새로 만들지 않는다.
   const MGR = new Set(["chief","lead","hr"]);
   const LIVE = new Set(["open","blocked","logged","deferred"]);
-  const WHY = {gate:["⏸","선행대기"], stale:["⌛","정체"], unaccepted:["📥","미수락"], deferred:["⏸","보류"]};
+  const WHY = {gate:["⏸","선행대기"], stale:["⌛","정체"], unaccepted:["📥","미수락"], deferred:["⏸","보류"], unconfirmed:["⛔","완료 미확인"]};
   const skOf = sc => sc.prj==null ? "hq" : String(sc.prj);
   function allSeats(){ return state.data.scopes.flatMap(s=>s.depts).flatMap(x=>x.seats); }
   function seatOf(bid){ return bid ? allSeats().find(x=>x.bot_id===bid) : null; }
@@ -7426,13 +7891,13 @@ _FBOT_BOARD_JS = r"""
   function jobRow(id, opt){ const d=state.data, j=d.jobs[id]; if(!j) return ""; opt=opt||{};
     const nm=b=>esc((d.bots[b]||{}).title||b||"?"); const why=opt.why?WHY[opt.why]:null;
     const who=j.kind==="request"?`${nm(j.dst)} → ${nm(j.owner)}`:`${nm(j.owner)} → ${nm(j.dst)}`;
-    return `<li data-job="${esc(id)}" class="${opt.child?"child ":""}${j.problem?"problem ":""}${state.selJob===id?"sel":""}" title="${esc(j.issue)}"><span class="sign">${esc(why?why[0]:(j.sign||"·"))}</span> ${who}${why?` <span class="fb-badge">${esc(why[1])}</span>`:""}<span class="meta">${esc((j.issue||"").slice(0,48))} · ${esc(ago(j.ts))}</span></li>`; }
+    return `<li data-job="${esc(id)}" class="${opt.child?"child ":""}${j.problem?"problem ":""}${state.selJob===id?"sel":""}" title="${esc(j.note?j.issue+" — "+j.note:j.issue)}"><span class="sign">${esc(why?why[0]:(j.sign||"·"))}</span> ${who}${why?` <span class="fb-badge">${esc(why[1])}</span>`:""}<span class="meta">${esc((j.issue||"").slice(0,48))} · ${esc(ago(j.ts))}</span></li>`; }
   function jobBox(){ const d=state.data; const e=d.jobs[state.selJob]||d.dispatch.find(x=>x.job_id===state.selJob);
     const x='<a href="#" class="fb-jobx fb-foot" style="float:right">✕ 닫기</a>';
     if(!e) return `<div class="fb-jobbox">${x}<div class="fb-empty">배분을 찾을 수 없습니다</div></div>`;
     const req=e.kind==="request"; const sid=req?e.dst:(e.owner||e.src), did=req?e.owner:e.dst;
     const src=d.bots[sid]||{title:sid}, dst=d.bots[did]||{title:did};
-    return `<div class="fb-jobbox">${x}<h3>${esc(e.sign||"")} ${req?"요청":"배분"} <code>${esc(e.id||e.job_id)}</code></h3><dl><dt>${req?"보낸 이":"배분자"}</dt><dd>${esc(src.title)}</dd><dt>${req?"받는 이":"대상"}</dt><dd>${esc(dst.title)} <small>${esc(dst.state_label||"")}</small></dd><dt>요지</dt><dd>${esc(e.issue)}</dd><dt>status</dt><dd>${esc(e.status)}${e.problem?' <span class="fb-badge bad">문제</span>':""}</dd><dt>시각</dt><dd>${esc(ago(e.ts))}</dd><dt>상위</dt><dd>${e.parent?`<a href="#" data-job="${esc(e.parent)}">${esc(e.parent)}</a>`:"—"}</dd></dl>`
+    return `<div class="fb-jobbox">${x}<h3>${esc(e.sign||"")} ${req?"요청":"배분"} <code>${esc(e.id||e.job_id)}</code></h3><dl><dt>${req?"보낸 이":"배분자"}</dt><dd>${esc(src.title)}</dd><dt>${req?"받는 이":"대상"}</dt><dd>${esc(dst.title)} <small>${esc(dst.state_label||"")}</small></dd><dt>요지</dt><dd>${esc(e.issue)}</dd><dt>status</dt><dd>${esc(e.status)}${e.problem?' <span class="fb-badge bad">문제</span>':""}</dd>${e.note?`<dt>사유</dt><dd>${esc(e.note)}</dd>`:""}<dt>시각</dt><dd>${esc(ago(e.ts))}</dd><dt>상위</dt><dd>${e.parent?`<a href="#" data-job="${esc(e.parent)}">${esc(e.parent)}</a>`:"—"}</dd></dl>`
       +(!req&&["open","blocked","logged","deferred"].includes(e.status)?`<form method="post" action="/fbot-dispatch-close" onsubmit="return confirm('이 배분을 닫습니까?')"><input type="hidden" name="job_id" value="${esc(e.id||e.job_id)}"><button class="fb-btn">배분 닫기</button></form>`:"")+`</div>`; }
   function work(){ const d=state.data, box=el("fb-work"); if(!box) return; let h=state.selJob?jobBox():"";
     const bid=focusBot(), b=bid?d.bots[bid]:null;
@@ -7502,9 +7967,10 @@ _FBOT_BOARD_JS = r"""
   // prj1#Issue557 — 배지는 매 폴링 다시 그려지므로 위임으로 한 번만 건다
   el("fb-summary").addEventListener("click",ev=>{ const b=ev.target.closest("[data-go]"); if(!b) return; const k=b.dataset.go;
     if(k==="unsettled"){ const w=document.querySelector(".fm-warn.fm-open"); if(w){ w.scrollIntoView({block:"start"}); w.classList.add("fb-flash"); setTimeout(()=>w.classList.remove("fb-flash"),1600);} return; }
-    state.chip=state.chip===k?null:k; summary(); });   // Issue571 — 나머지 배지는 공용 패널(같은 배지 재클릭 = 접기)
+    state.chip=state.chip===k?null:k; state.chipMore=false; summary(); });   // Issue571 — 나머지 배지는 공용 패널(같은 배지 재클릭 = 접기)
   // Issue571 — 패널 항목 착지(인박스 행 prj1#Issue557 과 같은 규칙): 봇 → 자리 선택 + 포커스 · 배분·요청 → 그 일 선택 · 공석 → 그 자리
-  el("fb-chip-panel").addEventListener("click",ev=>{ if(ev.target.closest(".fb-chip-x")){ state.chip=null; summary(); return; }
+  el("fb-chip-panel").addEventListener("click",ev=>{ if(ev.target.closest(".fb-chip-x")){ state.chip=null; state.chipMore=false; summary(); return; }
+    if(ev.target.closest(".fb-more")){ state.chipMore=true; summary(); return; }
     const li=ev.target.closest("li[data-kind]"); if(!li) return; const x=li.dataset;
     if(x.addr) state.sel=x.addr; state.focus=x.bot||null; state.selJob=x.job||null; state.selMember=null; state.mode="org"; writeHash(); render(); });
   el("fb-mode-org").addEventListener("click",()=>{state.mode="org";writeHash();render();});
@@ -7598,7 +8064,7 @@ def _fbot_board_html(root: str = "", org_prj=None) -> str:
     if root:
         q.append("root=" + quote(root))
     if org_prj is not None:
-        q.append("prj=%d" % org_prj)
+        q.append("prj=" + quote(str(org_prj)))
     qs = "&".join(q)
     return (
         "<style>" + _FBOT_BOARD_CSS + "</style>"
@@ -7610,6 +8076,16 @@ def _fbot_board_html(root: str = "", org_prj=None) -> str:
         '<button class="fb-btn" id="fb-toggle-problem" title="교착·정체·미상·취소만">문제만</button>'
         '<button class="fb-btn" id="fb-refresh" title="지금 갱신">↻</button></div>'
         '<div id="fb-chip-panel" class="fb-chipbox" hidden></div>'
+        # Issue616_5: 고유어 도움말 — 처음 보는 사람은 «교착·공석·결속» 이 무엇인지 알 길이 없었다
+        '<details class="fb-gloss" id="fb-glossary"><summary>용어 도움말 — 이 화면의 말</summary><dl>'
+        '<dt>핀봇</dt><dd>이름과 역할을 가진 영속 AI 일꾼. 세션이 끝나도 기록과 책임이 이 이름에 남는다.</dd>'
+        '<dt>배분</dt><dd>한 봇이 다른 봇에게 일을 맡기는 것. 「열린 배분」은 아직 끝나지 않은 것.</dd>'
+        '<dt>교착</dt><dd>스스로 풀리지 않는 막힘 — 일을 받을 봇이 명부에 없거나, 서로 상대를 기다리는 순환.</dd>'
+        '<dt>하위 진행 중</dt><dd>팀장이 맡긴 일을 하위 봇이 처리하는 동안 기다리는 상태. 정상이다.</dd>'
+        '<dt>자리 · 공석</dt><dd>자리는 조직도에 정해진 직책, 공석은 그 자리를 맡은 봇이 없는 것.</dd>'
+        '<dt>인박스</dt><dd>봇에게 온 요청함. 숫자는 아직 처리되지 않은 요청 수.</dd>'
+        '<dt>결속</dt><dd>이미 떠 있는 세션을 특정 봇에 묶어 그 봇의 몸체로 쓰는 것.</dd>'
+        '</dl></details>'
         '<details class="fb-stream" open><summary>알림 스트림 (이벤트 역순)</summary><div id="fb-stream-body"></div></details>'
         '<div class="fb-modes"><button class="fb-mode on" id="fb-mode-org">조직</button>'
         '<button class="fb-mode" id="fb-mode-task">작업</button></div>'
@@ -7663,7 +8139,9 @@ def _fbot_board_work(bots: dict, jobs: dict, slow: set) -> None:
             w["received"].append(j["id"])
             st = j["status"]
             if st == "blocked":
-                w["deferred"].append({"id": j["id"], "why": "gate"})
+                # Issue620 — 완료 미확인은 선행대기가 아니다(매니저 확정 대기). 그 밖의 blocked 는 종전 gate
+                w["deferred"].append({"id": j["id"],
+                                      "why": "unconfirmed" if j.get("blocked_by") == "unconfirmed" else "gate"})
             elif st == "deferred":
                 w["deferred"].append({"id": j["id"], "why": "deferred"})
             elif st == "open":
@@ -7834,7 +8312,7 @@ def _fbot_board_payload(full: dict, org: dict, extras: dict = None, inbox: dict 
             "seat": n.get("seat_id") or "", "parent": n.get("parent") or "",
             "root": n.get("root") or bid, "session_id": n.get("session_id") or "",
             "tmux_target": n.get("tmux_target") or "", "sessions": int(n.get("sessions") or 0),
-            "current_task": n.get("current_task") or "", "last_task": ex.get("last_task") or "",
+            "current_task": _fbot_task_line(n.get("current_task")), "last_task": _fbot_task_line(ex.get("last_task")),
             "lease_expires": int(ex.get("lease_expires") or 0),
             "last_active_at": int(ex.get("last_active_at") or 0),
             "inbox_open": int(inbox.get(bid) or 0), "escalated": int(escal.get(bid) or 0),
@@ -7894,6 +8372,7 @@ def _fbot_board_payload(full: dict, org: dict, extras: dict = None, inbox: dict 
             "ts": int(e.get("ts") or 0), "recent": bool(_fbot_edge_recent(e, now)),
             "problem": bool(problem), "parent": parent, "parent_via": parent_via,
             "task_ref": e.get("task_ref") or "", "cwd": e.get("cwd") or "",
+            "blocked_by": e.get("blocked_by") or "", "note": _fbot_block_note(e),   # Issue620
         })
     # Issue545 M4-1 — 봇 카드 «지시 중»: 그 봇이 낸 **열린** 배분(대상·이슈·시각). 끝난·회수된 것은 기록이지 지시가 아니다
     #   prj3#Issue818 — `issue_map` = 🗺 이슈맵 링크를 그릴지. serve 와 같은 판정(`_issue_map_openable`)을 여기서 한 번 —
@@ -7918,7 +8397,7 @@ def _fbot_board_payload(full: dict, org: dict, extras: dict = None, inbox: dict 
     for st in (org or {}).get("seats") or []:
         k = (st.get("scope_prj"), st.get("scope_title") or ("본사" if st.get("scope_prj") is None else f"prj{st.get('scope_prj')}"))
         by_scope.setdefault(k, {}).setdefault((st.get("dept") or "-", st.get("dept_label") or st.get("dept") or "-"), []).append(st)
-    for (sp, stitle), depts in sorted(by_scope.items(), key=lambda kv: (kv[0][0] is not None, kv[0][0] or 0)):
+    for (sp, stitle), depts in sorted(by_scope.items(), key=lambda kv: _org_scope_key(kv[0][0])):
         dl_ = []
         for (did, dlabel), ss in depts.items():
             dl_.append({"id": did, "label": dlabel, "seats": [{
@@ -7944,8 +8423,9 @@ def _fbot_board_payload(full: dict, org: dict, extras: dict = None, inbox: dict 
     # prj3#Issue573 — 뱃지의 "교착" 은 ⛔(hard) 만. 소프트(대상 퇴근)는 "미종결", 배분 직후는 "스폰 대기"
     summary["deadlocks"] = int(dl.get("hard_count") if dl.get("hard_count") is not None
                                else len([e for e in dl.get("orphaned") or [] if e.get("why") == "명부에 없음"]) + len(dl.get("cycles") or []))
-    summary["unsettled"] = len([e for e in dl.get("orphaned") or [] if e.get("why") != "명부에 없음"]) + len(dl.get("stale") or [])
+    summary["unsettled"] = len([e for e in dl.get("orphaned") or [] if e.get("why") != "명부에 없음"]) + len(dl.get("stale") or []) + len(dl.get("child_held") or [])
     summary["spawning"] = len(dl.get("spawning") or [])
+    summary["waiting_child_dispatch"] = len(dl.get("waiting_child") or [])   # prj3#Issue991 — 하위 진행 중인 팀장 배분(미종결 아님)
     summary["inbox_open"] = sum(b["inbox_open"] for b in bots.values())
     summary["decisions"] = sum(len(b["decisions"]) for b in bots.values())   # Issue570
     # Issue561 — 미답 질문 수 = **보드에 보이는** 질문(묻는 봇·받는 봇 중 한 카드라도 있는 것). 배지 = 화면
@@ -7960,7 +8440,8 @@ def _fbot_board_payload(full: dict, org: dict, extras: dict = None, inbox: dict 
         jid = e["job_id"] or f"disp:{e['src']}>{e['dst']}:{e['ts']}"
         jobs[jid] = {"id": jid, "kind": "dispatch", "status": e["status"], "owner": e["src"], "dst": e["dst"],
                      "issue": e["issue"], "role": e["role"], "ts": e["ts"], "done_ts": 0, "parent": e["parent"],
-                     "sign": e["sign"], "recent": e["recent"], "problem": e["problem"], "payload": {}}
+                     "sign": e["sign"], "recent": e["recent"], "problem": e["problem"], "payload": {},
+                     "blocked_by": e["blocked_by"], "note": e["note"]}                    # Issue620
         _tl(e["src"], jid); _tl(e["dst"], jid)
     for r in extra_jobs or []:
         try:
@@ -7979,7 +8460,7 @@ def _fbot_board_payload(full: dict, org: dict, extras: dict = None, inbox: dict 
             ent["problem"] = _fbot_req_escalated(pl, r.get("result")); ent["sign"] = "✉" if r.get("status") == "open" else "✓"
             ent["parent"] = pl.get("corr_id") if pl.get("corr_id") != jid else None
         elif k == "session":
-            ent["issue"] = _fbot_alias((pl.get("current_task") or pl.get("last_task") or "")[:120])
+            ent["issue"] = _fbot_alias(_fbot_task_line(pl.get("current_task") or pl.get("last_task") or "", pl.get("summary"))[:120])   # Issue616_5 — summary(prj3#Issue1011) 우선
             ent["sign"] = "⏻"; ent["payload"] = {"cwd": pl.get("cwd"), "session_id": pl.get("session_id")}
         elif k == "event":
             ent["issue"] = _fbot_alias((pl.get("detail") or "")[:160]); ent["sign"] = "•"
@@ -8014,7 +8495,8 @@ def _fbot_board_payload(full: dict, org: dict, extras: dict = None, inbox: dict 
             "dispatch": out_edges, "jobs": jobs, "timeline": timeline, "events": events,
             "cascade": _fbot_cascade(out_edges),                                   # Issue545 M3
             "deadlocks": {"orphaned": dl.get("orphaned") or [], "stale": dl.get("stale") or [],
-                          "cycles": dl.get("cycles") or [], "spawning": dl.get("spawning") or []},
+                          "cycles": dl.get("cycles") or [], "spawning": dl.get("spawning") or [],
+                          "waiting_child": dl.get("waiting_child") or [], "child_held": dl.get("child_held") or []},
             "org_available": bool((org or {}).get("available")),
             "org_reason": (org or {}).get("reason") or "",
             "legacy": {"hires": full.get("hires") or [], "roots": full.get("roots") or [],
@@ -8115,6 +8597,25 @@ def _fbot_flow_filter(edges: list, dl: dict = None, job: str = "", problem: bool
 #   ① 채용 실선 / 배분 화살표 / 취소 점선의 3분 구분(Issue402 ⓓ)
 #   ② 노드 접두 분리(조직 B_ / 흐름 F_) → 같은 페이지 두 그래프가 안 섞임
 _FBOT_LABEL_MAX = 20          # 엣지 라벨 말줄임 상한. 전문은 툴팁·상세가 받는다
+# Issue615 — 노드 라벨 말줄임 상한. 워커 호칭은 작업문 전문이라 그대로 그리면 노드가 문단이 된다
+_FBOT_NODE_LABEL_MAX = 28
+
+
+def _fbot_ledger_details(chip: str, src: str, dst: str, body: str, age: str, job_id: str,
+                         note: str, close_btn: str = "") -> str:
+    """Issue629 — 미종결 원장 한 건을 <details> 로 그린다. 접힌 제목은 한 줄(상태 칩·발신→수신·본문 첫 줄 80자·경과)
+    뿐이고, 본문 전문·안내·«원장 종결» 버튼은 펼친 안쪽에 둔다(버튼을 summary 에 두면 클릭이 펼침 토글과 겹친다).
+    src·dst 는 호출자가 이스케이프한 HTML, 나머지는 원문. data-job 은 폴링 갱신(reload) 뒤 열림 상태 복원 키."""
+    esc = html.escape
+    first = ((body or "").strip().split("\n", 1)[0] if (body or "").strip() else "이슈 미상").strip()
+    first = first if len(first) <= 80 else first[:79] + "\u2026"
+    return ('<details class="fm-led"%s><summary><b>%s</b> \u2014 %s \u2192 %s : %s'
+            '<span class="fm-mute">%s</span></summary>'
+            '<div class="fm-led-body"><div class="fm-led-text" style="white-space:pre-wrap">%s</div>'
+            '%s%s</div></details>'
+            % ((' data-job="%s"' % esc(job_id)) if job_id else "", esc(chip), src, dst, esc(first), esc(age or ""),
+               esc((body or "").strip() or "이슈 미상"),
+               ('<div class="fm-mute">%s</div>' % note) if note else "", close_btn))
 
 
 def _fbot_ellipsis(text: str, limit: int = _FBOT_LABEL_MAX) -> str:
@@ -8150,7 +8651,10 @@ def _fbot_graph_elements(data: dict, dl: dict = None, kind: str = "org") -> dict
         else:
             sub = " · ".join([x for x in (n.get("role"), n.get("state_label"),
                                           prj_lab) if x])
-        d = {"id": prefix + b, "bot": b, "label": title, "sub": sub,
+        # Issue615 — 그래프는 **제목만**. 상태·세션·전문은 옆 패널과 툴팁이 받는다(사용자 지적
+        #   2026-10-08: 상세 페이지가 있는데 노드에 상세를 실을 필요가 없다).
+        d = {"id": prefix + b, "bot": b, "title": title,
+             "label": _fbot_ellipsis(title, _FBOT_NODE_LABEL_MAX), "sub": sub,
              "role": n.get("role") or "", "state": n.get("state") or "",
              "orphan": "1" if orphan else "0",
              "sessions": int(n.get("sessions") or 0),
@@ -8180,7 +8684,7 @@ def _fbot_graph_elements(data: dict, dl: dict = None, kind: str = "org") -> dict
                 "id": "h%d" % i, "source": "B_" + e["src"],
                 "target": "B_" + e["dst"], "kind": "hire", "label": ""}})
         for i, e in enumerate(data["dispatch"]):
-            full = " \u00b7 ".join([x for x in (e.get("issue"), e.get("status")) if x]) or "\ubc30\ubd84"
+            full = " \u00b7 ".join([x for x in (e.get("issue"), e.get("status"), _fbot_block_note(e)) if x]) or "\ubc30\ubd84"
             els_e.append({"data": {
                 "id": "d%d" % i, "source": "B_" + e["src"], "target": "B_" + e["dst"],
                 "kind": "cancelled" if e["status"] == "cancelled" else "dispatch",
@@ -8222,7 +8726,7 @@ def _fbot_graph_elements(data: dict, dl: dict = None, kind: str = "org") -> dict
         when = _fbot_rel_time(e.get("ts") or 0, _now)
         _sub = (_cs.get(e.get("job_id") or "") or {}).get("descendants", 0)
         full = " \u00b7 ".join([x for x in (sign, e.get("issue"), e.get("role"), when,
-                                             ("하위 %d" % _sub) if _sub else "") if x]) or "\ubc30\ubd84"
+                                             ("하위 %d" % _sub) if _sub else "", _fbot_block_note(e)) if x]) or "\ubc30\ubd84"
         els_e.append({"data": {
             "id": "f%d" % i, "source": "F_" + e["src"], "target": "F_" + e["dst"],
             "kind": k, "sign": sign, "when": when, "w": 1 + _sub,
@@ -10173,10 +10677,74 @@ class Handler(BaseHTTPRequestHandler):
         # 브라우저 CORS 차단("Failed to fetch") 유발 (Simple Browser/htm-doc 경로).
         return self.headers.get("Origin") or "null"
 
+    # Issue616_1 — 주소창으로 들어온 사람에게 raw JSON 대신 안내 화면을 준다.
+    #   판정은 Accept 에 text/html 이 있는지 — 브라우저 내비게이션은 text/html 을 보내고,
+    #   fetch()/curl 은 */* 라 기존 JSON 소비처는 영향이 없다.
+    _API_GUIDE_PATHS = {"/boards": "boards", "/projects-list": "projects", "/job-catalog": "catalog"}
+    _HUMAN_ERR_PREFIXES = ("/md-doc", "/htm-doc")
+
+    def _wants_html(self) -> bool:
+        hdrs = getattr(self, "headers", None)
+        try:
+            accept = (hdrs.get("Accept") or "") if hdrs is not None else ""
+        except Exception:
+            return False
+        return "text/html" in accept.lower()
+
+    def _human_page(self, status: int, title: str, lines, back_label: str):
+        """안내·오류 공용 사람용 페이지 (hub 복귀 링크 포함, 라이트/다크 자동)."""
+        body_html = "".join("<p>%s</p>" % html.escape(ln) for ln in lines)
+        page = (
+            "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+            "<link rel=\"icon\" href=\"/fpm-icon.png\"><title>%s</title><style>"
+            "body{font-family:system-ui,sans-serif;max-width:640px;margin:3rem auto;padding:0 1rem;"
+            "line-height:1.6;color:#222;background:#fff}"
+            "@media(prefers-color-scheme:dark){body{color:#ddd;background:#1b1b1f}a{color:#8ab4f8}}"
+            "h1{font-size:1.25rem}code{background:rgba(127,127,127,.2);padding:.1em .35em;border-radius:4px}"
+            "</style></head><body><h1>%s</h1>%s<p><a href=\"/hub\">%s</a></p></body></html>"
+            % (html.escape(title), html.escape(title), body_html, html.escape(back_label))
+        ).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(page)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(page)
+
+    def _ui_lang(self) -> str:
+        try:
+            return i18n.norm_lang(_load_hub_setting().get("language"))
+        except Exception:
+            return i18n.DEFAULT_LANG
+
+    def _serve_api_guide(self, path: str) -> bool:
+        """Issue616_1: 사람용이 아닌 JSON 엔드포인트를 브라우저로 열면 안내 페이지. 서빙했으면 True."""
+        key = self._API_GUIDE_PATHS.get(path)
+        if not key or not self._wants_html():
+            return False
+        lang = self._ui_lang()
+        self._human_page(200, i18n.t("apiGuide.title", lang),
+                         [i18n.t("apiGuide.%s" % key, lang), i18n.t("apiGuide.common", lang)],
+                         i18n.t("apiGuide.back", lang))
+        return True
+
     def _send_json(self, status: int, body: dict):
+        # Issue616_1: 문서 라우트 오류를 브라우저가 열었으면 사람용 오류 화면
+        _p = getattr(self, "path", "") or ""
+        if (status >= 400 and _p.startswith(self._HUMAN_ERR_PREFIXES) and self._wants_html()):
+            lang = self._ui_lang()
+            self._human_page(status, i18n.t("docError.title", lang),
+                             [str((body or {}).get("error") or ""), i18n.t("docError.hint", lang)],
+                             i18n.t("docError.back", lang))
+            return
         payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        payload, _enc = _maybe_gzip(payload, self.headers.get("Accept-Encoding", ""))   # Issue616_9
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        if _enc:
+            self.send_header("Content-Encoding", _enc)
+        self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Access-Control-Allow-Origin", self._acao())
         self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
@@ -10383,6 +10951,10 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/projects-map":
             self._handle_projects_map(parsed)
             return
+        if parsed.path == "/projects-map/groups":          # Issue631
+            st, payload = projects_map_groups_read()
+            self._send_json(st, payload)
+            return
         # Issue472: 아이덴티티 카드뷰(Identity_map.htm) serve — 경로는 REPO_ROOT 고정
         if parsed.path == "/identity":
             self._handle_identity(parsed)
@@ -10399,6 +10971,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_open_prj(parsed)
             return
         if parsed.path == "/boards":
+            if self._serve_api_guide(parsed.path):
+                return
             self._handle_dashboards(parsed)
             return
         if parsed.path == "/api/file-stat":
@@ -10424,6 +10998,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_hub_events(parsed)
             return
         if parsed.path == "/projects-list":
+            if self._serve_api_guide(parsed.path):
+                return
             self._send_json(200, {"projects": _projects_list_with_htm()})
             return
         # Issue420: aoa-mq 전용 관리 페이지 + 데이터
@@ -10446,6 +11022,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_sched_result(parsed)
             return
         if parsed.path == "/job-catalog":            # prj3#Issue691 — 스텝 자동완성·cwd 드롭다운
+            if self._serve_api_guide(parsed.path):
+                return
             self._send_json(200, _schedule_catalog())
             return
         # Issue66: GET /issue?prj=N&id=M — Issue.md 섹션 html 반환
@@ -10591,6 +11169,9 @@ class Handler(BaseHTTPRequestHandler):
         # Issue398: projects-map note 박스 인라인 편집 저장
         if parsed.path == "/projects-map/note":
             self._handle_projects_map_note(parsed)
+            return
+        if parsed.path == "/projects-map/groups":          # Issue631
+            self._handle_projects_map_groups(parsed)
             return
         if parsed.path == "/open-settings-yml":
             self._handle_open_settings_yml(parsed)
@@ -11869,7 +12450,7 @@ class Handler(BaseHTTPRequestHandler):
                 "issue_map": _issue_map_visible(p.get("cwd", "")),
                 # Issue363: 맵 파일이 Issue.md 보다 오래됨 → 아이콘에 흐림 표식(노출 여부는 불변)
                 "issue_map_stale": _issue_map_stale(p.get("cwd", "")),
-                "open_issue_count": _issue_open_count(p.get("cwd", "")),  # Issue316: 카드 배지 — 미완료 이슈 수
+                "open_issue_count": _issue_open_count(p.get("cwd", "")),  # Issue316·623: 카드 배지 — 이슈맵 미완료 수(맵 없으면 None)
                 "mode": entry.get("mode"),
                 "content_type": entry.get("content_type"),
                 "origin": origin,         # Issue177: "vscode" | "terminal" (카드 배지·클릭 분기)
@@ -12098,8 +12679,12 @@ __WARN__
             .replace("{I18N_JSON}", json.dumps(i18n.merged(lang), ensure_ascii=False)))
         html_str = re.sub(r"\{T:([\w.]+)\}", lambda m: i18n.t(m.group(1), lang), html_str)
         body = html_str.encode("utf-8")
+        body, _enc = _maybe_gzip(body, self.headers.get("Accept-Encoding", ""))   # Issue616_9 — 228KB → 1/4
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        if _enc:
+            self.send_header("Content-Encoding", _enc)
+        self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
@@ -14568,7 +15153,7 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         """Issue255: htm 문서의 상대 리소스(이미지) serve.
         인증 2모드 — (1) cwd+token(=/view 대칭, cwd-jail) (2) htm-registry
         exact-match(토큰리스, /htm-doc 대칭). registry 모드의 jail 은 doc 의
-        `_doc_work/` 상위(없으면 doc 디렉토리) — 프로젝트 임의 파일 노출 차단."""
+        `_doc_work/` 상위=프로젝트 루트(없으면 doc 디렉토리) — 프로젝트 임의 파일 노출 차단."""
         qs = parse_qs(parsed.query)
         doc = (qs.get("doc") or [""])[0]
         rel = (qs.get("rel") or [""])[0]
@@ -14598,10 +15183,13 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
                 log(f"GET /htm-res — unauthorized doc rejected: {doc_real}")
                 self._send_json(403, {"error": "doc not authorized"})
                 return
+            # prj1#Issue617: jail 은 `_doc_work` 의 **상위(프로젝트 루트)** — 독스트링 계약대로.
+            #   `_doc_work` 자체로 잡으면 report 가 참조하는 `tdd/*/evidence/*.png` 같은
+            #   프로젝트 안 이미지가 전부 `rel outside jail` 403. abs= 는 file:// src 전용이라
+            #   이 경로에 안 닿는다. 판정은 여기 한 곳 — 프로젝트 밖·dotfile 은 계속 거부.
             marker = os.sep + "_doc_work" + os.sep
             i = doc_real.find(marker)
-            jail = (doc_real[:i + len(marker) - 1] if i >= 0
-                    else os.path.dirname(doc_real))
+            jail = doc_real[:i] if i > 0 else os.path.dirname(doc_real)
         if abs_p:
             # Issue283: file:// 절대경로 모드. jail 이 $HOME 으로 완화되므로
             # loopback 전용 + (위에서 통과한) doc 등록 인증을 함께 요구한다.
@@ -14622,6 +15210,11 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
                 log(f"GET /htm-res — rel escapes jail rejected: {res}")
                 self._send_json(403, {"error": "rel outside jail"})
                 return
+        # Issue393 대칭: jail 이 넓어진 만큼 dotfile·자격증명 게이트를 같은 자리에서 건다
+        if path_is_sensitive(res):
+            log(f"GET /htm-res — sensitive path rejected: {os.path.basename(res)}")
+            self._send_json(403, {"error": "path not allowed"})
+            return
         ext = os.path.splitext(res)[1].lower()
         if ext not in _HTM_RES_EXTS:
             self._send_json(403, {"error": "extension not allowed"})
@@ -14982,7 +15575,8 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         _sid = md_shell.split_frontmatter(md_text)[0].get("sid", "")
         _ed, _can = _session_open_mode(_sid) if _sid else (_default_editor(), False)
         body = md_shell.render_md_shell(md_text, title, abs_path, nonce,
-                                        proj_cwd, proj_label, editor=_ed, can_open=_can)
+                                        proj_cwd, proj_label, editor=_ed, can_open=_can,
+                                        issue_map_cwd=_issue_map_cwd_for(proj_cwd))
         # 셸이 canonical <header> 를 직접 갖고 CSS 는 htm 과 같은 정규화기가 붙인다
         # (헤더 표현이 두 경로에서 갈리지 않도록 — 셸 1벌 원칙의 CSS 판).
         body = _normalize_hub_header_css(body)
@@ -15073,6 +15667,11 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         #   `.header-actions` 가 생긴다. cwd 는 요청값이 아니라 **맵의 프로젝트 루트**를
         #   싣는다(하위 폴더 드리프트가 rebuild 대상까지 흔들지 않도록).
         body = _inject_before_body_end(body, _issue_map_rebuild_shim(proj_root, stale))
+        # Issue634: `?embed=1` — md 셸 헤더 🗺️ 풍선(md_shell.render_issue_map_pop) iframe 용. «그림만» —
+        #   첫 그래프(전체 의존 관계)의 SVG 만 남긴다. 생성기 산출물은 건드리지 않는다.
+        if (parse_qs(parsed.query).get("embed") or [""])[0] == "1":
+            body = _inject_before_body_end(body, ISSUE_MAP_EMBED_CSS)
+        body = _tilde_home_html(body)   # Issue616_6 — 보이는 텍스트의 홈 경로만 `~` (속성·script 보존)
         self._send_htm_html(body, path)
 
     def _handle_issue_map_rebuild(self, parsed):
@@ -15122,7 +15721,7 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         _q = parse_qs(parsed.query or "")
         root = (_q.get("root") or [""])[0].strip()
         _prj_raw = (_q.get("prj") or [""])[0].strip()
-        org_prj = int(_prj_raw) if _prj_raw.isdigit() else None
+        org_prj = _fbot_prj(_prj_raw)          # prj3#Issue1062 — 영숫자 id(9t)
         try:
             body = _fbot_board_data(root, org_prj)
         except Exception as e:                       # 관제 API 는 죽지 않는다 — 빈 페이로드 + 사유
@@ -15164,7 +15763,7 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         #   이 줄은 그때 바뀌지 않았다(오기록) — 탭 없는 주소가 계속 mermaid 였다.
         tab = _tab if _tab in ("roster", "org", "map") else "board"
         _prj_raw = (_q.get("prj") or [""])[0].strip()
-        org_prj = int(_prj_raw) if _prj_raw.isdigit() else None
+        org_prj = _fbot_prj(_prj_raw)          # prj3#Issue1062 — 영숫자 id(9t)
         # prj3#Issue562 — 흐름 필터. job 은 원장 id 형식만 통과(입력을 그대로 그림에 싣지 않는다)
         _job = (_q.get("job") or [""])[0].strip()
         flow_job = _job if re.fullmatch(r"fbotdisp-[0-9]+-[0-9a-f]{8}", _job) else ""
@@ -15268,8 +15867,9 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             return
         cmd = [sys.executable, inbox, "send", "--to", to, "--body", text, "--from-session", "hub-board",
                "--kind", str(body.get("kind") or "ask")]
-        if str(body.get("prj") or "").isdigit():
-            cmd += ["--prj", str(body.get("prj"))]
+        _iprj = _fbot_prj(body.get("prj"))      # prj3#Issue1062 — 영숫자 id(9t)
+        if _iprj is not None:
+            cmd += ["--prj", str(_iprj)]
         try:
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
             try:
@@ -15323,10 +15923,9 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         if err:
             self._send_json(400, {"error": err})
             return
-        try:
-            prj = int(body.get("prj"))
-        except (TypeError, ValueError):
-            self._send_json(400, {"error": "prj(정수) 필요"})
+        prj = _fbot_prj(body.get("prj"))         # prj3#Issue1062 — 영숫자 id(9t)
+        if prj is None:
+            self._send_json(400, {"error": "prj 필요(숫자 또는 숫자+영소문자 접미 — ex) 42·9t)"})
             return
         org = os.path.join(FBOT_ROOT, "hooks", "fbot-org.py")
         if not os.path.exists(org):
@@ -15448,25 +16047,7 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         import urllib.parse as _u
         full = data
         dl = _fbot_deadlocks(full)
-        # prj1#Issue451: show_all 도 퇴역(휴직·해고)은 그래프에서 뺀다 — 전수는 명부 표가 담당.
-        data = (_fbot_filter_career(full, show_hist) if show_all
-                else _fbot_filter_active(full, show_hist))
-        # prj1#Issue454: 기본 그래프는 **열린 배분만** 그린다 — done·cancelled 엣지와
-        #   원장에만 남은 고아 노드는 hist=1 에서만. 열린 배분의 고아 끝점은 남긴다
-        #   (교착 경고의 대상 — 지우면 경고가 가리킬 노드가 사라진다). 표 2종(명부·원장)은
-        #   전수 그대로라 기록이 사라지는 것이 아니라 **그림에서 물러나는 것**이다.
-        if not show_hist:
-            # prj3#Issue556 — 열린 배분 + **최근 3일 종결 배분**. 종결은 사인(✓·✕·⌇)이
-            #   말한다 — 기본 뷰에서 사라지면 사인을 만든 이유가 없다.
-            _open_ends = set()
-            for _e in data["dispatch"]:
-                if _e["status"] == "open" or _fbot_edge_recent(_e):
-                    _open_ends.add(_e["src"]); _open_ends.add(_e["dst"])
-            data = {**data,
-                    "dispatch": [e for e in data["dispatch"]
-                                 if e["status"] == "open" or _fbot_edge_recent(e)],
-                    "nodes": [n for n in data["nodes"]
-                              if not n["orphan"] or n["bot_id"] in _open_ends]}
+        data = _fbot_view_filter(full, show_all, show_hist)
         nodes = {n["bot_id"]: n for n in data["nodes"]}
         # 걸러진 뒤에도 경고문에는 원본 호칭이 필요하다(잘려나간 봇을 가리켜야 하므로).
         all_nodes = {n["bot_id"]: n for n in full["nodes"]}
@@ -15517,10 +16098,31 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         else:
             chips = ['<a class="fm-chip%s" href="%s">전체</a>'
                      % ("" if root else " on", _href(root_id=""))]
+            _cm = full.get("chip_meta") or {}
             for rid in full["roots"]:
-                t = all_nodes.get(rid, {}).get("title") or rid
+                t = (_cm.get(rid) or all_nodes.get(rid) or {}).get("title") or rid
                 chips.append('<a class="fm-chip%s" href="%s">%s</a>'
                              % (" on" if rid == root else "", _href(root_id=rid), esc(t)))
+            # Issue615 — 루트 칩(다중 서버 대비) 뒤에 **구성 중 팀**의 팀장 칩. 구성 판정은
+            #   조직 탭 칩과 같은 Issue689 scope_info — 판정기가 없으면(빈 표) 전부 보인다.
+            _si_m = (full.get("org") or {}).get("scope_info") or {}
+            # 그릴 봇이 없는 팀장 칩은 비활성(사용자 지적 2026-10-08) — 판정은 그림과 같은
+            #   _fbot_view_filter 를 **필터 전 전수**에 걸어 본다(지금 보는 팀장과 무관하게)
+            _vis = {n["bot_id"] for n in
+                    _fbot_view_filter(full.get("whole") or full, show_all, show_hist)["nodes"]}
+            _lt = full.get("lead_tree") or {}
+            for lid in full.get("leads") or []:
+                ln = _cm.get(lid) or all_nodes.get(lid) or {}
+                _fi = _si_m.get(ln.get("prj"), _si_m.get(str(ln.get("prj"))))
+                if _si_m and lid != root and not (_fi or {}).get("formed", False):
+                    continue
+                # «전체» 뒤로는 활성만 — 흐린 칩으로도 남기지 않는다(사용자 지시 2026-10-08).
+                #   지금 보는 팀장(root)은 예외: 칩이 사라지면 어디를 보는지 잃는다
+                if lid != root and not any(b in _vis for b in _lt.get(lid, [lid])):
+                    continue
+                chips.append('<a class="fm-chip lead%s" href="%s">prj%s · %s</a>'
+                             % (" on" if lid == root else "", _href(root_id=lid),
+                                esc(str(ln.get("prj"))), esc(ln.get("title") or lid)))
 
         # ⓐ 표시 옵션 토글 2종(Issue454) — 루트 선택은 유지한 채 축만 바꾼다.
         #   [퇴근 포함] = 하루 축 복원(all) · [기록 포함] = 완료·취소 배분과 원장 고아(hist).
@@ -15591,22 +16193,56 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             warn += ('<div class="fm-warn fm-open"><b>🚀 스폰 대기 %d건</b> <span class="fm-mute">— 배분 직후 워커가 뜨는 중입니다(유예 %d분). '
                      '이 창이 지나도 퇴근이면 미종결로 바뀝니다.</span><ul class="fm-dl">%s</ul></div>'
                      % (len(dl["spawning"]), FBOT_SPAWN_GRACE_SECS // 60, _sp))
+        if dl.get("waiting_child"):
+            # prj3#Issue991 — 하위가 일하는 중인 팀장 배분은 유실이 아니라 완료 대기다. 종결 버튼을 두지 않는다
+            _wc = "".join('<li><b>완료대기</b> — %s → %s (%s) : 하위 진행 중</li>'
+                          % (esc(all_nodes.get(e["src"], {}).get("title") or e["src"]),
+                             esc(all_nodes.get(e["dst"], {}).get("title") or e["dst"]),
+                             esc((e.get("issue") or "")[:60]))
+                          for e in dl["waiting_child"])
+            warn += ('<div class="fm-warn fm-open"><b>🔵 완료대기 %d건</b> <span class="fm-mute">— 팀장이 워커 보고를 기다리는 중입니다. '
+                     '하위 배분이 끝나면 보고로 기상합니다(원장 종결 대상 아님).</span><ul class="fm-dl">%s</ul></div>'
+                     % (len(dl["waiting_child"]), _wc))
+        if dl.get("auto_wake"):
+            # prj1#Issue630 — tick(30분)이 깨우는 중인 건: 미종결 수에 넣지 않고 종결 버튼도 내지 않는다(상한 뒤 mq 로 올라감)
+            _aw = "".join("<li>%s</li>" % _fbot_ledger_details(
+                "자동 재기상", _nm(e["src"]), _nm(e["dst"]), e["issue"],
+                "시도 %d/%d%s" % (e.get("attempts") or 0, FBOT_AUTO_WAKE_LIMIT, _age(e)),
+                e.get("job_id") or "",
+                "봇은 초 단위로 재출근할 수 있어 교착이 아닙니다 — tick 이 약 30분마다 깨우고, "
+                "%d회 뒤에도 안 되면 mq 로 올라갑니다." % FBOT_AUTO_WAKE_LIMIT)
+                for e in dl["auto_wake"])
+            warn += ('<details class="fm-warn"><summary><b>🔁 자동 재기상 대기 %d건</b> '
+                     '<span class="fm-mute">(시도 %s/%d · 약 30분마다)</span></summary>'
+                     '<ul class="fm-dl">%s</ul></details>'
+                     % (len(dl["auto_wake"]), "·".join(str(e.get("attempts") or 0) for e in dl["auto_wake"]),
+                        FBOT_AUTO_WAKE_LIMIT, _aw))
         if dl["soft_count"]:
             items = []
             for e in dl["soft_orphans"]:
-                items.append(
-                    '<li><b>미종결</b> — %s → %s (%s) : %s%s%s<br>'
-                    '<span class="fm-mute">봇은 초 단위로 재출근할 수 있어 교착이 아닙니다 '
-                    '— 작업이 이미 끝났다면 원장을 종결(회수)하십시오.</span></li>'
-                    % (_nm(e["src"]), _nm(e["dst"]), esc(e["issue"] or "이슈 미상"),
-                       esc(e["why"]), _age(e), _close_btn(e, e["why"])))
+                _gaveup = int(e.get("attempts") or 0) >= FBOT_AUTO_WAKE_LIMIT
+                items.append("<li>%s</li>" % _fbot_ledger_details(
+                    "미종결", _nm(e["src"]), _nm(e["dst"]), e["issue"], "%s : %s" % (e["why"], _age(e).strip(" ·")),
+                    e.get("job_id") or "",
+                    ("사람 개입 — mq 로 올라감: 자동 재기상 %d회로도 깨우지 못했습니다. 작업이 이미 끝났다면 원장을 종결(회수)하십시오."
+                     % FBOT_AUTO_WAKE_LIMIT) if _gaveup else
+                    ("자동 재기상 경로 밖입니다(tick 이 만지지 않은 오래된 배분). 작업이 이미 끝났다면 원장을 종결(회수)하십시오."
+                     if not e.get("attempts") else
+                     "작업이 이미 끝났다면 원장을 종결(회수)하십시오."),
+                    _close_btn(e, e["why"])))
+            for e in dl.get("child_held") or []:
+                # prj3#Issue1023 — 하위 보류: 종결 버튼 없음(하위가 풀리면 보고로 기상 — 닫으면 보류 중인 일의 부모만 사라진다)
+                items.append("<li>%s</li>" % _fbot_ledger_details(
+                    "하위 보류", _nm(e["src"]), _nm(e["dst"]), e["issue"], _age(e).strip(" ·"),
+                    e.get("job_id") or "",
+                    "하위 배분이 보류(deferred·blocked)뿐입니다. 하위 보류가 풀리면 보고로 기상합니다 — 종결 대상이 아닙니다."))
             for e in dl["stale"]:
-                items.append(
-                    '<li><b>정체</b> — %s → %s (%s) : <code>open</code> %.1f시간%s<br>'
-                    '<span class="fm-mute">임계 %g시간을 넘겼습니다 — 죽었다고 단정할 수 '
-                    '없어 관망 대상입니다. 무의미해진 배분이면 종결하십시오.</span></li>'
-                    % (_nm(e["src"]), _nm(e["dst"]), esc(e["issue"] or "이슈 미상"),
-                       e["hours"], _close_btn(e, "정체(stale)"), dl["stale_hours"]))
+                items.append("<li>%s</li>" % _fbot_ledger_details(
+                    "정체", _nm(e["src"]), _nm(e["dst"]), e["issue"], "open %.1f시간" % e["hours"],
+                    e.get("job_id") or "",
+                    "임계 %g시간을 넘겼습니다 — 죽었다고 단정할 수 없어 관망 대상입니다. "
+                    "무의미해진 배분이면 종결하십시오." % dl["stale_hours"],
+                    _close_btn(e, "정체(stale)")))
             # ⓒ 계수 분리 — ⛔ 건수를 함께 적어 "진짜 교착은 N건" 이 바로 읽히게 한다.
             warn += ('<div class="fm-warn fm-open"><b>⏳ 미종결 원장 %d건</b> '
                      '<span class="fm-mute">— 진짜 교착(⛔)은 %d건입니다. 종결은 '
@@ -15655,25 +16291,34 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             #   이 열의 용도다. 앞 8자만 줄여 놓으면 그 검색이 그대로 실패한다.
             sid = n.get("session_id") or ""
             pane = n.get("tmux_target") or ""
+            # prj1#Issue621 — 열 폭. 워커 호칭은 작업 지시 전문일 수 있다(prj3#Issue1033). 자동 레이아웃이
+            #   그 열에 폭을 몰아주면 짧은 열이 `le/a/d` 처럼 글자 단위로 쪼개진다 → 짧은 열은 `fm-nw`,
+            #   긴 열(호칭·현재 작업)은 `fm-clip`(폭 상한 + 3줄 말줄임)이고 전문은 title 툴팁에 남긴다.
+            #   소속·지시자도 호칭이라 길 수 있어 `fm-clip fm-s`(좁은 상한)로 둔다.
+            par_title = (nodes.get(par, {}).get("title") or par) if par else ""
             tbody.append(
-                "<tr%s><td>%s</td><td>%s%s</td><td><code>%s</code></td><td>%s</td>"
-                "<td>%s %s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td>"
+                "<tr%s><td>%s</td><td><div class=\"fm-clip\" title=\"%s\">%s%s</div></td>"
+                "<td><code>%s</code></td><td class=\"fm-nw\">%s</td>"
+                "<td class=\"fm-nw\">%s %s</td><td class=\"fm-nw\">%s</td><td class=\"fm-nw\">%s</td>"
+                "<td><div class=\"fm-clip fm-s\" title=\"%s\">%s</div></td>"
+                "<td><div class=\"fm-clip fm-s\" title=\"%s\">%s</div></td>"
                 "<td>%s</td><td>%s</td><td>%s</td></tr>" % (
                     ' class="fm-orphan"' if n["orphan"] else "",
                     _icon_cell(n),
-                    esc(n["title"]),
+                    esc(n["title"]), esc(n["title"]),
                     ' <span class="fm-badge">루트</span>' if n["root"] == n["bot_id"] and not n["orphan"] else "",
                     esc(n["bot_id"]), esc(n["role"]),
                     esc(n["state_emoji"]), esc(n["state_label"] or "—"),
                     esc(n["career"] or "—"),
                     ("prj%s" % esc(str(n["prj"]))) if n["prj"] is not None else "—",
-                    esc(group),
-                    par_cell,
+                    esc(group), esc(group),
+                    esc(par_title), par_cell,
                     ('<code class="fm-sid">%s</code>' % esc(sid)) if sid
                     else '<span class="fm-mute">—</span>',
                     ('<code>%s</code>' % esc(pane)) if pane
                     else '<span class="fm-mute">—</span>',
-                    esc(task) if task else '<span class="fm-mute">—</span>'))
+                    ('<div class="fm-clip" title="%s">%s</div>' % (esc(task), esc(task))) if task
+                    else '<span class="fm-mute">—</span>'))
 
         dbody = []
         # prj1#Issue454: 원장 표도 명부처럼 **항상 전수** — 그래프에서 물러난 기록의 보존처.
@@ -15794,6 +16439,8 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             ".fm-chip{display:inline-block;padding:.18rem .6rem;border:1px solid #ccd;"
             "border-radius:12px;font-size:.85em;text-decoration:none;color:#334}"
             ".fm-chip.on{background:hsl(238,45%,88%);border-color:hsl(238,45%,62%);font-weight:600}"
+            # Issue615 — 팀장 칩은 루트 칩과 축이 다르다(루트 = 서버·총괄, 팀장 = 프로젝트)
+            ".fm-chip.lead{border-style:dashed}.fm-chip.lead.on{border-style:solid}"
             # prj3#Issue494: 탭 2분할 — 관계 구조(map)와 명부·원장(roster)
             ".fm-tabs{display:flex;gap:.25rem;margin:.7rem 0 .2rem;border-bottom:2px solid hsl(238,35%,86%)}"
             ".fm-tab{display:inline-block;padding:.28rem .95rem;text-decoration:none;color:#556;border:1px solid transparent;border-radius:9px 9px 0 0;font-size:.92em}"
@@ -15853,6 +16500,10 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             ".fm-close-btn:disabled{opacity:.5;cursor:default}"
             ".fm-dl{margin:.45rem 0 0;padding-left:1.15rem}"
             ".fm-dl li{margin:.3rem 0}"
+            ".fm-led>summary{cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
+            ".fm-led[open]>summary{white-space:normal}"
+            ".fm-led-body{margin:.35rem 0 .2rem 1rem}"
+            ".fm-led-text{font-size:.92em;margin-bottom:.3rem}"
             ".fm-toggle{display:inline-block;text-decoration:none;color:#3949ab;""font-weight:600;background:#fff;border:1px solid hsl(238,45%,70%);""border-radius:8px;padding:.14rem .6rem;margin:0 .1rem;line-height:1.5}"".fm-toggle:hover{background:hsl(238,45%,92%)}"
             ".fm-seg{display:inline-flex;border:1px solid hsl(238,45%,70%);border-radius:8px;"
             "overflow:hidden;vertical-align:middle;line-height:1.5}"
@@ -15868,6 +16519,13 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             "table{border-collapse:collapse;width:100%;font-size:.88em;margin-bottom:1.6rem}"
             "th,td{border:1px solid #e2e2e8;padding:.35rem .55rem;text-align:left;vertical-align:top}"
             "th{background:#f4f4f8}"
+            # prj1#Issue621 — 명부 열 폭: 짧은 열 줄바꿈 금지 · 긴 열 폭 상한 + 3줄 말줄임(전문은 title).
+            #   표가 화면보다 넓어지면 페이지가 아니라 표 래퍼만 가로로 스크롤한다
+            ".fm-nw{white-space:nowrap}"
+            ".fm-clip{max-width:24em;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;"
+            "overflow:hidden;word-break:keep-all;overflow-wrap:anywhere}"
+            ".fm-clip.fm-s{max-width:11em}"
+            ".fm-scroll{overflow-x:auto;max-width:100%}"
             ".fm-icon{width:22px;height:22px;border-radius:50%;display:block}"
             ".fm-dot{width:18px;height:18px;border-radius:50%;display:inline-block}"
             ".fm-dot-orphan{background:#f5f5f5;border:1.5px dashed #c62828;color:#c62828;"
@@ -15969,21 +16627,23 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             "function style(){var d=dark();return ["
             "{selector:'node',style:{"
             "'shape':'round-rectangle','width':'label','height':'label',"
-            "'padding':'10px','text-wrap':'wrap','text-max-width':'190px',"
-            "'text-valign':'center','text-halign':'center','font-size':'12px',"
+            "'padding':'9px','text-wrap':'wrap','text-max-width':'170px',"
+            "'text-valign':'center','text-halign':'center','font-size':'13px',"
             "'line-height':1.35,'border-width':1,"
             "'border-color':d?'#ffffff26':'#33333340',"
             "'background-color':d?'#3a3a44':'#eceff1',"
             "'color':d?'#eee':'#222',"
-            "'label':function(e){var t=e.data('label')||'';var s=e.data('sub')||'';"
-            "var n=e.data('sessions')||0;if(s)t+='\\n'+s;"
-            "if(n)t+='\\n\\u2699 \\uc138\\uc158 '+n;return t;}}},"
+            "'label':'data(label)'}},"
             # 개체색은 원장 값이다 — 있으면 그대로 쓰고 대비색은 서버가 계산해 보냈다.
-            "{selector:'node[color]',style:{'background-color':'data(color)',"
+            # [?키] = 값이 참일 때만. [키] 는 빈 문자열에도 매칭돼 data(icon)='' 가 Cytoscape
+            #   파싱 예외(null.value)를 던지고 그래프 생성 자체가 멈췄다(Issue615 후속 실측)
+            "{selector:'node[?color]',style:{'background-color':'data(color)',"
             "'color':'data(textColor)'}},"
-            "{selector:'node[icon]',style:{'background-image':'data(icon)',"
-            "'background-fit':'none','background-width':'20px','background-height':'20px',"
-            "'background-position-x':'9px','background-position-y':'9px',"
+            # Issue615 — 아이콘이 제목 첫 글자를 덮었다(실측). 아이콘 칸만큼 왼쪽을 비운다
+            "{selector:'node[?icon]',style:{'background-image':'data(icon)',"
+            "'padding':'14px','text-margin-x':'10px',"
+            "'background-fit':'none','background-width':'16px','background-height':'16px',"
+            "'background-position-x':'6px','background-position-y':'50%',"
             "'background-clip':'node','background-image-opacity':1}},"
             # 명부에 없는 봇 — 원장에만 있다는 사실을 테두리로 말한다(mermaid 시절과 동일 의미)
             "{selector:'node[orphan=\"1\"]',style:{'background-color':d?'#2b2b2b':'#f5f5f5',"
@@ -16033,7 +16693,7 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             "if(!box)return;var d=ele.data(),h='';"
             "if(ele.isNode()){if(d.isGroup){h='<h3>'+esc(d.label)+'</h3>"
             "<div class=fb-g-empty>\\uadf8\\ub8f9\\uc785\\ub2c8\\ub2e4.</div>';}"
-            "else{h='<h3>'+esc(d.label)+'</h3><dl>'"
+            "else{h='<h3>'+esc(d.title||d.label)+'</h3><dl>'"
             "+'<dt>bot_id</dt><dd><code>'+esc(d.bot)+'</code></dd>'"
             "+(d.sub?'<dt>\\uc0c1\\ud0dc</dt><dd>'+esc(d.sub)+'</dd>':'')"
             "+(d.sessions?'<dt>\\uc138\\uc158</dt><dd>'+d.sessions+'\\ud68c</dd>':'')"
@@ -16055,26 +16715,54 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             "var p=(ev&&ev.originalEvent)||{};"
             "tip.style.left=((p.clientX||0)+14)+'px';tip.style.top=((p.clientY||0)+14)+'px';}"
             "function hideTip(){if(tip)tip.style.display='none';}"
+            # Issue615 — 좌→우 tidy-tree. breadthfirst 는 상→하 고정이고 transform 으로 돌리면 형제
+            #   간격이 max(폭,높이) 정사각 칸이라 세로가 6배로 벌어진다. 플러그인 CDN 을 더 싣지 않고
+            #   순수 함수로 둔다(테스트가 node 로 직접 돌린다). 부모 = 채용선 우선, 없으면 배분선.
+            #   깊이 = x(열 폭은 그 깊이의 최대 노드 폭), 잎 = y 로 차례로 쌓고 부모는 자식 구간 가운데.
+            "function lrPos(N,E){var par={},kids={},W={},H=0,dep={},Y={},seen={},row=0,mw=[],X=[0],out={};"
+            "N.forEach(function(n){W[n.id]=n.w;H=Math.max(H,n.h);});"
+            "[1,0].forEach(function(h){E.forEach(function(e){if(!!e.hire!==!!h||e.s===e.t)return;"
+            "if(W[e.s]===undefined||W[e.t]===undefined||par[e.t]!==undefined)return;par[e.t]=e.s;});});"
+            "N.forEach(function(n){var p=par[n.id];if(p!==undefined)(kids[p]=kids[p]||[]).push(n.id);});"
+            "var RH=H+12;"
+            "function dfs(id,d){seen[id]=1;dep[id]=d;mw[d]=Math.max(mw[d]||0,W[id]);var ys=[];"
+            "(kids[id]||[]).forEach(function(k){if(!seen[k])ys.push(dfs(k,d+1));});"
+            "var y=ys.length?(ys[0]+ys[ys.length-1])/2:(row++)*RH;Y[id]=y;return y;}"
+            "N.forEach(function(n){if(par[n.id]===undefined&&!seen[n.id]){dfs(n.id,0);row+=0.5;}});"
+            "N.forEach(function(n){if(!seen[n.id]){dfs(n.id,0);row+=0.5;}});"
+            "for(var i=1;i<mw.length;i++)X[i]=X[i-1]+mw[i-1]/2+80+mw[i]/2;"
+            "N.forEach(function(n){out[n.id]={x:X[dep[n.id]],y:Y[n.id]};});return out;}"
+            "function lrApply(cy){var ns=cy.nodes().filter(function(n){return !n.data('isGroup');});"
+            "var N=ns.map(function(n){return {id:n.id(),w:n.outerWidth(),h:n.outerHeight()};});"
+            "var E=cy.edges().map(function(e){return {s:e.source().id(),t:e.target().id(),"
+            "hire:e.data('kind')==='hire'};});var p=lrPos(N,E);"
+            "cy.batch(function(){ns.forEach(function(n){n.position(p[n.id()]);});});}"
             "function boot(which,els,lay){var el=document.getElementById('fb-cy-'+which);"
             "if(!el||!window.cytoscape||!els||!els.nodes.length)return;"
             "var cy=cytoscape({container:el,elements:els,style:style(),"
-            "layout:lay,wheelSensitivity:0.2,minZoom:0.15,maxZoom:3});"
+            "layout:{name:'preset'},wheelSensitivity:0.2,minZoom:0.15,maxZoom:3});"
             "CY[which]=cy;window.__fbCy=CY;"
             "cy.on('tap','node,edge',function(e){detail(which,e.target);});"
             "cy.on('mouseover','edge',function(e){showTip(e.target.data('full'),e);});"
             "cy.on('mousemove','edge',function(e){showTip(e.target.data('full'),e);});"
             "cy.on('mouseout','edge',hideTip);cy.on('pan zoom',hideTip);"
-            "cy.ready(function(){cy.fit(undefined,30);});}"
-            # 조직도는 계층이라 breadthfirst, 흐름은 방향 있는 얕은 DAG 라 같은 엔진에
-            #   spacing 만 달리 준다(별도 레이아웃 플러그인 CDN 을 더 싣지 않는다).
-            "boot('org',DATA.org,{name:'breadthfirst',directed:true,spacingFactor:1.25,"
-            "padding:24,avoidOverlap:true,nodeDimensionsIncludeLabels:true});"
-            "boot('flow',DATA.flow,{name:'breadthfirst',directed:true,spacingFactor:1.6,"
-            "padding:24,avoidOverlap:true,nodeDimensionsIncludeLabels:true});"
+            # 말줄임된 노드 제목의 전문은 툴팁이 받는다(Issue615)
+            "cy.on('mouseover','node',function(e){var d=e.target.data();"
+            "if(d.title&&d.title!==d.label)showTip(d.title,e);});"
+            "cy.on('mouseout','node',hideTip);"
+            # 좌→우 트리는 세로로 길다 — 컨테이너 높이를 그림에 맞춰 늘리고(상한 1400px),
+            #   노드가 적으면 과확대되지 않게 1.4 배에서 멈춘다(실측: 4노드가 3배로 부풀었다)
+            "cy.ready(function(){lrApply(cy);var bb=cy.elements().boundingBox();"
+            "var h=Math.min(1400,Math.max(420,Math.round(bb.h*Math.min(1,(el.clientWidth-60)/Math.max(bb.w,1))+60)));"
+            "el.style.height=h+'px';cy.resize();fitCap(cy);});}"
+            "function fitCap(cy){cy.fit(undefined,30);if(cy.zoom()>1.4){cy.zoom(1.4);cy.center();}}"
+            # 조직도·흐름 모두 좌→우 lrPos(Issue615) — 좌표는 boot 의 ready 가 놓는다.
+            "boot('org',DATA.org);"
+            "boot('flow',DATA.flow);"
             "document.addEventListener('click',function(ev){"
             "var b=ev.target.closest&&ev.target.closest('.fb-g-btn');if(!b)return;"
             "var cy=CY[b.dataset.cy];if(!cy)return;var a=b.dataset.act;"
-            "if(a==='fit')cy.fit(undefined,30);"
+            "if(a==='fit')fitCap(cy);"
             "else if(a==='zin')cy.zoom({level:cy.zoom()*1.3,renderedPosition:{x:cy.width()/2,y:cy.height()/2}});"
             "else if(a==='zout')cy.zoom({level:cy.zoom()/1.3,renderedPosition:{x:cy.width()/2,y:cy.height()/2}});});"
             "})();</script>")
@@ -16097,10 +16785,10 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             "<b>—</b> 는 미등록이 아니라 <b>pane/세션 기반 판정 불가</b>(Agent 형태 봇은 "
             "pane 이 원래 없습니다)를 뜻합니다. "
             "status <code>logged</code> 는 <code>fpm-do</code> 직접 위임의 사후 기록입니다.</div>"
-            "<h2>명부</h2><table><thead><tr><th></th><th>호칭</th><th>bot_id</th>"
+            "<h2>명부</h2><div class=\"fm-scroll\"><table><thead><tr><th></th><th>호칭</th><th>bot_id</th>"
             "<th>role</th><th>상태</th><th>career</th><th>prj</th><th>소속</th>"
             "<th>지시자</th><th>세션</th><th>pane</th>"
-            "<th>현재 작업</th></tr></thead><tbody>" + "".join(tbody) + "</tbody></table>"
+            "<th>현재 작업</th></tr></thead><tbody>" + "".join(tbody) + "</tbody></table></div>"
             "<h2>배분 원장</h2><table><thead><tr><th>생성</th><th>배분자</th>"
             "<th>대상</th><th>이슈</th><th>status</th></tr></thead><tbody>"
             + "".join(dbody) + "</tbody></table>")
@@ -16226,6 +16914,12 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             # prj3#Issue502 ⓑ: ⏳ 원클릭 종결 — 배너가 탭 밖 공통이라 스크립트도 공통부.
             #   집행은 POST /fbot-dispatch-close → fbot-lead.py cancel (hub 직접
             #   UPDATE 금지). 성공 시 새로고침으로 배너 계수까지 즉시 재판정된다.
+            + ("<script>(function(){var K='fmOpenLedgers',s=sessionStorage;"
+               "function g(){try{return JSON.parse(s.getItem(K)||'{}');}catch(e){return {};}}"
+               "var o=g();document.querySelectorAll('details.fm-led').forEach(function(d){"
+               "var j=d.dataset.job;if(j&&o[j])d.open=true;"
+               "d.addEventListener('toggle',function(){var m=g();if(d.open)m[j]=1;else delete m[j];"
+               "s.setItem(K,JSON.stringify(m));});});})();</script>")
             + ("<script>document.addEventListener('click',function(ev){"
                "var b=ev.target&&ev.target.closest?ev.target.closest('.fm-close-btn'):null;"
                "if(!b)return;"
@@ -16334,6 +17028,7 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             return
         # 구 builder stale 맵 헤더 합성 (신 builder 산출·authored 는 no-op).
         body = _synthesize_hub_header(body, REPO_ROOT, os.path.basename(REPO_ROOT))
+        body = _tilde_home_html(body)   # Issue616_6
         self._send_htm_html(body, path)
 
     def _send_projects_map_hint(self, path: str):
@@ -16388,6 +17083,11 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
                             os.path.getmtime(os.path.join(REPO_ROOT, "_note.md")))
         except OSError:
             pass
+        # Issue631: 빌더 자체가 바뀌어도(패널 마크업 등) 산출물은 낡은 것 — 빌더 mtime 도 소스로 본다
+        try:
+            src_mtime = max(src_mtime, os.path.getmtime(builder))
+        except OSError:
+            pass
         try:
             out_mtime = os.path.getmtime(out_path)
         except OSError:
@@ -16406,6 +17106,22 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             log(f"GET /projects-map — rebuilt (Projects.md stale): {out_path}")
         except Exception as e:
             log(f"GET /projects-map — rebuild skipped: {e}")
+
+    def _handle_projects_map_groups(self, parsed):
+        """Issue631: 그룹 추가·수정·삭제 — `/projects-map/note` 와 같은 등급 게이트(do_POST 공통)."""
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        if length <= 0 or length > 16 * 1024:
+            self._send_json(400, {"error": "invalid content length (1..16384)"})
+            return
+        try:
+            body = json.loads(self.rfile.read(length).decode("utf-8"))
+        except Exception as e:
+            self._send_json(400, {"error": f"invalid JSON: {e}"})
+            return
+        st, payload = projects_map_groups_apply(REPO_ROOT, body)
+        log(f"POST /projects-map/groups — {body.get('op') if isinstance(body, dict) else '?'} "
+            f"{body.get('name') if isinstance(body, dict) else ''} → {st}")
+        self._send_json(st, payload)
 
     def _handle_projects_map_note(self, parsed):
         """Issue398: note 박스 인라인 편집 저장 — `{REPO_ROOT}/_note.md` 고정 경로 기록.
@@ -17919,7 +18635,7 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
         _ed, _can = _session_open_mode(sid)  # Issue542: 세션 버튼 표시 판정
         body = md_shell.render_live_shell(
             title, cwd, label, sid, cwd_h, token, nonce,
-            editor=_ed, can_open=_can,
+            editor=_ed, can_open=_can, issue_map_cwd=_issue_map_cwd_for(cwd),
             display=display,
             degrade={"nodes": setting.get("live_degrade_nodes", 12000),
                      "render_ms": setting.get("live_degrade_render_ms", 400),
@@ -18298,7 +19014,19 @@ HUB_HTML = """<!doctype html>
 <link rel="icon" href="/fpm-icon.png">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>fPm Hub</title>
+<script>
+/* Issue616_2: 탭 제목 고정 — 외부 스크립트·확장이 <title> 을 마지막 이벤트 문구로 덮어도 되돌린다. */
+window.__hubTitleLock = "fPm Hub";
+(function(){
+  var el = document.querySelector("title");
+  if (!el) return;
+  new MutationObserver(function(){
+    if (document.title !== window.__hubTitleLock) document.title = window.__hubTitleLock;
+  }).observe(el, {childList:true, characterData:true, subtree:true});
+})();
+</script>
 <style>
+.hub-purpose { margin:6px 0 2px; font-size:.88em; color:var(--muted); }
 /* Issue28: 흰색 배경 고정. @media prefers-color-scheme dark override 제거 (다중 탭 일관성). */
 :root { --fg:#111; --bg:#fff; --muted:#666; --border:#ddd; --card:#fafafa; --code-bg:#f0f0f0; }
 * { box-sizing: border-box; }
@@ -18584,6 +19312,7 @@ main { padding: 1.5rem; max-width: 1600px; margin: 0 auto; display: flex; gap: 1
 /* Issue101: 프로젝트별 그룹 카드 — head 에 세션 수 배지, body 는 세션 topic 리스트 */
 /* Issue284: live-badge 를 .name 밖 .head-right 로 이동(🗺️ 와 함께 우측 정렬) — 셀렉터에서 .name 제거 */
 .card-head .live-badge { background: rgba(0,0,0,0.16); color: #1a1a1a; padding: 0.02rem 0.42rem; border-radius: 10px; font-size: 0.78em; font-weight: 600; }
+.card-head .live-badge.stale { opacity: 0.5; }  /* Issue623: 맵 없음·맵 낡음 */
 /* Issue284: 이슈맵(Issue_map.htm) 바로가기 — 숫자 배지 왼쪽 */
 .card-head .issue-map { text-decoration: none; font-size: 0.95em; line-height: 1; opacity: 0.85; }
 .card-head .issue-map:hover { opacity: 1; transform: scale(1.15); }
@@ -18758,6 +19487,8 @@ section.sec-collapsed .htm-bar-right { display: none; }
 #feed-toggle:hover, #feed-collapse-all:hover, #feed-keep:hover { background: var(--code-bg); }
 #feed-clear:hover { background: #fee2e2; border-color: #fca5a5; }
 .feed-list { padding: 0.5rem; display: flex; flex-direction: column; gap: 0.4rem; }
+.feed-x { flex: 0 0 auto; font-size: 0.75em; padding: 0 0.35em; border-radius: 99px; background: var(--border); color: var(--muted); }
+#feed-noise { font-size: 0.75em; }
 .feed-empty { color: var(--muted); font-style: italic; text-align: center; padding: 1.5rem 0.5rem; font-size: 0.9em; }
 .feed-item { border: 1px solid var(--border); border-left: 4px solid var(--muted);
   border-radius: 6px; background: var(--bg); overflow: hidden; }
@@ -18779,6 +19510,14 @@ section.sec-collapsed .htm-bar-right { display: none; }
 .hub-controls .btn-feed-vis:hover { background: var(--code-bg); }
 /* Issue279: 새 피드 도착 깜빡 프레임 — 배경 녹색 + 이모지 15% 확대 */
 .hub-controls .btn-feed-vis.blinking { background: #22c55e; border-color: #16a34a; transform: scale(1.15); }
+/* Issue616_3: 375px 가로 넘침 — 헤더·버튼군·상태줄 줄바꿈, 피드 최소 폭 해제 */
+@media (max-width: 600px) {
+  header { flex-wrap: wrap; padding: 0.8rem 0.9rem; }
+  .header-actions { flex-wrap: wrap; flex-shrink: 1; }
+  .status-bar { flex-wrap: wrap; gap: 0.4rem; }
+  main { padding: 0.8rem; }
+  .hub-feed { min-width: 0; }
+}
 @media (max-width: 900px) {
   main { flex-direction: column; }
   .hub-main, .hub-feed { flex: none; width: 100%; }
@@ -18814,8 +19553,9 @@ section.sec-collapsed .htm-bar-right { display: none; }
 </header>
 <main>
 <div class="hub-main">
+<p class="hub-purpose" id="hub-purpose">{T:hub.purpose}</p>
 <div class="status-bar">
-  <span id="hub-stats">—</span>
+  <span id="hub-stats" title="{T:hub.statsTitle}">—</span>
   <span class="hub-controls">
     <span id="updated" style="font-size:0.85em;color:var(--muted)">—</span>
     <button class="btn-rescan" id="btn-rescan" title="{T:statusbar.rescanTitle}">{T:statusbar.rescan}</button>
@@ -18871,6 +19611,7 @@ section.sec-collapsed .htm-bar-right { display: none; }
   <div class="feed-head">
     <span class="feed-title-label">{T:feed.title} <span id="feed-count" class="count-badge"></span></span>
     <span class="feed-actions">
+      <button id="feed-noise" title="{T:feed.noiseTitle}"></button>
       <button id="feed-collapse-all" title="{T:feed.collapseAllTitle}">⊟</button>
       <button id="feed-keep" title="{T:feed.keepTitle}">{T:feed.keep}</button>
       <button id="feed-clear" title="{T:feed.clearTitle}">{T:feed.clear}</button>
@@ -19014,9 +19755,9 @@ async function reload() {
     // Issue352: hub OFF 배지. off 는 "새 렌더 중단"이지 "과거 문서 숨김"이 아니므로
     //   목록은 그대로 두고 상태만 표시한다 (빈 페이지로 덮지 않음).
     const offCount = data.hub_off_count || 0, offTotal = data.hub_off_total || 0;
-    const offTxt = data.hub_system_off ? ' · ⏸ hub OFF (system)'
-                 : (offCount ? ` · ⏸ ${offCount}/${offTotal} hub OFF` : '');
-    if (hubStats) hubStats.textContent = `${(data.projects||[]).length} project · ${dashCount} dashboard · ${liveCount} live session · ${htmCount} hub doc` + offTxt;
+    const offTxt = data.hub_system_off ? t('hub.statsOffSystem')
+                 : (offCount ? t('hub.statsOff', {off: offCount, total: offTotal}) : '');
+    if (hubStats) hubStats.textContent = t('hub.stats', {p: (data.projects||[]).length, d: dashCount, l: liveCount, h: htmCount}) + offTxt;
     updated.textContent = t('statusbar.updated', {time: new Date().toLocaleTimeString()});
   } catch (e) {
     errorBar.textContent = '❌ ' + e.message;
@@ -19043,7 +19784,7 @@ function renderLiveSessions(list, limit, showCopy) {
   const groups = new Map();
   for (const s of list) {
     const key = s.cwd || s.name;
-    if (!groups.has(key)) groups.set(key, {cwd: s.cwd, name: s.name, color: s.color, emoji: s.emoji, issueMap: false, issueMapStale: false, openIssueCount: 0, items: []});
+    if (!groups.has(key)) groups.set(key, {cwd: s.cwd, name: s.name, color: s.color, emoji: s.emoji, issueMap: false, issueMapStale: false, openIssueCount: null, items: []});
     const g = groups.get(key);
     g.items.push(s);
     // Issue284: 그룹 내 한 세션이라도 이슈맵 보유면 카드에 🗺️ 노출
@@ -19051,7 +19792,8 @@ function renderLiveSessions(list, limit, showCopy) {
     // Issue363: 같은 cwd 라 값은 동일 — 맵이 Issue.md 보다 낡았으면 아이콘을 흐리게
     if (s.issue_map_stale) g.issueMapStale = true;
     // Issue316: 같은 cwd 세션은 동일 값 — 그대로 그룹에 복사(마지막 세션 값으로 덮여도 동일).
-    g.openIssueCount = s.open_issue_count || 0;
+    // Issue623: 이슈맵 집계 — 맵이 없으면 null(배지 `–`). 0 과 «모름» 을 섞지 않는다
+    g.openIssueCount = (s.open_issue_count === null || s.open_issue_count === undefined) ? null : s.open_issue_count;
   }
   const rowHtml = (s, extraCls) => {
     // Issue66: 큐 dashboard(supervisor_pid 존재)는 graceful remove, 일반은 stop
@@ -19136,10 +19878,16 @@ function renderLiveSessions(list, limit, showCopy) {
     const mapLink = g.issueMap
       ? `<a class="issue-map${g.issueMapStale ? ' stale' : ''}" href="/issue-map?cwd=${encodeURIComponent(g.cwd)}" target="_blank" data-title="${escapeHtml(g.name)} — Issue Map" onclick="return fpmOpenInShell(event,this)" title="${escapeHtml(mapTitle)}">🗺️</a>`
       : '';
+    // Issue623: 배지 = 이슈맵의 미완료 수. 맵이 Issue.md 보다 오래되면 흐림(🗺️ 와 같은 stale 신호)
+    const nIssue = g.openIssueCount;
+    const issueTip = (nIssue === null)
+      ? `이슈맵 없음 — 이슈 종결 시 생성 · 세션 ${g.items.length}개`
+      : `이슈맵 기준 미완료 이슈 ${nIssue}개${g.issueMapStale ? ' (맵이 Issue.md 보다 오래됨)' : ''} · 세션 ${g.items.length}개`;
+    const issueBadge = `<span class="live-badge${(nIssue === null || g.issueMapStale) ? ' stale' : ''}" data-tip="${escapeHtml(issueTip)}">${nIssue === null ? '–' : nIssue}</span>`;
     return `<div class="card live${expCls}" data-cwd="${escapeHtml(g.cwd)}" title="{T:common.openVscodeTitle}">
       <div class="card-head" style="background:${escapeHtml(g.color)}">
         <span class="name">${escapeHtml(g.emoji || '📁')} ${escapeHtml(g.name)}</span>
-        <span class="head-right">${mapLink}<span class="live-badge" data-tip="미완료 이슈 ${g.openIssueCount}개 · 세션 ${g.items.length}개">${g.openIssueCount}</span></span>
+        <span class="head-right">${mapLink}${issueBadge}</span>
       </div>
       <!-- Issue384: title="" 로 카드의 네이티브 title 상속을 끊는다. 카드에 붙은 title(위 .card.live)은
            세션 행 위에서도 커서 옆에 떠, 행·버튼의 커스텀 툴팁·메뉴와 이중으로 겹쳤다(Issue369 가
@@ -19939,10 +20687,40 @@ function renderImportant(list) {
 // Issue47: 활동 피드 프로젝트 이모지·이름 표시 토글 (hub_setting.yml)
 const FEED_SHOW_EMOJI = {FEED_SHOW_PROJECT_EMOJI};
 const FEED_SHOW_NAME = {FEED_SHOW_PROJECT_NAME};
-function renderFeed(list) {
-  feedCount.textContent = list.length;
+// Issue616_8: 활동 피드 노이즈 — «세션 종료 (other)» 가 피드의 절반이라 신호가 묻혔다.
+//   ① 세션 종료는 기본 숨김(토글 · localStorage 기억) ② 연속된 동종 이벤트(종류+제목 동일)는 ×N 으로 묶는다.
+//   순수 함수 — 입력 배열을 바꾸지 않는다(테스트 대상).
+function isNoiseFeed(it) { return !!it && it.event === 'session_end'; }
+function groupFeedRuns(list, showNoise) {
+  const out = [];
+  for (const it of list) {
+    if (!showNoise && isNoiseFeed(it)) continue;
+    const prev = out[out.length - 1];
+    const key = (it.htm_title || it.summary || '');
+    if (prev && prev.event === it.event && prev._key === key) { prev.count++; continue; }
+    out.push(Object.assign({}, it, { count: 1, _key: key }));
+  }
+  return out;
+}
+let feedShowNoise = false;
+try { feedShowNoise = localStorage.getItem('hubFeedShowNoise') === '1'; } catch (_) {}
+let feedLastList = [];
+const feedNoiseBtn = document.getElementById('feed-noise');
+feedNoiseBtn.addEventListener('click', () => {
+  feedShowNoise = !feedShowNoise;
+  try { localStorage.setItem('hubFeedShowNoise', feedShowNoise ? '1' : '0'); } catch (_) {}
+  renderFeed(feedLastList);
+});
+function renderFeed(rawList) {
+  feedLastList = rawList;
+  const hiddenNoise = feedShowNoise ? 0 : rawList.filter(isNoiseFeed).length;
+  const anyNoise = rawList.some(isNoiseFeed);
+  feedNoiseBtn.hidden = !anyNoise;
+  feedNoiseBtn.textContent = feedShowNoise ? t('feed.noiseHide') : t('feed.noiseShow', {n: hiddenNoise});
+  const list = groupFeedRuns(rawList, feedShowNoise);
+  feedCount.textContent = rawList.length;
   // Issue279: 최신 항목 id 변화 = 신규 도착 → 헤더 토글 깜빡 (첫 렌더는 skip)
-  const newTop = list.length ? list[0].id : null;
+  const newTop = rawList.length ? rawList[0].id : null;
   if (FEED_BLINK_ON_NEW && feedTopId !== null && newTop && newTop !== feedTopId) blinkFeedToggle();
   feedTopId = newTop;
   if (!list.length) {
@@ -19968,6 +20746,7 @@ function renderFeed(list) {
         ${(FEED_SHOW_EMOJI && it.emoji) ? `<span class="feed-proj-emoji" data-cwd="${escapeHtml(it.cwd)}" title="{T:common.openVscodeTitle}">${escapeHtml(it.emoji)}</span>` : ''}
         ${FEED_SHOW_NAME ? `<a class="feed-title" data-cwd="${escapeHtml(it.cwd)}" title="{T:common.openVscodeTitle}">${escapeHtml(it.name)}</a>` : ''}
         <span class="feed-summary" title="${escapeHtml(summaryText)}">${escapeHtml(summaryText)}</span>
+        ${it.count > 1 ? `<span class="feed-x" title="${escapeHtml(t('feed.groupTitle', {n: it.count}))}">×${it.count}</span>` : ''}
         ${openIcon}
         <span class="feed-age">${relTime(it.ts)}</span>
       </div>

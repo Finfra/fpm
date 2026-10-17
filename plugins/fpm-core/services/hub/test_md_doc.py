@@ -200,6 +200,74 @@ summary = server.Handler._extract_html_summary(moved_to)
 check("summary: frontmatter·헤딩 제외 본문 발췌",
       "본문 요약" in summary and "title" not in summary and "헤딩" not in summary)
 
+# --- Issue634: 헤더 🗺️ 버튼 + 풍선(이슈맵 그림 + 이동 버튼) ---
+# md_shell 단위 — 마크업·이스케이프·빈 값·CSP
+CWD_X = '/p/a"<b>&c'
+ENC_X = "%2Fp%2Fa%22%3Cb%3E%26c"
+pop = md_shell.render_issue_map_pop(CWD_X, "프로젝트")
+check("pop: 버튼은 이모지만(제목 텍스트 없음)",
+      '<button type="button" class="im-pop-btn"' in pop and ">\U0001F5FA\uFE0F</button>" in pop
+      and "프로젝트 이슈맵</button>" not in pop)
+check("pop: 풍선 iframe 은 열 때 로드(data-src) + embed=1",
+      f'data-src="/issue-map?cwd={ENC_X}&amp;embed=1"' in pop and ' src="/issue-map' not in pop)
+check("pop: 그림 아래 이슈맵 이동 링크(embed 없음)",
+      f'class="im-pop-go" href="/issue-map?cwd={ENC_X}"' in pop
+      and pop.index("<iframe") < pop.index('class="im-pop-go"'))
+check("pop: cwd HTML 특수문자가 마크업으로 새지 않음", "<b>" not in pop and 'a"<' not in pop)
+check("pop: 접기 패널(details) 폐기", "<details" not in pop)
+check("pop: 빈 cwd → 빈 문자열", md_shell.render_issue_map_pop("", "x") == "")
+check("CSP: frame-src 'self' (와일드카드 없음)",
+      "frame-src 'self';" in md_shell.csp_header("n") and "frame-src *" not in md_shell.csp_header("n"))
+hdr = md_shell.render_header("t", "/p", "p", issue_map_cwd="/p")
+check("header: 🗺️ 버튼이 헤더 header-actions 안", 'class="im-pop"' in hdr
+      and hdr.index('class="header-actions"') < hdr.index('class="im-pop"') < hdr.index("</header>"))
+check("header: 기본값 → 버튼 없음", "im-pop" not in md_shell.render_header("t", "/p", "p"))
+p_on = md_shell.render_md_shell("# t\n", "t", "/p/_doc_work/htm/x.md", "N", "/p", "p",
+                                issue_map_cwd="/p")
+p_off = md_shell.render_md_shell("# t\n", "t", "/p/_doc_work/htm/x.md", "N", "/p", "p")
+check("shell: 버튼은 헤더 안 · 본문 위 패널 없음", b'class="im-pop"' in p_on
+      and p_on.index(b'class="im-pop"') < p_on.index(b"</header>") and b"im-panel" not in p_on)
+check("shell: 풍선 스크립트에 nonce", b'nonce="N"' in p_on and b"im-pop" in p_on.split(b"</header>")[1])
+check("shell: issue_map_cwd 기본값 → 버튼·iframe 없음",
+      b'class="im-pop"' not in p_off and b"<iframe" not in p_off)
+p_live = md_shell.render_live_shell("t", "/p", "p", "sid", "h", "tok", "N", issue_map_cwd="/p")
+check("live shell: 같은 🗺️ 버튼", b'class="im-pop"' in p_live)
+
+# 라우트 — `_issue_map_openable` 이 루트를 내면 패널, 아니면 없음
+IM_PROJ = os.path.realpath(os.path.join(TMP, "improj"))
+IM_HTM = os.path.join(IM_PROJ, "_doc_work", "htm")
+os.makedirs(IM_HTM)
+open(os.path.join(IM_PROJ, "Issue.md"), "w").write("# Issue\n")
+IM_MD = os.path.join(IM_HTM, "hub_htm_1722800010_im.md")
+open(IM_MD, "w").write("# im\n")
+NOIM_PROJ = os.path.realpath(os.path.join(TMP, "noim"))  # Issue.md 없음
+os.makedirs(os.path.join(NOIM_PROJ, "_doc_work", "htm"))
+NOIM_MD = os.path.join(NOIM_PROJ, "_doc_work", "htm", "hub_htm_1722800011_noim.md")
+open(NOIM_MD, "w").write("# noim\n")
+_orig_roots = server._issue_map_roots
+server._issue_map_roots = lambda: [IM_PROJ, NOIM_PROJ]
+try:
+    r = _get_md(f"/md-doc?path={quote(IM_MD, safe='')}")
+    check("route: 맵을 열 수 있는 prj → 200 + 🗺️ 버튼", r._status == 200
+          and f'data-src="/issue-map?cwd={quote(IM_PROJ, safe="")}&amp;embed=1"'.encode() in r.raw)
+    check("route: CSP 헤더에 frame-src 'self'",
+          "frame-src 'self'" in r.raw_headers.get("Content-Security-Policy", ""))
+    r = _get_md(f"/md-doc?path={quote(NOIM_MD, safe='')}")
+    check("route: Issue.md 없는 prj → 버튼 없음", r._status == 200 and b'class="im-pop"' not in r.raw)
+    server._issue_map_roots = lambda: [NOIM_PROJ]
+    r = _get_md(f"/md-doc?path={quote(IM_MD, safe='')}")
+    check("route: 등록 트리 밖 prj → 버튼 없음", r._status == 200 and b'class="im-pop"' not in r.raw)
+    # 모든 md 셸 문서 — /mq-doc·/sched-log 도 _send_md_html 한 벌이라 같은 판정을 탄다
+    server._issue_map_roots = lambda: [IM_PROJ]
+    h = _FakeHandler()
+    h._send_md_html("# mq\n", "t", IM_MD, IM_PROJ, "improj")
+    check("route: _send_md_html(mq-doc·sched 경로)도 버튼", h._status == 200 and b'class="im-pop"' in h.raw)
+    h = _FakeHandler()
+    h._send_md_html("# r\n", "t", IM_MD, "", "schedule")
+    check("route: 프로젝트 없는 문서(sched-result) → 버튼 없음", h._status == 200 and b'class="im-pop"' not in h.raw)
+finally:
+    server._issue_map_roots = _orig_roots
+
 print()
 print(f"PASS={PASS} FAIL={FAIL}")
 sys.exit(1 if FAIL else 0)

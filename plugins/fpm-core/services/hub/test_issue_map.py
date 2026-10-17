@@ -241,6 +241,17 @@ try:
     check("Content-Type text/html",
           (r.raw_headers.get("Content-Type") or "").startswith("text/html"))
 
+    check("Issue634: 기본(embed 아님) → embed 스타일 없음", b'id="im-embed"' not in r.raw)
+    _clear_cache()
+    h = _FakeHandler()
+    _u = f"/issue-map?cwd={quote(PRJ_A, safe='')}&embed=1"
+    h.path = _u
+    h._handle_issue_map(urlparse(_u))
+    check("Issue634: ?embed=1 → 200 + 그래프 유지", h._status == 200 and b"ISSUE-MAP:GRAPH:START" in h.raw)
+    check("Issue634: ?embed=1 → 그림만(첫 그래프 외·툴바·캡션 숨김) 스타일 주입",
+          b'id="im-embed"' in h.raw and b"body:has(> .im-v) > *:not(.im-v)" in h.raw
+          and b".zoom-bar" in h.raw and b"figcaption" in h.raw)
+
     r = _get(os.path.join(PRJ_A, "sub", "deep"))
     check("등록 프로젝트 하위 폴더 cwd → 200 (prefix 매치)",
           r._status == 200 and b"ISSUE-MAP:GRAPH:START" in r.raw)

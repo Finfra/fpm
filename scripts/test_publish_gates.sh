@@ -115,7 +115,7 @@ for must in "data/publishable-policy.yml" ".gitleaks.toml" "scripts/fpm-sync.sh"
     if grep -qF "$must" "$REAL_POLICY"; then ok "self-exclude: $must"; else bad "self-exclude 누락: $must"; fi
 done
 # 개인 운영파일 제외
-for must in "Servers.md" "Projects.md" "data/hub_setting.yml" "data/fapp.txt"; do
+for must in "Servers.md" "Projects.md" "data/hub_setting.yml" "data/groups.yml"; do
     if grep -qF "$must" "$REAL_POLICY"; then ok "개인파일 제외: $must"; else bad "개인파일 제외 누락: $must"; fi
 done
 # yq/python3 파싱 동일성 (둘 다 가용 시) — exclude 카운트 일치

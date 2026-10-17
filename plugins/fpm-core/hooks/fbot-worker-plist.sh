@@ -65,22 +65,14 @@ LAUNCH_AGENTS="${HOME}/Library/LaunchAgents"
 # launchd 가 부르는 단일 진입점 — python 경로·env·로그 타임스탬프·회전을 래퍼가 소유한다
 TICK="${HOME}/.claude/hooks/fbot-tick.sh"
 
-# python3 해석 (Issue451 ①) — **생성 시점에 절대경로로 확정**해 plist 에 박는다.
-#   launchd 는 셸 프로파일도 PATH 관례도 주지 않는다. 래퍼(fbot-tick.sh)에 탐색 로직이
-#   있어도 plist 가 주는 PATH 에 python3 가 없으면 그 탐색이 헛돈다 — 그래서 여기서
-#   먼저 풀어 FBOT_PYTHON 으로 넘긴다(래퍼는 ①에서 즉시 끝난다).
-#   ⚠️ 해석 실패는 fail-loud. python3 없는 머신에 plist 를 깔면 30분마다 조용히 죽는다.
-resolve_python() {
-    local c
-    if [[ -n "${FBOT_PYTHON:-}" ]]; then printf '%s' "$FBOT_PYTHON"; return 0; fi
-    c="$(command -v python3 2>/dev/null || true)"
-    [[ -n "$c" ]] && { printf '%s' "$c"; return 0; }
-    for c in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
-        [[ -x "$c" ]] && { printf '%s' "$c"; return 0; }
-    done
-    return 1
-}
-PY_BIN="$(resolve_python)" || die "python3 미발견 — FBOT_PYTHON 을 절대경로로 지정하고 재실행하라"
+# python3 해석 — 단일 지점 hooks/lib/py-resolve.sh (prj3#Issue1117, 종전 Issue451 ① 의 사본 3벌 통합) — **생성 시점에 절대경로로 확정**해 plist 에 박는다.
+#   launchd 는 셸 프로파일도 PATH 관례도 주지 않는다 — 여기서 먼저 풀어 FBOT_PYTHON 으로 넘기면 래퍼(fbot-tick.sh)는 ①에서 끝난다.
+#   관례 절대경로(brew·/usr/local·/usr/bin)는 **이 생성기에만** 남긴다(PY_RESOLVE_EXTRA) — 세션 경로에서 절대경로로 메우면 PATH 누락 원인이 가려진다(Issue1109).
+#   ⚠️ 해석 실패는 fail-loud. python3 없는 머신에 plist 를 깔면 30분마다 조용히 죽는다. 3.14 미만은 경고만(비차단).
+PY_RESOLVE_EXTRA="${PY_RESOLVE_EXTRA:-/opt/homebrew/bin/python3.14 /usr/local/bin/python3.14 /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3}"
+# shellcheck source=lib/py-resolve.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/lib/py-resolve.sh"
+PY_BIN="$(py_resolve)" || die "python3 미발견 — FBOT_PYTHON 을 절대경로로 지정하고 재실행하라"
 
 # PATH — 해석된 python3 의 디렉토리를 맨 앞에 둔다(관례 경로만 나열하면 pyenv·conda 등
 #   비관례 설치를 놓친다). 뒤쪽 관례 목록은 python 외 보조 명령(date·tmux 등)용 폴백.

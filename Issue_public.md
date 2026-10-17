@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: 196f26a2539becb71e75377e41d128cc5c6f7791a100470578db65d554f747ae
+source_sha: e3960ed322bf548ee180538ec4d508ed3da68e298c1f21a211a5f845e2ef2ee7
 ---
 
 # 안내
@@ -28,14 +28,234 @@ source_sha: 196f26a2539becb71e75377e41d128cc5c6f7791a100470578db65d554f747ae
 
 # 이슈 근거
 
-## Issue608: 0.8.3 통일 뒤 미출고 수정분 출고 경로 결정 — 공개 0.8.3 소비자 회귀(무결성 FAIL 3/3 · jpc1 hub 멈춤)
-* 목적: 0.8.3 통일로 v0.8.4 가 철회되면서 Issue605·606(및 593·594·595·602) 수정이 소비자에게서 빠졌다. 공개 0.8.3 에서 무결성 FAIL 3/3 과 jpc1 hub «Loading…» 이 재현된다. 수정은 release/0.8.3 `<commit>` 에 있고 네이티브 TDD green 이므로, **번호만 정하면** 출고할 수 있다
-* depends: prj3#Issue973
+## Issue642: 📙 Python 3.14 전환 — 인터프리터 해석 단일 지점·하한 검사·Windows W4 🚧
+* 목적: Issue641 로 하한이 3.14 가 됐다. 문서만 바뀌고 실행 경로는 여전히 `python3` 이름에 기대므로 호스트마다 다른 minor(맥 CLT 3.9·Ubuntu 22.04 3.10·Windows 스텁)가 잡힌다 — prj3#Issue1109 의 OpenClaw 3.9.6 사고가 그 예
+* depends: Issue641, prj3#Issue1109, prj3#Issue1117
 * 구현 명세:
-    - 번호 결정 뒤 런북 `_doc_work/plan/release-ship-3os_plan.md` S0~S9 (prj1·prj3 동반) — S6 소비자는 재설치·hub 재기동
-    - 검증: 3대 `check.sh` 무결성 PASS · jpc1 `/boards` 200·홈 정상(ego) · P1 FAIL 0(jpc1 symlink 환경 제외)
+    1. tdd red 먼저 — `python3` 가 3.9 인 PATH 에서 hook 진입 시 원인 문구로 정지(침묵 TypeError 아님)
+    2. 해석 함수 1곳 + 호출처 치환 · `tdd/run-tdd.sh` 에 하한 검사 케이스
+    3. 3.14 로 전 파일 import 통과 확인(prj55 보고서 §4 방법)
 
-## Issue607: 출고·라인 마감이 prj1 단독 — prj3 동반(lockstep)·소비자 hub 재기동이 절차에 없다
+## Issue638: host zero-base 구현 테스트 — macOS 노트북에서 빈 `~/.claude` 부터 v0.8.3 설치·동작 검증
+* 목적: 사용자 지시(2026-10-16) — jpc1·host 검증(Issue637) 성공 후 host 는 따로 작업. 이번에는 이슈만 등록
+* depends: Issue637
+* 구현 명세: Issue637 의 637_2 절차를 macOS 로 · 결과 `_doc_work/_release/v0.8.3/os-test/macos/<YYYY.MM.DD_HHMM>/` · 검증: 판정 md + 결함 수정분 테스트 green
+
+## Issue634: hub `/md-doc` 문서 상단에 그 프로젝트의 이슈맵 패널 — 맵을 열 수 있으면 화면 위에서 바로 보이게 ✅
+* 목적: 사용자 요청(2026-10-15, prj3 세션 — prj7 연계 협업 결과 hub 문서 `/md-doc?path=~/_git/___cg/_doc_work/htm/hub_htm_20261014_234855_a_collab-done.md` 를 보다가 «해당 프로젝트의 이슈 맵이 있으면 화면 위에서 보여줘야함»). 그 문서는 이슈 상태·의존·막힘을 표로 풀어 쓰는데 맵은 따로 🗺️ 탭(`/issue-map?cwd=`)을 열어야 보인다 — 문서를 읽는 자리에서 맵이 같이 보여야 표와 그래프를 대조할 수 있다
+* 구현 명세:
+    - A (`md_shell.py`) `render_issue_map_panel(cwd)` — `<details open class="im-panel"><summary>🗺️ {프로젝트} 이슈맵</summary><iframe src="/issue-map?cwd={urlencode}" loading="lazy"></iframe></details>`. 헤더 아래·본문(`#md-root`) 위. 높이 ~45vh(375px 폭에서는 ~35vh), 접으면 문서가 바로 올라온다. 접힘 상태 영속은 Issue632(projects-map 접기)의 방식을 따른다. 마크업을 함수로 분리 — 라이브 셸(`render_live_shell`)이 같은 패널을 재사용할 수 있게
+    - B (`render_md_shell` · `server.py`) 인자 `issue_map_cwd: str = ""` 추가 — `_handle_md_doc` 이 `_issue_map_openable(proj_cwd)` 결과(프로젝트 루트)를 넘기고, 빈 값(`system/___pm-tmp`·등록 트리 밖·`Issue.md` 없음)이면 패널을 그리지 않는다. 같은 `_send_md_html` 을 쓰는 `/mq-doc`·`/sched-log`·`/sched-result` 는 기본값 빈 값 — 영향 없음
+    - C (`md_shell.csp_header`) `frame-src 'self'` 추가
+    - D 범위 밖(별도 판단): `/htm-doc`(`_send_htm_html`) 문서·라이브 셸에도 같은 패널 — A 의 함수 분리로 후속 이슈에서 붙인다
+    - 검증(TDD red 먼저): `test_md_doc.py` 확장 — ① `_issue_map_openable` 이 루트를 내는 cwd → 셸에 `<iframe … src="/issue-map?cwd=` + 헤더 `frame-src 'self'` ② 빈 값·열 수 없는 cwd → iframe 없음 ③ cwd 의 HTML 특수문자 이스케이프 ④ `/mq-doc`·`/sched-log` 회귀 green. 라이브: hub 재기동 후 ego-browser 로 위 prj7 문서를 열어 맵이 문서 위에 보이는지·접기·375px 캡처
+    - 구현 위치: prj1 단독(`plugins/fpm-core/services/hub/`). prj3 변경 없음
+
+## Issue633: fbot-map 전체뷰 스코프 정렬 TypeError — 영숫자 prj id(9t) int/str 혼재 (해결: 2026-10-12, commit: <commit>, <commit>) ✅
+* 목적: hub `/fbot-map.json` 전체뷰(보드) 스코프 정렬이 int·str prj id 혼재(prj9t `9t`)로 TypeError 를 내며 빈 payload 로 떨어져 보드 조직 트리가 비어 보이는 회귀를 고친다 (Issue628 ③ 후속)
+* 구현 명세:
+    - 정렬 키를 legacy `tab=org` 가 쓰던 `_org_scope_key` 로 통일(server.py:8376) — 본사(None) → 숫자 → 접미(9t → 9t1) 자연 정렬. 조직 원천 prj3 `_org_files()` 의 파일명 정렬이 아닌 hub 렌더 측 소유 정렬(기존 설계 그대로)
+    - 회귀 테스트 `test_fbot_map_issue402.py` 에 scope_prj None·2·9·"9t"·"9t1" 혼재 케이스 추가
+    - TDD(종결): 해당 항목 · local — red(`TypeError: '<' not supported ...` @ <commit>^) → green(326/326)
+
+## Issue632: projects-map 다이어그램 박스·미할당·숨김·텍스트 트리를 각각 접고 펼치며 상태를 유지 (해결: 2026-10-10, commit: 대기) ✅
+* 목적: 프로젝트 다이어그램과 그 아래 모든 절을 개별로 접을 수 있게 하고, 접힘·펼침 상태를 새로고침 뒤에도 유지한다
+* 구현 명세: 맵 박스(`section`→`details`, Main Map 은 «프로젝트 다이어그램»)·미할당을 `details` 로, 페이지의 모든 `details` 상태를 localStorage(`pmap.details.v1`)에 저장. mermaid 가 닫힌 상자 안에서 크기를 못 재므로 렌더 완료 뒤(최대 8초)에 저장 상태를 적용
+
+## Issue631: /projects-map 에 프로젝트 그룹(`data/groups.yml`) 패널 + 추가·수정·삭제 팝업 (해결: 2026-10-10, commit: <commit>) ✅
+* 목적: `/fpm-group --list` 로만 보던 그룹 현황을 projects-map 에서 보고, 팝업으로 추가·수정·제거까지 한다
+* 구현 명세:
+    - ① `sh/pm-group`: `--json`(그룹+프로젝트 레지스트리) 추가, `set` 이 구성원 없이 `--desc` 만으로도 설명 수정 가능
+    - ② hub `server.py`: `GET /projects-map/groups`(JSON) · `POST /projects-map/groups`(op=add|set|rm → pm-group 호출, 실패 시 stderr 사유 400)
+    - ③ `build_projects_map.py`: «프로젝트 그룹» 패널(동적 fetch — 재빌드 불요) + 모달(이름·설명·구성원 체크/순서) + 삭제 확인
+    - 검증: red 먼저 — pm-group `--json`·set desc 단위 테스트, 서버 핸들러 테스트, ego-browser 로 팝업 실조작
+
+## Issue630: fbot-map «미종결 원장» 에서 «자동 재기상 대기» 건을 분리 — 사람이 닫을 일과 시스템이 알아서 깨울 일을 가른다
+* 목적: prj3#Issue1085 로 tick 이 퇴근 대상의 열린 배분을 `watch --wake` 로 재기상시키고 상한(2회) 뒤 mq 로 올리므로, 그 자동 경로 안에 있는 건은 «미종결 원장» 경고에서 빼고 사람 개입이 필요한 건만 남긴다
+* 구현 명세:
+    - ① `_fbot_deadlocks`: «대상이 퇴근함» 중 `attempts < RETRY_LIMIT(2, prj3 상수와 같은 값 — 주석으로 출처 명시)` 이고 «tick 이 살아 있다» 로 볼 근거가 있으면 새 버킷 `auto_wake` 로 뺀다. 근거 = `attempts >= 1`(tick 이 이미 만졌다) 또는 퇴근 후 경과 < 1시간(첫 tick 전). 근거 없이 오래된 attempts 0 건(자동 경로 미작동)은 종전대로 soft_orphans — 사람 몫으로 남긴다
+    - ② `auto_wake` 는 `soft_count`·`summary.unsettled`·`count` 에 넣지 않는다. 별도 얇은 줄 «🔁 자동 재기상 대기 N건 (시도 k/2 · 약 30분마다)» 을 details 접힘으로 두고 «원장 종결» 버튼은 내지 않는다
+    - ③ `attempts >= RETRY_LIMIT` 이거나 `status=blocked`(mq 발송됨)인 건은 «사람 개입 — mq 로 올라감» 문구로 soft 에 남긴다(종결 버튼 유지). 기존 안내문 «봇은 초 단위로 재출근할 수 있어 교착이 아닙니다» 는 auto_wake 줄로 옮긴다
+    - ④ `fbot-hub-ui.md`(prj3 `_doc_arch`) 해당 절 1줄은 prj3 가 맡는다 — 이 이슈는 prj1 코드·테스트만
+    - 검증: red 먼저 — `test_fbot_map_issue402.py` 에 (a) attempts 1 → auto_wake·unsettled 불포함 (b) attempts 0·퇴근 후 3시간 → soft_orphans (c) attempts 2 → soft·문구 (d) 기존 waiting_child/child_held 불변. `tdd/playlist.md` 행 추가. ego-browser 로 `/fbot-map` 접힘 줄 확인
+    - 범위 밖: 재기상 로직(prj3#Issue1085 완료) · 원장 필터링
+
+## Issue627: Project Group 기제 — `data/groups.yml` 정본 + `pm-group` 해석기 (해결: 2026-10-10, commit: <commit>) ✅
+* 목적: 프로젝트 그룹(ex) `fapp`·`f2x2`)을 **이름 하나로 정의**하고 모든 소비처가 번호 사본 대신 그 정의를 참조하게 한다 — 지금은 같은 «fApp» 이 자리마다 구성원 6·8·9개로 갈려 있다
+* 구현 명세:
+    - `data/groups.yml` — 그룹별 `desc` + **순서 있는** `members`. 순서 계약: `cdf-fapp` 이 `fapp.txt` 의 1-based 인덱스(1=fBanner…)로 대상을 고르므로 순서가 의미를 가진다
+    - `pm-group <name>`(줄당 번호) · `--of <id>`(소속 그룹) · `--list` · 없는 그룹명·없는 prj id 는 **비0 종료**(침묵 실패 금지)
+    - `fapp.txt` 는 해석기 전환 전까지 같은 순서로 유지 — 소비처 전환 후 생성물화 또는 폐기는 설계 §2 에서 결정
+
+## Issue629: fbot-map «미종결 원장» 배너가 원장 본문을 전부 펼쳐 길다 — 제목 한 줄만 보이고 클릭하면 원장 본문
+* 목적: 미종결 원장이 늘어도 배너가 화면을 점령하지 않게, 건마다 제목(누가→누구에게·한 줄 요지·경과)만 보이고 클릭하면 원장 본문이 펼쳐지게 한다
+* 구현 명세:
+    - ① 건마다 `<details>`: `<summary>` = 상태 칩(미종결·하위 보류 등) + `발신 → 수신` + 배분 본문 첫 줄(약 80자 말줄임) + 경과 시간. 펼치면 본문 전문(줄바꿈 보존·`white-space: pre-wrap`)과 «원장 종결» 버튼·안내 문구
+    - ② 기본은 전부 접힘. 종결 버튼은 `<summary>` 안에 두지 않는다(클릭이 펼침 토글과 겹침) — 펼친 본문 하단
+    - ③ 자동 갱신(폴링) 때 사람이 펼쳐 둔 항목이 접히지 않게 job id 기준으로 열림 상태 유지
+    - ④ 설계 문서(`fbot-hub-ui.md` 해당 절) 1줄 갱신 — 2원 구조
+    - 검증: red 먼저 — 배너 렌더 단위 테스트(제목 줄 길이 상한 · 본문은 details 안 · 종결 버튼 존재). ego-browser 로 `/fbot-map` 캡처해 접힘/펼침 확인
+    - 범위 밖: 원장 필터링·정렬 변경 · 기상 로직(prj3#Issue1085)
+
+## Issue628: 영숫자 prj id(`9t`) 후속 — prj1 번들 동기·hub `/fbot-map`·조직 해산 API `norm_prj` 통일 + pm-new 1-13a 번들 반영 (해결: 2026-10-10, commit: <commit>) ✅
+* 목적: prj9t 핀봇 조직이 hub 보드·해산 API·번들 hooks 에서도 동작하게 한다 (prj3 가 `hooks/lib/fbot-prj.py` 로 판정 단일화 — 이 repo 의 번들·hub 가 옛 `int(prj)`·isdigit 판정에 남음)
+* depends: prj3#Issue1072, prj3#Issue1071
+* 구현 명세:
+    - ② `bash scripts/fpm-bundle-sync.sh` 로 번들 동기(`hooks/lib/fbot-prj.py` 동반) → `bash sh/gen-integrity-manifest.sh --check` OK · 번들 `resolve --prj 9t` rc 0
+    - ③ hub `/fbot-map.json?prj=` isdigit · 조직 해산 API `int(prj)` 지점 특정 → `norm_prj` 판정으로 통일, `/fbot-map` 에 9t 조직 표시. TDD red 먼저
+    - 1071: 번들 `plugins/fpm-core/commands/fpm-pm-new.md` 에 1-13a 반영 확인
+    - 종료 조건: 테스트 green + 커밋 hash. push 금지
+    - 보고서: `_doc_work/report/2026.10.10_prj3-1071-1072-bundle_report.md` 작성 필수 · 커밋은 `issue-tx.py commit --issues 628 …`(타 세션 미커밋분 Identity.md·deploy-state.yml 등 쓸어담기 금지) · 완료 시 `fbot-inbox.py defer --status done`
+
+## Issue626: `pm-new` 생성 시 트리 위치 반영 — 기반 prj 가 있으면 그 항목 아래 한 곳 · `goal_parent` 와 분리 ✅
+* 목적: 생성 직후 projects-map 이 곧 최종 모습이 되게 한다. 사용자 확정 2026.10.09 *"projects-map 최종 모습임. prj 생성 시 적용되게 해줘(다음 프로젝트부터)"* — 9t fTyping 은 생성(`<commit>`) 때 «프로모션» 그룹 아래 놓였다가 사용자가 «25 fSnippetCli 아래» 로 다시 옮겼다
+* 구현 명세:
+    - `pm-new` 절차(`.claude/skills/pm/SKILL.md` · `.agents`·`plugins/fpm-core` 사본)에 «트리 위치» 단계 추가: 위임 문구·청사진의 «트리 위치»(`{노드} 아래`)를 읽어 그 자리에 노드 1줄을 넣는다. 지정이 없으면 기반 prj 유무를 묻거나 `goal_parent` 그룹 아래
+    - `{{goal_parent}}` 정의를 «목적 축 그룹 노드명(트리 위치와 별개)» 로 정정 — 스키마 정본 prj6 `_doc_arch/project-identity-scheme.md` `goal_parent` 절
+    - `_doc_arch/projects-map-design.md` 에 단일 배치 원칙 1절(9t 선례)
+    - 검증: 다음 `pm-new` 1건에서 생성 직후 `/projects-map` 의 노드 위치가 위임 문구의 트리 위치와 같다 — 사후 이동 0회
+
+## Issue625: 번들 동기가 원본 배치에 의존하는 테스트를 fpm-core 번들로 반출한다 — 번들에서 FileNotFound·FAIL
+* 목적: `scripts/fpm-bundle-sync.sh` 가 반출하는 테스트는 번들 배치에서 그대로 통과해야 한다 — 원본 상대경로에 기대는 테스트는 반출하지 않거나 번들 경로로 해석되게 한다
+* depends: prj3#Issue1047
+* 구현 명세:
+    - 동기 스크립트의 반출 목록(매니페스트)에서 원본 배치 의존 테스트를 판정하는 기준을 한 곳에 둔다 — 제외하거나 번들 경로 해석을 넣는다
+    - 검증: 번들 배치에서 (a)·(b) 를 실행해 FileNotFound·FAIL 0, `fpm-bundle-sync.sh --check` 표류 0
+
+## Issue624: hub `/mq` 부제 «할 일 / 예약 / 대기» 분리 — prj3#Issue1046 표시 계약 동기 ✅
+* 목적: `/mq` 부제가 `미종결 N · 종결(최근) M` 한 숫자라 기한 전 예약 리마인더까지 «쌓인 일» 로 보인다(2026-10-09 실측 13건 중 지금 할 일 1건). prj3#Issue1046 이 넛지·MCP list 를 할 일/예약/대기로 나눴으니 화면도 같은 규칙을 따른다
+* depends: prj3#Issue1046
+* 구현 명세:
+    - `services/hub/server.py` `_mq_collect` — 항목별 `_class`·집계 `action_count`·`reserved_count`·`wait_count` · 부제 `할 일 A · 예약 R · 대기 W · 종결(최근) M`
+    - 검증: `services/hub/test_mq_*` 계열에 분류 회귀 1개(due·기한 지난 pending·기한 전 pending·watching·waiting 픽스처)
+
+## Issue623: hub 카드 미완료 배지를 프로젝트 이슈맵(`Issue_map.htm`) 기준으로 — 서버 자체 `Issue.md` 판정이 `🏁 완료-해결순` 을 몰라 fSnippet 이 0건인데 20 (해결: 2026-10-09, commit: <commit>, <commit>) ✅
+* 목적: 카드 배지 숫자가 이슈맵이 보여 주는 미완료 수와 같게 한다 — 완료 판정은 이슈맵 생성기 한 곳(`build_issue_map.py`)만 한다
+* depends: prj3#Issue1039
+* 구현 명세:
+    - [server.py](plugins/fpm-core/services/hub/server.py) 배지 값 = 맵 파일의 기본 변형 집계(`data-variant="base"` 의 `이슈 N건 · 완료 M건`, 구버전 맵은 첫 집계 문구) → 미완료 = N − M. 맵이 없으면 `null`(배지 `–`), 맵이 `Issue.md` 보다 오래되면 배지 흐림 + 툴팁
+    - 서버의 `Issue.md` 직접 순회(`_count_open_issues`)와 완료·제외 섹션 미러를 제거
+    - 검증(TDD red 먼저): 생성기로 만든 fixture 맵(완료 섹션명 `🏁 완료-해결순`)에서 배지 0 · 미완료 2건 맵에서 2 · 맵 부재 `None` · 구버전 맵 폴백
+    - 번들 동기(<commit>): `build_issue_map.py`·`SKILL.md` ← prj3 <commit>(잔여 0건도 맵 유지), 테스트 3번 `--all` 우회 제거, `.fpm-integrity.json` 재생성. `commands/fpm-issue-map.md` 에 «0건이면 안 만든다» 서술 없어 정정 불필요
+    - TDD(종결): 해당 항목 · local — `test_issue_badge_map_issue623.py` 9 passed (3번 `--all` 제거 후 green)
+
+## Issue621: fbot-map 명부 표 — 짧은 열이 글자 단위로 쪼개진다(`le/a/d`·`p/rj`) · 긴 호칭·현재 작업이 폭을 독차지 ✅
+* 목적: `/fbot-map?tab=roster` 명부 표에서 role·상태·career·prj·소속·지시자 열이 한두 글자씩 줄바꿈되어 읽을 수 없는 것을 없앤다
+* 구현 명세:
+    - [server.py](plugins/fpm-core/services/hub/server.py) 명부 행: 짧은 열(role·상태·career·prj·소속·지시자)에 `fm-nw`(`white-space:nowrap`) · 호칭·현재 작업은 `fm-clip`(최대 폭 + 3줄 말줄임) 이고 전문은 `title` 툴팁으로 보존
+    - 검증(TDD red 먼저): 긴 호칭 fixture 1건 → 명부 HTML 의 짧은 열 셀에 `fm-nw` · 호칭 셀에 `fm-clip` + `title` 전문 · 기존 fbot-map 테스트 회귀 green
+
+## Issue620: fbot-map 보드 ⛔ `blocked(unconfirmed)` 배분에 사유 표기 — «선행대기» 오표기 제거 ✅
+* 목적: prj3#Issue968 로 sweep 이 판정 불가 배분을 `blocked(unconfirmed)` 로 올리며 `payload.unconfirmed.reason` 에 사유(«증거 세션 없음 — 배분 뒤 몸체 미기동»·«완료 섹션이나 완료 표기 누락 — Issue944»)를 적는데, 보드는 사유를 버리고 모든 blocked 를 «⏸ 선행대기» 로 그린다 — 매니저가 무엇을 확정해야 하는지 화면에서 안 보인다
+* 구현 명세:
+    - [server.py](plugins/fpm-core/services/hub/server.py) `_fbot_dispatch_edges` 에 `blocked_by`·`block_reason` 싣기 · 사유 문구 단일 지점 `_fbot_block_note(e)` → 보드 엣지(`note`)·jobs·흐름 그래프 툴팁(`full`)이 같은 함수를 읽음
+    - 미룬 일 분류(`_fbot_board_work`): blocked(unconfirmed) 는 why `unconfirmed`(⛔ 완료 미확인), 그 외 blocked 는 종전 `gate`
+    - 화면: 작업 행 툴팁·배분 상세(jobBox)에 «사유» 행
+    - 검증(TDD red 먼저): fixture 원장에 unconfirmed 배분 1건 → 엣지 note·why·그래프 full 에 사유 문구 · 다른 blocked 는 종전 표기 유지 · 기존 fbot 테스트 회귀 green
+
+## Issue619: linked worktree 커밋 시 pre-commit 무결성 게이트 거짓 양성 «removed 204» — 훅 env `GIT_DIR` 이 매니페스트 생성기의 추적 목록을 비운다 ✅
+* 목적: `git worktree add` 작업트리에서 번들 파일을 커밋할 때 `[integrity]` 가 정상 번들을 불일치로 거부해 `SKIP_INTEGRITY=1` 우회가 상례가 되는 것을 없앤다 — 상시 우회는 진짜 변조를 묻는다
+* 구현 명세:
+    - 스크립트 내부 git 호출 env 판정 단일 지점(`_git_env`) — 위치 결정 변수(`GIT_DIR`·`GIT_WORK_TREE`·`GIT_COMMON_DIR`·`GIT_PREFIX`)는 제거해 `-C` 경로로 재발견하게 하고, `GIT_INDEX_FILE` 은 **절대경로로 고정해 유지**(커밋 중인 인덱스 = 추적 판정 근거, 임시 인덱스 커밋 `issue-tx commit` 도 동일)
+    - 검증(TDD red 먼저): 임시 repo + linked worktree + 훅과 같은 env(`GIT_DIR` 주입)에서 `--check` OK · 메인 작업트리·env 없음 회귀 OK
+
+## Issue622: 핀봇 조직도 «🚀 스폰 대기» 잔존 — 잠금 해제 기록 없는 배분(`dispatch --spawn`)이 몸체 왕복 뒤에도 10분간 출근 대기 ✅
+* 목적: Issue618 뒤에도 «스폰 대기 1건 · 미종결 원장 1건» 이 남았다(사용자 지시 2026-10-09). 팀장(lead-common)이 44초 만에 출근·보고·퇴근했는데 배너는 «스폰 대기» 였다
+
+## Issue618: 핀봇 조직도 «🚀 스폰 대기» 오표시 — 몸체가 이미 떴다 퇴근한 배분을 출근 대기로 판정 ✅
+* 목적: `/fbot-map` 배너가 «스폰 대기 1건 — 나래 → pm 팀장핀봇 … 출근 대기 413초» 로 떴으나 팀장은 이미 3회 출근해 완료 보고(`defer --status done`)까지 하고 퇴근한 상태였다 — 진행 중 안내로 오독돼 종결 대기(원장 미종결)가 가려진다
+
+## Issue616: (!) hub 회고 — 각 페이지 점검 → 이슈화 → «나만 쓰는» UI 를 처음 보는 사람도 쓰게 개선 → ego-browser 최종 검증 ✅
+* 목적: hub(`http://127.0.0.1:9876`) 화면이 «아직 나만 쓸 수 있는 수준» — 만든 사람의 맥락(내부 약어·이슈 번호·핀봇 고유어·숨은 클릭 동작)을 알아야 쓸 수 있다. prj8 공개 미러로 나가는 제품 표면이므로 처음 보는 사용자가 안내 없이 쓸 수 있어야 한다 (사용자 지시 2026-10-09, 나래 접수)
+* 구현 명세:
+    * 서버 `plugins/fpm-core/services/hub/server.py`(+ 정적 자원) — 화면 변경은 페이지별 테스트(`services/hub/test_*.py`) red→green 먼저(tdd-playlist-rules)
+    * prj3 동반 수정이 생기면 2원 구조(번들 sync) 확인 — 커밋은 각 repo 에서
+    * 출고(버전·태그·push·deploy)는 이 이슈 범위 밖 — H 결정(Issue973 계열)
+    * 검증: 회고 보고서 + 전·후 캡처 + 테스트 green + 서브 이슈 전부 ✅
+    * 마무리(나래 지시 2026-10-09, fbotreq-<commit>): `/hub restart` → `after/` 재캡처로 전·후 비교 + Issue617 재현 문서의 이미지 표시 확인 → 616 종결
+
+## Issue616_1: [H] 사람용이 아닌 JSON 엔드포인트(`/boards`·`/projects-list`·`/job-catalog`)·`/md-doc`·`/htm-doc` 오류가 주소창 진입 시 raw JSON — 안내 페이지 + `/boards` 토큰 노출 면 점검 ✅
+* 목적: hub 회고(`_doc_work/report/2026.10.09_hub-retro_report.md`) 문제 표 — 처음 보는 사람이 안내 없이 쓰게 한다
+* 구현 명세: 서버 `plugins/fpm-core/services/hub/server.py` · 검증: 페이지별 테스트 red 먼저 — Accept 헤더별 응답, `/boards` 응답에 token 부재(소비처가 있으면 인증 경로로만) (red→green)
+
+## Issue616_2: [H] `/hub` 첫 화면 — 페이지 목적 1줄·통계줄 설명(영어 혼용 i18n)·탭 제목 고정 ✅
+* 목적: hub 회고(`_doc_work/report/2026.10.09_hub-retro_report.md`) 문제 표 — 처음 보는 사람이 안내 없이 쓰게 한다
+* 구현 명세: 서버 `plugins/fpm-core/services/hub/server.py` · 검증: `test_i18n_parity.py` 확장 · title 고정 테스트 (red→green)
+
+## Issue616_3: [H] 375px 가로 넘침 — `/mq` scrollWidth 1233·`/hub` 524 ✅
+* 목적: hub 회고(`_doc_work/report/2026.10.09_hub-retro_report.md`) 문제 표 — 처음 보는 사람이 안내 없이 쓰게 한다
+* 구현 명세: 서버 `plugins/fpm-core/services/hub/server.py` · 검증: 375px 에서 `scrollWidth<=clientWidth` 를 ego-browser 재캡처로 확인 + CSS 회귀 테스트 (red→green)
+
+## Issue616_4: [M] 공통 헤더·내비 통일 — `/mq`·`/sched-log`·`/md-doc` 에 hub 복귀·페이지 간 이동 ✅
+* 목적: hub 회고(`_doc_work/report/2026.10.09_hub-retro_report.md`) 문제 표 — 처음 보는 사람이 안내 없이 쓰게 한다
+* 구현 명세: 서버 `plugins/fpm-core/services/hub/server.py` · 검증: 각 페이지 HTML 에 공통 내비 존재 테스트 (red→green)
+
+## Issue616_5: [M] `/fbot-map` 고유어 용어 도움말·페이지 길이·카드 `summary` 소비 ✅
+* 목적: hub 회고(`_doc_work/report/2026.10.09_hub-retro_report.md`) 문제 표 — 처음 보는 사람이 안내 없이 쓰게 한다
+* 구현 명세: 서버 `plugins/fpm-core/services/hub/server.py` · 검증: `test_fbot_map_*` 확장 (red→green)
+
+## Issue616_6: [M] 개인 경로·메모 노출 — `/Users/user` 절대경로(mq 헤더·sched-log·issue-map 36곳)·`/projects-map` 개인 메모 박스 ✅
+* 목적: hub 회고(`_doc_work/report/2026.10.09_hub-retro_report.md`) 문제 표 — 처음 보는 사람이 안내 없이 쓰게 한다
+* 구현 명세: 서버 `plugins/fpm-core/services/hub/server.py` · 검증: 경로 축약 단위 테스트 (red→green)
+
+## Issue616_7: [M] `/mq` 목록 가독성 — 출처 표기·이중 ID·긴 본문 접기·버튼 라벨 툴팁·`/sched-log` 구분선 설명 ✅
+* 목적: hub 회고(`_doc_work/report/2026.10.09_hub-retro_report.md`) 문제 표 — 처음 보는 사람이 안내 없이 쓰게 한다
+* 구현 명세: 서버 `plugins/fpm-core/services/hub/server.py` · 검증: `test_mq_*` 확장 (red→green)
+
+## Issue616_8: [M] `/hub` 활동피드 노이즈 — «세션 종료 (other)» 반복 ✅
+* 목적: hub 회고(`_doc_work/report/2026.10.09_hub-retro_report.md`) 문제 표 — 처음 보는 사람이 안내 없이 쓰게 한다
+* 구현 명세: 서버 `plugins/fpm-core/services/hub/server.py` · 검증: 피드 정렬·묶기 테스트 (red→green)
+
+## Issue616_9: [M] 초기 로드 무게·설정 모달 재검증 — `/hub` 228KB·`/boards` 712KB, 첫 시도 탭 무응답 재현 여부, ⚙️ 설정 모달 미관측 ✅
+* 목적: hub 회고(`_doc_work/report/2026.10.09_hub-retro_report.md`) 문제 표 — 처음 보는 사람이 안내 없이 쓰게 한다
+* 구현 명세: 서버 `plugins/fpm-core/services/hub/server.py` · 검증: ego-browser 재측정 기록 (red→green)
+
+## Issue617: hub `/htm-doc` 렌더에서 `_doc_work` 밖 상대 이미지가 `/htm-res` jail 403 — 기존 `abs=` 해법이 이 경로에 안 닿는 원인 제거 ✅
+* 목적: `_doc_work/report/*.html` 이 참조하는 `tdd/*/evidence/*.png` 같은 `_doc_work` 밖 이미지가 403. 사용자 말 «기존에 해결한 부분 — 이전 이슈를 확인해서 해결하라» (prj7 결속 세션 <commit> 경유 인박스 `fbotreq-<commit>-<commit>` ②, 나래 접수 2026-10-09)
+* 구현 명세:
+    * red 먼저 — 재현 fixture(`_doc_work` 밖 상대 이미지를 참조하는 html)로 403 을 고정하는 `services/hub/test_*` 추가 → 수정 → green
+    * $HOME jail·dotfile 게이트(Issue393(비공개))는 유지 — 보안 회귀 테스트 함께
+    * 검증: 테스트 green + ego-browser 로 재현 문서 이미지 표시 확인
+
+## Issue615: 핀봇 조직도 그래프 가독성 — 좌→우 흐름·노드는 제목만·활성 팀장 칩 ✅
+* 목적: `/fbot-map?tab=map` 그래프가 상→하로 흐르고 노드에 상세(세션·상태·긴 작업문)가 실려 글자가 뭉개진다. 칩도 `전체`·`나래` 뿐이라 프로젝트별로 볼 수 없다 (사용자 지적 2026-10-08, 스크린샷)
+* 구현 명세:
+    * `services/hub/server.py` `_fbot_org_data` — `root_filter` 가 팀장(role=lead·prj 소속·비퇴역)이면 하위 트리 필터, `leads` 목록 반환. 루트도 팀장도 아니면 종전대로 `unknown_root`
+    * `_fbot_graph_elements` — `label` 말줄임 + `title` 전문 분리, `sub` 는 패널 전용
+    * Cytoscape — `breadthfirst` 대신 자체 LR tidy-tree(preset 좌표, CDN 추가 없음)
+    * 검증: `services/hub/test_fbot_map_lr_issue615.py` red→green + 기존 `test_fbot_map_issue402.py` 회귀 + 실서버 화면 확인
+
+## Issue614: 신규 맥 앱 스캐폴드(`/fpm-pm-new` mac 타입)가 `data/exec.yml` 을 초기 생성 — 실행 머신 선언 기본값 (해결: 2026-10-08, commit: <commit>) ✅
+* 목적: 신규 mac 프로젝트가 만들어질 때 빌드·실행 머신 선언 `data/exec.yml` 이 함께 생겨, 프롬프트(*"host 에서 진행해줘"*) 없이 저장소 선언으로 host 가 정해지게 한다
+* depends: prj5#Issue119
+* 구현 명세:
+    - 템플릿 `data/template/exec.yml` 신설(또는 `fpm-scaffold-fill.py` 의 mac 분기 생성) — 값: `prj: {번호}` · `status: draft` · `host: host`(사용자 확정 2026.10.08 — 적용 9개 전부 host) · `sync` 는 판정 불가 시 `null` · `build`/`run`/`test` 는 비움(fail-loud) · `release` 비움
+    - mac 타입에서만 생성(general·web 미생성). 이미 있으면 덮어쓰지 않음(멱등)
+    - 공개 repo 로 만들어지는 경우 커밋 제외 규약(`.git/info/exclude`) 안내 — 스키마 문서 «공개 repo» 조항 준수
+    - `pm` 스킬 3벌(`.claude/skills/pm`·`.agents/skills/pm`·`plugins/fpm-core/skills/fpm-pm`) «## mac» 필수 초기화에 1줄 추가 + 번들 무결성 매니페스트 재생성
+    - 검증: 임시 디렉토리에 mac 타입 스캐폴드 → `data/exec.yml` 존재·키 검사 / general 타입 → 미생성 / 재실행 → 무변경 (red 먼저)
+    - 완료 해시는 prj3#Issue976 에도 기록 요청(fbot-lead-claude 회신)
+
+## Issue610: `..ask` 질문 경로 이상 동작 정상화 — VSCode 네이티브 다이얼로그 수준을 UX 기준선으로 (해결: 2026-10-07, commit: <commit>) ✅
+* 목적: 사용자 보고(2026-10-05, prj6 세션 «요즘 `..ask` 가 이상하게 동작한다»)에 따라 이상 동작을 진단하고 원인을 제거한다. 목표 동작은 VSCode 네이티브 `AskUserQuestion` 다이얼로그와 같은 수준으로 잡는다 — 즉시 뜨고, 보기를 고르고, 바로 회신이 이어지는 흐름이다. Issue611(preview 2단 이식)의 선행이다
+* depends: prj3#Issue975
+* 구현 명세:
+    - ① 재현: 이상 장면의 cwd·session_id 로 `hub_flag_file`·`hub_effective` 판정값을 실측하고, intercept 가 어느 분기로 나갔는지 확정한다
+    - ② 원인 제거: 판정이 한쪽만 갱신돼 갈라진 지점이 있으면 판정 단일 지점으로 통일한다. 우회·비활성화는 1순위가 아니다
+    - ③ 기준선 대조표: 네이티브 다이얼로그와 hub 폼을 축별(표시 지연·보기 선택·기타 입력·preview·회수)로 비교해 남은 격차를 결과에 적는다. preview 격차는 Issue611 로 넘긴다
+    - 검증: 재현 fixture(hub on cwd)에서 intercept 가 deny + 폼 경로로 나가는지 단언 · 사용자 재현 장면이 다시 일어나지 않음
+    - ⚠️ 이 hook 은 헤더 가드상 글로벌 SCAR(설계 SSOT `~/.claude/_doc_arch/hub-mode-arch.md`)이다. 수정 시 prj3 동반 여부를 먼저 판정한다
+
+## Issue613: 출고 3대 검증 게이트 보강 — ship-verify fixture FAIL 경로·clone_version 판정·⑤P1·⑥캡처 결합 ✅
+* 목적: Issue609 QA 판정 «반쪽» 의 후속이다. `fpm-ship-verify` 는 ③무결성·④`/healthz`·`/boards` 만 자동 판정하고, 명세의 «한 대라도 FAIL 이면 출고 완료로 닫지 않는다» 는 ⑤P1·⑥캡처에 대해 런북 문장에만 의존한다. 두 번째 출고(v0.9.0)부터 이 틈이 실제 게이트 누락이 된다
+* depends: Issue607
+* 구현 명세:
+    - fixture 에 plugin 버전 불일치·integrity FAIL 케이스를 추가하고 각각 rc=1 단언 · `clone_version` ≠ 출고 버전이면 FAIL · fixture 결과를 `evidence/fixture-<ver>.log` 로 보존
+    - ⑤ P1 결과(FAIL 수, jpc1 symlink 예외 제외)를 판정표 열로 받아 rc 에 반영 · ⑥ 캡처 파일 실재(`shots/hub-<host>.png`)를 판정 항목으로 넣는다(캡처 자체는 수동 허용)
+    - Issue607 이 들어가면 ①② 를 그 표준 명령 호출로 단계에 결합
+    - 검증: fixture 3종(구 hub `/boards` 404·plugin 불일치·integrity FAIL) 전부 rc=1 · 정상 0.8.3 증거로 rc=0
+
+## Issue607: 출고·라인 마감이 prj1 단독 — prj3 동반(lockstep)·소비자 hub 재기동이 절차에 없다 ✅
 * 목적: v0.8.4 는 prj1·prj3 가 같은 번호로 함께 가는 출고인데 `deploy`·라인 마감은 prj1 만 본다. 그래서 prj1 만 태그·release/0.8.5 로 넘어가고 prj3 는 release/0.8.4 에 남았다. 또 소비자 전파가 plugin·clone 만 갱신하고 상주 hub 는 구버전 코드로 계속 돈다
 * depends: Issue601, prj3#Issue973
 * 구현 명세:
@@ -43,14 +263,30 @@ source_sha: 196f26a2539becb71e75377e41d128cc5c6f7791a100470578db65d554f747ae
     - 소비자 전파 표준 명령에 hub 재기동 포함(systemd 유닛이면 `systemctl --user restart fpm-hub`, 아니면 pid 종료 후 절대경로 기동) + healthz 확인
     - 검증: 격리 클론에서 prj3 라인 불일치 fixture → deploy 선검사 rc≠0
 
-## Issue610: `..ask` 질문 경로 이상 동작 정상화 — VSCode 네이티브 다이얼로그 수준을 UX 기준선으로
-* 목적: 사용자 보고(2026-10-05, prj6 세션 «요즘 `..ask` 가 이상하게 동작한다»)에 따라 이상 동작을 진단하고 원인을 제거한다. 목표 동작은 VSCode 네이티브 `AskUserQuestion` 다이얼로그와 같은 수준으로 잡는다 — 즉시 뜨고, 보기를 고르고, 바로 회신이 이어지는 흐름이다. Issue611(preview 2단 이식)의 선행이다
+## Issue609: prj8 출고본을 jpc1·host·host 에 배포해 테스트하는 상설 단계 — 출고마다 3대 재설치·hub 재기동·실기동 검증·증거 ✅
+* 목적: prj8(fpm 공개 미러) 출고가 «미러 push» 로 끝나고 소비자 3대(jpc1 Windows·host Linux·host macOS)의 실제 동작은 출고 이슈마다 즉석으로 점검해 왔다. 그래서 공개 0.8.3 의 무결성 FAIL 3/3·jpc1 hub «Loading…» 이 출고 뒤에야 사람 눈으로 잡혔다. **출고 1건 = 3대 배포·테스트 1회** 를 정해진 단계와 증거로 고정한다
+* depends: Issue608
 * 구현 명세:
-    - ① 재현: 이상 장면의 cwd·session_id 로 `hub_flag_file`·`hub_effective` 판정값을 실측하고, intercept 가 어느 분기로 나갔는지 확정한다
-    - ② 원인 제거: 판정이 한쪽만 갱신돼 갈라진 지점이 있으면 판정 단일 지점으로 통일한다. 우회·비활성화는 1순위가 아니다
-    - ③ 기준선 대조표: 네이티브 다이얼로그와 hub 폼을 축별(표시 지연·보기 선택·기타 입력·preview·회수)로 비교해 남은 격차를 결과에 적는다. preview 격차는 Issue611 로 넘긴다
-    - 검증: 재현 fixture(hub on cwd)에서 intercept 가 deny + 폼 경로로 나가는지 단언 · 사용자 재현 장면이 다시 일어나지 않음
-    - ⚠️ 이 hook 은 헤더 가드상 글로벌 SCAR(설계 SSOT `~/.claude/_doc_arch/hub-mode-arch.md`)이다. 수정 시 prj3 동반 여부를 먼저 판정한다
+    - 단계(머신별, host 에서 원격 실행): ① plugin **재설치**(같은 번호 재출고는 `plugin update` 무효) + 클론 갱신 ② 상주 hub 재기동(systemd 면 `systemctl --user restart fpm-hub`, 아니면 pid 종료 후 절대경로 기동) ③ `check.sh` 무결성 PASS ④ `/healthz`·`/boards` 200 ⑤ P1 TDD(FAIL 0, jpc1 symlink 환경 예외 명시) ⑥ hub 홈 화면 캡처(ego)
+    - 증거: `_doc_work/_release/v<ver>/evidence/{state,post,shots}-<host>` · 3대 표를 출고 이슈 결과에 붙인다. 한 대라도 FAIL 이면 출고 «완료» 로 닫지 않는다
+    - 첫 실행 = Issue608 의 0.8.3 재출고(S6). 두 번째 출고부터 런북 `_doc_work/plan/release-ship-3os_plan.md` S6 를 이 단계로 대체
+    - 검증: 0.8.3 재출고 뒤 3대 ③④⑤ PASS 증거 · 의도적 구 hub(재기동 생략) fixture 에서 ④ 가 FAIL 로 잡히는지 1회 확인
+
+## Issue608: 0.8.3 통일 뒤 미출고 수정분 출고 경로 결정 — 공개 0.8.3 소비자 회귀(무결성 FAIL 3/3 · jpc1 hub 멈춤) ✅
+* 목적: 0.8.3 통일로 v0.8.4 가 철회되면서 Issue605·606(및 593·594·595·602) 수정이 소비자에게서 빠졌다. 공개 0.8.3 에서 무결성 FAIL 3/3 과 jpc1 hub «Loading…» 이 재현된다. 수정은 release/0.8.3 `<commit>` 에 있고 네이티브 TDD green 이므로, **번호만 정하면** 출고할 수 있다
+* depends: prj3#Issue973
+* 구현 명세:
+    - 번호 결정 뒤 런북 `_doc_work/plan/release-ship-3os_plan.md` S0~S9 (prj1·prj3 동반) — S6 소비자는 재설치·hub 재기동
+    - 검증: 3대 `check.sh` 무결성 PASS · jpc1 `/boards` 200·홈 정상(ego) · P1 FAIL 0(jpc1 symlink 환경 제외)
+
+## Issue612: 버전 번호 변경 가드레일 — prj1·prj3·prj8 의 VERSION 변경·번호 상향 출고는 사람이 터미널에서 남긴 승인 기록이 있어야만 (해결: 2026-10-05, commit: <commit>, prj3 <commit>) ✅
+* 목적: prj1·3·8 은 한 번호로 묶여 출고된다(lockstep). 세션이 «사용자 지시» 표기만으로 0.8.3 → 0.8.4 를 올리고 출고하고 0.8.5 라인까지 연 사고(prj3#Issue973)를 구조로 막는다. 다른 프로젝트의 무승인 minor 상향은 건드리지 않는다
+* depends: prj3#Issue973
+* 구현 명세:
+    - 본체 `scripts/version-guard.sh` — `check-commit`(스테이징 VERSION·매니페스트 버전 ≠ HEAD 면 승인 필요, 우회 env 없음) · `check <V>` · `approve`(TTY·비 Claude 전용) · `list`·`revoke`. 승인 기록 `~/.local/state/fpm/version-approvals/<group>-<V>`(24시간 유효)
+    - 검사 지점: ① prj1·3·8 pre-commit(설치 `scripts/install-precommit-version-guard.sh`) ② `fpm-sync.sh deploy` 가 bump(번호 변경) 전에 승인 확인 ③ 전역 PreToolUse 훅이 Claude 의 승인 저장소 쓰기·approve 실행·VERSION 가드 repo 의 `--no-verify` 차단
+    - prj3 `release-line-guard.sh` 의 «다음 버전으로 올려라» 안내를 «다음 번호는 사람이 정한다» 로 교체 · deploy 완료 로그의 다음 라인 안내도 같이
+    - 검증: 승인 없는 VERSION 변경 커밋·번호 상향 deploy 계산이 거부되는 red 테스트 먼저 (`scripts/test_version_guard_issue612.sh`)
 
 ## Issue603: digest 신선도 판정을 반출 기준(HEAD)으로 통일 — 타 세션의 미커밋 Issue.md 가 deploy 를 막는다 ✅
 * 목적: forward 는 `git archive HEAD` 를 반출하는데 `fpm-issue-digest.sh --check` 는 **작업트리** `Issue.md` 와 비교한다. 동시 세션이 Issue.md 를 고치는 동안에는 반출물과 무관한 이유로 deploy 선검사가 반복 중단된다(Issue592 실측 — 이슈 등록 1건으로 재중단)
@@ -868,6 +1104,14 @@ source_sha: 196f26a2539becb71e75377e41d128cc5c6f7791a100470578db65d554f747ae
     - 어느 안이든 **백업 부재 자체는 별도 문제**다 — 정책을 안 고치더라도 원천자료의 백업 경로(별도 private repo·외부 백업)는 있어야 한다. aoa-mq 컨펌 항목이 그 결정을 묻고 있다
     - 전 프로젝트 영향 조사 선행: `_doc_base/` 를 실사용하면서 origin 이 private 인 repo 가 몇 개인지 — prj9a 외에도 같은 상태가 있을 수 있다
 
+## Issue481: prj3 tagcheck 게이트가 재현되지 않는다 — 설치 스크립트 부재 ✅ 완료 (<commit>, prj3 <commit>)
+* 목적: Issue478_3 이 prj3 에 이식한 `pre-commit` tagcheck 은 **그 머신에만 있다**. `.git/hooks/` 는 git 추적 밖이라, 다른 머신에서 clone 하면 게이트가 통째로 사라지고 아무 신호도 없다
+* depends: Issue478_3
+* 구현 명세:
+    - prj3 에 `sh/install-precommit-tagcheck.sh` 신설 — prj1 원본의 마커 공존·멱등·shebang 뒤 삽입 방식을 그대로 따른다(바퀴를 다시 만들지 않는다)
+    - ⚠️ **타 repo 편집·커밋이라 사용자 승인 필수**([`~/.claude/rules/input-interpretation-rules.md`](.claude/rules/input-interpretation-rules.md)). prj3 세션에서 처리하는 편이 규칙상 자연스럽다
+    - 종결 조건: prj3 에서 hook 을 지운 뒤 설치 스크립트로 복원 → `python3 sh/precommit-tagcheck.py` rc=0 재현
+
 ## Issue480: sanitize 가 문서 속 마커 *예시* 를 실제 redaction 마커로 센다 — forward 통째 중단 ✅ 완료 (<commit>)
 * 목적: [`fpm-sanitize.sh`](scripts/fpm-sanitize.sh) 가 `grep -cF` 로 `<!-- fpm_private -->` 개수를 세는데, **그 마커를 설명하는 문서**의 백틱 인라인 코드까지 실제 마커로 센다. 불균형 판정 → fail-loud `exit 2` → `set -euo pipefail` 인 `do_forward` 가 그 자리에서 죽는다. **지금 미러 반출이 통째로 막혀 있다**
 * 구현 명세:
@@ -1369,6 +1613,14 @@ source_sha: 196f26a2539becb71e75377e41d128cc5c6f7791a100470578db65d554f747ae
     - i18n `bots.idle`·`bots.today*` ko/en 추가. 카운트 배지는 `0/13` 로 유지해 총원이 보이게 한다
     - 검증: `test_fbot_bots.py` 에 `bots_today` 집계·store 혼재·미설치 graceful 회귀 추가 + 기존 hub 테스트 무회귀
 
+## Issue399: hub 홈 핀봇 현황 카드 + badge `icon` 필드 ✅
+* 목적: prj3#Issue438 ③ 의 prj1 접점. 핀봇 조직이 돌아도 사용자가 **세션에 물어야만** 진행 상황을 알 수 있었다. hub 홈에 활성 봇 카드를 상시 표시해 "묻지 않아도 보이게" 한다
+* depends: prj3#Issue438
+* 구현 명세:
+    - fbot 미설치 환경 graceful — DB 부재·`bot` 테이블 부재는 "봇 0" 과 동일 취급(섹션 미표시). 경로는 `AOA_MEMORY_DIR`·`FBOT_ROOT` env 우선 + `$HOME` 상대(개인 경로 하드코딩 금지)
+    - **조용한 실패 금지**: DB 손상·WAL `-shm` 생성 불가 등 진짜 오류는 `bots_error` 로 분리 노출. "봇 0" 으로 보이면 봇이 노는 것으로 오독되어 이 기능의 목적을 정면으로 배반한다
+    - 검증: 회귀 `services/hub/test_fbot_bots.py` 27항(경로 탈출·스킴 가드·폴백 우선순위·오류 분리·멱등) + hub 테스트 18종 무회귀
+
 ## Issue398: projects-map 메모(note 박스) 실시간 인라인 편집 — 저장 버튼 없는 초단위 자동 동기화 ✅
 * 목적: `/projects-map` 의 `_note.md` 메모 박스가 읽기 전용(클릭 시 VSCode 오픈)이라 브라우저에서 즉석 수정이 불가. 저장 버튼 없이 타이핑만으로 서버(`_note.md`)에 자동 반영되게 한다
 * 구현 명세:
@@ -1390,6 +1642,14 @@ source_sha: 196f26a2539becb71e75377e41d128cc5c6f7791a100470578db65d554f747ae
     - 판정: `REPO_DIR` 이 `$FPM_BASE` 이면서 `~/.claude` 에 라이브 SCAR 가 존재하면 **저작 머신**
     - 저작 머신에서는 플러그인 설치 항목을 FAIL → **skip 또는 WARN** 으로 강등 (소비자 머신 동작은 불변)
     - 검증: host 에서 `bash sh/check.sh` rc=0 · 소비자 머신(host·host)에서는 기존대로 FAIL 유지
+
+## Issue390: 백업 선행 게이트 — 이력 시크릿 148건의 성격 판정 ✅
+* 목적: [`scripts/fpm-backup-repo.sh`](scripts/fpm-backup-repo.sh) 가 Issue387(비공개) 백업을 **차단**하고 있다. 148건이 진짜 자격증명인지 식별자인지 성격이 갈리는데, 판정 없이는 회전도 강행도 못 한다. 유출은 비가역이라 추정으로 넘길 수 없다
+* 구현 명세:
+    - 판정 3분기: ⓐ 진짜 자격증명 → **회전 먼저**, 그 다음 백업 ⓑ 식별자·오탐 → 스캐너 allowlist 에 등재해 신호를 정상화 ⓒ repo 에 있으면 안 되는 산출물 → gitignore + 이력 제거
+    - `.playwright-mcp/` 는 ⓒ 가 유력 — 다만 **이력 제거는 파괴적**(filter-repo/BFG)이므로 사용자 승인 필수
+    - ⚠️ 값 출력 금지 — 유형·경로·건수만 다룬다 (opus-4-8-execution-rules §5 민감정보)
+    - 게이트를 `--no-scan` 으로 우회하는 것은 **판정이 아니라 회피**다. 유형별 결론을 먼저 낸 뒤에만 허용
 
 ## Issue396: `fpm-backup-repo.sh` 의 push 가 git 문법상 성립하지 않는다 — `--all --tags` 동시 사용 불가 ✅
 * 목적: prj3 배선 중 실측된 버그. [`scripts/fpm-backup-repo.sh`](scripts/fpm-backup-repo.sh) 의 `--push` 경로가 **한 번도 성공할 수 없는 명령**을 쓰고 있었다. 백업 실행체 자신이 백업을 못 하는 상태였다 (prj3 위임)

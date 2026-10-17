@@ -26,6 +26,9 @@ import re
 import sys
 
 MODE_D_MARKER = "htm-form:auto:v1:BEGIN"
+# prj3#Issue1004 ③ — hub AskUserQuestion 가로채기 deny 지시문의 머리말(hooks/fpm-ask-intercept.sh). 가로채기 절차 §3 이 채팅에 평문 안내를
+#   요구하므로, 같은 턴에 이 결과가 있으면 그 평문 질문은 정당하다 — 판정을 여기 한 곳에서 면제한다(가드 쪽에 분기를 두지 않는다)
+INTERCEPT_MARKER = "AskUserQuestion 가로채기"
 SHORT_MAX = 800
 
 # 결정 요청 문구 (anchor). hub 선택지 자동 승격 조건 3 + binary confirm 보강 (Issue72) + 봇 몸체 표현 (Issue749)
@@ -38,6 +41,10 @@ DECISION_PHRASES = (
     "확인이 필요", "정해 주", "결정해 주", "알려 주", "알려주",
 )
 
+# Issue983 — `?` 없이 «결정 부탁드립니다» 로 끝나는 봇 몸체의 결정 요청. 이 문구가 있고 **그 뒤** 번호 선택지 2~4개가 있을 때만 질문
+#   (앞쪽 변경 내용 bullet 이 선택지로 세지지 않게 문구 뒤만 본다). 완료 보고·단순 인사는 문구나 선택지가 없어 걸리지 않는다
+ASK_PHRASES = ("결정 부탁", "결정해 주세요", "결정해주세요", "선택 부탁", "판단 부탁", "답 부탁")
+_NUM_OPT = re.compile(r"(?m)^\s*\d+[.)]\s+(\S.*)$")
 _LINE_OPT = re.compile(r"(?m)^\s*(?:\d+[.)]|[A-Da-d][.)]|[-*])\s+(\S.*)$")
 # 한 줄 안 번호 선택지 — `1)` 형만 본다(`1.` 은 버전·문장 번호와 겹친다)
 _INLINE_OPT = re.compile(r"(?:(?<=\s)|^)([1-9])\)\s*")
@@ -72,6 +79,32 @@ def last_assistant_text(path):
     return last
 
 
+def turn_intercepted(path):
+    """마지막 사용자 입력(도구 결과가 아닌 user 행) 이후 구간에 hub 가로채기 tool_result 가 있으면 True."""
+    hit = False
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as f:
+            for ln in f:
+                if '"user"' not in ln:
+                    continue
+                try:
+                    d = json.loads(ln)
+                except ValueError:
+                    continue
+                if d.get("type") != "user":
+                    continue
+                c = (d.get("message") or {}).get("content")
+                blocks = [b for b in c if isinstance(b, dict)] if isinstance(c, list) else []
+                results = [b for b in blocks if b.get("type") == "tool_result"]
+                if not results:
+                    hit = False          # 새 사용자 입력 — 이전 턴의 가로채기는 면제 아님
+                elif any(INTERCEPT_MARKER in json.dumps(b.get("content"), ensure_ascii=False) for b in results):
+                    hit = True
+    except OSError:
+        return False
+    return hit
+
+
 def _inline_options(text):
     """한 줄 안 `1) A 2) B` — 1부터 연속 번호 2~4개일 때만 선택지로 본다."""
     for line in text.splitlines():
@@ -100,6 +133,12 @@ def judge(text):
         return out
     analysis = re.sub(r"```.*?```", "", stripped, flags=re.DOTALL)
     if "?" not in analysis and "？" not in analysis:
+        low = analysis.lower()
+        at = max((low.rfind(p) for p in ASK_PHRASES), default=-1)
+        if at >= 0:
+            tail = [m.group(1).strip() for m in _NUM_OPT.finditer(analysis[at:])]
+            if 2 <= len(tail) <= 4:
+                out.update(question=True, signal="strong", options=tail)
         return out
     low = analysis.lower()
     if not any(p in low for p in DECISION_PHRASES):
@@ -152,6 +191,8 @@ def main(argv=None):
     a = ap.parse_args(argv)
     text = a.text if a.text is not None else (
         last_assistant_text(a.transcript) if a.transcript and os.path.exists(a.transcript) else "")
+    if a.transcript and os.path.exists(a.transcript) and turn_intercepted(a.transcript):
+        text = ""            # prj3#Issue1004 ③ — 같은 턴 가로채기 안내문은 평문 질문이 아니다
     v = judge(text)
     shadow(text, v)          # prj3#Issue863_11 — 분리 기동, 판정 불변
     if a.json:

@@ -71,6 +71,9 @@ cases:
       . "$REPO_DIR/sh/fbot-python.sh"
       _d="$(mktemp -d)"; trap 'rm -rf "$_d"' EXIT
       printf '#!/bin/sh\nexit 49\n' > "$_d/python3"; chmod +x "$_d/python3"
+      # Issue642 — 해석 순서에서 `python3.14` 가 `python3` 앞에 선다. 이 머신에 실물 python3.14 가 있으면
+      #   스텁 python3 에 닿기 전에 채택돼 «스텁 탈락» 을 못 본다 — 그래서 python3.14 도 죽는 스텁으로 가린다.
+      printf '#!/bin/sh\nexit 49\n' > "$_d/python3.14"; chmod +x "$_d/python3.14"
       _real="$(command -v python3 || command -v python)"
       printf '#!/bin/sh\nexec %s "$@"\n' "$_real" > "$_d/python"; chmod +x "$_d/python"
       PATH="$_d:$PATH" bash -c '. "$0/sh/fbot-python.sh"
@@ -78,6 +81,165 @@ cases:
         case "$FBOT_PY_REJECT" in *"python3(실행 불가)"*) echo rejected ;; *) echo "MISS:$FBOT_PY_REJECT" ;; esac
         "${FBOT_PY_ARGV[@]}" -c "print(\"ok\")"' "$REPO_DIR"
     expect: contains:rejected
+
+  # ── Python 3.14 기준 (Issue642 · prj55#Issue23 / prj3#Issue1117) ─────────────────
+  #   기준(하한)은 3.14 — 상한은 두지 않는다(3.15+ 통과). 기본은 «경고만»이다: fg1(Ubuntu 22.04)은
+  #   26.04 전환 전까지 맨 `python3` 가 3.10 이라 하한을 막으면 해석 경로 전체가 멈춘다.
+  #   정지(rc 2)는 FBOT_PY_ENFORCE=1 로 켠다. 가짜 인터프리터는 `sys.version_info` 질의에만 버전을 답한다.
+  - id: python-baseline-prefers-314
+    desc: 맨 `python3` 가 3.10 이어도 `python3.14` 가 있으면 그것을 고른다 (fg1 22.04 모사)
+    why: |
+      Issue642 — 해석 순서는 FBOT_PYTHON → python3.14 → py -3.14 → python3 → python → py -3.
+      이름이 minor 를 보장하는 `python3.14` 가 맨 `python3` 보다 앞서야, 22.04 처럼 `python3` 가
+      3.10 인 호스트에서도 기준 인터프리터가 잡힌다.
+    run: |
+      _d="$(mktemp -d)"; trap 'rm -rf "$_d"' EXIT
+      mk() { printf '#!/bin/sh\ncase "$*" in *version_info*) echo %s ;; esac\nexit 0\n' "$2" > "$_d/$1"; chmod +x "$_d/$1"; }
+      mk python3.14 3.14; mk python3 3.10
+      _b="$(command -v bash)"
+      env -i PATH="$_d" "$_b" -c '. "$0/sh/fbot-python.sh"
+        fbot_resolve_python || { echo "rc=$?"; exit 1; }
+        echo "picked:$FBOT_PY_DISPLAY v=$FBOT_PY_VERSION below=${FBOT_PY_BELOW:-0}"' "$REPO_DIR"
+    expect: contains:picked:python3.14 v=3.14 below=0
+
+  - id: python-baseline-warns-below
+    desc: 후보가 전부 3.14 미만이면 기본은 «경고만» — 채택하되 원인 문구를 낸다 (침묵 TypeError 아님)
+    why: |
+      Issue642 — 맥 CLT `python3`(3.9)를 잡아도 지금까지는 아무 말 없이 통과했고, 3.9 에서는 `X | None`
+      주석이 hook 진입 시 TypeError 로 죽었다. 하한 미달은 원인 문구로 드러나야 한다.
+      기본값을 정지가 아닌 경고로 둔 이유는 fg1(3.10)·OS python 경로가 멈추지 않게 하려는 것이다.
+    run: |
+      _d="$(mktemp -d)"; trap 'rm -rf "$_d"' EXIT
+      printf '#!/bin/sh\ncase "$*" in *version_info*) echo 3.9 ;; esac\nexit 0\n' > "$_d/python3"; chmod +x "$_d/python3"
+      _b="$(command -v bash)"
+      env -i PATH="$_d" "$_b" -c '. "$0/sh/fbot-python.sh"
+        fbot_resolve_python; rc=$?
+        echo "rc=$rc below=${FBOT_PY_BELOW:-0} warn=$FBOT_PY_WARN"' "$REPO_DIR"
+    expect: contains:rc=0 below=1 warn=python3 =
+
+  - id: python-baseline-warn-text
+    desc: 경고 문구가 해석된 경로·버전·기준·조치를 모두 담는다
+    why: |
+      Issue642 — «python3 = <경로> <버전> — 기준 3.14, PATH 확인 또는 FBOT_PYTHON 지정».
+      경로·버전이 없으면 어느 python 이 잡혔는지 알 수 없고(prj3#Issue1109 의 OpenClaw 3.9.6 사고),
+      조치가 없으면 사람이 다음 행동을 모른다.
+    run: |
+      _d="$(mktemp -d)"; trap 'rm -rf "$_d"' EXIT
+      printf '#!/bin/sh\ncase "$*" in *version_info*) echo 3.9 ;; esac\nexit 0\n' > "$_d/python3"; chmod +x "$_d/python3"
+      _b="$(command -v bash)"
+      env -i PATH="$_d" "$_b" -c '. "$0/sh/fbot-python.sh"
+        fbot_resolve_python
+        case "$FBOT_PY_WARN" in
+          *"$FBOT_PY_PATH"*"3.9"*"기준 3.14"*"FBOT_PYTHON"*) echo textok ;;
+          *) echo "MISS:$FBOT_PY_WARN" ;;
+        esac' "$REPO_DIR"
+    expect: contains:textok
+
+  - id: python-baseline-enforce-stops
+    desc: FBOT_PY_ENFORCE=1 이면 하한 미달에서 rc 2 로 정지하고 원인 문구를 FBOT_PY_WARN 에 남긴다
+    why: |
+      Issue642 구현 명세 1 — 3.9 인 PATH 에서 «원인 문구로 정지». 전 호스트 기본으로 켜면 fg1(3.10)이
+      멈추므로 정지는 선택(opt-in)이다. 켰을 때 rc 2(미달)와 rc 1(전멸)이 구분돼야 호출부가 안내를 가른다.
+    run: |
+      _d="$(mktemp -d)"; trap 'rm -rf "$_d"' EXIT
+      printf '#!/bin/sh\ncase "$*" in *version_info*) echo 3.9 ;; esac\nexit 0\n' > "$_d/python3"; chmod +x "$_d/python3"
+      _b="$(command -v bash)"
+      env -i PATH="$_d" FBOT_PY_ENFORCE=1 "$_b" -c '. "$0/sh/fbot-python.sh"
+        fbot_resolve_python; rc=$?
+        echo "rc=$rc argv=${#FBOT_PY_ARGV[@]} below=${FBOT_PY_BELOW:-0}"' "$REPO_DIR"
+    expect: contains:rc=2 argv=0 below=1
+
+  - id: python-baseline-accepts-newer
+    desc: 3.15 이상은 경고 없이 통과한다 (상한을 두지 않는다)
+    why: |
+      Issue642 · prj3#Issue1117 — 상한을 두면 brew 업그레이드 한 번이 전 hook 정지가 된다.
+      단일 minor 고정은 설치 정책(prj55 setup·venv)의 몫이다.
+    run: |
+      _d="$(mktemp -d)"; trap 'rm -rf "$_d"' EXIT
+      printf '#!/bin/sh\ncase "$*" in *version_info*) echo 3.15 ;; esac\nexit 0\n' > "$_d/python3"; chmod +x "$_d/python3"
+      _b="$(command -v bash)"
+      env -i PATH="$_d" FBOT_PY_ENFORCE=1 "$_b" -c '. "$0/sh/fbot-python.sh"
+        fbot_resolve_python; rc=$?
+        echo "rc=$rc v=$FBOT_PY_VERSION below=${FBOT_PY_BELOW:-0} warn=[${FBOT_PY_WARN:-}]"' "$REPO_DIR"
+    expect: contains:rc=0 v=3.15 below=0 warn=[]
+
+  - id: python-baseline-checks-fbot-python
+    desc: FBOT_PYTHON 도 버전을 확인한다 (이름이 버전을 보장하지 않는다)
+    why: |
+      Issue642 — 버전 확인 대상은 이름이 minor 를 보장하지 않는 후보(FBOT_PYTHON·python3·python)다.
+      사용자가 못박은 경로가 3.9 라면 그 사실이 경고에 드러나야 한다.
+    run: |
+      _d="$(mktemp -d)"; trap 'rm -rf "$_d"' EXIT
+      printf '#!/bin/sh\ncase "$*" in *version_info*) echo 3.9 ;; esac\nexit 0\n' > "$_d/mypy"; chmod +x "$_d/mypy"
+      _b="$(command -v bash)"
+      env -i PATH="$_d" FBOT_PYTHON="$_d/mypy" "$_b" -c '. "$0/sh/fbot-python.sh"
+        fbot_resolve_python; rc=$?
+        echo "rc=$rc below=${FBOT_PY_BELOW:-0} v=$FBOT_PY_VERSION"' "$REPO_DIR"
+    expect: contains:rc=0 below=1 v=3.9
+
+  - id: python-baseline-zsh-pinned
+    desc: zsh 에서 source 해도 `python3.14` 를 고른다 (배열 첨자·단어 분리가 bash 와 같아야 한다)
+    why: |
+      Issue642 — /hub·fpm-hub-server 의 셸 블록은 Claude 의 Bash 도구(macOS 기본 zsh)에서 fbot-python.sh 를 source 한다.
+      zsh 는 배열이 1부터라 `${argv[0]}` 가 빈 값이 돼 이름이 버전을 박은 후보(python3.14·py -3.14)가 전부
+      «없음» 으로 건너뛰어졌고, 맨 python3 가 3.10 인 호스트에서는 미달 인터프리터가 잡혔다(jm4 실측: zsh=python3, bash=python3.14).
+      zsh 가 없는 머신(Git Bash 등)은 이 케이스의 대상이 아니다.
+    run: |
+      _z="$(command -v zsh)" || { echo "skip — zsh 없음"; exit 0; }
+      _d="$(mktemp -d)"; trap 'rm -rf "$_d"' EXIT
+      mk() { printf '#!/bin/sh\ncase "$*" in *version_info*) echo %s ;; esac\nexit 0\n' "$2" > "$_d/$1"; chmod +x "$_d/$1"; }
+      mk python3.14 3.14; mk python3 3.10
+      env -i PATH="$_d" "$_z" -fc '. "$0/sh/fbot-python.sh"
+        fbot_resolve_python || { echo "rc=$?"; exit 1; }
+        echo "picked:$FBOT_PY_DISPLAY v=$FBOT_PY_VERSION below=${FBOT_PY_BELOW:-0}"' "$REPO_DIR"
+    expect: contains:picked:python3.14 v=3.14 below=0
+
+  # ── hub 기동 경로의 인터프리터 (Issue642 남은 것 ②③) ─────────────────────────────
+  #   hub 를 띄우는 곳(sh/fpm-hub-paths.sh 를 source 하는 start·restart·deploy 재기동 + 소비자 전파 페이로드)이
+  #   해석 단일 지점(sh/fbot-python.sh)을 거치지 않고 맨 `python3` 를 직접 불렀다 → fg1 22.04 에서 3.14 가 있어도 3.10 기동.
+  - id: hub-paths-enforce-no-bypass
+    desc: FBOT_PY_ENFORCE=1 로 해석기가 정지하면 fpm-hub-paths 도 멈춘다 — 맨 python3 폴백으로 우회하지 않는다
+    why: |
+      Issue642 남은 것 ② — 종전 fpm-hub-paths.sh 는 fbot_resolve_python 이 rc 2(하한 미달 정지)를 내도
+      `for py in python3 python` 폴백이 같은 3.9 를 다시 집어 상태 경로를 냈다. 정지가 무력화된다.
+      폴백은 fbot-python.sh 자체가 없는 옛 설치에서만 의미가 있다.
+    run: |
+      _d="$(mktemp -d)"; trap 'rm -rf "$_d"' EXIT
+      printf '#!/bin/sh\ncase "$*" in *version_info*) echo 3.9 ;; *--print-state-dir*) echo /x/claude-htm-server ;; esac\nexit 0\n' > "$_d/python3"; chmod +x "$_d/python3"
+      ln -s "$(command -v dirname)" "$_d/dirname"
+      _b="$(command -v bash)"
+      env -i PATH="$_d" FBOT_PY_ENFORCE=1 FPM_HUB_REPO="$REPO_DIR" "$_b" -c '. "$0/sh/fpm-hub-paths.sh" 2>/dev/null; rc=$?
+        echo "rc=$rc state=[${HUB_STATE_DIR:-}]"' "$REPO_DIR"
+    expect: contains:rc=1 state=[]
+
+  - id: hub-paths-exposes-python
+    desc: fpm-hub-paths 가 해석한 인터프리터를 HUB_PY_ARGV 로 내놓는다 — hub 기동부는 그것으로 띄운다 (fg1 22.04 모사)
+    why: |
+      Issue642 남은 것 ③ — hub start·restart(/hub·fpm-hub-server)와 deploy 재기동(fpm-sync.sh)은 상태 경로를 얻으려
+      fpm-hub-paths.sh 를 이미 source 한다. 그 해석 결과를 기동에도 써야 판정이 한 곳에 남는다.
+    run: |
+      _d="$(mktemp -d)"; trap 'rm -rf "$_d"' EXIT
+      mk() { printf '#!/bin/sh\ncase "$*" in *version_info*) echo %s ;; *--print-state-dir*) echo /x/claude-htm-server ;; esac\nexit 0\n' "$2" > "$_d/$1"; chmod +x "$_d/$1"; }
+      mk python3.14 3.14; mk python3 3.10
+      ln -s "$(command -v dirname)" "$_d/dirname"
+      _b="$(command -v bash)"
+      env -i PATH="$_d" FPM_HUB_REPO="$REPO_DIR" "$_b" -c '. "$0/sh/fpm-hub-paths.sh" 2>/dev/null || exit 1
+        echo "hubpy:${HUB_PY_ARGV[*]##*/} n=${#HUB_PY_ARGV[@]}"' "$REPO_DIR"
+    expect: contains:hubpy:python3.14 n=1
+
+  - id: propagate-payload-hub-python
+    desc: 소비자 전파 페이로드가 hub 재기동 인터프리터를 해석 단일 지점으로 고르고 FPMR 줄로 남긴다
+    why: |
+      Issue642 남은 것 ③ — 페이로드는 `command -v python3` 로 hub 를 띄웠다. fg1 22.04 는 맨 python3 가 3.10 이라
+      3.14 가 깔려 있어도 구버전으로 기동된다. 어떤 python 으로 띄웠는지가 propagate 증거 로그에 보여야 한다.
+    run: |
+      _d="$(mktemp -d)"; trap 'rm -rf "$_d"' EXIT
+      mk() { printf '#!/bin/sh\ncase "$*" in *version_info*) echo %s ;; esac\nexit 0\n' "$2" > "$_d/$1"; chmod +x "$_d/$1"; }
+      mk python3.14 3.14; mk python3 3.10
+      _b="$(command -v bash)"
+      env -i PATH="$_d" HOME="$_d" FPM_CLONE="$REPO_DIR" FPM_PROP_NO_INSTALL=1 FPM_PROP_WAIT=0 FPM_PROP_RESTART_CMD=: \
+        "$_b" "$REPO_DIR/scripts/fpm-consumer-propagate-payload.sh" 2>/dev/null | grep '^FPMR hub_python' || echo "MISS"
+    expect: contains:FPMR hub_python=python3.14
 
   - id: mcp-registration-validated
     desc: 깨진 MCP 등록(스크립트 부재)을 무효로 판정한다
@@ -254,3 +416,12 @@ cases:
       _fpm_pgrep "$m" >/dev/null && echo "FAIL 종료후생존 backend=$b" || echo "ok backend=$b"
       rm -rf "$d"
     expect: contains:ok
+
+  - id: pm-group-contract
+    desc: pm-group 해석기·groups.yml 계약 (조회·거부·쓰기 검증·실 그룹 회귀)
+    why: |
+      Issue627 — fapp 구성원이 자리마다 6·8·9개로 갈려 있었다. 번호 사본 대신 groups.yml 한 곳을
+      참조하고, 없는 이름·id 는 침묵하지 않고 비0 으로 드러나야 한다.
+    run: |
+      python3 "$REPO_DIR/tdd/cases/test_pm_group.py" | tail -1
+    expect: contains:PASS

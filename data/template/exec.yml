@@ -1,0 +1,11 @@
+# 빌드·실행 머신 선언 — 스키마 정본: ~/_git/___common/_doc_arch/exec-host.md
+# 공개 repo 는 커밋하지 않는다(.git/info/exclude).
+prj: {{prj}}
+status: draft        # 명령이 첫 실행으로 확인되면 active
+host: jma            # jma | jm4 | follow
+sync: null           # sync-jma 타깃 (판정 불가 시 null)
+build:               # 비움 = fail-loud — 실제 명령으로 채울 것
+run:
+test:
+playlist:
+release:

@@ -789,6 +789,11 @@ HTML_HEAD = """<!doctype html>
   #note ul { list-style: disc; padding-left: 1.3rem; margin: 0.25rem 0; }
   #note li { margin: 0.15rem 0; }
   #note.placeholder { color: #999; font-style: italic; }
+  /* Issue616: 접힌 메모 요약줄 */
+  details.note-wrap { margin: 0 0 1rem; }
+  details.note-wrap > summary { cursor: pointer; font-size: 0.75rem; color: #8a6d0b; }
+  details.note-wrap > summary small { color: #999; }
+  details.note-wrap > #note { margin-top: 0.4rem; }
   #note:focus { outline: 1px dashed #c9a227; outline-offset: 2px; }
   /* Issue398: 편집 순간 왼쪽 금색 바가 사라지고(syncing), 서버 동기화 완료 1초 뒤
      다시 나타난다 — 바 복귀 = 저장됨. '.' 입력은 즉시 동기화·즉시 복귀.
@@ -810,8 +815,8 @@ HTML_HEAD = """<!doctype html>
      머리(Main Map)는 목적의 뿌리라 테두리 없이 맨 위에 둔다(Issue577 과 같은 이유). */
   .map-box { margin: 0 0 1rem; padding: 0.35rem 0.7rem 0.5rem; border: 1px solid #d8d8d0;
     border-radius: 8px; }
-  .map-box.map-head { border: none; padding: 0; }
-  .map-box-title { margin: 0 0 0.2rem; font-size: 0.95rem; color: #555; }
+  .map-box.map-head { border: 1px solid #d8d8d0; padding: 0.35rem 0.7rem 0.5rem; }
+  .map-box-title { margin: 0 0 0.2rem; font-size: 0.95rem; font-weight: 600; color: #555; cursor: pointer; }
   @media (prefers-color-scheme: dark) {
     body { background: #1e1e1e; color: #ddd; }
     #note { background: #26230f; border-left-color: #a8871f; }
@@ -1129,6 +1134,239 @@ CLICK_SCRIPT_TMPL = """
 #   브라우저 DOM 에 남아 있으므로 다음 입력·pagehide sendBeacon 이 재시도한다.
 #   직렬화는 렌더 DOM → md 역변환(li → "* ", 그 외 블록 → 평문 줄) — read_note 가
 #   지원하는 부분집합(bullet·문단)과 정확히 왕복한다.
+# Issue631: «프로젝트 그룹» 패널 — `data/groups.yml` 현황(= `/fpm-group --list`)을 맵 위에서 보고 팝업으로
+#   추가·수정·삭제한다. 데이터는 맵 재빌드와 무관하게 열 때마다 `GET /projects-map/groups` 로 읽고, 쓰기는
+#   `POST /projects-map/groups` → `sh/pm-group`(스키마 검증) 경유다 — 이 파일이 groups.yml 을 직접 읽지 않는다.
+GROUPS_PANEL_HTML = """
+<style>
+  #groups-panel { margin: 1rem 0; padding: 0.6rem 1.1rem 0.9rem; border: 1px solid #d8d8d0;
+    border-radius: 8px; background: #f6f9fc; }
+  #groups-panel > summary { cursor: pointer; font-weight: 600; }
+  #groups-panel .g-bar { display: flex; align-items: center; gap: 0.6rem; margin: 0.6rem 0; }
+  #groups-panel .g-add { border: 1px solid #8aa; background: #fff; border-radius: 6px;
+    padding: 0.2rem 0.7rem; cursor: pointer; font-size: 0.9rem; }
+  #groups-panel .g-card { border: 1px solid #d3dbe3; border-radius: 8px; padding: 0.5rem 0.8rem;
+    margin: 0.5rem 0; background: #fff; }
+  #groups-panel .g-head { display: flex; align-items: baseline; gap: 0.6rem; }
+  #groups-panel .g-name { font-weight: 700; }
+  #groups-panel .g-desc { color: #666; font-size: 0.9rem; flex: 1; }
+  #groups-panel .g-btn { border: none; background: none; cursor: pointer; font-size: 1rem; padding: 0 0.2rem; }
+  #groups-panel .g-members { display: flex; flex-wrap: wrap; gap: 0.3rem 0.5rem; margin-top: 0.35rem; }
+  .g-chip { display: inline-flex; align-items: center; gap: 0.25rem; font-size: 0.85rem; padding: 0.05rem 0.5rem;
+    border: 1px solid #c9d3dc; border-radius: 999px; background: #eef3f8; color: inherit; text-decoration: none; }
+  #groups-panel .g-msg { color: #888; font-size: 0.9rem; }
+  #group-modal { border: 1px solid #aaa; border-radius: 10px; padding: 1rem 1.2rem; width: min(560px, 92vw);
+    background: #fff; color: #222; }
+  #group-modal::backdrop { background: rgba(0,0,0,0.4); }
+  #group-modal h2 { margin: 0 0 0.6rem; font-size: 1.1rem; }
+  #group-modal label { display: block; font-size: 0.85rem; margin: 0.6rem 0 0.15rem; color: #555; }
+  #group-modal input[type=text] { width: 100%; box-sizing: border-box; padding: 0.3rem 0.5rem; font-size: 0.95rem; }
+  #group-modal .gm-sel { list-style: none; margin: 0.2rem 0; padding: 0; max-height: 180px; overflow: auto;
+    border: 1px solid #ddd; border-radius: 6px; }
+  #group-modal .gm-sel li { display: flex; align-items: center; gap: 0.3rem; padding: 0.15rem 0.5rem; font-size: 0.9rem; }
+  #group-modal .gm-sel li span { flex: 1; }
+  #group-modal .gm-pick { max-height: 150px; overflow: auto; border: 1px solid #ddd; border-radius: 6px; margin-top: 0.2rem; }
+  #group-modal .gm-pick div { padding: 0.12rem 0.5rem; font-size: 0.88rem; cursor: pointer; }
+  #group-modal .gm-pick div:hover { background: #eef3f8; }
+  #group-modal .gm-err { color: #c0392b; font-size: 0.88rem; white-space: pre-wrap; min-height: 1.2em; margin-top: 0.5rem; }
+  #group-modal .gm-act { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.6rem; }
+  #group-modal button { padding: 0.25rem 0.9rem; cursor: pointer; }
+  @media (prefers-color-scheme: dark) {
+    #groups-panel { background: #1c2128; border-color: #3a3b40; }
+    #groups-panel .g-add { background: #2a2f36; color: #ddd; border-color: #556; }
+    #groups-panel .g-card { background: #22262d; border-color: #3a3b40; }
+    #groups-panel .g-desc { color: #aaa; }
+    .g-chip { background: #2a3340; border-color: #44505e; }
+    #group-modal { background: #24262b; color: #ddd; border-color: #555; }
+    #group-modal label { color: #aaa; }
+    #group-modal .gm-sel, #group-modal .gm-pick { border-color: #444; }
+    #group-modal .gm-pick div:hover { background: #2a3340; }
+  }
+</style>
+<details id="groups-panel" open>
+  <summary>👥 프로젝트 그룹 <span id="g-count"></span></summary>
+  <div class="g-bar"><button type="button" class="g-add" id="g-add">＋ 그룹 추가</button>
+    <span class="g-msg" id="g-msg">불러오는 중…</span></div>
+  <div id="g-list"></div>
+</details>
+<dialog id="group-modal">
+  <h2 id="gm-title">그룹</h2>
+  <label for="gm-name">이름 (소문자 kebab, 프로젝트명과 겹치지 않게)</label>
+  <input type="text" id="gm-name" autocomplete="off">
+  <label for="gm-desc">설명</label>
+  <input type="text" id="gm-desc" autocomplete="off">
+  <label>구성원 — 순서가 의미를 가짐 (2개 이상)</label>
+  <ul class="gm-sel" id="gm-sel"></ul>
+  <input type="text" id="gm-filter" placeholder="프로젝트 검색해서 추가… (번호·이름)" autocomplete="off">
+  <div class="gm-pick" id="gm-pick"></div>
+  <div class="gm-err" id="gm-err"></div>
+  <div class="gm-act"><button type="button" id="gm-cancel">취소</button>
+    <button type="button" id="gm-save">저장</button></div>
+</dialog>
+"""
+
+GROUPS_SCRIPT = """
+<script>
+(function () {
+  var panel = document.getElementById('groups-panel');
+  if (!panel) return;
+  var $ = function (id) { return document.getElementById(id); };
+  var state = { groups: {}, projects: {} }, editing = null, sel = [];
+  var modal = $('group-modal');
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+  function pname(id) { return state.projects[id] || '?'; }
+
+  function post(body) {
+    return fetch('/projects-map/groups', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); });
+  }
+
+  function render() {
+    var names = Object.keys(state.groups), list = $('g-list');
+    list.textContent = '';
+    $('g-count').textContent = '(' + names.length + ')';
+    $('g-msg').textContent = names.length ? '' : '그룹이 없습니다';
+    names.forEach(function (n) {
+      var g = state.groups[n], card = el('div', 'g-card'), head = el('div', 'g-head');
+      head.appendChild(el('span', 'g-name', n));
+      head.appendChild(el('span', 'g-desc', g.desc || ''));
+      var eb = el('button', 'g-btn', '✎'); eb.type = 'button'; eb.title = '수정';
+      eb.onclick = function () { openModal(n); };
+      var db = el('button', 'g-btn', '🗑'); db.type = 'button'; db.title = '삭제';
+      db.onclick = function () { removeGroup(n); };
+      head.appendChild(eb); head.appendChild(db);
+      var mem = el('div', 'g-members');
+      (g.members || []).forEach(function (id) {
+        var a = el('a', 'g-chip', '#' + id + ' ' + pname(id));
+        a.href = '/open-prj?id=' + encodeURIComponent(id);
+        mem.appendChild(a);
+      });
+      card.appendChild(head); card.appendChild(mem); list.appendChild(card);
+    });
+  }
+
+  function load() {
+    return fetch('/projects-map/groups').then(function (r) { return r.json(); }).then(function (j) {
+      if (j.error) { $('g-msg').textContent = '⚠️ ' + j.error; return; }
+      state = j; render();
+    }).catch(function () { $('g-msg').textContent = '⚠️ hub 서버 미응답'; });
+  }
+
+  function renderSel() {
+    var ul = $('gm-sel'); ul.textContent = '';
+    sel.forEach(function (id, i) {
+      var li = el('li'); li.appendChild(el('span', null, '#' + id + ' ' + pname(id)));
+      [['↑', -1], ['↓', 1]].forEach(function (d) {
+        var b = el('button', null, d[0]); b.type = 'button';
+        b.onclick = function () {
+          var j = i + d[1]; if (j < 0 || j >= sel.length) return;
+          var t = sel[i]; sel[i] = sel[j]; sel[j] = t; renderSel();
+        };
+        li.appendChild(b);
+      });
+      var x = el('button', null, '×'); x.type = 'button';
+      x.onclick = function () { sel.splice(i, 1); renderSel(); renderPick(); };
+      li.appendChild(x); ul.appendChild(li);
+    });
+    if (!sel.length) ul.appendChild(el('li', null, '구성원 없음 — 아래에서 검색해 추가'));
+  }
+
+  function renderPick() {
+    var q = $('gm-filter').value.trim().toLowerCase(), box = $('gm-pick'); box.textContent = '';
+    Object.keys(state.projects).forEach(function (id) {
+      if (sel.indexOf(id) >= 0) return;
+      var label = '#' + id + ' ' + state.projects[id];
+      if (q && label.toLowerCase().indexOf(q) < 0) return;
+      var d = el('div', null, label);
+      d.onclick = function () { sel.push(id); renderSel(); renderPick(); };
+      box.appendChild(d);
+    });
+  }
+
+  function openModal(name) {
+    editing = name;
+    var g = name ? state.groups[name] : { desc: '', members: [] };
+    $('gm-title').textContent = name ? '그룹 수정 — ' + name : '그룹 추가';
+    $('gm-name').value = name || ''; $('gm-name').readOnly = !!name;
+    $('gm-desc').value = g.desc || '';
+    sel = (g.members || []).slice(); $('gm-filter').value = ''; $('gm-err').textContent = '';
+    renderSel(); renderPick();
+    if (modal.showModal) modal.showModal(); else modal.setAttribute('open', '');
+  }
+  function closeModal() { if (modal.close) modal.close(); else modal.removeAttribute('open'); }
+
+  function save() {
+    var body = { op: editing ? 'set' : 'add', name: $('gm-name').value.trim(),
+                 desc: $('gm-desc').value.trim(), members: sel };
+    $('gm-err').textContent = '';
+    post(body).then(function (r) {
+      if (!r.ok) { $('gm-err').textContent = r.j.error || '저장 실패'; return; }
+      closeModal(); load();
+    }).catch(function () { $('gm-err').textContent = 'hub 서버 미응답'; });
+  }
+
+  function removeGroup(name) {
+    if (!window.confirm('그룹 "' + name + '" 을(를) 삭제할까요?\\n구성원 프로젝트는 그대로 남고 그룹 정의만 사라집니다.')) return;
+    post({ op: 'rm', name: name }).then(function (r) {
+      if (!r.ok) { window.alert('삭제 실패: ' + (r.j.error || '')); return; }
+      load();
+    });
+  }
+
+  $('g-add').onclick = function () { openModal(null); };
+  $('gm-cancel').onclick = closeModal;
+  $('gm-save').onclick = save;
+  $('gm-filter').addEventListener('input', renderPick);
+  load();
+})();
+</script>
+"""
+
+# Issue632: 접힘·펼침 상태 영속 — 페이지의 모든 <details>(그룹·다이어그램 박스·미할당·숨김·텍스트 트리)를 localStorage 에 기억한다.
+#   mermaid 는 display:none 안에서 크기를 못 재므로, 렌더가 끝난 뒤(또는 8초 뒤) 저장된 «접힘» 을 적용한다.
+DETAILS_PERSIST_SCRIPT = """
+<script>
+(function () {
+  var KEY = 'pmap.details.v1', saved = {}, applying = true;
+  try { saved = JSON.parse(localStorage.getItem(KEY) || '{}') || {}; } catch (e) { saved = {}; }
+  function keyOf(d) {
+    if (d.id) return '#' + d.id;
+    if (d.dataset.map) return 'map:' + d.dataset.map;
+    var s = d.querySelector(':scope > summary');
+    var up = d.parentElement && d.parentElement.closest ? d.parentElement.closest('details') : null;
+    return (up ? keyOf(up) + '>' : '') + 'sum:' + (s ? s.textContent.trim().slice(0, 60) : '?');
+  }
+  function all() { return Array.prototype.slice.call(document.querySelectorAll('details')); }
+  function apply() {
+    all().forEach(function (d) {
+      var k = keyOf(d);
+      if (k in saved) d.open = !!saved[k];
+    });
+    applying = false;
+  }
+  document.addEventListener('toggle', function (e) {
+    var d = e.target;
+    if (applying || !d || d.tagName !== 'DETAILS') return;
+    saved[keyOf(d)] = d.open;
+    try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch (err) { /* 저장 불가 환경 — 상태만 비영속 */ }
+  }, true);
+  var t0 = Date.now();
+  (function wait() {
+    var pend = document.querySelectorAll('pre.mermaid:not([data-processed])').length;
+    if ((pend === 0 && Date.now() - t0 > 300) || Date.now() - t0 > 8000) { apply(); return; }
+    setTimeout(wait, 150);
+  })();
+})();
+</script>
+"""
+
 NOTE_EDIT_SCRIPT = """
 <script>
 (function () {
@@ -1431,9 +1669,16 @@ def read_note(root):
     # Issue398: 박스 자체가 편집면 — 타이핑만으로 hub POST /projects-map/note 에 자동 저장.
     attrs = ('contenteditable="true" spellcheck="false" '
              'title="직접 수정 — 자동 저장 (_note.md)"')
+    # Issue616: 메모는 «이 PC 사용자의 데이터» 다 — 제품 표면 최상단에 펼쳐 두지 않고 접어서 출처를 밝힌다.
+    #   #note(편집면)는 <details> 안에 그대로 있어 자동 저장 JS(getElementById('note'))는 영향받지 않는다.
+    def wrap(inner):
+        return ('<details class="note-wrap"><summary>📝 내 메모 '
+                '<small>(이 PC 전용 · _note.md — 공개 미러에는 실리지 않음)</small></summary>'
+                + inner + '</details>')
+
     if not raw:
-        return (f'<div id="note" class="placeholder" {attrs}>'
-                f'{html.escape(NOTE_PLACEHOLDER)}</div>',
+        return (wrap(f'<div id="note" class="placeholder" {attrs}>'
+                     f'{html.escape(NOTE_PLACEHOLDER)}</div>'),
                 NOTE_PLACEHOLDER)
 
     parts, bullets = [], []
@@ -1455,7 +1700,7 @@ def read_note(root):
             flush()
             parts.append(f"<p>{html.escape(s)}</p>")
     flush()
-    return (f'<div id="note" {attrs}>' + "".join(parts) + "</div>", raw)
+    return (wrap(f'<div id="note" {attrs}>' + "".join(parts) + "</div>"), raw)
 
 
 def main():
@@ -1524,11 +1769,12 @@ def main():
     canvas_html = []
     for name, src in boxes:
         head = name == MAIN_MAP
+        title = "프로젝트 다이어그램" if head else name
         canvas_html.append(
-            f'<section class="map-box{" map-head" if head else ""}" id="{box_anchor(name)}" '
+            f'<details class="map-box{" map-head" if head else ""}" id="{box_anchor(name)}" open '
             f'data-map="{html.escape(name)}">'
-            + ("" if head else f'<h3 class="map-box-title">{html.escape(name)}</h3>')
-            + f'<pre class="mermaid">{html.escape(src)}</pre></section>')
+            f'<summary class="map-box-title">{html.escape(title)}</summary>'
+            + f'<pre class="mermaid">{html.escape(src)}</pre></details>')
     tree_html = "".join(
         f'<details open><summary>{html.escape(name)}</summary><ul>'
         + "".join(render_node(n, table) for n in roots) + "</ul></details>"
@@ -1586,10 +1832,10 @@ def main():
             items.append(f'<li><a href="/open-prj?id={html.escape(pid)}">{nm}</a> '
                          f'<span class="id-tag">#{html.escape(pid)}</span>'
                          f'<span class="sess-slot" data-prj="{html.escape(pid)}"></span></li>')
-        misc_html = ('<div id="misc"><b>미할당 ' + str(len(missing)) + '건</b> — '
+        misc_html = ('<details id="misc" open><summary><b>미할당 ' + str(len(missing)) + '건</b></summary>'
                      "아직 어느 목적에도 붙지 않은 프로젝트입니다. 결함이 아니라 "
                      "<b>목적 미할당 신호</b>이므로, 목적이 생기면 맵에 넣고 없으면 그대로 둡니다."
-                     f'<ul class="misc-list">{"".join(items)}</ul></div>')
+                     f'<ul class="misc-list">{"".join(items)}</ul></details>')
 
     # Issue574: 숨김은 접힘 목록으로만 — 그래프에서는 뺐지만 «어디 갔나» 를 찾을 수 있게 링크는 남긴다
     hidden_html = ""
@@ -1624,6 +1870,7 @@ def main():
         + (f" · 숨김 {len(hidden)}건" if hidden else "")
         + " · 노드 클릭 → VSCode 로 열기 · 🗂️ 버튼 → Projects.md · note 박스 직접 수정 → _note.md 자동 저장</div>",
         note_html,                      # Issue305: 부제 바로 아래 고정 — 열자마자 보이게
+        GROUPS_PANEL_HTML,              # Issue631: 프로젝트 그룹 패널 + 추가·수정·삭제 팝업
         "<!-- PROJECTS-MAP:MERMAID -->",
         '<div id="map-canvas">',
         *canvas_html,
@@ -1638,6 +1885,8 @@ def main():
         "<!-- /PROJECTS-MAP:TREE -->",
         "</details>",
         render_session_script(table),   # Issue299: 활성 세션 오버레이 (</body> 앞)
+        GROUPS_SCRIPT,                  # Issue631
+        DETAILS_PERSIST_SCRIPT,         # Issue632: 접힘 상태 영속
         POPUP_SCRIPT_TMPL,              # Issue371: 노드 hover → 이슈맵 진입 팝업
         render_click_script(note_href, projects_href),  # note/Projects.md 클릭 오픈
         NOTE_EDIT_SCRIPT,               # Issue398: note 인라인 편집 — 초단위 자동 동기화

@@ -23,6 +23,9 @@
 #   공통 옵션: --target prj<N> — 이 항목을 수행할 프로젝트 (prj3#Issue770). 넛지 범위·기동 cwd 의 1순위 근거.
 #             생략하면 message 첫 prjN 토큰 → source 프로젝트 순으로 판정한다(aoa-mq-lib.sh aoa_mq_target).
 #             번호는 ~/_git/___pm/projects/{N} 에 있어야 한다 — 매핑 없는 번호는 거부(오타가 곧 방송이 되므로)
+#   공통 옵션: --subject prj<N> — 이 항목이 **무엇에 관한 것인지**(subject_prj) 명시 (prj3#Issue1092 ④).
+#             본문 머리에 prjN 토큰이 없는 총괄 [컨펌] 상신도 hub «프로젝트» 열에서 주제를 잃지 않게 한다.
+#             message 는 건드리지 않는다. 머리 추정보다 우선. `prj` 접두 생략 허용(9t) — 검증은 --target 과 같은 규칙
 #   공통 옵션: --json — 성공 출력을 산문 대신 1줄 JSON 으로 (prj3#Issue808 · 명세 prj3#Issue811)
 #             {"id","path","type","kind","due","source","target"} — 호출자가 경로를 splitext 로 자르지 않게 한다
 #             (cwd 이름의 `.`(`.claude`)에서 잘못 잘리던 함정). 실패 경로(stderr+exit≠0)는 불변
@@ -62,7 +65,8 @@ JQ=$(command -v jq || echo /usr/bin/jq)
 [ -d "$QUEUE_DIR" ] || die "큐 디렉토리 없음: $QUEUE_DIR — aoa-mq 미초기화. AOA_MQ_DIR 확인 또는 'mkdir -p' 로 생성"
 
 MESSAGE="" DUE="" WATCH="" WATCH_PANE="" ALERT="" SOURCE="" ONRESP="" KIND="" RESCHED=""
-FROM_BOT="" TO_BOT="" JOB="" JOB_ARG="" TARGET_PRJ="" OUT_JSON=""
+FROM_BOT="" TO_BOT="" JOB="" JOB_ARG="" TARGET_PRJ="" SUBJECT_PRJ="" OUT_JSON=""
+DEDUP_KEY="" DEDUP_GROUP="" REASK=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --message)     MESSAGE="${2:-}"; shift 2 ;;
@@ -79,6 +83,10 @@ while [ $# -gt 0 ]; do
     --job)         JOB="${2:-}";     shift 2 ;;
     --arg)         JOB_ARG="${2:-}"; shift 2 ;;
     --target)      TARGET_PRJ="${2:-}"; shift 2 ;;
+    --subject)     SUBJECT_PRJ="${2:-}"; shift 2 ;;
+    --key)         DEDUP_KEY="${2:-}"; shift 2 ;;
+    --group)       DEDUP_GROUP="${2:-}"; shift 2 ;;
+    --reask)       REASK=1;            shift 1 ;;
     --json)        OUT_JSON=1;       shift 1 ;;
     *) die "알 수 없는 인자: $1" ;;
   esac
@@ -90,7 +98,8 @@ if [ -n "$RESCHED" ]; then
   # 등록 전용 인자와 섞이면 의도가 갈린다 — 조용히 무시하지 않고 즉시 거절
   for pair in "message:$MESSAGE" "watch:$WATCH" "watch-pane:$WATCH_PANE" \
               "alert:$ALERT" "kind:$KIND" "on-response:$ONRESP" \
-              "from-bot:$FROM_BOT" "to-bot:$TO_BOT" "job:$JOB" "target:$TARGET_PRJ"; do
+              "from-bot:$FROM_BOT" "to-bot:$TO_BOT" "job:$JOB" "target:$TARGET_PRJ" \
+              "key:$DEDUP_KEY" "group:$DEDUP_GROUP" "reask:$REASK"; do
     [ -n "${pair#*:}" ] && die "--reschedule 과 --${pair%%:*} 는 함께 쓸 수 없음 (재스케줄은 due_ts 만 바꾼다)"
   done
   [ -n "$DUE" ] || die "--reschedule 에는 --due 필수 (허용: +Nd | YYYY-MM-DD | YYYY-MM-DDTHH:MM[:SS])"
@@ -203,11 +212,13 @@ mode_count=0
 [ "$mode_count" -eq 1 ] || die "--due | --watch <topic> | --watch-pane <tmux_target> | --alert 중 정확히 하나 필수"
 [ -z "$SOURCE" ] && SOURCE="claude@$(basename "$PWD")"
 
+# 생성 키·대상 판정은 라이브러리 한 곳에서 한다(prj3#Issue1046).
+# shellcheck source=/dev/null
+. "$(dirname "$0")/aoa-mq-lib.sh"
+
 # ── 대상 prj (prj3#Issue770) — 형식 + 매핑 검증. 조용히 받아 두면 오타 항목이 «대상 미상» 으로
 #   떨어져 전 세션 넛지(방송)가 된다 — 이 이슈가 고치려는 바로 그 증상이다.
 if [ -n "$TARGET_PRJ" ]; then
-  # shellcheck source=/dev/null
-  . "$(dirname "$0")/aoa-mq-lib.sh"
   aoa_mq_check_target "$TARGET_PRJ" || die "--target $MQ_TV_ERR"   # 검증 단일 지점 — retarget 과 같은 규칙(Issue925)
 fi
 
@@ -245,7 +256,7 @@ if [ "$_is_confirm" = 1 ]; then
     if [ "$hit" != 1 ] || [ -n "$_pre" ]; then
       echo "aoa-mq-enqueue ERROR: [컨펌] 은 H 등급 전용이다 — 메시지 **맨 앞**에 '[컨펌] [H:<분류>]' 가 필요하다 (받음: '${tag:-태그 없음}'${_pre:+ · 앞 장식 '$_pre'})." >&2
       echo "  H 분류: $cats" >&2
-      echo "  H 가 아니면 mq 에 올리지 않는다 — C(다른 prj 이슈 등록·배분·매뉴얼·내부 정책)는 총괄 전결, L(자기 prj 내부)은 팀장 전결." >&2
+      echo "  H 가 아니면 mq 에 올리지 않는다 — C(다른 prj 업무 접수·시스템 이슈 등록·배분·매뉴얼·내부 정책)는 총괄 전결, L(자기 prj 내부)은 팀장 전결." >&2
       echo "  결정 후 기록: ~/.claude/hooks/fbot-state.py decide --by <bot> --grade C|L --topic … --decision …" >&2
       echo "  권한표: ~/.claude/_doc_arch/decision-authority.md" >&2
       exit 5
@@ -288,6 +299,61 @@ else
   TYPE="scheduled"; STATUS="pending"; SIGNAL=""; TOPIC=""
 fi
 
+# ── 생성 정책: 키·묶음·결정 재상신 (prj3#Issue1046) ───────────────────
+MQ_POLICY="$MQ_DIR/policy.yml"
+_mq_policy() { sed -n "s/^$1:[[:space:]]*//p" "$MQ_POLICY" 2>/dev/null | tail -1 | tr -d '\r'; }
+DEDUP_MODE="$(_mq_policy dedup_mode)"
+case "$DEDUP_MODE" in merge|reject|off) ;; *) DEDUP_MODE=merge ;; esac
+CONFIRM_DAYS="$(_mq_policy confirm_decided_days)"
+case "$CONFIRM_DAYS" in ''|*[!0-9]*) CONFIRM_DAYS=14 ;; esac
+CONFIRM_KEY_MODE="$(_mq_policy confirm_key)"
+case "$CONFIRM_KEY_MODE" in auto|require) ;; *) CONFIRM_KEY_MODE=auto ;; esac
+
+MQ_DK=""; MQ_DG=""; MQ_DK_LEGACY=""; MQ_DK_CAT=""
+if [ "$TYPE" = scheduled ] || [ "$TYPE" = alert ]; then
+  # 잡은 호출자가 명시 키를 준 경우에만 중복 판정한다.
+  if [ -z "$JOB" ] || [ -n "$DEDUP_KEY" ]; then
+    aoa_mq_dedup_key "$MESSAGE" "$DEDUP_KEY" "$DEDUP_GROUP" "${DUE_TS:0:10}" \
+      "$TARGET_PRJ" "$SOURCE" "$_is_confirm" "$TYPE"
+  fi
+fi
+
+# (Issue1060_1) 무엇에 관한 항목인지 — hub «프로젝트» 열이 target(처리자)·source(보낸 곳) 대신 이것을 보인다
+aoa_mq_subject_prj "$MESSAGE"
+# (prj3#Issue1092 ④) 명시 --subject 는 머리 추정보다 우선 — 본문은 건드리지 않고 필드로만 보존한다
+if [ -n "$SUBJECT_PRJ" ]; then
+  MQ_SUBJ="prj${SUBJECT_PRJ#prj}"
+  aoa_mq_check_target "$MQ_SUBJ" || die "--subject $MQ_TV_ERR"
+fi
+
+if [ "$_is_confirm" = 1 ] && [ "$CONFIRM_KEY_MODE" = require ] && [ -z "$MQ_DK" ]; then
+  die "confirm_key=require — [컨펌] 항목은 자동 키가 없으므로 --key <k> 가 필요하다"
+fi
+
+# 최근 confirmed 결정은 같은 질문을 다시 만들지 않는다. 조건이 바뀐 재질의만 --reask 로 통과한다.
+#   (Issue1059) 자동 키가 이슈+H 분류 단위라 같은 이슈의 다른 H 분류 결정은 막지 않는다. 키에 H 분류가 없던 시절
+#   (…:confirm)에 confirmed 된 항목은 소급 변경하지 않으므로, 그 항목 message 의 첫 `[컨펌] [H:<분류>]` 가
+#   이번 요청과 같을 때만 «종전 키» 로도 차단한다(전환기 하위 호환 — 다른 분류면 통과).
+if [ "$_is_confirm" = 1 ] && [ -n "$MQ_DK" ] && [ -z "$REASK" ] && [ -d "$MQ_DIR/queue_done" ]; then
+  CONFIRM_CUTOFF=$(date -v "-${CONFIRM_DAYS}d" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null) \
+    || CONFIRM_CUTOFF=$(date -d "-${CONFIRM_DAYS} days" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null) \
+    || die "confirm_decided_days 기준 시각 계산 실패: $CONFIRM_DAYS"
+  for _done in "$MQ_DIR/queue_done"/*.json; do
+    [ -f "$_done" ] || continue
+    if "$JQ" -e --arg k "$MQ_DK" --arg lk "$MQ_DK_LEGACY" --arg cat "$MQ_DK_CAT" --arg c "$CONFIRM_CUTOFF" '
+      .status=="confirmed" and ((.ack_ts // "") >= $c) and
+      (.dedup_key==$k or
+       ($lk != "" and .dedup_key==$lk and
+        ((([.message // "" | scan("^\\s*\\[컨펌\\]\\s*\\[H:([^\\]]*)\\]")][0][0] // "") | gsub(" "; "")) == $cat)))' \
+      "$_done" >/dev/null 2>&1; then
+      _done_id=$("$JQ" -r '.id // "?"' "$_done" 2>/dev/null)
+      _done_ack=$("$JQ" -r '.ack_ts // "?"' "$_done" 2>/dev/null)
+      echo "aoa-mq-enqueue ERROR: 최근 결정된 [컨펌] 이 이미 있다: ${_done_id} (ack_ts=${_done_ack}) — 다시 물으려면 --reask" >&2
+      exit 7
+    fi
+  done
+fi
+
 # JSON 은 jq -n 으로 생성 (이스케이프 보장 — 즉흥 heredoc 조립 금지)
 # from_bot/to_bot (prj3#Issue436_3 s4): 지정 시만 최상위 필드로 기록 — 미지정 시 필드 자체 미기록
 # (null 기록 금지). 부재 = 비봇(세션·사람) 발신 해석의 근거이므로 빈 값·null 을 남기면 판정이 흐려진다.
@@ -298,6 +364,7 @@ build_json() { # $1=id
     --arg status "$STATUS" --arg source "$SOURCE" \
     --arg fbot "$FROM_BOT" --arg tbot "$TO_BOT" \
     --arg job "$JOB" --arg jarg "$JOB_ARG" --arg tgt "$TARGET_PRJ" \
+    --arg dkey "$MQ_DK" --arg dgroup "$MQ_DG" --arg subj "${MQ_SUBJ:-}" \
     --argjson onresp "${ONRESP:-null}" \
     '{id:$id, type:$type, kind:$kind, created_ts:$created,
       due_ts:(if $due=="" then null else $due end),
@@ -309,8 +376,86 @@ build_json() { # $1=id
      + (if $tbot=="" then {} else {to_bot:$tbot} end)
      + (if $job=="" then {} else {job:$job} end)
      + (if $jarg=="" then {} else {job_arg:$jarg} end)
-     + (if $tgt=="" then {} else {target:$tgt} end)'
+     + (if $tgt=="" then {} else {target:$tgt} end)
+     + (if $subj=="" then {} else {subject_prj:$subj} end)
+     + (if $dkey=="" then {} else {dedup_key:$dkey} end)
+     + (if $dgroup=="" then {} else {group:$dgroup} end)'
 }
+
+# 키가 있으면 «같은 키 미종결 항목» 을 찾아 병합한다. 락은 **기존 파일을 고칠 때만** 잡는다 —
+#   tick 은 질의 ask-wait 동안 .tick.lock 을 최대 3분 쥐므로(ask_wait_secs), 등록 전체를 락에 걸면
+#   그 창의 등록이 전부 실패한다(구현 직후 실측). 병합용 락을 못 잡으면 병합을 포기하고 같은 키로
+#   새로 만든다 — 중복 1건이 등록 유실보다 낫고, 다음 등록은 둘 중 먼저 찾은 쪽에 붙는다.
+#   락 안에서 대상이 아직 queue/ 에 있는지 다시 본다 — tick 이 그새 종결(mv)했으면 되살리지 않는다.
+MQ_LOCK_OWNED=0
+_mq_find_key() { # → EXISTING (빈 값 = 없음)
+  EXISTING=""
+  for _queued in "$QUEUE_DIR"/*.json; do
+    [ -f "$_queued" ] || continue
+    if "$JQ" -e --arg k "$MQ_DK" '.dedup_key==$k' "$_queued" >/dev/null 2>&1; then
+      EXISTING="$_queued"
+      return 0
+    fi
+  done
+}
+EXISTING=""
+if [ -n "$MQ_DK" ] && [ "$DEDUP_MODE" != off ]; then
+  _mq_find_key
+  if [ -n "$EXISTING" ] && [ "$DEDUP_MODE" = reject ]; then
+    echo "aoa-mq-enqueue ERROR: 같은 키의 미종결 항목이 이미 있다: $("$JQ" -r '.id // "?"' "$EXISTING" 2>/dev/null) (key=${MQ_DK})" >&2
+    exit 6
+  fi
+  if [ -n "$EXISTING" ]; then
+    _lock_reentrant="${AOA_MQ_LOCK_HELD:-}"
+    # shellcheck source=/dev/null
+    . "$(dirname "$0")/aoa-mq-lock.sh"
+    if aoa_mq_lock_try "${AOA_MQ_MERGE_LOCK_WAIT:-5}"; then
+      [ -z "$_lock_reentrant" ] && MQ_LOCK_OWNED=1
+      [ -f "$EXISTING" ] || _mq_find_key                   # 락 대기 중 종결됐으면 다시 찾는다
+    else
+      echo "aoa-mq-enqueue WARN: tick 락 점유(${MQ_LOCK_AGE}m) — 병합 대신 같은 키로 새 항목 등록 (key=${MQ_DK})" >&2
+      EXISTING=""
+    fi
+  fi
+  if [ -n "$EXISTING" ]; then
+    EXISTING_ID=$("$JQ" -r '.id // "?"' "$EXISTING" 2>/dev/null)
+    MERGE_TMP=$(mktemp "$QUEUE_DIR/.merge.XXXXXX") || die "병합 temp 생성 실패: $QUEUE_DIR"
+    MERGE_HEAD="${MESSAGE:0:200}"
+    "$JQ" --arg ts "$NOW_ISO" --arg source "$SOURCE" --arg msg "$MESSAGE" \
+      --arg head "$MERGE_HEAD" --arg due "$DUE_TS" '
+        .merged = ((.merged // []) + [{ts:$ts, source:$source, message:$msg,
+          due:(if $due=="" then null else $due end)}])
+        | .message = ((.message // "") + "\n➕ 병합 " + $ts + " " + $source + ": " + $head)
+        | if $due!="" and .status=="pending" and (((.due_ts // "")=="") or $due < .due_ts)
+          then .due_ts=$due else . end' "$EXISTING" > "$MERGE_TMP" \
+      || { rm -f "$MERGE_TMP"; die "병합 JSON 갱신 실패: $EXISTING"; }
+    "$JQ" -e --arg k "$MQ_DK" '.id and .message and .dedup_key==$k and (.merged|type)=="array"' \
+      "$MERGE_TMP" >/dev/null 2>&1 \
+      || { rm -f "$MERGE_TMP"; die "병합본 사후 검증 실패 — 원본 보존: $EXISTING"; }
+    mv "$MERGE_TMP" "$EXISTING" || { rm -f "$MERGE_TMP"; die "병합 원자 교체 실패: $EXISTING"; }
+
+    MERGED_N=$("$JQ" -r '.merged | length' "$EXISTING")
+    MERGED_DUE=$("$JQ" -r '.due_ts // ""' "$EXISTING")
+    MERGED_TYPE=$("$JQ" -r '.type // ""' "$EXISTING")
+    MERGED_KIND=$("$JQ" -r '.kind // ""' "$EXISTING")
+    MERGED_TARGET=$("$JQ" -r '.target // ""' "$EXISTING")
+    DIGEST="$(dirname "$0")/aoa-mq-digest.sh"
+    [ -x "$DIGEST" ] && "$DIGEST" >/dev/null 2>&1 || true
+    [ "$MQ_LOCK_OWNED" = 1 ] && aoa_mq_lock_release
+
+    if [ -n "$OUT_JSON" ]; then
+      "$JQ" -nc --arg id "$EXISTING_ID" --arg path "$EXISTING" --arg type "$MERGED_TYPE" \
+        --arg kind "$MERGED_KIND" --arg due "$MERGED_DUE" --arg source "$SOURCE" \
+        --arg tgt "$MERGED_TARGET" --arg key "$MQ_DK" \
+        '{id:$id,path:$path,type:$type,kind:$kind,
+          due:(if $due=="" then null else $due end),source:$source,
+          target:(if $tgt=="" then null else $tgt end),key:$key,merged:true}'
+    else
+      echo "enqueued: $EXISTING (merged into $EXISTING_ID, key=$MQ_DK, 병합 ${MERGED_N}건)"
+    fi
+    exit 0
+  fi
+fi
 
 # id 채번 + temp→mv 원자 등장 (충돌 시 seq 재시도, 최대 999)
 DEST=""
@@ -343,10 +488,11 @@ if [ -n "$OUT_JSON" ]; then
   # 기계 파싱용 1줄 (prj3#Issue808) — id 는 채번값 그대로(= basename 에서 `.json` 만 벗긴 값).
   #   호출자가 경로를 자르지 않게 하는 것이 목적이므로 산문과 병행 출력하지 않는다(1줄 계약).
   "$JQ" -nc --arg id "$ID" --arg path "$DEST" --arg type "$TYPE" --arg kind "$KIND" \
-    --arg due "$DUE_TS" --arg source "$SOURCE" --arg tgt "$TARGET_PRJ" \
+    --arg due "$DUE_TS" --arg source "$SOURCE" --arg tgt "$TARGET_PRJ" --arg key "$MQ_DK" \
     '{id:$id, path:$path, type:$type, kind:$kind,
       due:(if $due=="" then null else $due end), source:$source,
-      target:(if $tgt=="" then null else $tgt end)}' \
+      target:(if $tgt=="" then null else $tgt end),
+      key:(if $key=="" then null else $key end), merged:false}' \
     || die "JSON 출력 실패 (jq) — 등록은 완료: $DEST"
 else
 case "$TYPE" in
@@ -359,3 +505,5 @@ fi
 # 읽기용 digest(Aoa-mq-list.md) 재생성 — 등록 즉시 현황 반영 (prj3#Issue20). 실패해도 등록 자체는 성공 유지
 DIGEST="$(dirname "$0")/aoa-mq-digest.sh"
 [ -x "$DIGEST" ] && "$DIGEST" >/dev/null 2>&1 || true
+if [ "$MQ_LOCK_OWNED" = 1 ]; then aoa_mq_lock_release; fi
+exit 0

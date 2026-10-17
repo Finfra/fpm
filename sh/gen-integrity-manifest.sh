@@ -94,10 +94,23 @@ EXCLUDE_SUFFIX = ('.pyc', '.pyo', '.log', '.tmp')
 #      **소스(prj1) 추적 파일**이다. 한쪽에만 추적되는 파일(ex: prj1 미추적인데 마켓엔
 #      커밋된 README)은 해시에서 빠진다. 방향은 **과소 포함**이라 거짓 경고를 만들지 않고
 #      검사 범위만 좁아진다 — 거짓 FAIL 보다 과소 검사가 안전하다는 판단. 🚧 정밀화 여지
+
+# Issue619 — git 호출 env 판정 단일 지점. pre-commit 훅은 linked worktree 에서 `GIT_DIR` 만 넘기고
+#   `GIT_WORK_TREE` 는 넘기지 않는다 → `git -C <bundle>` 이 번들을 작업트리 루트로 간주해 저장소 루트 기준
+#   경로를 내고, 번들 상대 경로와 하나도 안 맞아 전 항목 REMOVED(«removed 204») 였다.
+#   위치 결정 변수는 지워 `-C` 경로로 재발견하게 하고, `GIT_INDEX_FILE` 은 **절대경로로 고정해 유지**한다 —
+#   커밋 중인 인덱스(부분 커밋·`issue-tx commit` 의 임시 인덱스 포함)가 추적 판정 근거이고, 상대경로면 `-C` 로 깨진다.
+def _git_env():
+    env = {k: v for k, v in os.environ.items()
+           if k not in ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_PREFIX')}
+    if env.get('GIT_INDEX_FILE'):
+        env['GIT_INDEX_FILE'] = os.path.abspath(env['GIT_INDEX_FILE'])
+    return env
+
 def tracked_set():
     try:
         r = subprocess.run(['git', '-C', bundle, 'ls-files', '-z'],
-                           capture_output=True, timeout=30)
+                           capture_output=True, timeout=30, env=_git_env())
         if r.returncode != 0:
             return None
         names = [n.decode() for n in r.stdout.split(b'\x00') if n]
@@ -145,7 +158,7 @@ except Exception:
 def git_sha():
     try:
         return subprocess.run(['git', '-C', repo, 'rev-parse', 'HEAD'],
-                              capture_output=True, text=True, timeout=10).stdout.strip() or 'unknown'
+                              capture_output=True, text=True, timeout=10, env=_git_env()).stdout.strip() or 'unknown'
     except Exception:
         return 'unknown'
 

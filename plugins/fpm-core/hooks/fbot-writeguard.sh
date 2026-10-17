@@ -83,9 +83,9 @@ fi
 #   python 기동은 역할이 매니저로 판정된 **뒤**다 — 워커의 `git status` 마다 fork 하지 않는다
 #   판정 불가는 **통과**다 — 가드가 일반 작업을 막는 피해가 우회보다 크다(fail-open 유지).
 # 관할 예외 — 매니저가 써도 되는 것. 파일 도구(`[[ =~ ]]`)와 Bash 대상(shcmd `--allow`)이 **이 한 정규식**을 쓴다
-#   (ERE·python 공통 문법). 등록·보고·조직 선언·sleep 로그 + 산출물 아닌 세션 기록(auto-memory·그 동반 정보 파일)
+#   (ERE·python 공통 문법). 등록(Issue.md·업무 접수 Request.md — Issue1096)·보고·조직 선언·sleep 로그 + 산출물 아닌 세션 기록(auto-memory·그 동반 정보 파일)
 #   폴더 자체도 예외다(`mkdir -p _doc_work/report` — codex 2차 O4). 대상은 shcmd 가 `./`·`~`·`..` 를 정규화한 뒤 본다
-_ALLOW_RE='(^|/)Issue(_OLD)?\.md$|(^|/)_doc_work/(htm|report)(/|$)|(^|/)\.claude/data/fbot/org(/|$)|^data/fbot/org(/|$)|(^|/)\.sleep-log(/|$)|/\.claude/projects/[^/]+/memory(/|$)|/\.claude/(learning_log|knowledge_base)\.md$'
+_ALLOW_RE='(^|/)Issue(_OLD)?\.md$|(^|/)Request\.md$|(^|/)_doc_work/request_OLD\.md$|(^|/)_doc_work/(htm|report)(/|$)|(^|/)\.claude/data/fbot/org(/|$)|^data/fbot/org(/|$)|(^|/)\.sleep-log(/|$)|/\.claude/projects/[^/]+/memory(/|$)|/\.claude/(learning_log|knowledge_base)\.md$|/\.claude/\.hub-(active|ask-timeout)(/|$)'
 _wa=0; _wv=0; _appr=0; _cmd=""
 case "$_tool" in
   Edit|Write|NotebookEdit|MultiEdit) ;;
@@ -274,7 +274,7 @@ if [ "$_axis" = "분업" ]; then
   _acts="$(sqlite3 "$_DB" "SELECT COUNT(*) FROM job WHERE owner='$_BOTQ' AND kind='fbot_solo' AND created_at >= strftime('%s','now') - $_win AND COALESCE(CASE WHEN json_valid(payload) THEN json_extract(payload,'\$.approved_by') END,'') <> ''" 2>/dev/null)" || exit 0
   [ "${_acts:-0}" = "0" ] || exit 0             # 사람이 승인한 직접 수행 → 통과
   _where="본사"; [ -n "$_prj" ] && _where="prj$_prj"
-  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"[핀봇 비실행 원칙 — %s(팀장·%s)] 팀장은 일을 직접 하지 않는다 — 허용은 회의·모색·지시·수령·전달이다(prj3#Issue757). 대상: %s. ① 자리 안의 일은 배분: python3 ~/.claude/hooks/fbot-lead.py dispatch --by %s --role <developer|qa|architect|planner|release|fileops|…> --cwd <prj 경로> --issue Issue<N> → 응답의 next_step 실행(구현은 developer). ② 자리 밖·카탈로그 밖의 일이면 총괄에게 인력 요청(차용·생성) — 그래도 없으면 발굴. ③ 등록(Issue.md)·보고(_doc_work/{htm,report})·조직 선언·임시 경로·issue-tx 커밋은 자유다."}}\n' \
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"[핀봇 비실행 원칙 — %s(팀장·%s)] 팀장은 일을 직접 하지 않는다 — 허용은 회의·모색·지시·수령·전달이다(prj3#Issue757). 대상: %s. ① 자리 안의 일은 배분: python3 ~/.claude/hooks/fbot-lead.py dispatch --by %s --role <developer|qa|architect|planner|release|fileops|…> --cwd <prj 경로> --issue Issue<N> → 응답의 next_step 실행(구현은 developer). ② 자리 밖·카탈로그 밖의 일이면 총괄에게 인력 요청(차용·생성) — 그래도 없으면 발굴. ③ 등록(Issue.md)·보고(_doc_work/{htm,report})·조직 선언·임시 경로·issue-tx 커밋은 자유다 — 커밋은 python3 ~/.claude/sh/issue-tx.py commit [--issues N] -m … <경로> (맨 git commit 은 이 가드가 막는다 · 정상 경계가 아니니 사람·의뢰 세션에 커밋을 넘기지 않는다)."}}\n' \
     "$_BOT" "$_where" "$_file" "$_BOT"
   exit 0
 fi

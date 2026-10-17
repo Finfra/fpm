@@ -35,7 +35,8 @@ description: 메시지 큐 AOA — "N일 후 작업" 예약 리마인드·장기
     - 멈춘(paused) 잡을 지목하면 실행하지 않고 `job_result=paused` + 사유를 남겨 `done_unacked`(조용히 삼키지 않는다). 긴 잡은 그동안 tick 을 점유한다 — 상한은 잡 선언의 `timeout`
     - 설계: [`_doc_arch/schedule-arch.md`](../../_doc_arch/schedule-arch.md) "큐 --job"
 * `--target prj<N>` (prj3#Issue770): 이 항목을 **수행할 프로젝트**. 넛지 범위(그 prj 세션만 본문 주입)·기동 cwd 의 1순위 근거. 번호는 `~/_git/___pm/projects/{N}` 에 있어야 한다(매핑 없으면 거부). 생략하면 message 첫 `prjN` → source 프로젝트 순으로 판정한다
-* `--source` 생략 시 `claude@<cwd basename>` 자동. 성공 시 `enqueued: <경로>` echo, 실패 시 exit≠0 fail-loud
+* `--key <k>` · `--group <g>` · `--reask` (prj3#Issue1046 생성 정책): 같은 키(명시 → 묶음 `group:<g>:<날짜>` → 본문 첫 이슈 토큰 `<target>:<IssueN>` — `[컨펌]` 은 머리 이슈 + 머리 `[H:<분류>]` 까지 `<target>:<IssueN>:confirm:<H분류>` (Issue1059 — 태그 없으면 종전 `…:confirm`) · alert 는 이슈 키 없음)의 미종결 항목이 있으면 병합(`merged[]`·본문 꼬리 1줄·이른 기한). 병합할 때만 `.tick.lock` 을 `AOA_MQ_MERGE_LOCK_WAIT`(기본 5초) 시도하고 못 잡으면 WARN 후 같은 키로 새 항목 — 정책 `dedup_mode` 가 `reject` 면 **exit 6**. 같은 키 `[컨펌]` 이 `confirm_decided_days` 안에 confirmed 면 **exit 7**(`--reask` 로만 재상신). `confirm_key: require` 면 키 없는 `[컨펌]` 거부. 항목에 `dedup_key`·`group` 필드. 설계 [aoa-mq.md](../../_doc_arch/aoa-mq.md) «생성 정책»
+* `--source` 생략 시 `claude@<cwd basename>` 자동. 성공 시 `enqueued: <경로>` echo(병합이면 기존 경로 + `merged into`), 실패 시 exit≠0 fail-loud
 * 글로벌 진입점: 모든 프로젝트에서 `/mq-send` (prj3 `commands/mq-send.md`, prj3#Issue192) — 본 helper 의 얇은 wrapper
 * **재스케줄 (prj5#Issue63)**: `--reschedule <id> --due <+Nd|YYYY-MM-DD|ISO8601>` — 기존 항목의 `due_ts` 만 바꾸는 1급 경로. 등록 인자(`--message`·`--watch`·`--alert`·`--kind`·`--on-response`)와 **배타**이며 `queue/` 항목만 대상. 큐 JSON 을 손으로 고치고 digest 를 따로 돌리는 2단계는 **폐지**됐다
     - `+Nd` 는 **기존 시각을 보존**하고 날짜만 옮긴다(기준일 = `max(오늘, 기존 due 날짜)`). tick 의 `snooze` 도 이 경로에 위임하므로 원래 시각(19:00 등)이 더는 소실되지 않는다

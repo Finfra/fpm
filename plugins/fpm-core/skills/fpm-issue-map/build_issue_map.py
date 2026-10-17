@@ -101,8 +101,50 @@ def resolve_projects_dir():
 # ── 파싱 ────────────────────────────────────────────────────────────────
 # `* depends:` 에서 파싱 불가여도 정상인 토큰 — 선행 없음을 밝히는 표기 (Issue343 P1)
 DEP_NULL_TOKENS = {"없음", "-", "n/a", "none", "na"}
+
+
+def _fbot_prj_mod():
+    """`hooks/lib/fbot-prj.py` 로드 — prj id 판정 단일 지점(prj3#Issue1061)을 **복제하지 않는다**.
+
+    id 는 숫자만이 아니다(`9t`·`42a` — Issue1099 실측: `projects/9t` 를 건너뛰어 `prj9t#…` 이 미확인).
+    정본·prj1 번들 모두 두 단계 위에 `hooks/lib/fbot-prj.py` 가 있다. 부재·로드 실패는 None —
+    숫자 id 만 읽는 종전 동작으로 돌아간다.
+    """
+    path = Path(__file__).resolve().parents[2] / "hooks" / "lib" / "fbot-prj.py"
+    if not path.is_file():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("fbot_prj_for_issue_map", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:
+        return None
+
+
+_PRJ = _fbot_prj_mod()
+
+
+def _is_prj_name(name) -> bool:
+    """`projects/` 파일명이 prj id 인가 — `_hq`·README 를 거른다."""
+    return _PRJ.is_prj_name(name) if _PRJ else str(name).isdigit()
+
+
+def _try_prj(v):
+    """prj 값(10 · "10" · "prj10" · "9t") → 숫자는 int · 접미 id 는 소문자 str. 해석 불가면 None."""
+    if _PRJ:
+        return _PRJ.try_prj(v)
+    if isinstance(v, bool) or v in (None, ""):
+        return None
+    if isinstance(v, int):
+        return v
+    m = re.fullmatch(r"\s*(?:prj)?(\d+)\s*", str(v), re.I)
+    return int(m.group(1)) if m else None
+
+
 # 규약상 유효한 prj 참조 (rules/issue-g.md 규칙2) — 이름 표기는 위반 (Issue343 P2)
-PRJ_REF_RE = re.compile(r"^prj[0-9]+[a-z]?$")
+PRJ_TOKEN = _PRJ.PRJ_TOKEN if _PRJ else r"\d+[a-z]?"
+PRJ_REF_RE = re.compile(rf"^prj{PRJ_TOKEN}$")
 
 
 def split_deps(s: str):
@@ -389,7 +431,7 @@ class CrossResolver:
         if projects_dir is None:
             return out
         for f in sorted(projects_dir.iterdir()):
-            if not f.is_file() or not f.name.isdigit():
+            if not f.is_file() or not _is_prj_name(f.name):
                 continue
             try:
                 raw = f.read_text().strip()
@@ -561,25 +603,15 @@ def _fbot_state_mod():
 
 
 def project_number(root: Path):
-    """root → prj 번호(int). projects 레지스트리에 없으면 None — 호출측은 cwd 대조로 폴백한다."""
+    """root → prj id(숫자 int · 접미 `9t` str). projects 레지스트리에 없으면 None — 호출측은 cwd 대조로 폴백한다."""
     try:
         rr = root.resolve()
         for k, p in CrossResolver._load_projects(resolve_projects_dir()).items():
-            if k.startswith("prj") and k[3:].isdigit() and p.resolve() == rr:
-                return int(k[3:])
+            if k.startswith("prj") and _try_prj(k) is not None and p.resolve() == rr:
+                return _try_prj(k)
     except OSError:
         pass
     return None
-
-
-def _prj_int(v):
-    """`payload.prj` 값(10 · "10" · "prj10") → int. 해석 불가면 None."""
-    if isinstance(v, bool) or v in (None, ""):
-        return None
-    if isinstance(v, int):
-        return v
-    m = re.fullmatch(r"\s*(?:prj)?(\d+)\s*", str(v), re.I)
-    return int(m.group(1)) if m else None
 
 
 def _dispatch_ref(text, prj_field):
@@ -596,9 +628,9 @@ def _dispatch_ref(text, prj_field):
     if not t:
         return None
     prefix = None
-    m = re.match(r"prj(\d+)\s*#\s*", t, re.I)
+    m = re.match(rf"prj({PRJ_TOKEN})\s*#\s*", t, re.I)
     if m:
-        prefix, t = int(m.group(1)), t[m.end():]
+        prefix, t = _try_prj(m.group(1)), t[m.end():]
     m = re.match(r"issue[_-]?(\d+(?:_\d+)*)(?![0-9A-Za-z_])", t, re.I)
     if m:
         num = m.group(1)
@@ -606,7 +638,7 @@ def _dispatch_ref(text, prj_field):
         num = t
     else:
         return None
-    prj = prefix if prefix is not None else _prj_int(prj_field)
+    prj = prefix if prefix is not None else _try_prj(prj_field)
     return prj, f"Issue{num}", prefix is not None
 
 
@@ -985,7 +1017,7 @@ DEEPLINK_JS = """<script>
 (function () {
   function norm(v) {
     try { v = decodeURIComponent(v || ''); } catch (e) { v = v || ''; }
-    v = v.trim().replace(/^prj\\d+#/i, '').replace(/^issue/i, '');
+    v = v.trim().replace(/^prj\\d+[a-z0-9]*#/i, '').replace(/^issue/i, '');
     return /^[0-9A-Za-z_]+$/.test(v) ? v : '';
   }
   function land() {
@@ -2043,19 +2075,11 @@ def main():
         print_dep_warnings(dep_warn)
         return
 
-    # Issue606(A): 잔여 이슈가 하나도 없으면 볼 것이 없다 — 맵을 만들지 않고
-    #   이미 있던 산출물은 지운다. hub 아이콘은 파일 존재로 판정하므로 함께 사라진다.
-    #   `--all` 은 진단용 탈출구라 이 게이트를 우회한다.
+    # Issue1039: 잔여 0건이어도 맵을 쓴다 — hub 카드 배지가 머리 집계(`이슈 N건 · 완료 N건`)를
+    #   읽기 때문이다(prj1#Issue623). 구 동작(Issue606(A))은 맵을 지워 배지가 0 이 아닌 `–` 가 됐다.
+    #   남은 노드가 없으면 GRAPH 블록은 «생략» 안내라 `<svg` 가 없고, hub 🗺️ 아이콘은
+    #   `_issue_map_has_graph` 가 그 기준으로 이미 숨긴다.
     out = root / args.out
-    remaining = [i for i in issues.values() if not i["done"] and not i["ghost"]]
-    if not remaining and not args.all:
-        if out.exists():
-            out.unlink()
-            print(f"🧹 {out} 제거 — 잔여 이슈 0건 (전량 완료). 재생성은 `--all`")
-        else:
-            print("ℹ️ 잔여 이슈 0건 (전량 완료) — 맵을 생성하지 않았습니다. 전량 표시는 `--all`")
-        print_dep_warnings(dep_warn)
-        return
 
     with tempfile.TemporaryDirectory() as td:
         wd = Path(td)

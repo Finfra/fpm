@@ -22,7 +22,7 @@ python3 ~/.claude/hooks/fbot-lead.py dispatch --by fbot-chief-narae --spawn --ro
   --bot-id <PM bot_id> --cwd <prj 경로> --topic "<요청 요지>"
 # ③ --spawn 없이 썼거나 응답이 Agent 형태면 next_step 을 **그대로** 실행 — PM 몸체 스폰 (FBOT_ID 가 출근 훅을 켠다). 프롬프트를 늘리지 말 것:
 #    fpm-do 는 1000바이트 가드가 있어 명세를 프롬프트에 옮겨 적으면 거부된다(2026-09-07 실측 1차 스폰 실패).
-#    명세는 Issue.md 가 정본이고 PM 은 `/issue-fix N` 으로 그것을 읽는다. 승인 주체는 HR 게이트다 —
+#    명세는 Issue.md(시스템 변경) 또는 Request.md(업무 접수, `fpm-do <prj> "Req<N> 처리"` — Issue1096)가 정본이고 PM 은 `/issue-fix N` 으로 그것을 읽는다. 승인 주체는 HR 게이트다 —
 #    fpm-do 는 FBOT_ID 스폰에서 사람 컨펌을 묻지 않는다(사용자 결정 2026-09-06). 플래그를 더 붙이지 않는다
 # ④ 완료 수령 — sweep 이 done 을 판정·통지한다. 직접 워커에게 가지 않는다
 python3 ~/.claude/hooks/fbot-lead.py sweep
@@ -60,7 +60,7 @@ python3 ~/.claude/hooks/fbot-inbox.py reply --id <인력 요청 id> --status don
 정본: [decision-authority.md](../../../../_doc_arch/decision-authority.md). 판정 한 줄 *«밖에서 보이거나 되돌릴 수 없으면 H, 조직 안에서 되돌릴 수 있으면 C·L»*.
 
 ```bash
-# C 결정(다른 prj 이슈 등록·배분·위임·이슈후보 승격·매뉴얼·내부 정책·시점) — 사람에게 묻지 않고 정한 뒤 기록
+# C 결정(다른 prj 업무 접수(Request.md)·시스템 이슈 등록·배분·위임·이슈후보 승격·매뉴얼·내부 정책·시점) — 사람에게 묻지 않고 정한 뒤 기록
 python3 ~/.claude/hooks/fbot-state.py decide --by <나> --grade C --topic "…" --decision "…" --ref "<mq id·이슈>"
 # 매뉴얼 개정안(인박스 kind=manual-review) — 결정만 한다: 반영·반려(draft 삭제)·반송(draft 유지·재작성).
 #   본문 수정은 내 일이 아니다(쓰기 가드가 막는다) — 매뉴얼핀봇 몫(prj3#Issue757_1)

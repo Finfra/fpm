@@ -24,6 +24,17 @@ document.querySelectorAll('.q-other').forEach(inp => {
   });
 });
 
+// prj3#Issue975: 보기 `preview` — `.q-preview-grid` 카드의 보기(`input[data-preview]`)가 focus·change·mouseenter 되면
+//   `.q-preview` 패널을 그 보기의 미리보기로 갱신한다. 초기값은 첫 보기. 고른 값 회수(collectAnswers)와 무관.
+document.querySelectorAll('.q-preview-grid').forEach(grid => {
+  const panel = grid.querySelector('.q-preview');
+  const opts = Array.from(grid.querySelectorAll('input[data-preview]'));
+  if (!panel || !opts.length) return;
+  const show = el => { panel.textContent = el.dataset.preview || ''; };
+  opts.forEach(el => ['focus', 'change', 'mouseenter'].forEach(ev => el.addEventListener(ev, () => show(el))));
+  show(opts.find(el => el.checked) || opts[0]);
+});
+
 // Issue43: 카드별 radio/checkbox + .q-other + .q-textarea 통합 수집
 function collectAnswers() {
   return Array.from(document.querySelectorAll('.q-card')).map(card => {

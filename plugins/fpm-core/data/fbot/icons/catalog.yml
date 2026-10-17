@@ -7,7 +7,7 @@
 # nonexec (prj3#Issue757): 일을 하지 않고 시키기만 하는 관리직(총괄·팀장) — 배분 채널(지휘 지시문)·환기·
 #   인박스 발신 제한·사람 창구의 판정 단일 지점(fbot-org.is_nonexec). 쓰기 가드는 역할별 축(권한·분업)으로 따로 가른다. manager(명령 수신 — hr 포함)와 다른 축이다.
 # 도형 어휘: star shield hexagon triangle grid check magnifier magnet frame speech venn tag compass wrench broom
-# origin (prj3#Issue589) (prj3#Issue833): agent:N | skill:N | plugin:M/N | command:N | hook:N | web:URL | native — 복수는 '|'.
+# origin (prj3#Issue589) (prj3#Issue833): agent:N | agent:P/N(prj P 로컬 agent — prj3#Issue1062) | skill:N | plugin:M/N | command:N | hook:N | web:URL | native — 복수는 '|'.
 #   ⚠️ 값에 공백·따옴표 불가(파서가 split() 기준). 쓰기는 훅 경유만 — 직접 Edit 금지.
 #   origin_seen = drift 판정 기준선(원본을 본 시각). 매뉴얼 mtime 을 기준선으로 쓰지 않는다.
 # kind (prj3#Issue636): tool = «도구 래핑» 재분류 — 봇 계층 배분을 기대하지 않는다(배분 0 이
@@ -21,13 +21,20 @@ planner: shape=grid base=#A0623A label=기획핀봇 tags=plan|task origin=native
 qa: shape=check base=#3A8A8A label=QA핀봇 tags=검증|판정 origin=native checker=true permission_mode=floor
 research: shape=magnifier base=#6E6E3A label=조사핀봇 tags=조사|선례 origin=native
 scout: shape=magnet base=#8A3A5F label=발굴핀봇 tags=직능|발굴 origin=native
-graphic: shape=frame base=#5F8A3A label=도해핀봇 tags=변환|개선 origin=agent:ig-maker|skill:ig-maker kind=tool origin_seen=11cf8a6b4da2d761
-consult: shape=speech base=#3A6E8A label=자문핀봇 tags=선례|큐레이션 origin=agent:consultant-m origin_seen=7e5b40c5e7285c0b
+graphic: shape=frame base=#5F8A3A label=도해핀봇 tags=변환|개선 origin=agent:ig-maker|skill:ig-maker kind=tool origin_seen=3c4afda45666cbf2
+consult: shape=speech base=#3A6E8A label=자문핀봇 tags=선례|큐레이션 origin=agent:consultant-m origin_seen=d9c95c18540ebfe2
 crosscheck: shape=venn base=#A03A3A label=교차검증핀봇 tags=2차의견|외부LLM origin=skill:agy-diff-reviewer|skill:agy-file-processor|skill:agy-image-describer|skill:agy-scrapper kind=tool checker=true engine=agy permission_mode=floor origin_seen=3f8263a0f87ba451
 release: shape=tag base=#8A5A2B label=배포핀봇 tags=배포|릴리즈 origin=native
-advisor: shape=compass base=#3A3A8A label=외부자문핀봇 tags=외부검토|codex origin=skill:codex-arch-reviewer|agent:codex-diff-reviewer|agent:codex-arch-checker|agent:codex-plan-checker|agent:codex-test-auditor|agent:codex-completion-auditor|agent:agy-visual-qa checker=true engine=codex|agy permission_mode=floor origin_seen=7a775982cf5e2ce8
+advisor: shape=compass base=#3A3A8A label=외부자문핀봇 tags=외부검토|codex origin=skill:codex-arch-reviewer|agent:codex-diff-reviewer|agent:codex-arch-checker|agent:codex-plan-checker|agent:codex-test-auditor|agent:codex-completion-auditor|agent:agy-visual-qa checker=true engine=codex|agy permission_mode=floor origin_seen=fd1e920ece7f4252
 contractor: shape=wrench base=#5A3A2A label=외부컨설턴트핀봇 tags=외부작업|patch origin=skill:codex-worker|agent:codex-patcher|agent:codex-migrator engine=codex origin_seen=17bdd42ec8cc215d
-fileops: shape=broom base=#7A5A6E label=파일작업핀봇 tags=정리|삭제 origin=skill:claude-project-retension|skill:doc-work-archive|skill:proj-refactor origin_seen=8c5771bd8bb459a0
+fileops: shape=broom base=#7A5A6E label=파일작업핀봇 tags=정리|삭제 origin=skill:claude-project-retension|skill:doc-work-archive|skill:proj-refactor origin_seen=34544484ffb9b8a3
 developer: shape=brackets base=#2A3A3A label=개발핀봇 tags=구현|fix origin=skill:dev-g|skill:tdd-workflow origin_seen=d1f96b3757d254bb
 manual: shape=book base=#3D2B4F label=매뉴얼핀봇 tags=매뉴얼|개정 origin=native
 deck-review: shape=grid base=#8A5A3A label=덱검수핀봇 tags=검수|보완 home=42 origin=skill:ppt-check|skill:slide-compare|agent:agy-visual-qa|agent:slide-tuner|agent:m2slide2ppt origin_seen=2ad400dc6b0848c6
+ftyping-art: shape=tag base=#40795E label=아트·UI팀핀봇 tags=로컬agent|ftyping home=9t origin=agent:9t/team-art origin_seen=dedddbe789a1b07e
+ftyping-audio: shape=speech base=#944E9C label=사운드팀핀봇 tags=로컬agent|ftyping home=9t origin=agent:9t/team-audio origin_seen=d2bd4b70f8dc88ac
+ftyping-design: shape=wrench base=#6E3A9E label=기획팀핀봇 tags=로컬agent|ftyping home=9t origin=agent:9t/team-design origin_seen=eaf59acccab07d33
+ftyping-direction: shape=wrench base=#373056 label=디렉션팀핀봇 tags=로컬agent|ftyping home=9t origin=agent:9t/team-direction origin_seen=40f1c5b9d20c1e38
+ftyping-narrative: shape=tag base=#3C6D79 label=시나리오팀핀봇 tags=로컬agent|ftyping home=9t origin=agent:9t/team-narrative origin_seen=e615aac4360c6481
+ftyping-publishing: shape=compass base=#6B8667 label=퍼블리싱팀핀봇 tags=로컬agent|ftyping home=9t origin=agent:9t/team-publishing origin_seen=edb33ac1fec6b84e
+ftyping-ui: shape=wrench base=#794D70 label=UI팀핀봇 tags=로컬agent|ftyping home=9t origin=agent:9t/team-ui origin_seen=6f83aac8e9bd2c55

@@ -153,7 +153,7 @@ for path in BUILDERS:
     pos = [htm.find(f'data-map="{n}"') for n in ORDER]
     check("htm: 박스 등장 순서 = 참조 순서", all(p >= 0 for p in pos) and pos == sorted(pos), pos)
     check("htm: 박스 제목 = 서브맵 이름(map-box-title)",
-          all(re.search(rf'<h3 class="map-box-title"[^>]*>{n}</h3>', htm) for n in ORDER[1:]))
+          all(re.search(rf'<summary class="map-box-title"[^>]*>{n}</summary>', htm) for n in ORDER[1:]))
     check("htm: 미할당·숨김·텍스트 트리 유지", 'id="misc"' in htm and 'id="hidden"' in htm
           and "PROJECTS-MAP:TREE" in htm)
     mds = [m.start() for m in re.finditer(r"^```mermaid$", md, re.M)]

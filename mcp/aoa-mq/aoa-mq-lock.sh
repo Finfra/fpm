@@ -18,6 +18,7 @@
 # 계약:
 #   호출 전 `MQ_DIR` 이 정의돼 있어야 한다. `die()` 가 있으면 그것을 쓰고, 없으면 자체 정의한다.
 #   aoa_mq_lock_acquire [최대대기초]   — 기본 10초. 실패 시 die
+#   aoa_mq_lock_try [최대대기초]       — 같은 획득, 실패 시 rc 1 + MQ_LOCK_AGE (prj3#Issue1046 — 최선 노력 호출자)
 #   aoa_mq_lock_release                — 자기가 건 PID 일 때만 해제 (남의 락을 풀지 않는다)
 #   AOA_MQ_LOCK_HELD=1 이면 acquire 는 **즉시 성공 반환**(재진입 — tick 의 위임 호출)
 
@@ -54,10 +55,18 @@ aoa_mq_lock_release() {
 }
 
 aoa_mq_lock_acquire() { # $1=최대 대기(초, 기본 10)
+  aoa_mq_lock_try "${1:-10}" || die "tick 진행 중(lock ${MQ_LOCK_AGE}m) — ${1:-10}초 대기 후 포기. 잠시 뒤 재시도"
+}
+
+# 실패해도 die 하지 않는 판 (prj3#Issue1046) — rc 1 + MQ_LOCK_AGE(분). 락이 «있으면 좋은» 호출자용:
+#   enqueue 병합은 tick 이 ask-wait 로 락을 최대 3분 쥐는 동안 등록 자체를 실패시키면 안 되므로,
+#   못 잡으면 병합을 포기하고 새 항목으로 등록한다(중복 1건이 등록 유실보다 낫다)
+aoa_mq_lock_try() { # $1=최대 대기(초, 기본 10)
   # 호출자가 이미 락을 쥔 경우(tick 의 위임 호출) — 재진입 허용
   [ -n "${AOA_MQ_LOCK_HELD:-}" ] && return 0
 
-  local maxw="${1:-10}" waited=0 stale owner age
+  local maxw="${1:-10}" waited=0 stale owner age=0
+  MQ_LOCK_AGE=0
   stale=$(grep -E "^[[:space:]]*lock_stale_mins:" "$MQ_DIR/policy.yml" 2>/dev/null | head -1 \
       | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//')
   case "${stale:-}" in ''|*[!0-9]*) stale=30 ;; esac
@@ -73,7 +82,7 @@ aoa_mq_lock_acquire() { # $1=최대 대기(초, 기본 10)
       rm -rf "$MQ_DIR/.tick.lock" 2>/dev/null; rm -f "$MQ_DIR/.tick.lock.pid"
     fi
     waited=$((waited+1))
-    [ "$waited" -gt "$maxw" ] && die "tick 진행 중(lock ${age}m) — ${maxw}초 대기 후 포기. 잠시 뒤 재시도"
+    [ "$waited" -gt "$maxw" ] && { MQ_LOCK_AGE="$age"; return 1; }
     sleep 1
   done
   printf '%s' "$$" > "$MQ_DIR/.tick.lock.pid"

@@ -25,6 +25,7 @@ import re
 import os
 import sqlite3
 import sys
+import importlib.util
 
 try:
     import yaml
@@ -33,6 +34,11 @@ except ImportError:
     sys.exit(2)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# prj3#Issue1061 — prj id 판정 단일 지점(숫자 int · 접미 `9t` str). 이 파일의 `int(prj)`·`isdigit()` 은 전부 이것으로
+_sp = importlib.util.spec_from_file_location("fbot_prj", os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib/fbot-prj.py"))
+_P = importlib.util.module_from_spec(_sp)
+_sp.loader.exec_module(_P)
+norm_prj, try_prj, prj_arg = _P.norm_prj, _P.try_prj, _P.prj_arg
 # env knob 3종 — 스모크가 실제 선언·실제 대장을 건드리지 않게 한다(schedule-smoke 선례).
 #   운영에서는 셋 다 미설정이므로 기본 경로가 그대로 쓰인다.
 # 조직 선언 폴더 (prj3#Issue757 — 사용자 결정 2026-09-28 «번들에서 개인 선언 제거 + 로컬 선언 폴백»)
@@ -150,6 +156,17 @@ def is_manager(role):
     return (catalog_attrs().get(role or "", {}).get("manager") or "").lower() == "true"
 
 
+# prj3#Issue1023 — 하위 배분 상태 3분류 **단일 지점**. sweep(`fbot-lead.CHILD_LIVE`)과 hub 보드(prj1 `_fbot_deadlocks`)가
+#   같이 읽는다(둘이 각자 술어를 두면 같은 팀장 배분을 보드는 «퇴근함 미종결», sweep 은 «부모 보류» 로 갈라진다).
+#   live = 일이 진행 중인 하위 · held = 명시 보류·정체(`deferred`·`blocked`) · "" = 종결·사후 기록(`logged` 는 prj3#Issue815 그림자 행)
+CHILD_STATUS_CLASS = {"open": "live", "blocked": "held", "deferred": "held"}
+
+
+def child_class(status):
+    """하위 배분 상태 → "live" | "held" | "" (미등재·None 은 "" — 모르면 하위 활성으로 세지 않는다)."""
+    return CHILD_STATUS_CLASS.get(status or "", "")
+
+
 def is_nonexec(role):
     """비실행 판정 — **일을 하지 않고 시키기만 하는 관리직인가** (prj3#Issue757).
 
@@ -240,6 +257,65 @@ def prj_path(prj):
         return None
     with open(p, encoding="utf-8") as f:
         return os.path.expanduser(f.read().strip())
+
+
+# ── 로컬 agent (prj3#Issue1062) ────────────────────────────────────────────────────
+#   자리 필드 `agent` 와 출처 `agent:<prj>/<이름>` 의 해소 단일 지점. 이름은 기동 줄(`--agent <이름>`)에 그대로
+#   실려 대상 zsh 가 다시 파싱하므로 셸 안전 문자만 받는다(경로 침투 `/`·`.` 도 여기서 막힌다).
+AGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+SCAR_ROOT = os.environ.get("FBOT_SCAR_ROOT") or os.path.join(os.path.expanduser("~"), ".claude")
+
+
+def local_agent_path(prj, name):
+    """`<prj 경로>/.claude/agents/<이름>.md` — 실재 여부는 보지 않는다(drift 해시가 부재를 판정). 형식 밖·prj 미등록은 None."""
+    if prj is None or not isinstance(name, str) or not AGENT_NAME_RE.match(name):
+        return None
+    base = prj_path(prj)
+    return os.path.join(base, ".claude", "agents", name + ".md") if base else None
+
+
+def agent_path(prj, name):
+    """자리 agent 이름 → 정의 파일. 로컬(그 prj) 우선, 없으면 글로벌(`~/.claude/agents`) — claude 의 agent 해소 순서와 같다.
+    형식 밖·부재는 None(결속하지 않는다)."""
+    if not isinstance(name, str) or not AGENT_NAME_RE.match(name):
+        return None
+    p = local_agent_path(prj, name)
+    if p and os.path.isfile(p):
+        return p
+    g = os.path.join(SCAR_ROOT, "agents", name + ".md")
+    return g if os.path.isfile(g) else None
+
+
+_MODEL_ALIASES = ("haiku", "sonnet", "opus", "fable")
+
+
+def agent_meta(path):
+    """agent 정의 frontmatter 에서 몸체 계약에 쓰는 두 값 (prj3#Issue1073).
+    `model` = 별칭(haiku·sonnet·opus·fable)일 때만, 아니면(inherit·전체 id·부재) None.
+    `tools` = 쉼표 나열이면 이름 목록, 선언이 없거나 목록 형식이 아니면 None(= 제한 모름 — 경고하지 않는다)."""
+    meta = _frontmatter(path)
+    m = (meta.get("model") or "").lower()
+    raw = meta.get("tools")
+    tools = [t.strip() for t in raw.split(",") if t.strip()] if raw else None
+    return {"model": m if m in _MODEL_ALIASES else None, "tools": tools}
+
+
+def seat_agent_model(bot_id):
+    """봇이 앉은 자리의 결속 agent 가 정한 몸체 모델 별칭 — 없으면 None. 원장·선언 판독 실패도 None(배분을 막지 않는다)."""
+    if not bot_id:
+        return None
+    try:
+        with _Con() as con:
+            row = con.execute("SELECT seat_id FROM bot WHERE bot_id=?", (bot_id,)).fetchone() if con else None
+        addr = (row or [None])[0]
+        if not addr:
+            return None
+        scope = addr.split("/", 1)[0]
+        got = resolve(None if scope == "hq" else norm_prj(scope))
+        seat = next((x for x in got.get("seats", []) if x.get("addr") == addr), None)
+        return (seat or {}).get("agent_model")
+    except Exception:
+        return None
 
 
 def seat_addr(prj, seat_id):
@@ -343,10 +419,8 @@ def _target_scope(addr):
         return False, None, ""
     if scope == "hq":
         return True, None, target
-    try:
-        return True, int(scope), target
-    except (TypeError, ValueError):
-        return False, None, target
+    n = try_prj(scope)
+    return (True, n, target) if n is not None else (False, None, target)
 
 
 def _target_exists(addr, local, cache):
@@ -367,6 +441,10 @@ def resolve(prj=None, with_formed=False, con=None, _check_checked_by=True):
     `with_formed` — 구성 판정(`team_formed`, Issue689)을 싣는다. 활동 시각 계산에 git 조회가
     들어가므로 기본은 끈다(bind·wake 등 내부 호출이 비용을 내지 않게). 보드만 켠다.
     """
+    try:
+        prj = norm_prj(prj)       # prj3#Issue1061 — 파일명·원장 조회 키가 같은 형(숫자 int · 접미 str)이어야 한다
+    except ValueError as e:
+        return {"ok": False, "prj": prj, "error": str(e)}
     central = _org_file("_hq.yml" if prj is None else f"{prj}.yml")
     doc = _load(central)
     if doc is None:
@@ -374,7 +452,7 @@ def resolve(prj=None, with_formed=False, con=None, _check_checked_by=True):
         return {"ok": True, "prj": prj, "seats": [], "invalid": [],
                 "reason": "조직 선언 없음", "declared": False}
 
-    seats, permission_modes, invalid = {}, {}, []
+    seats, permission_modes, invalid, warnings = {}, {}, [], []
     ext = doc.get("extends")
     if ext:
         base = _load(_org_file(ext))
@@ -406,6 +484,23 @@ def resolve(prj=None, with_formed=False, con=None, _check_checked_by=True):
                     continuity=continuity,
                     permission_mode=permission_modes.get(key, role_permission_default(st.get("role"))),
                     permission_reason=st.get("permission_reason", ""), checked_by_addr="")
+        if "agent" in st:
+            # prj3#Issue1062 — 몸체를 이 agent 로 기동한다(launch-flags). 못 찾으면 결속하지 않고 invalid 로 드러낸다
+            path = agent_path(prj, st.get("agent"))
+            if path:
+                item["agent_path"] = path
+                am = agent_meta(path)
+                if am["model"]:
+                    item["agent_model"] = am["model"]      # prj3#Issue1073 — 몸체 모델 판정(fbot-lead model_for)이 읽는다
+                if am["tools"] is not None and "Bash" not in am["tools"]:
+                    # 완료 보고(`fbot-inbox.py defer`)가 Bash 라 도구를 줄인 agent 몸체는 «완료 미확인» 에 묶인다. 결속은 유지하고 드러낸다
+                    _add_invalid(warnings, st.get("id"), "agent", st.get("agent"),
+                                 "agent tools 에 Bash 없음 — 완료 보고(defer)를 못 불러 배분이 완료 미확인에 묶인다")
+            else:
+                _add_invalid(invalid, st.get("id"), "agent", st.get("agent"),
+                             "agent 정의 부재(로컬·글로벌)" if AGENT_NAME_RE.match(str(st.get("agent") or ""))
+                             else "형식 밖 이름(영숫자·_·- 만)")
+                item.pop("agent", None)
         _seats.append(item)
         by_addr[item["addr"]] = item
 
@@ -439,7 +534,7 @@ def resolve(prj=None, with_formed=False, con=None, _check_checked_by=True):
             "archived": (doc.get("status") == "archived"),
             "alive": team_alive(prj, con=con),
             **({"formed_info": team_formed(prj, con=con)} if with_formed else {}),
-            "stale_drops": dropped_missing, "invalid": invalid}
+            "stale_drops": dropped_missing, "invalid": invalid, "warnings": warnings}
 
 
 IDLE_DAYS = int(os.environ.get("FBOT_ORG_IDLE_DAYS") or 3)
@@ -477,6 +572,8 @@ def _lead_rows(con, prj):
     자리가 다른 prj 를 가리키는 lead 는 prj 열이 N 이어도 N 의 팀장이 아니다(자리가 이긴다).
     employment 가 없는(백필 전) 행은 career 로 폴백한다(prj3#Issue551).
     """
+    # prj3#Issue1061 — 원장 prj 열은 ANY(형 변환 없음): "9" 로 찾으면 9 를 놓친다. prj 형식 밖(본사 "hq")은 그대로
+    prj = try_prj(prj) if try_prj(prj) is not None else prj
     cols = {r[1] for r in con.execute("PRAGMA table_info(bot)")}
     if "seat_id" not in cols:
         return []
@@ -492,7 +589,7 @@ def _lead_rows(con, prj):
 def _org_files():
     """선언된 prj 조직 목록. `_hq`·`_template` 은 생명주기 대상이 아니다 —
     본사는 조직 골격이라 쉬지 않는다(상비 4종이 아카이브 제외인 것과 같은 이유)."""
-    return sorted(int(n) for n in _declared_names() if n.isdigit())
+    return sorted((norm_prj(n) for n in _declared_names() if _P.is_prj_name(n)), key=_P.prj_sort_key)
 
 
 _GIT_TS_CACHE = {}   # base → (head_key, ts) — prj3#Issue732
@@ -556,6 +653,35 @@ def pm_bot(prj, con=None):
             return (live or rows)[0][0] if rows else None
         except sqlite3.Error:
             return None
+
+
+def lead_info(prj, con=None):
+    """«prj → 팀장» 조회 단일 지점 (prj3#Issue1113_3) — 타 prj 전달 경로를 정하는 재료.
+
+    팀장 판정은 `pm_bot` 그대로다(재직 우선). 출근 여부와 무관하게 원장의 팀장을 낸다 — 퇴근(`checkout`) 팀장이어도
+    `fbot-inbox.py send` 가 인박스에 적재하고 원장이 깨운다. 세션 이름을 추측한 `SendMessage` 를 대신한다
+    (2026-10-16 OpenClaw 세션이 checkout 팀장 대신 이름이 비슷한 사람 세션으로 보냈다).
+    팀장이 없으면 `lead=None` 과 대체 경로(그 prj `Request.md` 접수 · `fpm-do`)를 명시한다."""
+    out = {"prj": prj, "lead": None}
+    bid = pm_bot(prj, con=con)
+    if not bid:
+        out.update(route="request",
+                   deliver=f"팀장 없음 — prj{prj} `Request.md` 접수(`issue-tx --file Request.md alloc`) 또는 `fpm-do {prj} …`")
+        return out
+    out.update(lead=bid, route="inbox",
+               deliver=f"python3 ~/.claude/hooks/fbot-inbox.py send --to {bid} --prj {prj} --body '<요청>'")
+    with _Con(con) as c:
+        if c is None:
+            return out
+        try:
+            cols = {r[1] for r in c.execute("PRAGMA table_info(bot)")}
+            want = [k for k in ("title", "state", "employment", "session_id", "tmux_target") if k in cols]
+            row = c.execute(f"SELECT {', '.join(want)} FROM bot WHERE bot_id=?", (bid,)).fetchone() if want else None
+        except sqlite3.Error:
+            row = None
+    if row:
+        out.update({k: (v or None) for k, v in zip(want, row)})
+    return out
 
 
 def pm_last_activity(prj, con=None):
@@ -767,9 +893,9 @@ def check_pm():
         #   자리 기준인 team_alive 와 갈라져 «팀장 있음 + 팀 죽음» 을 동시에 참으로 만들었다.
         pm, unseated = {}, []
         for prj in _declared:
-            if not prj.isdigit():
+            n = try_prj(prj) if _P.is_prj_name(prj) else None
+            if n is None:
                 continue
-            n = int(prj)
             for bid, emp in _lead_rows(con, n):
                 st = con.execute("SELECT state, COALESCE(seat_id,'') AS seat FROM bot WHERE bot_id=?",
                                  (bid,)).fetchone()
@@ -780,9 +906,8 @@ def check_pm():
         con.close()
     ok_list, missing = [], []
     for prj in _declared:
-        try:
-            n = int(prj)
-        except (TypeError, ValueError):
+        n = try_prj(prj) if _P.is_prj_name(prj) else None
+        if n is None:
             continue
         live = [b for b in pm.get(n, []) if b["emp"] == "employed"]
         if live:
@@ -850,10 +975,7 @@ def find_role(role, con=None):
             except sqlite3.Error:
                 pass
     home = (catalog_attrs().get(role or "") or {}).get("home")
-    try:
-        home = int(home) if home not in (None, "") else None
-    except ValueError:
-        home = None
+    home = try_prj(home)
     return {"role": role, "home": home, "seats": seats, "bots": bots}
 
 
@@ -861,12 +983,12 @@ def body_prj():
     """본사 몸체 prj — `_hq.yml` body_prj (prj3#Issue734). 미선언·해소 실패는 None(본사 = 어느 prj 도 아님)."""
     try:
         bp = resolve(None).get("body_prj")
-        return int(bp) if bp not in (None, "") else None
+        return norm_prj(bp)
     except Exception:  # noqa: BLE001 — 해소 실패는 «팀 없음» 일 뿐 판정을 막지 않는다
         return None
 
 
-_SEAT_PRJ = re.compile(r"^(\d+)/")
+_SEAT_PRJ = re.compile(rf"^({_P.PRJ_TOKEN})/")
 
 
 def team_prj(prj, seat_id=None):
@@ -879,13 +1001,10 @@ def team_prj(prj, seat_id=None):
     `fbot-lead.loan_reject`(배분자 팀)·`cross_step`(요청 팀장의 팀)이 이것을 쓴다 — 종전엔 loan_reject 안에만 있었다."""
     m = _SEAT_PRJ.match(str(seat_id or ""))
     if m:
-        return int(m.group(1))
+        return norm_prj(m.group(1))
     if str(seat_id or "").startswith("hq/") or prj is None:
         return body_prj()
-    try:
-        return int(prj)
-    except (TypeError, ValueError):
-        return None
+    return try_prj(prj)
 
 
 def _requester_lead_team(c, by):
@@ -924,9 +1043,8 @@ def cross_step(prj, role, by, con=None):
     대장 해소 실패는 None(fail-soft — 판정 불가는 거부 근거가 아니다)."""
     if not by or prj is None or not role or is_manager(role):
         return None
-    try:
-        prj = int(prj)
-    except (TypeError, ValueError):
+    prj = try_prj(prj)
+    if prj is None:
         return None
     with _Con(con) as c:
         if c is None:
@@ -964,6 +1082,7 @@ def ladder_step(prj, role, con=None, by=None):
     org 는 다른 prj 의 재직 개체를 후보로 싣는다(본거지 먼저).
     `by` = 요청자 bot_id — 팀장이면 그 팀(`team_prj`)과 일의 prj 를 대조해 ⓪ 을 먼저 본다(`cross_step`). 없으면 종전 판정.
     dispatch 입구·`fbot-inbox staffing`·채용 사다리(`fbot-lead.hire_ladder_verdict`)가 모두 `by` 를 넘겨 같은 판정을 받는다."""
+    prj = try_prj(prj)
     if by:
         x = cross_step(prj, role, by, con=con)
         if x:
@@ -991,7 +1110,7 @@ def _validate_seat_ext(prj, ext, cur, sid=None):
         return None
     if not isinstance(ext, dict):
         return "ext 는 매핑이어야 한다"
-    allowed = {"checked_by", "continuity", "permission_mode", "permission_reason"}
+    allowed = {"checked_by", "continuity", "permission_mode", "permission_reason", "agent"}
     unknown = sorted(set(ext) - allowed)
     if unknown:
         return f"지원하지 않는 확장 필드: {', '.join(unknown)}"
@@ -1000,6 +1119,8 @@ def _validate_seat_ext(prj, ext, cur, sid=None):
             return f"{key} 값은 문자열이어야 한다"
     if "continuity" in ext and ext["continuity"] not in CONTINUITIES:
         return f"continuity 열거 밖 값: {ext['continuity']}"
+    if "agent" in ext and not agent_path(prj, ext["agent"]):
+        return f"agent 정의 부재 또는 형식 밖: {ext['agent']} (로컬 <prj>/.claude/agents → 글로벌 순 — prj3#Issue1062)"
     if "permission_mode" in ext and ext["permission_mode"] not in PERMISSION_MODES:
         return f"permission_mode 열거 밖 값: {ext['permission_mode']}"
     if ext.get("permission_mode") in _PERMISSION_RANK and not ext.get("permission_reason", "").strip():
@@ -1046,7 +1167,9 @@ def add_seat(prj, role, dept="dev", reports_to="ops-lead-1", apply=False, note="
     error = _validate_seat_ext(prj, ext, cur)
     if error:
         return {"ok": False, "error": error}
-    have = [s for s in cur if s.get("role") == role]
+    # prj3#Issue1062 — agent 결속 자리는 (직능, agent) 가 자리의 정체다. 같은 직능이라도 agent 가 다르면 다른 자리
+    want_agent = (ext or {}).get("agent")
+    have = [s for s in cur if s.get("role") == role and (want_agent is None or s.get("agent") == want_agent)]
     if have:
         return {"ok": True, "existing": True, "seat_id": have[0].get("id"), "prj": prj}
     k = 1 + sum(1 for s in cur if s.get("dept") == dept)
@@ -1090,9 +1213,265 @@ def add_seat(prj, role, dept="dev", reports_to="ops-lead-1", apply=False, note="
     return out
 
 
+def bind_seat_agent(prj, seat, agent, apply=False):
+    """이미 있는 자리(템플릿 상속분 포함)에 agent 를 결속한다 — 같은 (부서, 자리 id) 블록을 덧붙여 덮는다(prj3#Issue1062).
+
+    `_absorb` 는 자리 단위 교체라 뒤 블록이 이긴다. role·reports_to 는 원 자리 값을 그대로 옮긴다(결속만 바꾼다)."""
+    if not agent_path(prj, agent):
+        return {"ok": False, "error": f"agent 정의 부재 또는 형식 밖: {agent}"}
+    path = os.path.join(ORG_DIR, f"{prj}.yml")
+    src = _org_file(f"{prj}.yml")
+    if not os.path.exists(src):
+        return {"ok": False, "error": f"조직 선언 없음: prj{prj}"}
+    orig = open(src, encoding="utf-8").read()
+    tops = [ln for ln in orig.splitlines() if re.match(r"^[A-Za-z_][\w-]*:", ln)]
+    has_depts = any(ln.startswith("depts:") for ln in tops)
+    if has_depts and not tops[-1].startswith("depts:"):
+        return {"ok": False, "error": f"{path}: `depts:` 가 마지막 최상위 키가 아니다 — 손으로 결속한다"}
+    # 선언 원문 값만 옮긴다 — resolve 결과의 permission_mode·continuity 는 계산값이라 옮기면 «명시» 가 되어 사유 요구에 걸린다.
+    #   permission_mode 엄격도는 층을 넘어 누적되므로(_absorb) 옮기지 않아도 풀리지 않는다
+    raw = {}
+    doc = _load(src) or {}
+    for layer in ([_load(_org_file(doc["extends"])) or {}] if doc.get("extends") else []) + [doc]:
+        for d in (layer.get("depts") or []):
+            if d.get("id") == seat["dept"]:
+                for s in (d.get("seats") or []):
+                    if s.get("id") == seat["id"] and not s.get("drop"):
+                        raw = s
+    keep = "".join(f", {k}: {_yaml_flow_value(raw[k])}" for k in
+                   ("checked_by", "continuity", "permission_mode", "permission_reason") if raw.get(k))
+    add = ("" if has_depts else "depts:\n") + (
+        f"  # agent 결속 — 상속 자리 {seat['id']} 를 로컬 agent {agent} 로 띄운다 (prj3#Issue1062)\n"
+        f"  - id: {seat['dept']}\n    label: {seat.get('dept_label') or seat['dept']}\n    seats:\n"
+        f"      - {{ id: {seat['id']}, role: {seat['role']}, reports_to: {seat.get('reports_to') or 'ops-lead-1'}"
+        f"{keep}, agent: {_yaml_flow_value(agent)} }}\n")
+    out = {"ok": True, "prj": prj, "seat_id": seat["id"], "agent": agent, "mode": "apply" if apply else "dry-run"}
+    if not apply:
+        return dict(out, preview=add)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(orig.rstrip("\n") + "\n" + add)
+    got = next((s for s in resolve(prj).get("seats") or [] if s.get("id") == seat["id"]), {})
+    if got.get("agent") != agent:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(orig)
+        return {"ok": False, "error": f"결속 뒤 해소 결과에 agent 가 없다 — 원문 복구 ({seat['id']})"}
+    return out
+
+
+# ── 로컬 agent 로 prj 조직 일괄 구성 (prj3#Issue1062) ─────────────────────────────────
+#   사용자 지시 «add-seat 를 매번 사람이 치기 힘듦 · 로컬 agent 로 핀봇이 구성되어야 함». 한 번에 ① 조직 선언
+#   ② 로컬 agent 별 자리(기존 직능이면 그 자리에 결속, 아니면 직능 신설 — 발굴 register 경유: 매뉴얼·아이콘·origin·home)
+#   ③ PM(팀장) 채용. 전부 멱등 — 다시 돌리면 빠진 것만 채운다.
+STAFF_ROLE_ALIAS = {"dev": "developer", "devel": "developer", "test": "qa"}
+STAFF_SHAPES = ("frame", "speech", "grid", "triangle", "magnifier", "tag", "compass", "wrench", "venn", "check", "broom")
+MANUAL_DIR = os.environ.get("FBOT_MANUAL_DIR") or os.path.join(os.path.expanduser("~"), ".claude", "data", "fbot", "manuals")
+
+
+def _frontmatter(path):
+    """agent 정의의 frontmatter 평탄 키(name·description·fbot-role) — yaml 의존 없이 `key: value` 한 줄만 읽는다."""
+    meta = {}
+    try:
+        lines = open(path, encoding="utf-8").read().splitlines()
+    except OSError:
+        return meta
+    if not lines or lines[0].strip() != "---":
+        return meta
+    for ln in lines[1:]:
+        if ln.strip() == "---":
+            break
+        m = re.match(r"^([A-Za-z][\w-]*):\s*(.*)$", ln)
+        if m:
+            meta[m.group(1)] = m.group(2).strip().strip('"').strip("'")
+    return meta
+
+
+def _staff_slug(base):
+    return re.sub(r"[^a-z0-9]", "", os.path.basename(base.rstrip("/")).lower())
+
+
+def _staff_role(name, meta, slug, attrs):
+    """agent → 직능. ① frontmatter `fbot-role` ② 별칭·같은 이름의 실행 직능(관리직 제외) ③ 신설 `<slug>-<팀>`."""
+    explicit = meta.get("fbot-role")
+    if explicit:
+        return explicit, explicit not in attrs
+    suffix = name[5:] if name.startswith("team-") else name
+    cand = STAFF_ROLE_ALIAS.get(suffix, suffix)
+    a = attrs.get(cand)
+    if a is not None and a.get("status") != "archived" and a.get("manager") != "true":
+        return cand, False
+    role = f"{slug}-{suffix}"
+    return role, role not in attrs
+
+
+def _staff_label(meta, suffix):
+    m = re.search(r"([^\s\"'=|]+팀)", meta.get("description", ""))
+    return f"{m.group(1)}핀봇" if m else f"{suffix}핀봇"
+
+
+def _staff_manual(prj, role, label, name, path, meta):
+    import time as _t
+    desc = re.sub(r"\s+", " ", meta.get("description", "")).split(". ")[0][:120] or f"prj{prj} 로컬 agent {name}"
+    return (f"---\nname: {role}\ntitle: {label}\ndescription: {desc}\ndate: {_t.strftime('%Y.%m.%d')}\n"
+            f"completion: light\n---\n"
+            f"# 임무\n\nprj{prj} 로컬 agent `{name}` 를 몸체로 띄운 핀봇이다(기동 `--agent {name}`). 임무·소유 파일·경계의 "
+            f"정본은 agent 정의 `{path}` — 이 매뉴얼은 핀봇 계약만 덧붙인다. 정의가 바뀌면 drift 로 개정 신호가 온다"
+            f"(origin `agent:{prj}/{name}`).\n\n"
+            f"# 작업 절차\n\n배분(이슈·topic)을 agent 정의의 «하는 일» 대로 처리하고, 산출 경로를 보고한다. 범위가 정의 밖이면 "
+            f"착수하지 않고 팀장에게 되돌린다.\n\n"
+            f"# 경계·금지\n\nagent 정의의 경계를 따른다. `Issue.md` 이슈 이동·커밋은 정의가 허락할 때만. 사람의 지시를 직접 받으면 "
+            f"팀장에게 넘기고 착수하지 않는다.\n\n"
+            f"# 완료 판정\n\nlight — 산출 경로 또는 커밋 해시를 완료 보고(`defer --status done`)에 남긴다.\n")
+
+
+def _staff_color(role):
+    import hashlib
+    h = hashlib.sha256(role.encode()).digest()
+    return "#" + "".join(f"{0x30 + b % 0x70:02X}" for b in h[:3])
+
+
+def _employed_lead(prj):
+    try:
+        with _Con() as c:
+            if c is None:
+                return None
+            rows = _lead_rows(c, prj)
+            live = [r for r in rows if r[1] == "employed"]
+            return live[0][0] if live else None
+    except sqlite3.Error:
+        return None
+
+
+def staff_local(prj, apply=False):
+    """로컬 agent 로 prj 조직을 꾸린다 — 계획(dry-run) 또는 집행(apply). 반환 `{ok, mode, declared, seats[], pm, errors[]}`."""
+    import subprocess
+    try:
+        prj = norm_prj(prj)
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    if prj is None:
+        return {"ok": False, "error": "본사는 대상이 아니다"}
+    base = prj_path(prj)
+    if not base or not os.path.isdir(base):
+        return {"ok": False, "prj": prj, "error": f"projects 맵에 경로 없음: prj{prj}"}
+    adir = os.path.join(base, ".claude", "agents")
+    names = sorted(fn[:-3] for fn in (os.listdir(adir) if os.path.isdir(adir) else [])
+                   if fn.endswith(".md") and AGENT_NAME_RE.match(fn[:-3]))
+    slug = _staff_slug(base) or f"prj{prj}"
+    title = os.path.basename(base.rstrip("/"))
+    attrs = catalog_attrs()
+    cur = resolve(prj)
+    declared = cur.get("declared", True) and cur.get("ok")
+    seats_now = cur.get("seats") or []
+    if not declared:
+        # 계획도 집행과 같은 판정이어야 한다 — 선언이 생기면 나타날 general 상속 자리로 결속 대상을 가린다
+        tpl = _load(_org_file("_template/general.yml")) or {}
+        seats_now = [dict(s, dept=d.get("id")) for d in (tpl.get("depts") or []) for s in (d.get("seats") or [])]
+    plan, errors = [], []
+    for name in names:
+        meta = _frontmatter(os.path.join(adir, name + ".md"))
+        suffix = name[5:] if name.startswith("team-") else name
+        # prj3#Issue1080 ⓑ — 어느 자리든 `agent: <name>` 으로 이미 결속됐으면 role 무관 existing 이다. 종전엔 자리 role == agent
+        #   유도 role 일 때만 결속으로 봐서, repo override 로 lead 자리에 결속된 team-lead 를 `ftyping-lead` 새 직능·새 자리로 계획했다
+        bound = [s for s in seats_now if s.get("agent") == name]
+        if bound:
+            plan.append({"agent": name, "role": bound[0].get("role"), "new_role": False,
+                         "action": "existing", "seat_id": bound[0]["id"]})
+            continue
+        role, new_role = _staff_role(name, meta, slug, attrs)
+        item = {"agent": name, "role": role, "new_role": new_role}
+        if new_role:
+            item["label"] = _staff_label(meta, suffix)
+        same = [s for s in seats_now if s.get("role") == role and s.get("agent") == name]
+        free = [s for s in seats_now if s.get("role") == role and not s.get("agent")]
+        if same:
+            item.update(action="existing", seat_id=same[0]["id"])
+        elif free and not new_role:
+            item.update(action="bind", seat_id=free[0]["id"])
+        else:
+            item.update(action="add", dept="team")
+        plan.append(item)
+    lead = _employed_lead(prj)
+    pm = {"action": "existing", "bot_id": lead} if lead else {
+        "action": "hire", "bot_id": f"fbot-lead-{slug}", "title": f"{title} 팀장핀봇"}
+    out = {"ok": True, "prj": prj, "path": base, "mode": "apply" if apply else "dry-run",
+           "declared": bool(declared), "seats": plan, "pm": pm, "warnings": cur.get("warnings") or []}
+    if not apply:
+        return out
+
+    # ① 조직 선언 — 없으면 general 로 만든다(add_seat 생성분과 같은 골격 + title)
+    if not declared:
+        path = os.path.join(ORG_DIR, f"{prj}.yml")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(f"# 조직 인스턴스 — prj{prj} ({title}) — 로컬 agent 일괄 구성(staff-local, prj3#Issue1062)\n"
+                     f"prj: {prj}\ntitle: {title}\nextends: _template/general.yml\n")
+        seats_now = resolve(prj).get("seats") or []
+        for item in plan:       # 선언이 생기며 상속 자리가 나타났다 — 결속 대상 재판정
+            if item["action"] == "add" and not item["new_role"]:
+                free = [s for s in seats_now if s.get("role") == item["role"] and not s.get("agent")]
+                if free:
+                    item.update(action="bind", seat_id=free[0]["id"])
+                    item.pop("dept", None)
+    scout = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fbot-scout.py")
+    hr = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fbot-hr-gate.py")
+    # ② 자리
+    for item in plan:
+        name, role = item["agent"], item["role"]
+        if item["action"] == "existing":
+            continue
+        if item["new_role"]:
+            manual = os.path.join(MANUAL_DIR, f"{role}.md")
+            if not os.path.exists(manual):
+                os.makedirs(MANUAL_DIR, exist_ok=True)
+                with open(manual, "w", encoding="utf-8") as fh:
+                    # 경로는 repo 상대 — 몸체 cwd 가 그 repo 다(개인 절대경로를 매뉴얼에 굽지 않는다)
+                    fh.write(_staff_manual(prj, role, item["label"], name,
+                                           f".claude/agents/{name}.md", _frontmatter(os.path.join(adir, name + ".md"))))
+            import hashlib
+            shape = STAFF_SHAPES[hashlib.sha256(role.encode()).digest()[0] % len(STAFF_SHAPES)]
+            r = subprocess.run([sys.executable, scout, "register", "--role", role, "--shape", shape,
+                                "--base", _staff_color(role), "--label", item["label"], "--tags", f"로컬agent|{slug}",
+                                "--origin", f"agent:{prj}/{name}", "--home", str(prj), "--home-dept", "team"],
+                               capture_output=True, text=True)
+            if r.returncode != 0:
+                errors.append({"agent": name, "role": role, "error": (r.stderr or r.stdout).strip()[-300:]})
+                item["result"] = "error"
+                continue
+            # 매뉴얼을 지금 이 원본에서 만들었다 = 대조했다 → drift 기준선을 현재 해시로(미기입이면 다음 review 가 오탐)
+            subprocess.run([sys.executable, scout, "set-origin", "--role", role, "--origin", f"agent:{prj}/{name}",
+                            "--reconciled"], capture_output=True, text=True)
+            item["result"] = "registered"
+            attrs = catalog_attrs()
+        elif item["action"] == "bind":
+            seat = next((s for s in resolve(prj).get("seats") or [] if s.get("id") == item["seat_id"]), None)
+            got = bind_seat_agent(prj, seat, name, apply=True) if seat else {"ok": False, "error": "자리 소실"}
+            item["result"] = "bound" if got.get("ok") else "error"
+            if not got.get("ok"):
+                errors.append({"agent": name, "role": role, "error": got.get("error")})
+        else:
+            got = add_seat(prj, role, dept="team", apply=True, note=f"로컬 agent {name}", ext={"agent": name})
+            item["result"] = "added" if got.get("ok") else "error"
+            item["seat_id"] = got.get("seat_id")
+            if not got.get("ok"):
+                errors.append({"agent": name, "role": role, "error": got.get("error")})
+    # ③ PM — HR 게이트 채용(빈 lead 자리 자동 결속). 몸체는 첫 배분·기상 때 뜬다(checkout)
+    if pm["action"] == "hire":
+        r = subprocess.run([sys.executable, hr, "hire", "--bot-id", pm["bot_id"], "--role", "lead",
+                            "--title", pm["title"], "--prj", str(prj), "--state", "checkout"],
+                           capture_output=True, text=True)
+        pm["result"] = "hired" if r.returncode == 0 else "error"
+        if r.returncode != 0:
+            errors.append({"pm": pm["bot_id"], "error": (r.stderr or r.stdout).strip()[-300:]})
+    final = resolve(prj)
+    out.update(errors=errors, ok=not errors, invalid=final.get("invalid") or [], warnings=final.get("warnings") or [],
+               bound={s["id"]: s.get("agent") for s in final.get("seats") or [] if s.get("agent")})
+    return out
+
+
 # ── 기동 권한 플래그 — 조립 단일 지점 (prj3#Issue859_2) ─────────────────────────────
-#   기동 3곳(`~/.bin/fpm-do`·`fbot-lead.py spawn_line_bytes`·`aoa-mq-lib.sh`)이 이 함수의 출력을 쓴다.
-#   ⚠️ 플래그 리터럴은 여기 한 곳이다 — 바꾸면 줄 바이트 예산(fbot-lead LINE_BUDGET)에 닿는다.
+#   기동 2곳(`~/.bin/fpm-do`·`aoa-mq-lib.sh`)이 이 함수의 출력을 쓴다.
+#   ⚠️ 플래그 리터럴은 여기 한 곳이다(기동 줄 바이트 예산은 prj3#Issue1047_1 로 은퇴).
 LAUNCH_BYPASS = "--dangerously-skip-permissions"
 FLOOR_TOOLS_DEFAULT = "Read,Grep,Glob"          # policy 에 목록이 없을 때의 fail-closed 최소(읽기 전용)
 POLICY_FILE = os.environ.get("FBOT_POLICY_FILE")
@@ -1136,7 +1515,7 @@ def launch_permission(bot_id=None):
         if not addr:
             return out
         scope = addr.split("/", 1)[0]
-        got = resolve(None if scope == "hq" else int(scope))
+        got = resolve(None if scope == "hq" else norm_prj(scope))
         seat = next((s for s in got.get("seats", []) if s.get("addr") == addr), None)
         if not seat:
             out["reason"] = f"자리 선언 없음: {addr}"
@@ -1144,15 +1523,19 @@ def launch_permission(bot_id=None):
         mode = seat.get("permission_mode") or "bypass"
         reason = seat.get("permission_reason") or ""
         role = seat.get("role")
+        # prj3#Issue1062 — 자리에 결속된 agent 로 몸체를 띄운다(resolve 가 실재·셸 안전 이름을 검증한 값만 남긴다)
+        agent = seat.get("agent")
+        agent_flag = f" --agent {agent}" if agent and AGENT_NAME_RE.match(agent) else ""
     except Exception as e:      # 기동을 막지 않는다 — 해소 실패는 현행 동작
         out["reason"] = f"해소 실패({type(e).__name__}) — 현행 유지"
         return out
     if mode == "floor":
         # prj3#Issue940 — `--tools` 는 MCP 를 거르지 않는다. floor 몸체는 MCP 0(--strict-mcp-config 단독, 설정 파일 없음) —
         #   floor 3직능 매뉴얼은 MCP 참조 0. fpm-do 는 이 플래그를 보고 몸체 MCP 부착(--mcp-config)을 뗀다
-        return {"mode": "floor", "reason": reason or "floor 선언", "seat": addr,
-                "flags": f"--permission-mode dontAsk --tools={_floor_tools(role)} --strict-mcp-config"}
-    return {"mode": "bypass", "reason": reason or "bypass(기본)", "seat": addr, "flags": LAUNCH_BYPASS}
+        return {"mode": "floor", "reason": reason or "floor 선언", "seat": addr, "agent": agent or None,
+                "flags": f"--permission-mode dontAsk --tools={_floor_tools(role)} --strict-mcp-config{agent_flag}"}
+    return {"mode": "bypass", "reason": reason or "bypass(기본)", "seat": addr, "agent": agent or None,
+            "flags": LAUNCH_BYPASS + agent_flag}
 
 
 def launch_flags(bot_id=None):
@@ -1167,12 +1550,15 @@ def audit_launch(bot_id, perm):
         con = sqlite3.connect(REGISTRY_DB, timeout=5)
         try:
             now = int(time.time())
-            detail = f"mode={perm['mode']} seat={perm.get('seat', '-')} reason={perm['reason']}"[:300]
+            detail = (f"mode={perm['mode']} seat={perm.get('seat', '-')} reason={perm['reason']}"
+                  + (f" agent={perm['agent']}" if perm.get("agent") else ""))[:300]
             con.execute(
                 "INSERT INTO job (id, store, kind, status, payload, result, attempts, owner, lease_until, blocked_since, created_at)"
                 " VALUES (?,?,?,?,?,NULL,0,?,NULL,NULL,?)",
                 (f"fbotev-{now}-{uuid.uuid4().hex[:8]}", "fbot", "fbot_event", "done",
-                 json.dumps({"type": "launch-perm", "detail": detail, "ref": ""}, ensure_ascii=False),
+                 json.dumps({"type": "launch-perm", "detail": detail, "ref": "",
+                             "label": f"기동 권한: {'우회(bypass)' if perm['mode'] == 'bypass' else perm['mode']}"[:120]},
+                            ensure_ascii=False),
                  bot_id, now))
             con.commit()
         finally:
@@ -1185,7 +1571,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="조직 선언 해소기 (Issue538)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("resolve", help="prj 조직 해소 (생략 시 본사)")
-    r.add_argument("--prj", type=int, default=None)
+    r.add_argument("--prj", type=prj_arg, default=None)
     sub.add_parser("list", help="선언된 조직 목록")
     nx = sub.add_parser("nonexec", help="봇이 비실행 관리직(총괄·팀장)인가 — true|false 한 줄 (prj3#Issue951 Stop 훅용)")
     nx.add_argument("--bot-id", default="")
@@ -1196,28 +1582,30 @@ def main(argv=None):
     sw = sub.add_parser("sweep", help="구성 판정 보고 — 휴직 전이 없음 (Issue689 에서 --apply 폐기)")
     sw.add_argument("--idle-days", type=int, default=None)
     fm = sub.add_parser("formed", help="팀 구성 판정 (Issue689) — 보드 표시 기준")
-    fm.add_argument("--prj", type=int, default=None)
+    fm.add_argument("--prj", type=prj_arg, default=None)
     db = sub.add_parser("disband", help="사용자 해산 — kv 에 시각 기록, career 불변 (Issue689)")
-    db.add_argument("--prj", type=int, required=True)
+    db.add_argument("--prj", type=prj_arg, required=True)
     db.add_argument("--by", default="")
     db.add_argument("--undo", action="store_true", help="해산 기록 삭제(즉시 재구성 판정)")
     db.add_argument("--apply", action="store_true")
     wk = sub.add_parser("wake", help="조직 부활 — 배분 발생 시 호출")
-    wk.add_argument("--prj", type=int, required=True)
+    wk.add_argument("--prj", type=prj_arg, required=True)
     wk.add_argument("--reason", default="")
     b = sub.add_parser("bind", help="개체를 자리에 결속")
     b.add_argument("--bot-id", required=True)
     b.add_argument("--seat-id", required=True)
-    b.add_argument("--prj", type=int, default=None)
+    b.add_argument("--prj", type=prj_arg, default=None)
     b.add_argument("--apply", action="store_true")
+    le = sub.add_parser("lead", help="prj → 팀장 bot_id·상태·결속 세션·전달 경로 — 타 prj 전달 조회 단일 지점 (prj3#Issue1113_3)")
+    le.add_argument("--prj", type=prj_arg, required=True)
     fr = sub.add_parser("find", help="직능 R 을 가진 prj·재직 개체 (prj3#Issue757 사다리 ②)")
     fr.add_argument("--role", required=True)
     ld = sub.add_parser("ladder", help="사다리 단 판정 cross·team·org·scout (prj3#Issue757 · prj3#Issue945)")
-    ld.add_argument("--prj", type=int, default=None)
+    ld.add_argument("--prj", type=prj_arg, default=None)
     ld.add_argument("--role", required=True)
     ld.add_argument("--by", default=None, help="요청 팀장 bot_id — 일의 prj 가 내 팀 밖이면 ⓪ cross(그 prj 팀장 인박스)")
     asx = sub.add_parser("add-seat", help="요청 prj 조직 선언에 자리 추가 — 생성·발굴 (prj3#Issue757)")
-    asx.add_argument("--prj", type=int, required=True)
+    asx.add_argument("--prj", type=prj_arg, required=True)
     asx.add_argument("--role", required=True)
     asx.add_argument("--dept", default="dev")
     asx.add_argument("--note", default="")
@@ -1226,8 +1614,16 @@ def main(argv=None):
     asx.add_argument("--continuity", default=None)
     asx.add_argument("--permission-mode", default=None)
     asx.add_argument("--permission-reason", default=None)
+    asx.add_argument("--agent", default=None, help="몸체를 띄울 agent 이름 — 로컬 <prj>/.claude/agents → 글로벌 순 (prj3#Issue1062)")
+    stl = sub.add_parser("staff-local", help="로컬 agent 로 prj 조직 일괄 구성 — 선언·자리 결속·직능 신설·PM 채용 (prj3#Issue1062)")
+    stl.add_argument("--prj", type=prj_arg, required=True)
+    stl.add_argument("--apply", action="store_true", help="생략 시 계획만(dry-run)")
     a = ap.parse_args(argv)
 
+    if a.cmd == "staff-local":
+        out = staff_local(a.prj, apply=a.apply)
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0 if out.get("ok") else 1
     if a.cmd == "nonexec":
         print("true" if bot_nonexec(a.bot_id) else "false")
         return 0
@@ -1236,6 +1632,9 @@ def main(argv=None):
         if a.audit and a.bot:
             audit_launch(a.bot, perm)
         print(perm["flags"])
+        return 0
+    if a.cmd == "lead":
+        print(json.dumps(lead_info(a.prj), ensure_ascii=False, indent=2))
         return 0
     if a.cmd == "find":
         print(json.dumps(find_role(a.role), ensure_ascii=False, indent=2))
@@ -1247,6 +1646,7 @@ def main(argv=None):
         ext = {k: v for k, v in {
             "checked_by": a.checked_by, "continuity": a.continuity,
             "permission_mode": a.permission_mode, "permission_reason": a.permission_reason,
+            "agent": a.agent,
         }.items() if v is not None}
         out = add_seat(a.prj, a.role, dept=a.dept, apply=a.apply, note=a.note, ext=ext)
         print(json.dumps(out, ensure_ascii=False, indent=2))

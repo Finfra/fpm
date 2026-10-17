@@ -80,6 +80,7 @@ normalize_path() {
 | 1-2  | `.gitignore`            | 템플릿: `___pm/data/template/gitignore`. 이미 존재 시 diff 후 누락분 추가 |
 | 1-3  | `CLAUDE.md`             | 미존재 시만 생성 (기존 커스텀 보존). 템플릿: 프로젝트명·타입 반영          |
 | 1-4  | `Issue.md`              | 미존재 시만 생성 (기존 커스텀 보존). 템플릿: `___pm/data/template/Issue.md` |
+| 1-4a | `Request.md`            | 업무 접수대장 — 미존재 시만 생성. 템플릿: `___pm/data/template/Request.md`(`{{프로젝트명}}`·`{{날짜}}` 치환). **git 미추적**: 1-2 `.gitignore` 템플릿의 `/Request.md`·`/_doc_work/request_OLD.md` 로 무시 — 커밋하지 않는다(prj3#Issue1096 · [request-rules](~/.claude/_doc_arch/rules-ondemand/request-rules.md)) |
 | 1-5  | `noteForHuman.md`       | 템플릿: `___pm/data/template/noteForHuman.md`                             |
 | 1-6  | `PROMPTS.md`            | 템플릿: `___pm/data/template/PROMPTS.md`. date 치환                       |
 | 1-7  | `Harness.md`            | 템플릿: `___pm/data/template/Harness.md` + 타입별 global layer 자동 채움  |
@@ -89,6 +90,7 @@ normalize_path() {
 | 1-11 | `_doc_arch/`            | 서브폴더 포함 생성: `z_old/` (미존재 시)                                  |
 | 1-12 | `projects/{번호}` 등록  | **정규화 후** `___pm/projects/{번호}` 파일에 경로 기록 (`$HOME` → `~` 치환 필수. 0-2 참조). 기존 pm에 이미 등록된 번호 중복 금지 |
 | 1-13 | `Projects.md` 업데이트  | 테이블 행 + setting Script echo 라인 추가                                 |
+| 1-13a | Project Map 트리 노드 | 위임 문구·청사진의 «트리 위치»(`{노드} 아래`) 그 자리 한 곳에만 1줄 — `sh/fpm-map-place.py --id … --text … --under …`. 지정 없으면 기반 prj 유무를 묻고, 없으면 goal_parent 그룹 아래. 트리 위치 ≠ goal_parent (pm 스킬 «Project Map 트리 배치», prj1#Issue626) |
 | 1-14 | initial commit          | 신규 git repo 인 경우만 수행 (기존 repo이면 스킵, 커밋 이력 유지)          |
 | 1-15 | `___pm/Harness.md` 등록 | 생성된 스킬·커맨드를 `___pm/Harness.md`의 해당 레이어에 기록              |
 | 1-16 | `pm-history.md` 기록    | `_doc_work/pm-history.md`에 실행 이력 append                              |

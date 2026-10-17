@@ -159,11 +159,13 @@ payloads:
         - lib/claude-pid.sh
         - lib/decision-question.py   # 질문 판정 단일 지점 (prj3#Issue749 · prj1#Issue561)
         - lib/fbot-ident.py   # 봇 신원 확인 — fbot-state·lead·inbox 가 import (prj3#Issue832 · prj1#Issue591)
+        - lib/fbot-prj.py   # prj id 판정 단일 지점(영숫자 9t) — 핀봇 훅이 import (prj3#Issue1061 · prj1#Issue628)
         - lib/hub-context.sh
         - lib/hub-instruction.py
         - lib/issue-completion.py   # 이슈 완료 판정 (번들 동기 반입)
         - lib/out-dir.sh   # 출력 폴더 해석 단일 지점 — ask-common·hub-context 가 source (prj3#Issue802 · prj1#Issue587)
         - lib/perm-relax-guard.py
+        - lib/py-resolve.sh   # SCAR python 해석 단일 지점(3.14 하한) — fbot-tick·worker-plist·worker-unit 이 source (prj3#Issue1117 · prj1#Issue642)
         - lib/schedule-core.py
         - lib/selection-shadow.sh
         - lib/session-end.py   # 퇴근 사유 판정 (prj1#Issue561 동반 반입)

@@ -11,6 +11,9 @@ revisions:
   - date: 2026.10.05
     mq: fbotev-1791126388-1e5a50eb
     note: 총괄 전결(fbot-chief-narae): origin 원본 절차 대조 반영 확인(본문 diff 검토) — C 총괄 전결
+  - date: 2026.10.12
+    mq: fbotev-1791732862-0068ce19
+    note: 총괄 전결(fbot-chief-narae): origin_drift 반영 — igsvg 라벨 원장·품질 게이트·완료 증적 '검증 게이트' 대조 일치 확인
 ---
 # 임무
 
@@ -18,7 +21,7 @@ revisions:
 
 # 작업 절차
 
-재료 원본은 [ig-maker agent](../../../agents/ig-maker.md)가 정본 — 순서 고정: AID 발급 → igpath `--ensure --by` → 적합성 게이트(`igsrc fit`) → `intake` → 없는 첫 단계부터 1~7. SVG 단계는 그려서 보고 겹침 린트 판단. 7단계는 `igsvg` + `ppt-check --theme --render`(`--theme` 생략=palette SKIP), 끝은 `igprog end`. 개선: 실측→개선안→재생성→비교.
+정본은 [ig-maker agent](../../../agents/ig-maker.md) — 순서 고정: AID 발급 → igpath `--ensure --by` → 적합성 게이트(`igsrc fit`) → `intake` → 없는 첫 단계부터 1~7. SVG 단계는 그려서 보고 겹침 린트 판단. 7단계는 `igsvg`(라벨 원장·품질 게이트) + `ppt-check --theme --render`(`--theme` 생략=palette SKIP), 끝은 `igprog end`. 개선: 실측→개선안→재생성→비교.
 
 delegate: agent:ig-maker × 장표 N (ig-selector 판정 후 페이지 병렬)
 
@@ -32,4 +35,4 @@ nptir 기본 — 개선은 이슈 단위. 단건 변환은 직행.
 
 # 완료 판정
 
-strict — 산출물이 파일이다. 증적: `7.pptx`+`7.svg` 존재 + 검증 스크립트 통과(도형 수·텍스트 매칭). 개선은 전후 비교 수치 필수.
+strict — 산출물이 파일이다. 증적: `7.pptx`+`7.svg` 존재 + 검증 게이트 통과. 개선은 전후 비교 수치 필수.

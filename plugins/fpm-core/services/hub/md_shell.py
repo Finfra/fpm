@@ -26,6 +26,7 @@ import html
 import json
 import re
 import secrets
+from urllib.parse import quote
 
 # 핀 고정 CDN — mermaid 는 server.py MERMAID_RUNTIME 도 이 값을 쓴다(Issue569 단일 출처)
 CDN_MARKED = "https://cdn.jsdelivr.net/npm/marked@12.0.2/lib/marked.umd.min.js"
@@ -93,6 +94,9 @@ def csp_header(nonce: str) -> str:
         "img-src * data: blob:; "
         "font-src https://cdn.jsdelivr.net data:; "
         "connect-src 'self'; "
+        # Issue634: 문서 상단 이슈맵 패널(`/issue-map` iframe)용 — 같은 출처만. `frame-ancestors *`(이 문서를
+        #   남이 품는 쪽)와는 별개 지시어다.
+        "frame-src 'self'; "
         "base-uri 'none'; form-action 'self'; frame-ancestors *"
     )
 
@@ -136,7 +140,92 @@ hr { border: none; border-top: 1px solid #d8dee4; margin: 1.6em 0; }
   blockquote { border-color: #333b45; color: #8b949e; }
   hr { border-color: #333b45; }
 }
+/* Issue634: 헤더 🗺️ 버튼의 풍선 — 이슈맵 그림 + 이동 버튼. 위치는 IM_POP_JS 가 버튼 기준으로 잡는다 */
+.im-pop { display: inline-flex; }
+.im-pop-panel { display: none; position: fixed; z-index: 200; padding: .5rem;
+  background: #ffffff; color: #24292f; border: 1px solid #d0d7de; border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0,0,0,.22); }
+.im-pop.open .im-pop-panel { display: block; }
+.im-pop-panel iframe { display: block; width: 100%; height: min(60vh, 460px); border: 0;
+  border-radius: 6px; background: #fff; }
+.im-pop-panel .im-pop-go { display: block; margin-top: .5rem; padding: .45rem .8rem;
+  text-align: center; border-radius: 6px; background: #0969da; color: #fff;
+  font-size: .9rem; font-weight: 600; text-decoration: none; }
+.im-pop-panel .im-pop-go:hover { background: #0550ae; text-decoration: none; }
+@media (max-width: 600px) { .im-pop-panel iframe { height: 45vh; } }
+@media (prefers-color-scheme: dark) {
+  .im-pop-panel { background: #22272e; color: #d7dde3; border-color: #333b45; }
+}
 """
+
+# Issue634: 풍선 동작 — hover 로 열고(떠나면 300ms 뒤 닫힘, 그 사이 풍선으로 옮겨 갈 수 있게), 클릭은 고정 토글
+#   (터치 기기). iframe 은 **처음 열 때** src 를 붙인다 — display:none iframe 은 lazy 여도 Chrome 이 즉시 로드하므로
+#   모든 문서가 열릴 때마다 `/issue-map`(맵 부재 시 생성까지)을 부르게 된다. 바깥 클릭·Esc 로 닫는다.
+IM_POP_JS = """(function () {
+  var pop = document.querySelector('.im-pop');
+  if (!pop) return;
+  var btn = pop.querySelector('.im-pop-btn'), panel = pop.querySelector('.im-pop-panel'),
+      frame = panel.querySelector('iframe'), timer = null, pinned = false;
+  function place() {
+    var r = btn.getBoundingClientRect(), vw = document.documentElement.clientWidth;
+    var w = Math.min(720, vw - 24);
+    panel.style.width = w + 'px';
+    panel.style.top = Math.round(r.bottom + 6) + 'px';
+    panel.style.left = Math.round(Math.max(12, Math.min(r.right - w, vw - w - 12))) + 'px';
+  }
+  // 그림 높이에 맞춘다(같은 출처) — 상한은 CSS 높이(60vh·460px). 큰 맵은 풍선 안에서 스크롤.
+  function fit() {
+    try {
+      var h = Math.ceil(frame.contentDocument.body.getBoundingClientRect().height);
+      if (h > 0) frame.style.height = Math.min(h, Math.round(window.innerHeight * 0.6), 460) + 'px';
+    } catch (e) {}
+  }
+  frame.addEventListener('load', fit);
+  function open() {
+    clearTimeout(timer);
+    if (!frame.getAttribute('src')) frame.setAttribute('src', frame.getAttribute('data-src'));
+    place();
+    pop.classList.add('open');
+    btn.setAttribute('aria-expanded', 'true');
+    fit();
+  }
+  function close() {
+    pinned = false;
+    pop.classList.remove('open');
+    btn.setAttribute('aria-expanded', 'false');
+  }
+  pop.addEventListener('mouseenter', open);
+  pop.addEventListener('mouseleave', function () { if (!pinned) timer = setTimeout(close, 300); });
+  btn.addEventListener('click', function (e) {
+    e.preventDefault();
+    if (pinned) { close(); } else { open(); pinned = true; }
+  });
+  document.addEventListener('click', function (e) { if (!pop.contains(e.target)) close(); });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') close(); });
+  window.addEventListener('resize', function () { if (pop.classList.contains('open')) place(); });
+})();"""
+
+
+def render_issue_map_pop(cwd: str, label: str = "") -> str:
+    """Issue634: 헤더 🗺️ 버튼 + 풍선(이슈맵 그림 + «이슈맵으로 이동») 마크업.
+
+    `cwd` 는 호출자가 `_issue_map_openable` 로 판정한 **프로젝트 루트**다(빈 값 = 버튼 없음).
+    셸은 재판정하지 않는다 — «열 수 있는가» 는 서버 판정 단일 지점의 몫(prj3#Issue818).
+    풍선 iframe 은 `embed=1`(그림만) 판이고 src 는 IM_POP_JS 가 처음 열 때 붙인다.
+    """
+    if not cwd:
+        return ""
+    name = html.escape(label or cwd.rstrip("/").rsplit("/", 1)[-1] or cwd)
+    full = "/issue-map?cwd=" + quote(cwd, safe="")
+    return (
+        '<div class="im-pop">'
+        f'<button type="button" class="im-pop-btn" title="{name} 이슈맵" aria-label="{name} 이슈맵" '
+        'aria-haspopup="dialog" aria-expanded="false">\U0001F5FA\uFE0F</button>'
+        f'<div class="im-pop-panel" role="dialog" aria-label="{name} 이슈맵">'
+        f'<iframe data-src="{full}&amp;embed=1" title="{name} 이슈맵"></iframe>'
+        f'<a class="im-pop-go" href="{full}">\U0001F5FA\uFE0F 이슈맵으로 이동</a>'
+        "</div></div>"
+    )
 
 # Issue569: hub mermaid 안전 렌더 — md 셸(RENDER_JS)과 htm 런타임(server.MERMAID_RUNTIME)이
 #   **같은 한 벌**을 싣는다. 전역 window.hubMermaid = {quoteLabels, plan, run}.
@@ -435,8 +524,27 @@ if(j.uri){if(j.folder_uri){try{window.open(j.folder_uri);}catch(_){}}window.loca
 })();"""
 
 
+# Issue616_4: 사람이 보는 페이지 간 공통 내비 — 페이지마다 헤더가 달라 /mq 에는 hub 복귀 링크도 없었다.
+#   마크업 한 벌을 /mq·md 셸(sched-log 포함)이 같이 쓴다. 항목을 늘리면 여기 한 곳만 고친다.
+HUB_NAV_ITEMS = (
+    ("hub", "/hub", "\U0001F3E0 Hub", "hub 홈 — 세션·문서·피드"),
+    ("mq", "/mq", "\U0001F4EE 예약 큐", "예약 큐·스케줄·잡 관리"),
+    ("fbot-map", "/fbot-map", "\U0001F916 핀봇", "핀봇 조직도·배분 현황"),
+)
+
+
+def hub_nav(current: str = "") -> str:
+    """공통 내비 `<nav class="hub-nav">`. current 와 같은 key 항목에 aria-current=page."""
+    links = []
+    for key, href, label, tip in HUB_NAV_ITEMS:
+        cur = ' aria-current="page"' if key == current else ""
+        links.append(f'<a href="{href}" title="{html.escape(tip)}"{cur}>{label}</a>')
+    return '<nav class="hub-nav" aria-label="hub 페이지 이동">' + "".join(links) + "</nav>"
+
+
 def render_header(title: str, proj_cwd: str, proj_label: str, sid: str = "",
-                  editor: str = "vscode", can_open: bool = True) -> str:
+                  editor: str = "vscode", can_open: bool = True,
+                  issue_map_cwd: str = "") -> str:
     """canonical hub 헤더 마크업 (`_synthesize_hub_header` 와 동일 구조·클래스).
 
     htm 경로는 저작 문서에 헤더가 없을 때 서버가 첫 `<h1>` 을 승격해 합성하지만,
@@ -451,6 +559,8 @@ def render_header(title: str, proj_cwd: str, proj_label: str, sid: str = "",
     """
     label = html.escape(proj_label or "project")
     cwd_esc = html.escape(proj_cwd or "")
+    im_pop = render_issue_map_pop(issue_map_cwd, proj_label)   # Issue634 — 빈 값이면 ""
+    im_pop = f"    {im_pop}\n" if im_pop else ""
     sess = ""
     if sid:
         sid_esc = html.escape(sid)
@@ -471,7 +581,9 @@ def render_header(title: str, proj_cwd: str, proj_label: str, sid: str = "",
         '  <a class="hub-link" href="/hub" target="fpm-hub" title="통합 모니터링 Hub">'
         '<img src="/fpm-icon.png" alt="Hub" style="height:1.2em;vertical-align:-0.25em;"></a>\n'
         f"  <h1>{html.escape(title or 'hub md doc')}</h1>\n"
+        f"  {hub_nav()}\n"
         '  <nav class="header-actions">\n'
+        f"{im_pop}"
         f'    <a class="proj-badge" href="#" title="클릭 → 에디터로 {label} 열기" '
         f'data-cwd="{cwd_esc}">\U0001F4C1 {label}</a>\n'
         f"{sess}"
@@ -832,14 +944,15 @@ LIVE_JS = """
 def render_live_shell(title: str, proj_cwd: str, proj_label: str, sid: str,
                       cwd_hash: str, token: str, nonce: str,
                       display: str = "auto", degrade: dict = None,
-                      editor: str = "vscode", can_open: bool = True) -> bytes:
+                      editor: str = "vscode", can_open: bool = True,
+                      issue_map_cwd: str = "") -> bytes:
     """Issue353_2 M2-c: 라이브 뷰 셸 — 아카이브 셸과 **동일한 CSS·렌더 파이프라인**.
 
     `SHELL_CSS` 와 `RENDER_JS`(`window.hubRenderMd`)를 그대로 재사용하고 라이브 전용
     CSS·폴러만 덧댄다. 셸을 2벌로 만들면 스타일 드리프트가 서버 안에서 재발한다.
     """
     t = html.escape(title or "라이브 세션")
-    header = render_header(title, proj_cwd, proj_label, sid, editor, can_open)
+    header = render_header(title, proj_cwd, proj_label, sid, editor, can_open, issue_map_cwd)
     degrade = degrade or {}
     cfg = json.dumps({
         "mail": f"/s/{cwd_hash}/{sid}/mail?token={token}",
@@ -877,6 +990,7 @@ def render_live_shell(title: str, proj_cwd: str, proj_label: str, sid: str,
 <script src="{CDN_MERMAID}"></script>
 <script nonce="{nonce}">{RENDER_JS}</script>
 <script nonce="{nonce}">{HEADER_JS}</script>
+<script nonce="{nonce}">{IM_POP_JS}</script>
 <script nonce="{nonce}">{LIVE_JS}</script>
 </body>
 </html>"""
@@ -885,8 +999,12 @@ def render_live_shell(title: str, proj_cwd: str, proj_label: str, sid: str,
 
 def render_md_shell(md_text: str, title: str, doc_abs: str, nonce: str,
                     proj_cwd: str = "", proj_label: str = "",
-                    editor: str = "vscode", can_open: bool = True) -> bytes:
+                    editor: str = "vscode", can_open: bool = True,
+                    issue_map_cwd: str = "") -> bytes:
     """md 아카이브 문서용 완성 셸 HTML.
+
+    Issue634: `issue_map_cwd`(서버가 `_issue_map_openable` 로 판정한 프로젝트 루트)를 주면
+    헤더에 🗺️ 버튼(풍선 = 이슈맵 그림 + 이동)을 싣는다. 빈 값이면 버튼 없음.
 
     md 원문은 JSON 문자열(`<` 이스케이프)로만 실린다 — serve 시점 마크업 불가침.
     frontmatter 는 본문에서 분리한다(marked 가 YAML 을 모르므로 떼지 않으면
@@ -899,7 +1017,8 @@ def render_md_shell(md_text: str, title: str, doc_abs: str, nonce: str,
     md_json = md_json.replace("<", "\\u003c")
     t = html.escape(title)
     doc_json = json.dumps(doc_abs).replace("<", "\\u003c")
-    header = render_header(title, proj_cwd, proj_label, meta.get("sid", ""), editor, can_open)
+    header = render_header(title, proj_cwd, proj_label, meta.get("sid", ""), editor, can_open,
+                           issue_map_cwd)
     page = f"""<!doctype html>
 <html lang="ko">
 <head>
@@ -921,6 +1040,7 @@ def render_md_shell(md_text: str, title: str, doc_abs: str, nonce: str,
 <script src="{CDN_MERMAID}"></script>
 <script nonce="{nonce}">{RENDER_JS}</script>
 <script nonce="{nonce}">{HEADER_JS}</script>
+<script nonce="{nonce}">{IM_POP_JS}</script>
 <script nonce="{nonce}">
 (function () {{
   var md = JSON.parse(document.getElementById('md-src').textContent);

@@ -42,6 +42,26 @@ _HOOKS_SELF="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 STATE_PY="$_HOOKS_SELF/fbot-state.py"
 HANDOFF="$CLAUDE_DIR/.fbot-handoff/$FBOT_ID.json"
 
+# --- 몸체가 아닌 세션의 종료는 퇴근이 아니다 (prj3#Issue1042) -----------------------
+# `FBOT_ID` 는 «스폰 시점 결속 신호» 인데 env 는 상속된다 — 봇 몸체가 띄운 `claude -p` 자식도 같은 신호를 달고 종료한다.
+#   출근 훅은 그 자식을 거부했지만(Issue959·fbot-checkin.sh) 이 훅은 FBOT_ID 만 보고 돌아 **살아 있는 몸체의 봇을 퇴근시키고**
+#   kv `last_session_id`·세션 기록·배분 잠금을 덮었다(2026-10-09 실측). 상태가 checkout 이 되자 후속 자식 3개는 출근 사전 가드
+#   (③ working)를 통과해 결속·defer 했다. 출근과 퇴근의 판정이 갈라져 한쪽만 갱신된 자리다.
+# 몸체가 «아님» 이 확정될 때만 물러난다 — ① 레코드에 다른 세션이 결속돼 있고 ② 이 세션의 마커(sid-<SID>.id)가 없고
+#   ③ 이 봇의 열린 몸체 원장에도 없다. 판정 불능(sid·레코드·sqlite3 부재)은 종전대로 퇴근한다(fail-open — 퇴근 누락이 더 나쁘다).
+_CO_SID="${CLAUDE_CODE_SESSION_ID:-}"
+[ -n "$_CO_SID" ] || _CO_SID="$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)"
+if [ -n "$_CO_SID" ] && [ -f "$DB" ] && [ ! -f "$CLAUDE_DIR/.fbot-handoff/sid-$_CO_SID.id" ]; then
+  _co_bot="${FBOT_ID//\'/\'\'}"; _co_sid="${_CO_SID//\'/\'\'}"
+  _co_bound="$(sqlite3 -cmd ".timeout 2000" "$DB" "SELECT COALESCE(session_id,'') FROM bot WHERE bot_id='$_co_bot';" 2>/dev/null)"
+  if [ -n "$_co_bound" ] && [ "$_co_bound" != "$_CO_SID" ] \
+     && [ -z "$(sqlite3 -cmd ".timeout 2000" "$DB" "SELECT 1 FROM job WHERE kind='fbot_body' AND status='open' AND owner='$_co_bot' AND json_extract(payload,'\$.session_id')='$_co_sid' LIMIT 1;" 2>/dev/null)" ]; then
+    printf '%s\tbot=%s\tbound_sid=%s\tcur_sid=%s\tcwd=%s\tskip=checkout-nonbody\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$FBOT_ID" "$_co_bound" "$_CO_SID" "$PWD" \
+      >> "${FBOT_BIND_REJECT_LOG:-$CLAUDE_DIR/data/fbot/bind-reject.log}" 2>/dev/null
+    exit 0
+  fi
+fi
+
 # kv flush + 작업 기록 append 를 **python3 1회**로 묶는다.
 #   따로 돌리면 프로세스 기동(~40ms)을 두 번 물고, SQL 문자열 이스케이프를 셸에서
 #   손으로 하게 되어 주입 위험이 생긴다. 파라미터 바인딩이 있는 쪽으로 모은다.

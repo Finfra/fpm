@@ -10,7 +10,7 @@
 #   서버 down 시 fail-loud — paste-back fallback 없음.
 #
 # 동작:
-#   - .hub-active/<hash> 플래그 없음 or effective=off → 통과 (exit 0) [Issue283]
+#   - .hub-active/<hash> 플래그 없음 → 통과 (exit 0) [Issue283]. 플래그는 effective=off 도 이긴다 [Issue1015 ③]
 #   - 플래그 있음 + healthz 200 + /register OK → deny + form 자동 회수 지시 주입
 #   - 플래그 있음 + 서버 실패                 → deny + 서버 재시작 안내 + 종료 옵션 제시
 #   - Mode C(Live Dashboard) 는 본 hook 영향 받지 않음 (별도 dashboard agent)
@@ -75,15 +75,22 @@ _ask_zed_plain() {
   exit 0
 }
 
-FLAG_MODE=$(hub_flag_file "$cwd")
+# prj3#Issue975: 판정 순서 — effective(walk-up) 먼저, 플래그는 조상까지 찾는다(hub_flag_find). 하위 폴더 cwd 에서
+#   정확 해시 플래그가 없다는 이유만으로 통과하던 갈라짐 제거. off 면 md5 walk-up 없이 곧장 무음 경로.
+# prj3#Issue1015 ③ — 플래그가 effective 보다 앞선다. 트리거(fpm-hub-trigger.sh)는 hub 가 off 인 턴마다 플래그를
+#   지우므로, off + 플래그 = 이 턴의 명시 `..ask`(1회성 진입, Issue283) 뿐이다. 명시 요청은 그 턴의 effective off 를 이긴다.
+#   종전엔 effective off 를 먼저 보고 빠져 hub off 폴더에서 `..ask` 가 구조적으로 불능이었다(Zed 는 평문 거부까지).
+FLAG_MODE=$(hub_flag_find "$cwd")
 if [ ! -f "$FLAG_MODE" ]; then
   _ask_zed_plain
   _ask_say
 fi
-if [ "$(hub_effective "$cwd")" = "off" ]; then
-  _ask_zed_plain
-  _ask_say
-fi
+
+# prj3#Issue1004 ② — 이 세션에서 폼 회수가 한 번 시간 초과(124)했으면 사람이 폼을 보고 있지 않다는 뜻이다.
+#   같은 세션의 다음 AskUserQuestion 은 가로채지 않고 통과시켜 네이티브 질문으로 간다(재질문이 또 20분 막히던 실발생).
+#   표지는 폴링 명령(아래 §4)이 124 일 때 남긴다 — 파일명은 세션 ID(영숫자·_- 외는 _ 로).
+ASK_TIMEOUT_MARK="${HUB_ASK_TIMEOUT_DIR:-$HOME/.claude/.hub-ask-timeout}/${HOOK_SESSION_ID//[^A-Za-z0-9_-]/_}"
+[ -n "${HOOK_SESSION_ID:-}" ] && [ -e "$ASK_TIMEOUT_MARK" ] && exit 0
 
 # prj3#Issue545 — 번들(플러그인) 설치본은 ~/.claude/hooks/lib 가 없다. 자기 옆의 lib/ 로 폴백한다
 FPM_LIB_DIR="$HOME/.claude/hooks/lib"
@@ -191,6 +198,7 @@ QUESTIONS_JSON="$questions_json" \
   RENDER_HOST="$RENDER_HOST" \
   RENDER_TARGET="$RENDER_TARGET" \
   HUB_LINK_TARGET="$HUB_LINK_TARGET" \
+  ASK_TIMEOUT_MARK="$ASK_TIMEOUT_MARK" \
   python3 <<'PYEOF'
 import json, os, urllib.parse, shlex
 
@@ -204,6 +212,7 @@ server_port = os.environ.get('SERVER_PORT', '9876')
 server_token = os.environ.get('SERVER_TOKEN', '')
 cwd_hash = os.environ.get('CWD_HASH', '')
 inbox_dir = os.environ.get('INBOX_DIR', '')
+ask_timeout_mark = os.environ.get('ASK_TIMEOUT_MARK', '')   # prj3#Issue1004 ②
 cwd = os.environ.get('PROJECT_CWD', '')
 open_cmd = os.environ.get('HTM_OPEN_CMD', 'open -g -a Firefox')
 cwd_q = urllib.parse.quote(cwd) if cwd else ''
@@ -425,7 +434,9 @@ if a_pair:
            "-d '{\"path\":\"" + a_pair + "\",\"ask\":\"<M2 가 출력한 ASK_ID 값>\"}'\n```\n"
            if render_target == 'vscode' else
            "```bash\n" + f'{open_cmd} "<M2 가 출력한 ASK_URL 값>"' + "\n```\n")
-        "   - §3 채팅 안내의 4번 `저장 경로` 는 b 파일이 없으므로 **이 URL** 로 대체한다\n\n"
+        # prj3#Issue975: 위 ternary 괄호 뒤 `+` 누락 — 괄호식에 문자열 리터럴이 바로 붙어 SyntaxError.
+        #   prj3#Issue500(2026-09-01)부터 폼 생성 python 이 통째로 죽어 hook 이 무출력 통과 → 네이티브 다이얼로그.
+        + "   - §3 채팅 안내의 4번 `저장 경로` 는 b 파일이 없으므로 **이 URL** 로 대체한다\n\n"
         "**M-fallback. 서버 미기동·`/ask-register` 실패 시** (조용한 실패 금지 — 셋 다 수행):\n"
         "   1. 아래 §1·§2 의 **b 폼 문서 경로를 그대로 수행**(종전 동작). 맥락 문서는 링크로 병기: "
         f"`{_p}`\n"
@@ -487,6 +498,11 @@ reason = (
     "**1. HTML form 생성** (:9876 hub URL 로 띄움 — Issue172):\n"
     "   - 각 question 을 `<fieldset class=\"q-card\" data-question=\"...\">` 카드로 표시\n"
     "   - `multiSelect: false` → radio, `multiSelect: true` → checkbox\n"
+    "   - **보기 `preview` (prj3#Issue975)**: `multiSelect: false` 질문의 보기 중 하나라도 `preview` 가 있으면 그 카드를 "
+    "`<div class=\"q-preview-grid\">` 안에 «보기 목록 | `<pre class=\"q-preview\">`» 2단 grid 로 만든다"
+    "(`display:grid;grid-template-columns:1fr 1fr;gap:.8em` · `@media (max-width:640px)` 에서 1단). "
+    "각 보기 `<input>` 에 `data-preview=\"<preview 텍스트(HTML 이스케이프)>\"` 를 둔다 — 템플릿 JS 가 focus·change·mouseenter 로 패널을 갱신하고 "
+    "초기값은 첫 보기다. `multiSelect: true` 질문과 `preview` 없는 질문은 종전 렌더 그대로(회수 계약 `collectAnswers` 불변)\n"
     "   - '기타 (직접 입력)' `<input type=\"text\" class=\"q-other\">` 추가\n"
     "   - **자유 텍스트 보조 입력 (Issue43)**: 옵션 외 자유 응답 필요 시 동일 카드에 `<textarea class=\"q-textarea\" placeholder=\"...\">` 추가 — collectAnswers 가 textarea 값을 answers 에 합산\n"
     "   - **`<button id=\"submit-btn\">전송</button>`** (주 액션)\n"
@@ -504,7 +520,8 @@ reason = (
     f"  4. 저장 경로: `📁 {ask_path}`\n"
     "   5. 답변 방법: '폼 사용. 브라우저 부재 시 채팅에 A/B/번호/자유 텍스트 입력 가능.'\n"
     "   (사유: 브라우저 표시 안 됐을 가능성(Firefox 강제 종료·hidden·미설치·원격 SSH·다른 데스크톱) 항상 가정 — **채팅 fallback 텍스트가 1차 채널**, 폼은 보조. 채팅만 읽어도 질문·옵션 파악 + 답변 가능해야 함. Issue60)\n\n"
-    "**4. 답변 polling (Bash, 본 turn 종료 전 실행)**:\n"
+    "**4. 답변 polling (Bash `run_in_background: true`, 그 뒤 턴을 끝낸다 — prj3#Issue1004)**:\n"
+    "   폴링을 포그라운드로 돌리면 그동안 채팅 입력이 막힌다 — 반드시 백그라운드로 걸고 §3 채팅 안내 직후 **턴을 끝낸다**:\n"
     "   ```bash\n"
     f"  HTM_Q1={q1_quoted} HTM_SID={sid_quoted} timeout 600 sh -c '\n"
     "    while :; do\n"
@@ -515,12 +532,14 @@ reason = (
     "        done\n"
     "      done\n"
     "      sleep 2\n"
-    "    done'\n"
+    "    done'; rc=$?\n"
+    f"  [ $rc -eq 124 ] && {{ mkdir -p {shlex.quote(os.path.dirname(ask_timeout_mark))} && : > {shlex.quote(ask_timeout_mark)}; }}; exit $rc\n"
     "   ```\n"
     f"   - inbox: `{inbox_dir}` — Issue90 sid 격리: `$HTM_SID` 서브폴더 우선 탐색 → flat fallback, 양쪽 첫 질문 시그니처 `HTM_Q1` 매칭\n"
     "   - 위 명령은 본 폼 응답 json **하나만** 출력. 다른 세션 폼 json 은 sid 서브폴더 분리 또는 `HTM_Q1` 미포함으로 skip(미접촉)\n"
-    "   - 발견 시 Read → JSON 파싱 → answers 추출 → `rm` 삭제 → AskUserQuestion answers 형식으로 흐름 재개\n"
-    "   - **타임아웃 10분 (Issue61)**. 시간 초과 시 사용자에게 다음 양식으로 채팅 답변 부탁:\n"
+    "   - **채팅 답 우선**: 폼 완료 알림이 오기 전에 사용자가 채팅으로 답하면 그것이 정본이다 — 백그라운드 폴링을 TaskStop 으로 끄고 그 답으로 진행\n"
+    "   - 폼 완료 알림(stdout=json 경로)이 오면 Read → JSON 파싱 → answers 추출 → `rm` 삭제 → AskUserQuestion answers 형식으로 흐름 재개\n"
+    "   - **타임아웃 10분 (Issue61)**: 알림이 exit 124 면 위 명령이 이 세션의 시간 초과 표지를 남겼다 — **이후 같은 세션의 AskUserQuestion 은 가로채지 않고 네이티브 질문으로 통과한다**. 사용자에게 다음 양식으로 채팅 답변 부탁:\n"
     "     ```\n"
     "     ⚠️ 폼 '전송' 버튼은 더 이상 회수 안 됨 (Claude polling 만료). 채팅에 JSON paste 부탁:\n"
     "     [{\"question\":\"Q1 텍스트\",\"answers\":[\"선택값1\"]}, {\"question\":\"Q2 텍스트\",\"answers\":[\"선택값2\"]}]\n"

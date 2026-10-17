@@ -13,7 +13,10 @@ skill: "fpm-pm-do"
 /fpm-do --auto-deps [IssueN]
 /fpm-do --no-wait <prj번호> "<명령>"
 /fpm-do --status <prj번호>
+/fpm-do --approve publish <prj번호> "<명령>"
 ```
+
+* `--approve publish` (prj3#Issue995) — 사용자가 **게시를 명시 승인**했을 때만 붙인다. 없으면 위임 세션은 안전 hook 의 «게시 금지» 로 기록만 남기고 끝난다(발행 창구 prj4 위임도 같다). 배포·결제·원격 동기화는 위임으로 승인하지 않는다
 
 # 실행 모드 (Issue299)
 
@@ -32,8 +35,10 @@ skill: "fpm-pm-do"
 5. 명령 변환: `이슈N 해결` → `/issue-fix{suffix} N` (스킬의 `resolve_cmd` 규칙)
 6. 사용자 컨펌: 위임 계획(대상 prj, 명령, 타임아웃) 출력 후 진행 승인
 7. tmux 위임: cdf로 윈도우 확보 → Claude 띄움(필요 시) → 명령 전달
-8. `--no-wait` 아니면 폴링: 60초 간격, 30분 타임아웃
+8. `--no-wait` 아니면 폴링: 60초 간격, 30분 타임아웃 (이슈 번호 없는 자유 명령은 exit code + JSON 판정 · 마감 초과 시 몸체 kill — Issue979_3)
 9. 완료 hash 회수 → stdout 보고
+
+* 업무 접수 위임(`"Req<N> 처리"`, Issue1096)은 대상 prj `Request.md` `# ✅ 완료` 에서 같은 규칙으로 판정·회수한다 (명시 `Issue<N>` 우선 · 판정 단일 지점 `hooks/lib/issue-completion.py` `ledger_file`, `~/.bin/fpm-do` `ledger_select` 가 `LEDGER_FILE`/`LEDGER_PFX` 결정 — [request-rules](../_doc_arch/rules-ondemand/request-rules.md))
 
 # 상세
 

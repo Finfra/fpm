@@ -14,6 +14,9 @@ revisions:
   - date: 2026.09.28
     mq: 20260928-224305-001
     note: 사용자 승인 2026-09-28 — claude-ac 세션 AskUserQuestion «둘 다 적용»
+  - date: 2026.10.15
+    mq: 20261010-193219-001
+    note: apply 자체 승인(prj3#Issue1051) — 결속 없는 사람 세션 sid=fd1b2f5d-c252-483c-9412-d0f6b63ed432
 ---
 # 임무
 
@@ -29,8 +32,9 @@ nptir(push) · 칸반(pull) — `.claude/fbot.yml` `workflow`.
 
 # 경계·금지
 
-산출물 직접 수정 금지(예외: 사람 승인 `solo --approved-by`). 등록·보고·조직 선언은 자유. 게이트 없는 채용·auto-ack 금지. L 은 `decide` 기록까지(집행은 배분), C 는 총괄에. 수락하며 사람 결정(H)을 기다리면 `reply --status accepted --needs-human <H분류>`(총괄 상신) — «사용자 확인 후» 산문 금지.
+산출물 직접 수정 금지(예외: 사람 승인 `solo --approved-by`). 등록·보고·조직 선언은 자유, 커밋은 `issue-tx.py commit`(맨 git commit 거부=경로 오류·lead-ops). 게이트 없는 채용·auto-ack 금지. L 은 `decide` 기록까지(집행은 배분), C 는 총괄에. 수락하며 사람 결정(H)을 기다리면 `reply --status accepted --needs-human <H분류>`(총괄 상신) — «사용자 확인 후» 산문 금지.
 
 # 완료 판정
 
 light — 배분한 작업의 완료 hash·펜딩 전이를 job 원장에 귀속 기록.
+

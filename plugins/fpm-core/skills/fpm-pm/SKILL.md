@@ -131,7 +131,7 @@ ___pm/
 | `{{설명}}`       | `설명` 컬럼 전문                |
 | `{{날짜}}`       | 생성일 `YYYY.MM.DD`             |
 | `{{prj}}`        | 발급 번호 (`id`)                |
-| `{{goal_parent}}`| `Projects.md` `# Project Map` 트리의 **부모 노드명** |
+| `{{goal_parent}}`| **목적 축 그룹 노드명** — 트리 위치와 별개다(아래 «Project Map 트리 배치») · 정본 prj6 `project-identity-scheme.md` `goal_parent` 절 |
 | `{{lifetime}}`   | `finite` / `perpetual` — 아래 판정표 |
 
 * 프로젝트 성격이 파악되면 `## 목적`·`## 폴더 구조`·`## 불변식` 섹션을 실제 내용으로 보강 (generic stub 방치 금지).
@@ -156,7 +156,7 @@ ___pm/
 | :--- | :--- |
 | `prj` — 발급 번호 | `identity` — 지금 무엇인가 |
 | `status: active` | `not` — 무엇이 아닌가 |
-| `goal_parent` — 부모를 정하고 만드므로(조항 2) | `outcome` — 기대 성과 |
+| `goal_parent` — 목적 축 그룹을 정하고 만드므로(조항 2) | `outcome` — 기대 성과 |
 | `lifetime` — 아래 판정으로 대개 자명 | `deadline` — 판정 시점 |
 
 * 🔑 **모르는 필드는 추측해서 채우지 않는다. 비워 둔다.** `Identity.md` 에 `⚠️ 미기재` 로 노출되는 편이 낫다 — **틀린 값은 빈 값보다 나쁘다.** 한 번 박히면 아무도 다시 안 읽고, 집계표에서 채워진 것처럼 보여 **미기재 신호 자체가 죽는다**
@@ -168,6 +168,34 @@ ___pm/
 | `perpetual` | 제품(fApp) · 인프라(prj1·3·5·6) · 라이브러리 — **살아 있는 동안 목표를 갈아 끼우는 것** |
 
 * 생성 후 `sh/fpm-identity-collect` 를 실행해 [Identity.md](../../../Identity.md) 에 새 prj 가 나타나는지 확인한다
+
+# Project Map 트리 배치 (Issue626)
+
+**생성 직후의 `/projects-map` 이 곧 최종 모습이어야 한다** — 사후 이동 0회. 종전 절차에는 트리에 노드를 넣는 단계가 없었고, `{{goal_parent}}` 를 «트리의 부모 노드명» 으로 적어 두어 트리 위치와 같은 값으로 읽혔다. 9t fTyping 은 생성(`265af49b`) 때 «프로모션» 아래 놓였다가 사용자가 «25 fSnippetCli 아래» 로 옮겼다.
+
+| 축 | 묻는 것 | 값 | 소유 |
+| :--- | :--- | :--- | :--- |
+| **트리 위치** | 무엇에 **기대어** 있는가 — 엔진·데이터를 물려받는 기반 prj | 프로젝트 항목(`25`) 또는 그룹 | `Projects.md` `# Project Map` |
+| **`goal_parent`** | 무엇을 **위해** 있는가 — 목적 축 | 그룹 노드명만(`프로모션`·`App 개발`) | L1 아이덴티티 |
+
+* 둘이 갈려도 정상이다 — 9t 는 트리상 `25` 아래(fApp 서브맵)이면서 `goal_parent: 프로모션`
+* 🔑 **한 곳에만 둔다** — 기반 prj 가 있으면 그 항목 아래에만, 없으면 `goal_parent` 그룹 아래에만. `goal_parent` 그룹에 사본을 두지 않는다. 기존 다중 부모 노드(`42 m2slide`)는 대상 아님
+
+## 절차 — `pm-new` 1-13a
+
+1. **트리 위치를 읽는다** — 위임 문구·청사진(prj6 `blueprint.md` «트리 위치» 행)의 `{노드} 아래`
+2. 지정이 없으면 **기반 prj 유무를 묻는다**(*"이 프로젝트가 엔진·데이터를 물려받는 기반 prj 가 있나요?"*). 없다고 하면 `goal_parent` 그룹 아래
+3. 집행자로 넣는다 — 들여쓰기·하위 끝 위치·중복 판정을 손으로 하지 않는다
+
+```bash
+sh/fpm-map-place.py --id 9t --text "🎮⌨️ fTyping : fSnippet 홍보 게임" --under 25 --dry-run   # 위치 확인
+sh/fpm-map-place.py --id 9t --text "🎮⌨️ fTyping : fSnippet 홍보 게임" --under 25             # 반영
+```
+
+* `--under <id>` 는 프로젝트 항목 하위 끝(+2 들여쓰기), `--under <그룹>` 은 `### <그룹>` 서브맵 끝 또는 맵 안 그룹 노드 하위 끝
+* rc `2` = 이미 맵에 있는 id(사본 금지) · rc `1` = 부모 없음 또는 **모호**(부모가 다중 부모 노드라 두 곳에 있음) — 모호하면 사람이 위치를 정한다
+* `:` 뒤는 설명이 아니라 **목적**이다 — 표기 규칙 [`_doc_arch/projects-map-design.md`](../../../_doc_arch/projects-map-design.md) «`:` 의 정의»
+* 검증: 반영 후 `/projects-map` 에서 노드 위치가 위임 문구의 트리 위치와 같은지 본다
 
 # 타입별 기본값 (Harness.md global layer)
 
@@ -196,6 +224,7 @@ Commands: /issue-reg-m, /issue-fix-m, /issue-closer-m
 **필수 초기화**:
 
 * **VERSION 파일**: 신규 mac 프로젝트 생성 시 git root에 `VERSION` 파일을 생성하고 `0.0.1` 기록. `~/.claude/rules/version-manager-rules.md` SSOT 원칙 준수 — xcodeproj/Info.plist/Formula.rb는 이 파일을 참조
+* **`data/exec.yml`** (Issue614): 실행 머신 선언 — `fpm-scaffold-fill.py --type mac` 가 `data/template/exec.yml` 로 생성(`host: jma`·`status: draft`, build/run/test 비움). 이미 있으면 보존, 공개 repo 는 `.git/info/exclude` 로 커밋 제외. 스키마 `~/_git/___common/_doc_arch/exec-host.md`
 * **기존 fApp 보강**: `pm-update` 실행 시 VERSION 파일이 없으면 현재 `MARKETING_VERSION` 또는 `0.0.1` 값으로 생성
 
 # .gitignore 케이스 무결성 검증 (필수)

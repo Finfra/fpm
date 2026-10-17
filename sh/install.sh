@@ -198,10 +198,17 @@ install_mcp() {
     fi
     # Issue436 ⓐ: 존재가 아니라 **실행**으로 고른다. aoa-memory 의 store.py 가 sqlite3 를 쓴다.
     if ! fbot_resolve_python sqlite3; then
-        warn "ℹ️  쓸 수 있는 python 없음 → MCP 배선 건너뜀 (후보 전멸: ${FBOT_PY_REJECT:-없음})"
-        warn "   조치: python 을 PATH 에 두거나 FBOT_PYTHON 으로 절대경로를 지정 후 재실행"
+        if [[ -n "${FBOT_PY_WARN:-}" ]]; then
+            # FBOT_PY_ENFORCE=1 에서 기준(3.14) 미달 — 전멸이 아니라 «기준 미달 정지» 다 (Issue642)
+            warn "ℹ️  python 기준 미달 → MCP 배선 건너뜀 ($FBOT_PY_WARN)"
+        else
+            warn "ℹ️  쓸 수 있는 python 없음 → MCP 배선 건너뜀 (후보 전멸: ${FBOT_PY_REJECT:-없음})"
+            warn "   조치: python 을 PATH 에 두거나 FBOT_PYTHON 으로 절대경로를 지정 후 재실행"
+        fi
         MCP_SKIPPED=1; return 0
     fi
+    # Issue642: 기준(3.14) 미달이지만 채택됨(기본은 경고만) — 원인을 드러낸다. 정지하려면 FBOT_PY_ENFORCE=1
+    if [[ -n "${FBOT_PY_WARN:-}" ]]; then warn "python 기준 미달 — $FBOT_PY_WARN"; fi
     # Issue436 ⓑ: 어느 후보가 왜 떨어졌는지 남긴다 — 스텁을 잡은 사실이 안 보이면 진단이 불가능하다.
     if [[ -n "$FBOT_PY_REJECT" ]]; then
         info "python 후보 탈락: $FBOT_PY_REJECT → 채택: $FBOT_PY_DISPLAY"
@@ -484,8 +491,14 @@ ensure_projects_map() {
     [[ -f "$builder" ]] || { warn "맵 빌더 부재: $FPM_PROJECTS_MAP_BUILDER — 생성 생략"; return 0; }
     # Issue436: `command -v python3` 를 통과한 뒤 실행에서 죽어 "맵 생성 실패" 만 남던 지점.
     if ! fbot_resolve_python; then
-        warn "쓸 수 있는 python 없음 — 맵 생성 생략 (후보 전멸: ${FBOT_PY_REJECT:-없음})"; return 0
+        if [[ -n "${FBOT_PY_WARN:-}" ]]; then
+            warn "python 기준 미달 — 맵 생성 생략 ($FBOT_PY_WARN)"
+        else
+            warn "쓸 수 있는 python 없음 — 맵 생성 생략 (후보 전멸: ${FBOT_PY_REJECT:-없음})"
+        fi
+        return 0
     fi
+    if [[ -n "${FBOT_PY_WARN:-}" ]]; then warn "python 기준 미달 — $FBOT_PY_WARN"; fi
     local log
     if log="$(cd "$REPO_DIR" && "${FBOT_PY_ARGV[@]}" "$builder" 2>&1)"; then
         info "$FPM_PROJECTS_MAP_OUT 생성 (동명 .md 동반)"
@@ -510,8 +523,9 @@ cat <<EOF
   4) cdf          → 프로젝트 목록 확인
      sshf         → 서버 목록 확인
 
-[선택] hub 서버 (HTML 렌더 + 대시보드, Python 3):
-  cd "$REPO_DIR" && python3 services/hub/server.py
+[선택] hub 서버 (HTML 렌더 + 대시보드, Python 3.14+):
+  cd "$REPO_DIR" && python3.14 services/hub/server.py
+  (python3.14 가 없으면 3.14 이상인 python3 — /hub start 는 sh/fbot-python.sh 가 고른 인터프리터로 띄운다)
   ⚠️ 반드시 **repo 루트에서 상대경로로** 띄운다 (Issue437). services/hub 안에서
      \`python3 server.py\` 로 띄우면 프로세스 명령줄에 경로가 남지 않아, 재기동·정리가
      그 인스턴스를 **찾지 못한다**(Windows 에서 실제로 그렇게 떠 있었다).

@@ -61,7 +61,7 @@ elif [ -f "$PLIST" ]; then
   curl -s http://127.0.0.1:"$PORT"/healthz
 else
   mkdir -p "$HUB_STATE_DIR"
-  nohup python3 ~/_git/___pm/services/hub/server.py \
+  nohup "${HUB_PY_ARGV[@]}" ~/_git/___pm/services/hub/server.py \
     >"$HUB_STATE_DIR"/stdout.log 2>&1 &
   sleep 1
   echo "hub started (nohup fallback)"
@@ -156,7 +156,7 @@ if [ -f "$PLIST" ]; then
   launchctl enable "$JOB" 2>/dev/null
   launchctl bootstrap "gui/$UID_" "$PLIST" 2>/dev/null
 else
-  nohup python3 ~/_git/___pm/services/hub/server.py \
+  nohup "${HUB_PY_ARGV[@]}" ~/_git/___pm/services/hub/server.py \
     >"$HUB_STATE_DIR"/stdout.log 2>&1 &
 fi
 sleep 2
@@ -285,7 +285,7 @@ rm -f "$HUB_STATE_DIR"/opened-*
 
 # 4. start
 mkdir -p "$HUB_STATE_DIR"
-nohup python3 ~/_git/___pm/services/hub/server.py \
+nohup "${HUB_PY_ARGV[@]}" ~/_git/___pm/services/hub/server.py \
   >"$HUB_STATE_DIR"/stdout.log 2>&1 &
 sleep 1
 curl -s http://127.0.0.1:9876/healthz

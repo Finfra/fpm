@@ -16,6 +16,8 @@ date: 2026-05-16
 
 `fpm-do <prj번호> "<명령>"` — 호출한 prj에서 다른 prj로 명령을 위임함. 대상 prj의 Issue.md `✅ 완료` 섹션에 **해당 이슈 블록이 나타날 때까지** 동기 대기하고, 있으면 hash를 회수함(hash 는 없을 수 있고 그래도 완료다 — Issue387).
 
+업무 접수 위임(`fpm-do <prj> "Req<N> 처리"`, Issue1096)은 대상 prj `Request.md` 의 `# ✅ 완료` 섹션에서 같은 규칙으로 판정·회수한다 — 명시 `Issue<N>` 이 있으면 `Issue.md` 가 우선이고, 판정 단일 지점은 [`hooks/lib/issue-completion.py`](../../hooks/lib/issue-completion.py) `ledger_file` 이다(`~/.bin/fpm-do` 의 `ledger_select` 가 `LEDGER_FILE`·`LEDGER_PFX` 를 정한다). 규약: [request-rules](../../_doc_arch/rules-ondemand/request-rules.md).
+
 ⚠️ **`✅`+`commit:` 이 완비인데 블록이 완료 섹션 **밖**에 있으면** 첫 폴링에서 즉시 경고함(Issue391).
 판정은 미완료 그대로지만 — 섹션 소속은 issue-g 규칙0 이 요구하는 것이라 넓히지 않음 — 30분을
 침묵하는 대신 *"섹션 이동만 누락된 것으로 보인다"* 를 알려서 대상 세션이 바로 고칠 수 있게 함.
@@ -33,12 +35,14 @@ date: 2026-05-16
 | `fpm-do --auto-deps <IssueN>`    | 명시한 이슈의 `* depends:` 처리                                                 |
 | `fpm-do --no-wait <번호> "<명령>"` | 위임만 하고 즉시 리턴 (블로킹 생략). ⚠️ **호출은 즉시 끝나지만 완료 감시는 계속된다** — 축A 워처가 뒤에서 폴링하다 다음 프롬프트에 결과를 알린다(Issue371). "즉시 리턴" 을 *"이후 아무 일도 없다"* 로 읽지 말 것 |
 | `fpm-do --status <번호>`         | 대상 prj 윈도우 capture만 출력                                                  |
+| `fpm-do --approve publish …`     | 사용자가 **명시 승인한 게시**를 위임 세션에 싣는다(env `FPM_APPROVED`) — 없으면 위임 세션은 안전 hook 의 게시 금지로 기록만 남긴다. 허용 목록 `publish` 1종·위임 세션 안에서는 거부·다른 인자 어느 자리에나 둔다(prj3#Issue995) |
 
-## 프롬프트 길이 계약 (prj3#Issue489 ②, 2026-09-01)
+## 프롬프트 길이 — 한도 없음 (prj3#Issue1047, 2026-10-09)
 
-* 실측: **1,105바이트**가 `send-keys` 에서 조용히 잘려 자식 0개·무신호 실패, 540바이트는 정상
-* `800바이트+` 경고(`PM_DO_PROMPT_WARN`) · **`1,000바이트+` 기동 중단**(`PM_DO_PROMPT_HARD`) — 조용한 절단을 명시적 중단으로 바꿨다
-* 우회 밸브: `FPM_DO_FORCE_LONG=1` (절단 위험을 알고 진행). 정석은 상세를 대상 prj `_doc_work/delegation_*.md` 파일로 두고 **경로만** 위임
+* 기동 줄은 `send_launch_line` 이 `/tmp/fpm-do-launch.XXXXXX`(mktemp·0600)에 쓰고 pane 에는 `. '<파일>'` 만 보낸다 — 파일은 첫 줄에서 자기 삭제
+* 종전 1KB 한도(Issue416 800B 경고·Issue489 1,000B 차단·`FPM_DO_FORCE_LONG`)는 걷었다. 원인은 tmux 가 아니라 macOS `MAX_CANON` 1024B — pane 셸이 ZLE 밖(새 창 rc 로딩·앞 `cd` 실행 중)일 때 들어온 긴 줄의 1024B 뒤와 Enter 가 버려졌다
+* 생존 봇 창 주입(interactive 분기)은 claude TUI 가 직접 받으므로 이 한도와 무관 — 단 개행은 제출로 읽히므로 프롬프트는 여전히 한 줄
+* 상세가 길면 대상 prj `_doc_work/delegation_*.md` 에 두고 경로를 넘기는 것은 여전히 좋은 습관이다(길이 때문이 아니라 추적성)
 * 이슈번호 없는 위임(문서 정정·조사)은 정상이다 — `감시 번호: …Issue없음` 으로 기동되고 완료 폴링만 생략된다(①)
 
 # Projects.md lookup
@@ -452,6 +456,7 @@ extract_completion_hash() {
 | `PM_DO_TIMEOUT`       | 1800   | 타임아웃 (초, 30분)            |
 | `PM_DO_DEPTH_LIMIT`   | 3      | 재귀 의존성 depth 상한         |
 | `PM_DO_DEPTH`         | 0      | 내부 사용 (재귀 카운터)        |
+| `PM_DO_LAUNCH_DIR`    | `/tmp` | 기동 파일 디렉토리 (Issue1047) |
 
 # 보고 형식
 
@@ -489,3 +494,7 @@ extract_completion_hash() {
 * 폴링 횟수 상한: `TIMEOUT / POLL_INTERVAL` (기본 30회)
 * 사용자 승인 필수: 첫 위임 직전 1회 + `--auto-deps` 다건 시 일괄 1회
 * 파괴적 동작 없음 — kill·rm·force-push 미사용
+
+## 자유 명령(이슈 번호 없음) 완료 판정 (prj3#Issue979_3)
+
+비봇 위임의 자유 명령은 `timeout` 래퍼 + `--output-format json` 으로 띄우고 **exit code + JSON `result`** 로 완료를 판정한다(Issue.md 마커 불필요). 마감(`PM_DO_TIMEOUT`) 초과 시 몸체를 kill 하고 로그를 `~/.claude/data/fpm-do-free/` 에 보존한다. 상세: [`_doc_arch/fpm-do.md`](../../_doc_arch/fpm-do.md) "자유 명령 완료 판정".

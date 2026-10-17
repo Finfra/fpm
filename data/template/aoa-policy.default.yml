@@ -46,11 +46,6 @@ job_max_attempts: 2              # 재시도 상한 1회 = attempts 2
 # 판정 단일 지점은 게이트다 — 이 수치를 코드·타 스크립트에 복제하지 않는다.
 fbot_spawn_depth_limit: 3        # 스폰 깊이 상한 — fpm-do PM_DO_DEPTH_LIMIT(3) 선례 승계
 fbot_concurrent_limit: 60        # 동시 상주 상한 — state != checkout 인 봇 수. 배분 전역 동시 상한과 맞춘다
-# 월 채용 상한은 prj3#Issue697 로 **제거**됐다 — 신 hr-gate 는 아래 키를 읽지 않는다.
-#   ⚠️ 호환용으로만 남긴다: 번들(plugins/fpm-core/hooks/fbot-hr-gate.py)이 prj3 와 동기되기 전까지
-#   구 코드가 이 키를 **필수**로 요구한다(없으면 채용 fail-loud). 값은 사실상 무제한으로 둔다.
-#   번들 동기 후 이 키와 tdd `aoa-policy-template-complete` 기대가 함께 빠진다.
-fbot_spawn_budget_monthly: 100000
 
 # ── fbot 수요측 (배분 가드 — hooks/fbot-lead.py POLICY_KEYS) ───────────
 fbot_dispatch_monthly_limit: 100    # 월 배분 **알림 기준**(차단 아님, prj3#Issue696) — ns=fbot:dispatch

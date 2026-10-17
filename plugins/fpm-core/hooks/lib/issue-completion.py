@@ -27,8 +27,17 @@ ISSUE_HASH_RE = re.compile(r"(commit|hash):[ \t]*`?(?:[a-z0-9_-]+:)?[a-f0-9]{7,4
 # 헤더 완료 신호 — `✅`(prj3 관행) · `완료:`(prj82 등) · `해결:`(prj3 관행) · `commit:`(해시 기록·«commit: 없음 — 사유»)
 DONE_SIGNALS = ("✅", "완료:", "해결:", "commit:")
 
-# 블록 경계 = 다음 이슈 헤더(서브 `### Issue<N>_<M>` 포함) — fpm-do 와 같다
-_ISSUE_HEAD_RE = re.compile(r"^#{2,}\s+Issue")
+# 블록 경계 = 다음 이슈 헤더(서브 `### Issue<N>_<M>` 포함) — fpm-do 와 같다.
+#   업무 접수대장 `Request.md` 의 `## Req<N>:` 도 같은 블록이다 (prj3#Issue1096_3)
+_ISSUE_HEAD_RE = re.compile(r"^#{2,}\s+(?:Issue|Req\d)")
+_REQ_ID_RE = re.compile(r"^(?:prj[0-9]+[a-z0-9]*#)?Req\d+(?:_\d+)*$")
+
+
+def ledger_file(issue: str) -> str:
+    """식별자 → 그 항목이 사는 파일 이름 — 판정 단일 지점 (prj3#Issue1096).
+
+    `Req<N>` 은 업무 접수대장 `Request.md`, 그 밖은 시스템 개발 `Issue.md`. fpm-do(zsh)는 같은 규칙의 사본을 갖는다."""
+    return "Request.md" if _REQ_ID_RE.match((issue or "").strip()) else "Issue.md"
 
 
 def is_done_section(line: str) -> bool:
@@ -93,13 +102,13 @@ def done_unmarked(lines, issue: str) -> bool:
 def issue_completed_in(cwd: str, issue: str):
     """그 이슈가 대상 repo(``cwd``)의 **완료 섹션**에 있고 완료 신호를 달고 있는가 (prj3#Issue644 ⑥).
 
-    3-state — True=완료 · False=미완료 · None=**판정 불가**(Issue.md 접근 불가).
+    3-state — True=완료 · False=미완료 · None=**판정 불가**(대장 파일 접근 불가 — `Req<N>` 은 Request.md, Issue1096).
     판정 규칙은 `~/.bin/fpm-do` 의 `completed_block`/`is_completed` 와 **같은 것**이다 — 둘이 갈리면
     "위임은 완료로 보는데 원장은 아니다" 같은 어긋남이 생긴다.
     """
     if not cwd or not issue:
         return None
-    path = os.path.join(os.path.expanduser(cwd), "Issue.md")
+    path = os.path.join(os.path.expanduser(cwd), ledger_file(issue))
     try:
         with open(path, encoding="utf-8") as f:
             lines = f.read().split("\n")
@@ -116,7 +125,7 @@ def issue_done_unmarked(cwd: str, issue: str):
     """
     if not cwd or not issue:
         return None
-    path = os.path.join(os.path.expanduser(cwd), "Issue.md")
+    path = os.path.join(os.path.expanduser(cwd), ledger_file(issue))
     try:
         with open(path, encoding="utf-8") as f:
             lines = f.read().split("\n")

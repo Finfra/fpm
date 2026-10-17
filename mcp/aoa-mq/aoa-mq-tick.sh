@@ -817,7 +817,7 @@ fi
 # prj3#Issue25 는 적체를 "감지·통지"만 했다. 상태가 안 변하니 매 tick 동일 문구가 반복됐고(무한 nag),
 # 결국 사용자가 통지를 껐다 — 알림이 행동을 못 만들면 알림 자체가 무력해진다.
 # prj3#Issue26 은 두 축을 바꾼다:
-#   ① stale 초과분은 **상태를 전이**시킨다 (기본 promote — 대상 prj Issue.md 🌱 이슈후보로 승격).
+#   ① stale 초과분은 **상태를 전이**시킨다 (기본 promote — 대상 prj Request.md 📥 접수로 승격, Issue1096).
 #      할 일이 우편함이 아니라 사람이 매일 보는 곳에 도착하므로 적체 자체가 해소된다.
 #   ② 그래도 남은 잔여분 통지는 **백오프**한다 (1일 → 3일 → 7일 → 중단, 로그만).
 HO_SH="$(dirname "$0")/aoa-mq-handoff.sh"
@@ -896,7 +896,18 @@ fi
 # 승격분은 타 repo 의 uncommitted 작업본이라 다른 세션이 stale 사본으로 덮어쓰면 조용히 사라진다
 # (2026-07-20 social 3건 실제 소실 — 승격은 성공했는데 10분 뒤 목적지에서 증발).
 # 여기서는 탐지·로깅만 한다. 복구(재등록)는 타 repo 쓰기라 무인 실행하지 않고 사용자에게 위임.
-if [ -x "$HO_SH" ]; then
+# ⚠️ 간격 제한 필수 — 유실분마다 `git log -S`(Issue.md 전체 이력 pickaxe)를 돌려 1회 약 2~3분이 걸리고,
+#   그 동안 .tick.lock 을 쥔다. 5분 주기마다 돌리면 hub 의 --consume-only 가 락에 막혀 /mq·fbot-map 의
+#   [진행]·[완료]·[취소] 가 «눌러도 변화 없음» 이 된다(2026-10-12 실측: 클릭 3건 inbox 에 잔류).
+AUDIT_STAMP="$MQ_DIR/.audit_last"
+AUDIT_INTERVAL_MIN=$(pol audit_interval_min 60)
+audit_due=1
+if [ -f "$AUDIT_STAMP" ]; then
+  _astamp=$("$STAT" -f %m "$AUDIT_STAMP" 2>/dev/null || echo 0)
+  [ $(( NOW_EPOCH - _astamp )) -lt $(( AUDIT_INTERVAL_MIN * 60 )) ] && audit_due=0
+fi
+if [ -x "$HO_SH" ] && [ "$audit_due" = 1 ]; then
+  : > "$AUDIT_STAMP"      # 실행 전에 찍는다 — 감사가 실패·중단돼도 다음 tick 이 곧바로 재진입하지 않게
   # 파이프로 받으면 종료코드가 tail 것이 되어 이상을 못 잡는다 — 먼저 받고 나서 자른다
   audit_raw=$("$HO_SH" audit 2>&1); audit_rc=$?
   if [ "$audit_rc" -ne 0 ]; then

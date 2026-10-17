@@ -34,6 +34,7 @@ import argparse
 import datetime
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -148,6 +149,33 @@ def fill_harness(repo, defaults, force=False):
     return filled
 
 
+def create_exec_yml(repo, pm_base, prj):
+    """mac 타입 data/exec.yml 초기 생성 (Issue614). 이미 있으면 건드리지 않는다(멱등).
+
+    공개 repo(origin 이 있는 git repo)면 .git/info/exclude 에 등재해 커밋에서 뺀다.
+    반환: 'created' | 'exists' | 'skipped'(템플릿 없음·prj 미지정)
+    """
+    tpl = Path(pm_base) / 'data' / 'template' / 'exec.yml'
+    dst = Path(repo) / 'data' / 'exec.yml'
+    if dst.exists():
+        return 'exists'
+    if not tpl.exists() or prj is None:
+        return 'skipped'
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_text(tpl.read_text().replace('{{prj}}', str(prj)))
+    git = Path(repo) / '.git'
+    if git.is_dir():
+        has_origin = subprocess.run(['git', '-C', str(repo), 'remote', 'get-url', 'origin'],
+                                    capture_output=True).returncode == 0
+        if has_origin:
+            ex = git / 'info' / 'exclude'
+            ex.parent.mkdir(exist_ok=True)
+            cur = ex.read_text() if ex.exists() else ''
+            if 'data/exec.yml' not in cur:
+                ex.write_text(cur + ('' if cur.endswith('\n') or not cur else '\n') + 'data/exec.yml\n')
+    return 'created'
+
+
 def audit(repo, label):
     """오염 감사 — 미치환 토큰·prj1 값 누출·빈 global layer. (읽기 전용)"""
     findings = []
@@ -235,6 +263,8 @@ def main():
     subbed = substitute(repo, a.name, a.desc, date, a.prj)
     filled = fill_harness(repo, load_defaults(pm_base, a.ptype), force=a.force)
     print(f'[scaffold] 치환 {subbed} 파일 · Harness global layer {filled} 절 채움')
+    if a.ptype == 'mac':
+        print(f'[scaffold] data/exec.yml: {create_exec_yml(repo, pm_base, a.prj)}')
     n = audit(repo, repo)
     if n:
         print('[scaffold] ⚠️ 잔존 오염이 있다 — 위 항목을 손으로 채울 것')

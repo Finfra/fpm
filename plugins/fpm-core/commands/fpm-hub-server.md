@@ -56,7 +56,7 @@ if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
   curl -s http://127.0.0.1:9876/healthz
 else
   mkdir -p "$HUB_STATE_DIR"
-  nohup python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/_git/___pm}/services/hub/server.py" \
+  nohup "${HUB_PY_ARGV[@]}" "${CLAUDE_PLUGIN_ROOT:-$HOME/_git/___pm}/services/hub/server.py" \
     >"$HUB_STATE_DIR"/stdout.log 2>&1 &
   sleep 1
   echo "hub started"
@@ -97,7 +97,7 @@ PID=$(cat "$HUB_STATE_DIR"/pid 2>/dev/null)
 [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null && kill -9 "$PID"
 rm -f "$HUB_STATE_DIR"/pid
 mkdir -p "$HUB_STATE_DIR"
-nohup python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/_git/___pm}/services/hub/server.py" \
+nohup "${HUB_PY_ARGV[@]}" "${CLAUDE_PLUGIN_ROOT:-$HOME/_git/___pm}/services/hub/server.py" \
   >"$HUB_STATE_DIR"/stdout.log 2>&1 &
 sleep 1
 curl -s http://127.0.0.1:9876/healthz
@@ -166,7 +166,7 @@ rm -f "$HUB_STATE_DIR"/tokens.json
 rm -f "$HUB_STATE_DIR"/sessions.json
 rm -f "$HUB_STATE_DIR"/opened-*
 mkdir -p "$HUB_STATE_DIR"
-nohup python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/_git/___pm}/services/hub/server.py" \
+nohup "${HUB_PY_ARGV[@]}" "${CLAUDE_PLUGIN_ROOT:-$HOME/_git/___pm}/services/hub/server.py" \
   >"$HUB_STATE_DIR"/stdout.log 2>&1 &
 sleep 1
 curl -s http://127.0.0.1:9876/healthz

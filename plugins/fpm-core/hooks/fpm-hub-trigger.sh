@@ -69,6 +69,13 @@ _hub_pmatch() {
   local _ci=0
   if [ "${1:-}" = "-i" ]; then _ci=1; shift; fi
   [ "$_HUB_TRIG_MAYBE" = 1 ] || return 1
+  # Issue1015: 트리거 앞뒤 경계의 단일 지점. 호출부는 `(^|[[:space:]])`·`([[:space:]]|$)` 로 쓰고 여기서 치환한다.
+  #   뒤 = ASCII 영숫자·`_`·`-` 가 아니면 경계(한국어 — [:alnum:] 은 한글을 영숫자로 봐 쓰지 않는다 —  조사 «..ask로»·구두점 «..ask,»·«(..ask)» 허용, «..asker» 불일치)
+  #   앞 = 영숫자·`_`·`.`·`/`·`-` 가 아니면 경계(«(..ask)» 허용, «foo..ask» 불일치)
+  local _re="$1"
+  _re="${_re//'(^|[[:space:]])'/'(^|[^A-Za-z0-9_./-])'}"
+  _re="${_re//'([[:space:]]|$)'/'($|[^A-Za-z0-9_-])'}"
+  set -- "$_re"
   # ⚠️ 아래 두 줄은 **실제 grep 이어야 한다**. 일괄 치환 시 이 안까지 바뀌면 자기 자신을
   #   호출해 무한 재귀에 빠진다(F2-7 1차 시도에서 실제로 발생 — 발동 경로가 25s 타임아웃).
   if [ "$_ci" = 1 ]; then
@@ -384,12 +391,12 @@ fi
 # Issue126 (2026-06-03): `..board <topic>` 신설 — c모드 단일 단어 트리거. `..hub dash`/`..dashboard` 는
 #   하위호환 별칭으로 유지 (deprecation 예정, 즉시 제거 금지 — 기존 muscle memory 보호).
 if _hub_pmatch '(^|[[:space:]])(\.\.hub[[:space:]]+dash|\.\.dashboard|\.\.board)([[:space:]]|$)'; then
-  touch "$FLAG_FILE"
+  hub_flag_write "$FLAG_FILE" "${cwd-}"
   SERVER_PORT="${HTM_SERVER_PORT:-9876}"
   health=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 "http://127.0.0.1:${SERVER_PORT}/healthz" 2>/dev/null)
 
   # topic 추출: "..hub dash <topic ...>" / "..dashboard <topic ...>" / "..board <topic ...>" 에서 트리거 다음 토큰들
-  TOPIC=$(printf '%s' "$prompt" | sed -nE 's/.*(\.\.hub[[:space:]]+dash|\.\.dashboard|\.\.board)[[:space:]]+(.+)/\2/p' | head -1)
+  TOPIC=$(printf '%s' "$prompt" | sed -nE 's/.*(\.\.hub[[:space:]]+dash|\.\.dashboard|\.\.board)[^[:space:]]*[[:space:]]+(.+)/\2/p' | head -1)
   # Issue131: --auto-kill 플래그 — 완료 alert 후 tmux window 자동 kill (기본 미설정 = 잔존, 로그 보존)
   AUTO_KILL=false
   if printf '%s' "$TOPIC" | grep -qE '(^|[[:space:]])--auto-kill([[:space:]]|$)'; then
@@ -497,10 +504,10 @@ fi
 if _hub_pmatch -i '(^|[[:space:]])\.\.ask([[:space:]]|$)'; then
   # Issue283: `..ask` 는 1회성 진입 — state file 불변 (Issue178 이 `..show` 에 확립한 원칙 동일 적용).
   #   구 코드는 `printf 'on' > "$STATE_FILE"` 로 그 폴더 hub 를 영구 on 전환시켰음.
-  touch "$FLAG_FILE"
+  hub_flag_write "$FLAG_FILE" "${cwd-}"
 
   # topic 추출: "..ask <주제 ...>" 에서 트리거 다음 토큰들
-  ASK_TOPIC=$(printf '%s' "$prompt" | sed -nE 's/.*\.\.ask[[:space:]]+(.+)/\1/p' | head -1)
+  ASK_TOPIC=$(printf '%s' "$prompt" | sed -nE 's/.*\.\.ask[^[:space:]]*[[:space:]]+(.+)/\1/p' | head -1)
 
   ASK_TOPIC="$ASK_TOPIC" \
     SERVER_PORT="${HTM_SERVER_PORT:-9876}" \
@@ -607,6 +614,21 @@ _hub_instr() {  # <show|auto>
   fp="$fp$us${RENDER_PORT-}$us${HUB_LINK_TARGET-}$us${ZED_DOWNGRADED-}$us${HUB_DOWN_DOWNGRADED-}"
   fp="$fp$us${LIVE_OPENED-}$us${LIVE_URL-}$us${LIVE_DISPLAY-}"
   f="${_HUBCTX_CACHE_DIR:-${TMPDIR:-/tmp}/___pm/hubctx}/${_HUBCTX_KEY:-none}.${SID:-none}.$mode"
+  # prj3#Issue979_4 — 자동 모드 지시문(~4KB)은 세션 끝까지 모든 호출에서 재독된다. 같은 세션·같은 지문이면
+  #   2턴째부터 1줄 유지 표기만. 지문이 바뀌면 전문, compact 직후엔 nudge-state-reset.sh 가 상태를 지워 전문.
+  #   세션 id 가 없으면 종전대로 매번 전문. show(명시 1회성) 모드는 대상 아님
+  local seen="" seen_prev=""
+  if [ "$mode" = auto ] && [ -n "${HOOK_SESSION_ID:-}" ]; then
+    seen="${SESSION_NUDGE_STATE:-${TMPDIR:-/tmp}/claude-mq-nudge}/hub/${HOOK_SESSION_ID}"
+    [ -f "$seen" ] && IFS= read -r seen_prev < "$seen"
+    if [ "$seen_prev" = "$(printf '%s' "$fp" | cksum)" ]; then
+      jq -nc --arg c "## 세션 모드: hub 자동 on 유지 — 렌더 지시문은 앞서 주입됨(입력 불변). 매 응답 md 렌더 규약 그대로 적용" \
+        '{hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: $c}}'
+      return 0
+    fi
+    [ -d "${seen%/*}" ] || mkdir -p "${seen%/*}"
+    printf '%s\n' "$(printf '%s' "$fp" | cksum)" > "$seen"
+  fi
   if [ -s "$f" ] && [ "$f" -nt "$HUB_INSTR_PY" ]; then
     c=$(< "$f")
     if [ "${c%%"$rs"*}" = "$fp" ]; then
@@ -642,7 +664,7 @@ _hub_instr() {  # <show|auto>
 
 if [ -n "$HUB_RENDER_TRIGGER" ]; then
   # 플래그 활성화 — 후속 AskUserQuestion 을 form 으로 가로채기 위함
-  touch "$FLAG_FILE"
+  hub_flag_write "$FLAG_FILE" "${cwd-}"
   # Issue178: `..show` = 그 턴만 1회성 렌더. STATE_FILE 미변경 (off 면 off 유지).
   #   과거 Issue83 은 여기서 `printf 'on' > "$STATE_FILE"` 로 영구 on 덮어썼으나
   #   "off 기본 + ..show 1회성" 모델과 충돌 → 제거. 자동 모드 재개는 STATE_FILE/IS_PROJECT default 가 결정.
@@ -659,7 +681,7 @@ fi
 
 if [ "$EFFECTIVE" = "on" ]; then
   # 플래그 활성화 — 후속 AskUserQuestion intercept + 선택지 자동 승격용
-  touch "$FLAG_FILE"
+  hub_flag_write "$FLAG_FILE" "${cwd-}"
   _hub_instr auto
 else
   # 비프로젝트 + 마커 없음, 또는 이 폴더 off 기록 → 플래그 비활성 (intercept 미동작)

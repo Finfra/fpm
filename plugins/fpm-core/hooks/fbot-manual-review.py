@@ -18,9 +18,9 @@
                                    형식은 같은 `role: X.` 결정 요청이라 총괄 `reject --by` 가 그대로 근거를 찾는다.
                                    `--reason` 은 `--decline` 전용 — 일반 상신에 붙으면 거부
   needs-human --role R [--by <총괄>]  권한 경계 draft 를 mq `[컨펌] [H:방침]` 으로 사람에게 — 총괄(표지·상신 필수) 또는
-                                   결속 없는 사람 세션 직접(`--by` 없음·표지 불요, prj3#Issue773·954). 반영은 사람 ACK 뒤 `apply`
+                                   결속 없는 사람 세션 직접(`--by` 없음·표지 불요, prj3#Issue773·954). 반영은 결속 없는 사람 세션의 `apply`(대기 [컨펌] 을 직접 ACK — prj3#Issue1051)
   apply   --role R [--by B --reason "..."]  승인 확인 후에만 draft → 정본 반영 + 이력 append + draft 삭제
-                                   승인 = 총괄(role=chief) `--by` 전결(일반 role) **또는** mq ACK(권한 경계 role)
+                                   승인 = 총괄(role=chief) `--by` 전결(일반 role) **또는** 권한 경계 role 은 결속 없는 사람 세션의 apply 자체(mq ACK 불요 — 대기 [컨펌] 을 직접 confirmed 종결, 기존 ACK 있으면 종전대로, prj3#Issue1051)
   reject  --role R --reason "..." [--by B] [--return]  반려 — 결정 기록·요청 종결 공유, 모드 둘(prj3#Issue946·948):
                                    삭제(기본) draft 폐기 + origin_seen 갱신 · 반송(`--return`) draft 보존·작성 표지 제거·
                                    사유 머리 첨부·origin_seen 불변 → 본사 팀장 재배분 요청(적재 실패 시 exit 2).
@@ -37,7 +37,8 @@
     `.md.draft` 로 끝나지 않으면 예외를 던진다. 정본 경로를 넘길 방법이 코드에 없다.
   * 정본을 쓰는 함수 `write_canonical()` 은 **mq ACK 레코드**를 인자로 요구하고, 없거나
     acked 가 아니면 예외다. `apply` 만 이 함수를 부른다.
-  * ACK 는 **읽기 조회**만 한다 — 이 스크립트는 ack 를 발행하지 않는다(봇 auto-ack 금지, 계약).
+  * ACK 조회(`find_ack`)는 읽기 전용이다. ack 를 쓰는 곳은 `_mq_ack`(aoa-mq `t_ack` 재사용) 한 곳 — 사람 세션 `apply`·`reject` 가
+    `_human_session_rejection` 통과 뒤에만 부른다(봇 auto-ack 금지, 계약. prj3#Issue1051 — 사람 판정 단일 지점).
   * prj3#Issue756 — 매뉴얼 개정은 결정 권한 **C 등급**(총괄 전결)이다(`_doc_arch/decision-authority.md`).
     과거 사람 승인 10건이 전부 승인·반려 0 이었다 — 사람 게이트가 도장이었다. 하드 가드는 그대로 두고
     **승인 주체만** 바꾼다: `apply --by` 는 레지스트리 role=chief 개체만 통과하고, 그 결정을
@@ -936,6 +937,24 @@ def pending_confirm(role):
     매칭 규칙은 `find_ack()` 와 **같다**(`"role: %s." % role` — 마침표까지 봐서 접두
     충돌을 막는다). 두 곳이 다른 규칙을 쓰면 한쪽만 갱신돼 갈라진다.
     """
+    item = pending_confirm_item(role)
+    return item["id"] if item else None
+
+
+DRAFT_SHA_RE = re.compile(r"draft-sha256:\s*([0-9a-f]{64})")
+
+
+def draft_sha(path):
+    """draft 바이트 해시 — 상신 시 [컨펌] 에 결속하고 apply 가 대조한다 (prj3#Issue1053 — 초 단위 mtime 이 못 거르는 같은 초 수정)."""
+    with open(path, "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
+
+
+def pending_confirm_item(role):
+    """`pending_confirm` 의 레코드판 — `{id, created}` 또는 None (prj3#Issue1051 — apply·reject 가 그 항목을 종결한다).
+
+    created — 상신 시각(`created_ts`, 없으면 큐 파일 mtime). draft 가 이보다 새 것이면 «상신된 본문» 이 아니다.
+    sha — 상신 시 결속한 draft 해시(옛 항목은 None → 시각 비교로 폴백)."""
     q = os.path.join(MQ_DIR, "queue")
     if not os.path.isdir(q):
         return None
@@ -946,8 +965,36 @@ def pending_confirm(role):
             continue
         msg = d.get("message") or ""
         if CONFIRM_MARK in msg and ("role: %s." % role) in msg:
-            return d.get("id") or os.path.basename(f)
+            created = (d.get("created_ts") or "")[:19] or \
+                datetime.fromtimestamp(os.path.getmtime(f)).strftime("%Y-%m-%dT%H:%M:%S")
+            m = DRAFT_SHA_RE.search(msg)
+            return {"id": d.get("id") or os.path.splitext(os.path.basename(f))[0], "created": created,
+                    "sha": m.group(1) if m else None}
     return None
+
+
+def _mq_ack(mid, status, note, result=""):
+    """mq 항목 종결 — aoa-mq 서버의 `t_ack` **재사용**(원자 쓰기·queue_done 이동 규약이 거기 있다. 여기서 재구현하면
+    두 경로가 갈라진다). 큐 위치는 이 모듈의 `MQ_DIR` 로 맞춘다. 반환 queue_done 레코드 경로, 실패면 FbotError."""
+    import importlib.util
+    srv_path = os.path.join(os.path.dirname(MQ_ENQUEUE), "server.py")
+    saved = os.environ.get("AOA_MQ_DIR")
+    os.environ["AOA_MQ_DIR"] = MQ_DIR
+    try:
+        spec = importlib.util.spec_from_file_location("aoa_mq_server_ack", srv_path)
+        srv = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(srv)
+    except Exception as e:
+        die("mq ACK 실패 — aoa-mq 서버 로드 불가(%s): %r" % (srv_path, e))
+    finally:
+        if saved is None:
+            os.environ.pop("AOA_MQ_DIR", None)
+        else:
+            os.environ["AOA_MQ_DIR"] = saved
+    out = srv.t_ack({"id": mid, "status": status, "note": note, "result": result})
+    if not str(out).startswith("✅"):
+        die("mq ACK 실패(%s → %s): %s" % (mid, status, out))
+    return os.path.join(MQ_DIR, "queue_done", mid + ".json")
 
 
 def cmd_propose(args):
@@ -1341,7 +1388,7 @@ def cmd_submit(args):
         msg = ("%s — role: %s. 사람 결정 요청(H 방침 — 권한 경계 매뉴얼이라 총괄 전결 불가) — 매뉴얼핀봇 %s 가 "
                "본문을 썼다(초안 %s). 총괄은 `~/.claude/hooks/fbot-manual-review.py needs-human --role %s "
                "--by <총괄 bot_id>` 로 mq `[컨펌] [H:방침]` 에 올린다(결정 묶음에 섞지 말 것 — ACK 매칭 형식). "
-               "사람 ACK 뒤 `apply --role %s` 로 반영된다. 본문 수정은 총괄 몫이 아니다. "
+               "사람 승인 = 결속 없는 세션의 `apply --role %s`(별도 ACK 불요, prj3#Issue1051)로 반영된다. 본문 수정은 총괄 몫이 아니다. "
                "권한표: ~/.claude/_doc_arch/decision-authority.md"
                % (CONFIRM_MARK, role, author, d, role, role))
     else:
@@ -1393,7 +1440,7 @@ def cmd_needs_human(args):
         die("draft 없음: %s" % d)
     already = pending_confirm(role)
     if already:
-        die("role=%s 의 [컨펌] 이 이미 대기 중이다: %s — 사람 ACK 를 기다린다" % (role, already))
+        die("role=%s 의 [컨펌] 이 이미 대기 중이다: %s — 사람 승인(결속 없는 세션의 apply)을 기다린다" % (role, already))
     author, rid = None, None
     if by:
         err = _ident().impersonation_error(by, "사람 상신")
@@ -1412,15 +1459,15 @@ def cmd_needs_human(args):
                 "(본사 팀장 `submit` → 총괄 `needs-human --by`)" % why)
     who = ("매뉴얼핀봇 %s 가 본문을 썼다" % author) if author else "비봇 세션이 draft 를 직접 썼다(작성 표지 없음)"
     msg = ("[컨펌] [H:방침] %s — role: %s. 권한 경계 매뉴얼이라 사람 결정 — %s(초안 %s). "
-           "승인 시 `~/.claude/hooks/fbot-manual-review.py apply --role %s`, "
+           "승인 = 결속 없는 세션(VSCode·터미널 Claude, jm4)에 «%s 승인» 이라고 말하거나 `~/.claude/hooks/fbot-manual-review.py apply --role %s` — 별도 ACK 불요(apply 가 직접 ACK), "
            "반려 시 `reject --role %s --reason \"…\"`(고칠 것이 있으면 `--return` — draft 보존·매뉴얼핀봇 재배분). "
-           "정본은 승인 전까지 무변경."
-           % (CONFIRM_MARK, role, who, d, role, role))
+           "정본은 승인 전까지 무변경. draft-sha256: %s"
+           % (CONFIRM_MARK, role, who, d, role, role, role, draft_sha(d)))
     mid = _mq_confirm(msg, by)
     if rid:
         close_request(rid, "사람 상신", "mq %s" % mid, by)
     record_job(role, "raised", "mq=%s by=%s" % (mid, by or "비봇 세션"), by=by)
-    print("✅ %s → mq [컨펌] [H:방침] %s (%s) — 사람 ACK 뒤 `apply --role %s`" % (role, mid, who, role))
+    print("✅ %s → mq [컨펌] [H:방침] %s (%s) — 결속 없는 세션의 `apply --role %s` 가 승인(별도 ACK 불요)" % (role, mid, who, role))
     return 0
 
 
@@ -1495,11 +1542,37 @@ def cmd_apply(args):
     else:
         # Issue830 — mq ACK 는 승인 주체를 증명하지 못한다. 권한 경계의 최종 apply 호출자는
         #   solo-approve 와 같은 판정에서 결속 없는 사람 세션임이 확인돼야 한다.
-        if role in AUTHORITY_ROLES:
-            why = _human_session_rejection()
-            if why:
-                die("%s — 권한 경계 매뉴얼 apply 는 결속 없는 사람 세션 전용이다" % why)
-        ack = find_ack(role, since=draft_ts)
+        why = _human_session_rejection()
+        if role in AUTHORITY_ROLES and why:
+            die("%s — 권한 경계 매뉴얼 apply 는 결속 없는 사람 세션 전용이다" % why)
+        # prj3#Issue1051 — 사람 판정이 ACK·apply 두 지점으로 갈려 있었다(hub ACK 없이 apply 하면 «승인 미확인»).
+        #   사람 판정의 단일 지점은 위 `_human_session_rejection` 이다 — 그것을 통과한 apply 가 곧 승인이므로
+        #   대기 중 [컨펌] 을 여기서 confirmed 로 종결한다. 대기 항목이 있으면 옛 ACK 보다 우선한다(옛 ACK 는 앞 상신 몫).
+        pend = None if why else pending_confirm_item(role)
+        if pend:
+            # prj3#Issue1053 — 승인 대상 = 상신 본문과 바이트 동일. 해시가 있으면 그것으로, 옛 항목은 시각 비교로 폴백
+            if pend.get("sha"):
+                if draft_sha(d) != pend["sha"]:
+                    die("draft 가 상신(%s · %s) 이후 수정됐다(해시 불일치) — 상신된 본문이 아니다. 정본 무변경.\n"
+                        "   다시 올린다: 대기 항목을 `reject`(반송 `--return`) 하거나 hub 에서 닫고 `needs-human --role %s`"
+                        % (pend["id"], pend["created"], role))
+            elif draft_ts > pend["created"]:
+                die("draft 가 상신(%s · %s) 이후 수정됐다(%s) — 상신된 본문이 아니다. 정본 무변경.\n"
+                    "   다시 올린다: 대기 항목을 `reject`(반송 `--return`) 하거나 hub 에서 닫고 `needs-human --role %s`"
+                    % (pend["id"], pend["created"], draft_ts, role))
+            # prj3#Issue1053 — 자격 → 상한 → 기록 → 쓰기. 상한 초과로 쓰기가 실패할 반영을 큐에 «반영» 으로 닫지 않는다
+            check_cap(m, append_revision(canonical_body(read_text(d)),
+                                         {"date": today(), "mq": pend["id"], "note": "apply 자체 승인"}))
+            sid = os.environ.get("CLAUDE_CODE_SESSION_ID") or "터미널"
+            done = _mq_ack(pend["id"], "confirmed",
+                           "apply 자체 승인(prj3#Issue1051) — 결속 없는 사람 세션 sid=%s" % sid,
+                           "fbot-manual-review apply --role %s → 정본 반영" % role)
+            try:
+                ack = json.load(open(done, encoding="utf-8"))
+            except (OSError, ValueError) as e:
+                die("mq ACK 레코드 판독 실패(%s): %r — 다시 `apply` 하면 이 ACK 로 반영된다" % (done, e))
+        else:
+            ack = find_ack(role, since=draft_ts)
     if not ack:
         stale = find_ack(role)
         die("승인 미확인 — role=%s 의 `[컨펌]` ACK 레코드가 %s/queue_done 에 없다%s.\n"
@@ -1579,6 +1652,10 @@ def cmd_reject(args):
         rids = [rid for rid, _ in open_requests(role)]   # 사람 세션 — 이 결정으로 무의미해진 요청 전부
     lead = hq_lead_bot() if ret else None              # 반송은 재배분 수신자가 있어야 한다 — 쓰기 전에 fail-loud
     new_text = add_return_note(strip_author(read_text(d)), by, reason) if ret else None   # 기록 전에 계산
+    if not by:   # prj3#Issue1051 — (draft 변경 전: 종결 실패 시 draft 가 남아 reject 재실행 가능) 사람 세션 반려·반송이면 대기 [컨펌] 도 dismissed 로 종결(다음 상신이 «대기 중» 에 막히지 않게)
+        pend = pending_confirm_item(role)
+        if pend:
+            _mq_ack(pend["id"], "dismissed", "사람 세션 %s: %s" % (verdict, reason or "-"))
     if by:
         record_decision(by, role, verdict, reason)     # prj3#Issue756 — 반려·반송도 결정이다
     if ret:

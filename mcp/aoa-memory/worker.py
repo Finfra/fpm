@@ -74,6 +74,15 @@ import store as S       # noqa: E402
 
 WATERMARK_KEY = "consolidated_until"
 BACKUP_KEEP = 3
+# API 배치 응답 한도 — 5.5 세대는 adaptive thinking 이 끌 수 없는 기본값이라 thinking 이 이 한도를
+#   함께 쓴다. 1024 면 요약 본문이 잘린다(claude-model-rules «5.5 세대 API 제약»). 예산 추정도 이 값을 쓴다
+LLM_BATCH_MAX_TOKENS = 4096
+
+
+def message_text(message):
+    """Messages 응답의 text block 만 이어 붙인다 — 5.5 는 thinking block 이 앞에 올 수 있다."""
+    return "\n".join(b.get("text", "") for b in message.get("content", [])
+                     if b.get("type") == "text").strip()
 
 # 판별 축 화이트리스트 — 알 수 없는 값은 버리지 않고 'other' 로 **사영**한다.
 #   prj3 가 `origin` 열에 자유 텍스트가 섞여 GROUP BY 가 갈라진 것과 같은 계열의 오염을 막는다.
@@ -583,12 +592,12 @@ def do_consolidate(pol, emit_dir=None, verbose=True, rc=None, job=None):
                         requests.append({
                             "custom_id": pid,
                             "params": {
-                                "model": model, "max_tokens": 1024,
+                                "model": model, "max_tokens": LLM_BATCH_MAX_TOKENS,
                                 "messages": [{"role": "user", "content": prompt}]
                             }
                         })
                     if requests:
-                        estimated_tokens = sum(len(req["params"]["messages"][0]["content"]) // 4 for req in requests) + len(requests) * 1024
+                        estimated_tokens = sum(len(req["params"]["messages"][0]["content"]) // 4 for req in requests) + len(requests) * LLM_BATCH_MAX_TOKENS
                         # 🔴 예산 게이트 2단 — 예상 소진까지 합산해 한도를 넘으면 발주 전에 멈춘다
                         if spent + estimated_tokens > budget_limit:
                             raise RuntimeError(
@@ -781,7 +790,7 @@ def check_pending_batches(rc, pol):
                     summaries = {}
                     for req in results:
                         if req["result"]["type"] == "succeeded":
-                            summaries[req["custom_id"]] = req["result"]["message"]["content"][0]["text"]
+                            summaries[req["custom_id"]] = message_text(req["result"]["message"])
                     apply_llm_summaries(lc, bucket, summaries, payload.get("projs", {}), path, "api")
 
                     en = payload.get("end_ts")

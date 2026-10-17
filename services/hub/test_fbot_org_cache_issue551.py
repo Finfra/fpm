@@ -72,6 +72,9 @@ def main():
     src_path = os.path.expanduser("~/.claude/hooks/fbot-org.py")
     with tempfile.TemporaryDirectory() as tmp:
         p = os.path.join(tmp, "fbot-org.py"); shutil.copy(src_path, p)
+        # prj3#Issue1061 — fbot-org 가 옆 `lib/fbot-prj.py`(prj id 판정)를 적재한다. 복사본도 같은 모양으로
+        os.makedirs(os.path.join(tmp, "lib"))
+        shutil.copy(os.path.join(os.path.dirname(src_path), "lib", "fbot-prj.py"), os.path.join(tmp, "lib", "fbot-prj.py"))
         server._ORG_MOD_PATH = p; server._ORG_MOD = None
         m1 = server._org_mod(); m2 = server._org_mod()
         check("mtime 같으면 같은 모듈 객체", m1 is not None and m1 is m2)

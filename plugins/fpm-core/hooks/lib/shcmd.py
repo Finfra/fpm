@@ -331,13 +331,41 @@ WRAP_OPT_VALUE = {"env": {"-u", "--unset", "-C", "--chdir", "-S", "--split-strin
                   "timeout": {"-s", "--signal", "-k", "--kill-after"},
                   "nice": {"-n", "--adjustment"}, "exec": {"-a"}, "stdbuf": {"-i", "-o", "-e"}, "time": set()}
 WRAPPERS = WRAP | set(WRAP_OPT_VALUE) | {"nice", "stdbuf", "time"}
-ISSUE_TX_OPT_VALUE = {"-m", "--message", "-F", "--file", "--issues"}
+ISSUE_TX_OPT_VALUE = {"-m", "--message", "-F", "--file", "--issues", "--section"}   # issue-tx argparse 의 값 1개 옵션 — test-fbot-writeguard.sh 가 대조(prj3#Issue987)
 ISSUE_TX_OPT_HUNK = "--hunk"        # `--hunk PATH SEL`(nargs=2) — PATH 는 경로 판정에 넣고 SEL(번호·정규식)만 건너뛴다(prj3#Issue932)
 _ARITH = re.compile(r"\$?\(\((?:[^()]|\([^()]*\))*\)\)")        # `(( … ))`·`$(( … ))` — 안의 `>` 는 비교다
 _TEST2 = re.compile(r"\[\[.*?\]\]", re.S)                       # `[[ … ]]` — 안의 `>` 는 문자열 비교다
 _SUBST = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")                # 명령 치환 — 안도 명령이다(N5)
 _TMPVAR = re.compile(r"(?:^|[\s;&|(])(?:export\s+|local\s+)?([A-Za-z_][A-Za-z0-9_]*)="
                      r"(?:\"|')?(?:\$\(\s*mktemp\b|/tmp(?:/|\b)|/private/tmp(?:/|\b)|\$TMPDIR\b|\$\{TMPDIR)")
+
+
+# 허용 경로 변수 추적 (prj3#Issue1003) — `X=<경로>` 대입의 값이 전부 관할 예외·임시 경로면 `$X` 는 안전하다.
+#   재대입이 하나라도 허용 밖이면 안전하지 않다(순서를 따지지 않는 보수 판정). 셸(_analyze)과 파이썬 쓰기 API(api_writes)가
+#   **이 한 지점**으로 같은 판정을 한다 — 표기(리다이렉트·heredoc·argv)마다 판정이 갈리던 것이 이슈의 원인이다.
+_ASSIGN = re.compile(r"""(?:^|[\s;&|(])(?:export\s+|local\s+)?([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|[^\s;&|()<>]*)""")
+
+
+def _shell_assigns(flat):
+    """정규화한 명령의 `이름=값` 대입 — {이름: [값…]} (따옴표 제거). 명령 치환이 든 값은 '?' 로 둬 미해석이 되게 한다."""
+    out = {}
+    for m in _ASSIGN.finditer(flat):
+        v = m.group(2)
+        if len(v) > 1 and v[0] == v[-1] and v[0] in "'\"":
+            v = v[1:-1]
+        out.setdefault(m.group(1), []).append("?" if re.search(r"\$\(|`", v) else v)
+    return out
+
+
+def _var_state(vals, allow):
+    """대입값 목록의 상태 — 'safe'(전부 안전) · 'outside'(하나라도 확정된 허용 밖) · None(미해석)."""
+    unknown = False
+    for v in vals:
+        if v == "?" or not v or (v.startswith("$") and not SAFE_TARGET.match(v)):
+            unknown = True
+        elif not safe_path(v, allow):
+            return "outside"
+    return None if unknown else "safe"
 
 
 def _mut_resolve(seg):
@@ -455,6 +483,9 @@ def _seg_mutates(w, args, ctx, depth):
         if sub in GIT_DRYRUN and any(a in ("-n", "--dry-run") or (re.fullmatch(r"-[a-zA-Z]+", a) and "n" in a)
                                      for a in rest):
             return False
+        if sub == "restore" and any(a in ("-S", "--staged") for a in rest) \
+                and not any(a == "--worktree" or re.fullmatch(r"-[a-zA-Z]*W[a-zA-Z]*", a) for a in rest):
+            return False                                   # 인덱스만(`git restore --staged`) — 워킹트리 무접촉(Issue1003)
         if sub in GIT_ALWAYS:
             return True
         if sub == "checkout":
@@ -562,6 +593,7 @@ def _analyze(src, ctx, depth=0):
         return False
     flat = _TEST2.sub(" true ", _ARITH.sub(" 0 ", normalize(src)))
     ctx.tmpvars |= {m.group(1) for m in _TMPVAR.finditer(flat)}
+    ctx.tmpvars |= {n for n, vs in _shell_assigns(flat).items() if _var_state(vs, ctx.allow) == "safe"}
     for m in _SUBST.finditer(flat):
         body = m.group(1) if m.group(1) is not None else m.group(2)
         if body and _analyze(body, ctx, depth + 1):
@@ -602,10 +634,99 @@ _PATHLIT = re.compile(r"""(['"])([^'"\s]+)\1""")
 _PATHLIKE = re.compile(r"^(~|/|\.{1,2}/|\$\{?HOME\}?|\$\{?TMPDIR)|^[\w.-]+/|\.[A-Za-z0-9]{1,8}$")
 
 
+_PY_ASSIGN = re.compile(r"^[ \t]*([A-Za-z_]\w*)[ \t]*=(?!=)[ \t]*(.+?)[ \t]*$", re.M)
+_PY_FOR = re.compile(r"\bfor[ \t]+([A-Za-z_]\w*)[ \t]+in[ \t]*[\[(]")
+_PY_PATHCALL = re.compile(r"^(?:pathlib\.)?Path\(.*\)$|^(?:os\.path\.expanduser|str)\(.*\)$", re.S)
+_PY_ARGV = re.compile(r"^sys\.argv\[(\d+)\]$")
+_PY_OTHER = re.compile(r"(?<![\w.])(?:os\.(?:remove|unlink|removedirs|rename|replace|makedirs|mkdir|rmdir)"
+                       r"|shutil\.(?:copy\w*|move|rmtree|copytree))\(")
+_PY_PATH = re.compile(r"(?<![\w.])(?:pathlib\.)?Path\(")
+_PY_PATHW = re.compile(r"\.(?:write_text|write_bytes|unlink|rmdir|mkdir|touch|open)\(")
+_PY_RECV = re.compile(r"(?<![\w.])([A-Za-z_]\w*)\.(?:write_text|write_bytes|unlink|rmdir|mkdir|touch)\(")
+
+
+def _shell_arg_state(a, svars, allow):
+    """파이썬 `sys.argv[N]` 으로 넘어간 셸 인자의 상태 — `$X`/`${X}` 는 대입을 따라가고 리터럴은 경로 판정."""
+    m = re.fullmatch(r"\$\{?([A-Za-z_]\w*)\}?", a)
+    if m:
+        return _var_state(svars[m.group(1)], allow) if m.group(1) in svars else None
+    if a.startswith("$") and not SAFE_TARGET.match(a):
+        return None
+    return "safe" if safe_path(a, allow) else "outside"
+
+
+def _py_state(expr, env, argv, svars, allow, depth=0):
+    """파이썬 경로 식의 상태 — 'safe' · 'outside' · None(미해석). 리터럴·`Path()`/`str()`/`expanduser()` 래핑·`sys.argv[N]`·
+    같은 코드의 `이름 = 식` 대입(전부 안전해야 안전)만 따라간다. 그 밖의 식은 미해석 — 경고 통과(Issue1003 ④)."""
+    expr = expr.strip()
+    if depth > 6 or not expr:
+        return None
+    lit = _py_lit(expr)
+    if lit is not None:
+        if re.match(r"^[fF]", expr) and "{" in lit:
+            return None
+        return "safe" if safe_path(lit, allow) else "outside"
+    if _PY_PATHCALL.match(expr):
+        args, end = _py_call(expr, expr.index("("))
+        return _py_state(args[0], env, argv, svars, allow, depth + 1) if args and end == len(expr) else None
+    m = _PY_ARGV.match(expr)
+    if m:
+        k = int(m.group(1))
+        return _shell_arg_state(argv[k - 1], svars, allow) if 1 <= k <= len(argv) else None
+    if re.fullmatch(r"[A-Za-z_]\w*", expr):
+        sts = [_py_state(r, env, argv, svars, allow, depth + 1) for r in env.get(expr, [])]
+        if "outside" in sts:
+            return "outside"
+        return "safe" if sts and all(x == "safe" for x in sts) else None
+    return None
+
+
+def _py_argv(src):
+    """python 명령이 받은 스크립트 인자(`python3 - A B` · `python3 -c CODE A B`) — sys.argv[1:] 에 해당."""
+    for seg in simple_commands(src) or []:
+        w, args = _mut_resolve(seg)
+        if not w.startswith("python"):
+            continue
+        if "-c" in args:
+            return args[args.index("-c") + 2:]
+        if "-" in args:
+            return args[args.index("-") + 1:]
+    return []
+
+
 def api_writes(src, allow=None):
-    """파이썬 쓰기 API 가 산출물에 닿는가 — 경로 리터럴이 없거나 하나라도 산출물이면 True."""
-    lits = [m.group(2) for m in _PATHLIT.finditer(src) if _PATHLIKE.search(m.group(2))]
-    return not lits or not all(safe_path(p, allow) for p in lits)
+    """파이썬 쓰기 API 가 **확정된** 산출물에 닿는가 (Issue1003) — 쓰기 API 의 대상 식(open·Path 는 첫 인자, 쓰기 모드 open 만)을
+    리터럴·대입·argv 로 풀어 하나라도 허용 밖으로 확정되면 True. 못 푼 대상은 경고 통과(fail-open).
+    heredoc·`-c` 본문이 없으면(스크립트 파일 실행) 종전 판정 — 경로 리터럴이 없거나 하나라도 산출물이면 True."""
+    codes = _py_sources(src)
+    if not codes:
+        lits = [m.group(2) for m in _PATHLIT.finditer(src) if _PATHLIKE.search(m.group(2))]
+        return not lits or not all(safe_path(p, allow) for p in lits)
+    svars, argv = _shell_assigns(normalize(src)), _py_argv(src)
+    for code in codes:
+        masked = _py_mask(code)
+        env = {}
+        for m in _PY_ASSIGN.finditer(masked):
+            env.setdefault(m.group(1), []).append(code[m.start(2):m.end(2)])
+        for m in _PY_FOR.finditer(masked):                  # `for p in ['a','b']:` — 목록 원소가 전부 p 의 대입값
+            elems, _ = _py_call(code, m.end() - 1)
+            env.setdefault(m.group(1), []).extend(elems or ["?"])
+        targets = []
+        for stmt in _py_statements(code):
+            for _, expr, mode, _ in _py_opens(stmt):
+                if mode is None or re.search(r"[wax+]", mode):
+                    targets.append(expr)
+        if _PY_PATHW.search(masked):
+            for m in _PY_PATH.finditer(masked):
+                args, _ = _py_call(code, m.end() - 1)
+                if args:
+                    targets.append(args[0])
+        for m in _PY_OTHER.finditer(masked):
+            targets += _py_call(code, m.end() - 1)[0] or []
+        targets += [m.group(1) for m in _PY_RECV.finditer(masked)]
+        if any(_py_state(t, env, argv, svars, allow) == "outside" for t in targets):
+            return True
+    return False
 
 
 _FBOT_LEAD = re.compile(r"(^|/)fbot-lead\.py$")

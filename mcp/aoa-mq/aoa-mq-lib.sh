@@ -26,6 +26,9 @@ AOA_MQ_PRJ_LOADED=0
 AOA_MQ_PRJ_IDS=()
 AOA_MQ_PRJ_PATHS=()
 
+# prj3#Issue1046 — 넛지·목록이 함께 쓰는 미종결 항목 분류 계약.
+AOA_MQ_JQ_CLASS='def mq_class($now): if .status=="waiting" then "wait" elif .status=="watching" or (.status=="pending" and ((.due_ts // "") > $now)) then "reserved" else "action" end;'
+
 _aoa_mq_norm_path() { # $1=경로 → MQ_NP (~ 확장·끝 공백·끝 / 제거)
   local p="$1"
   p="${p%$'\r'}"
@@ -123,6 +126,118 @@ aoa_mq_target() {
   return 0
 }
 
+# ── 생성 시점 중복 키 (prj3#Issue1046) (Issue1059) ───────────────────
+# 입력: message · 명시 key · 명시 group · due 날짜 · target · source · confirm(0|1) · type(scheduled|alert)
+# 출력: MQ_DK(키 또는 빈 값) · MQ_DG(적용된 묶음 또는 빈 값) ·
+#   MQ_DK_LEGACY(H 분류를 붙인 경우의 종전 confirm 키) · MQ_DK_CAT(키에 붙인 H 분류)
+# 이 판정은 UserPromptSubmit 경로에서도 재사용할 수 있게 외부 프로세스를 띄우지 않는다.
+aoa_mq_dedup_key() {
+  local msg="$1" explicit="$2" group="$3" due_date="$4" target="$5" source="$6" is_confirm="$7" type="${8:-scheduled}"
+  local policy="${MQ_DIR:-${AOA_MQ_DIR:-$HOME/.claude/data/aoa/mq}}/policy.yml"
+  local line name re issue prj head_tag confirm_cat=""
+  local issue_re='(prj[0-9]+#)?Issue[0-9]+(_[0-9]+)?'
+  MQ_DK=""; MQ_DG=""; MQ_DK_LEGACY=""; MQ_DK_CAT=""
+
+  if [ -n "$group" ]; then
+    MQ_DG="$group"
+  elif [ -f "$policy" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      line="${line%$'\r'}"
+      case "$line" in
+        group.*:*)
+          name="${line%%:*}"; name="${name#group.}"
+          re="${line#*:}"; re="${re#"${re%%[![:space:]]*}"}"
+          if [ -n "$name" ] && [ -n "$re" ] && [[ $msg =~ $re ]]; then
+            MQ_DG="$name"
+            break
+          fi
+          ;;
+      esac
+    done < "$policy"
+  fi
+
+  # 명시 키는 호출자가 정한 값 그대로이며 confirm 접미사도 붙이지 않는다.
+  if [ -n "$explicit" ]; then
+    MQ_DK="$explicit"
+    return 0
+  fi
+  if [ -n "$MQ_DG" ] && [ -n "$due_date" ]; then
+    MQ_DK="group:${MQ_DG}:${due_date}"
+    return 0
+  fi
+  # ③ 이슈 토큰 — alert 는 대상 아님(새 통지를 이미 알린 항목 꼬리에 묻으면 다시 울리지 않는다).
+  #   [컨펌] 은 **머리**(태그 바로 뒤)의 이슈만 — 본문에 근거로 인용한 이슈가 같다고 서로 다른
+  #   결정을 합치면 사람의 결정 하나가 조용히 사라진다(ex) 직능별 매뉴얼 개정안이 같은 근거 이슈를 인용)
+  [ "$type" = alert ] && return 0
+  local scan="$msg"
+  if [ "$is_confirm" = 1 ]; then
+    while :; do
+      scan="${scan#"${scan%%[![:space:]]*}"}"
+      case "$scan" in
+        \[*\]*)
+          head_tag="${scan%%\]*}"; head_tag="${head_tag#\[}"
+          case "$head_tag" in
+            H:*)
+              if [ -z "$confirm_cat" ]; then
+                confirm_cat="${head_tag#H:}"; confirm_cat="${confirm_cat// /}"
+              fi
+              ;;
+          esac
+          scan="${scan#*\]}"
+          ;;
+        *) break ;;
+      esac
+    done
+    issue_re='^((prj[0-9]+)[ #])?Issue[0-9]+(_[0-9]+)?'
+  fi
+  if [[ $scan =~ $issue_re ]]; then
+    issue="${BASH_REMATCH[0]}"
+    issue="${issue/ /#}"                                   # «prjN IssueM» 공백 표기 = prjN#IssueM
+    case "$issue" in
+      prj*#Issue*) prj="${issue%%#*}"; issue="${issue#*#}" ;;
+      *)
+        aoa_mq_target "$target" "$msg" "$source"
+        if [ "$MQ_T_RESOLVED" = 1 ]; then prj="$MQ_T_PRJ"; else prj="-"; fi
+        ;;
+    esac
+    MQ_DK="${prj}:${issue}"
+    if [ "$is_confirm" = 1 ]; then
+      MQ_DK="${MQ_DK}:confirm"
+      # (Issue1059) 머리 [H:<분류>] 가 있으면 키에 붙인다 — 같은 이슈의 다른 결정이 서로를 막지 않게 한다.
+      #   태그가 없으면(게이트 면제 source 등) 종전 키 그대로. 종전 키는 MQ_DK_LEGACY 로 남겨
+      #   enqueue 가 소급 변경 없이 «종전 키로 confirmed 된 같은 분류 결정» 도 계속 차단한다.
+      if [ -n "$confirm_cat" ]; then
+        MQ_DK_LEGACY="$MQ_DK"
+        MQ_DK_CAT="$confirm_cat"
+        MQ_DK="${MQ_DK}:${MQ_DK_CAT}"
+      fi
+    fi
+  fi
+  return 0
+}
+
+# ── 항목이 «무엇에 관한 것인지» — 본문 머리의 prj (Issue1060_1) ──────────
+# 입력: $1=message → MQ_SUBJ(prjN|"")
+#   target 은 «누가 처리하나»(Issue925 — 총괄 [컨펌] 이면 봇 거처 prj3)라 화면에 «무엇에 관한 것인지» 가 사라진다.
+#   머리 태그(`[컨펌]`·`[H:…]`) 뒤 첫 토큰이 `prjN`·`prjN IssueM`·`prjN#IssueM` 일 때만 인정한다 — 본문 중간
+#   언급(근거 인용·`fSnippet(prj15)`)은 주제가 아니다. 매핑 없는 번호는 버린다(오타가 화면에 «사실» 로 서지 않게).
+aoa_mq_subject_prj() {
+  local scan="$1" tok
+  MQ_SUBJ=""
+  while :; do
+    scan="${scan#"${scan%%[![:space:]]*}"}"
+    case "$scan" in
+      \[*\]*) scan="${scan#*\]}" ;;
+      *) break ;;
+    esac
+  done
+  [[ $scan =~ ^(prj[0-9]+[a-z]*)([[:space:]#:]|$) ]] || return 0
+  tok="${BASH_REMATCH[1]}"
+  aoa_mq_check_target "$tok" || return 0
+  MQ_SUBJ="$tok"
+  return 0
+}
+
 # ── 세션이 속한 prj — 가장 긴 접두 (Issue770 넛지 범위) ────────────────
 # 입력: $1=cwd → MQ_C_PRJ(prjN|"") · MQ_C_CWD(프로젝트 루트, 없으면 cwd 자체)
 #   ⚠️ «접두면 매칭» 으로 끝내면 prj0(`~`)이 모든 세션을 삼킨다 — 가장 긴 것만 인정한다
@@ -209,8 +324,39 @@ aoa_mq_hr_gate() { # $1=로그 파일 → 0 통과 · 1 거부·오류 · 2 게�
   return 0
 }
 
+aoa_mq_timeout_bin() { # → MQ_TIMEOUT_BIN. timeout(GNU coreutils)·gtimeout 중 있는 것. 부재면 rc 1 — 호출부가 **명시 실패**한다(Issue979_2)
+  MQ_TIMEOUT_BIN="${AOA_MQ_TIMEOUT_BIN:-}"
+  [ -n "$MQ_TIMEOUT_BIN" ] || MQ_TIMEOUT_BIN="$(command -v timeout 2>/dev/null)"
+  [ -n "$MQ_TIMEOUT_BIN" ] || MQ_TIMEOUT_BIN="$(command -v gtimeout 2>/dev/null)"
+  [ -n "$MQ_TIMEOUT_BIN" ] && [ -x "$MQ_TIMEOUT_BIN" ]
+}
+
+# 몸체 종료 뒤 결과 기록 — `--output-format json` 의 is_error·num_turns·total_cost_usd 와 rc 를 항목 진행 메모(progress)로.
+#   $1=id $2=rc $3=JSON 출력 파일 $4=로그 파일. 기록 실패는 로그에만 남긴다(몸체는 이미 끝났다)
+aoa_mq_spawn_record() {
+  local id="$1" rc="$2" out="$3" log="$4" line="" ie nt cost
+  if [ -s "$out" ]; then
+    { printf '%s [spawn-result] %s rc=%s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$id" "$rc"; cat "$out"; } >> "$log" 2>/dev/null
+    ie=$(jq -r 'if type=="object" then (if has("is_error") then .is_error|tostring else "null" end) else "null" end' "$out" 2>/dev/null | tail -1)
+    nt=$(jq -r 'if type=="object" then (if has("num_turns") then .num_turns|tostring else "null" end) else "null" end' "$out" 2>/dev/null | tail -1)
+    cost=$(jq -r 'if type=="object" then (if has("total_cost_usd") then .total_cost_usd|tostring else "null" end) else "null" end' "$out" 2>/dev/null | tail -1)
+    line="몸체 종료: rc=${rc} is_error=${ie:-null} num_turns=${nt:-null} total_cost_usd=${cost:-null}"
+  else
+    line="몸체 종료: rc=${rc} (JSON 출력 없음)"
+  fi
+  if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then line="${line} — 마감 초과(timeout) 로 종료"; fi
+  rm -f "$out"
+  AOA_MQ_DIR="${MQ_DIR:-${AOA_MQ_DIR:-}}" bash "$(dirname "${BASH_SOURCE[0]}")/aoa-mq-progress.sh" note "$id" --text "$line" >> "$log" 2>&1 \
+    || printf '%s [spawn-result] progress 기록 실패: %s — %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$id" "$line" >> "$log" 2>/dev/null
+}
+
 aoa_mq_spawn() { # $1=cwd $2=id $3=prompt $4=로그 파일 [$5=작업 메시지 — 있으면 Jev 로 모델 선택] — MQ_CLAUDE_BIN 이 먼저 정해져 있어야 한다
   [ -d "$1" ] || return 1
+  # prj3#Issue979_2 — 몸체 수명 상한: timeout(마감 AOA_MQ_SPAWN_TIMEOUT 초, 기본 3600) + --max-turns(AOA_MQ_SPAWN_MAX_TURNS, 기본 60).
+  #   timeout 바이너리 부재면 상한 없이 띄우지 않고 **명시 실패**한다(조용한 무제한 기동 금지)
+  aoa_mq_timeout_bin || { echo "aoa_mq_spawn: timeout/gtimeout 부재 — 수명 상한 없이 기동하지 않는다 (brew install coreutils)" >&2; return 1; }
+  local _to="${AOA_MQ_SPAWN_TIMEOUT:-3600}" _mt="${AOA_MQ_SPAWN_MAX_TURNS:-60}" _out
+  _out=$(mktemp "${TMPDIR:-/tmp}/aoa-mq-spawn.XXXXXX") || return 1
   # prj3#Issue863_7 — 작업 메시지(사람이 [진행] 을 누른 항목 본문)로 모델을 고른다. pick 은 별칭 한 줄·실패해도 기본값(rc 0).
   #   별칭 밖 출력은 버린다(기동 줄 주입 방지). 메시지가 없으면 종전과 같다(settings 모델 상속)
   local _m="" _ma=()
@@ -225,6 +371,10 @@ aoa_mq_spawn() { # $1=cwd $2=id $3=prompt $4=로그 파일 [$5=작업 메시지 
     # prj3#Issue859_2 — 권한 플래그는 fbot-org.py launch-flags 단일 지점. mq 세션은 자리 키(봇)가 없어 현행 플래그가 나온다.
     #   해소기 실행 불가면 빈 값 = claude 기본 권한(권한을 넓히는 쪽으로 실패하지 않는다)
     _pf=$(python3 "${CLAUDE_DIR:-$HOME/.claude}/hooks/fbot-org.py" launch-flags 2>/dev/null)
+    # 몸체 + 종료 후 기록을 한 덩어리로 백그라운드 — 호출자(tick·helper)는 즉시 돌아온다. HUP 은 무시(nohup 대체)
     # shellcheck disable=SC2086 — 플래그 한 줄을 단어로 나눠 넘긴다(해소기가 만든 값만)
-    AOA_MQ_WAKE_ID="$2" nohup "$MQ_CLAUDE_BIN" $_pf ${_ma[@]+"${_ma[@]}"} -p "$3" >> "$4" 2>&1 & )
+    ( trap '' HUP
+      AOA_MQ_WAKE_ID="$2" "$MQ_TIMEOUT_BIN" -k 10 "$_to" "$MQ_CLAUDE_BIN" $_pf ${_ma[@]+"${_ma[@]}"} \
+        --max-turns "$_mt" --output-format json -p "$3" > "$_out" 2>> "$4" < /dev/null
+      aoa_mq_spawn_record "$2" "$?" "$_out" "$4" ) > /dev/null 2>&1 & )
 }

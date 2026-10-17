@@ -643,6 +643,17 @@ def cmd_write(argv):
 MISS_HEARTBEAT_S = 15 * 60       # 가동 흔적 창 — t-5m 주기(300s)의 3배
 MISS_SETTLE_S = 120              # 잡 timeout 뒤 ledger 기록까지의 여유
 MISS_DEFAULT_TIMEOUT_S = 900     # timeout 미선언 잡의 판정 보류 시간
+# prj3#Issue979_7: LLM 스텝(scar·prompt)은 상한 없이 돌 수 있다 — 스텝·잡 어느 쪽도 timeout 을 선언하지
+#   않으면 이 값을 적용한다. env 는 테스트 knob 이다
+STEP_DEFAULT_TIMEOUT_S = 1800
+LLM_STEP_KINDS = ("scar", "prompt")
+
+
+def _llm_default_timeout():
+    try:
+        return int(os.environ.get("SCHEDULE_STEP_DEFAULT_TIMEOUT_S") or STEP_DEFAULT_TIMEOUT_S)
+    except ValueError:
+        return STEP_DEFAULT_TIMEOUT_S
 MISS_HOURS = 48                  # 기본 관찰 창 — 하루 2회 잡이면 4슬롯
 
 
@@ -928,18 +939,33 @@ def cmd_check(argv):
             bad.append("발화 누락 %s" % _miss_line(m)[2:])
     warn = [m for m in miss["missed"] if m["cause"] != "up"]
 
+    # ⑤ LLM 스텝 timeout 선언 누락 — 기본값이 걸리긴 하나 의도한 상한인지 선언으로 드러내라 (Issue979_7)
+    tmo_warn = []
+    for jn, jv in sorted(jobs.items()):
+        jd = _job_dict(jv)
+        if jd.get("timeout"):
+            continue
+        for n, st in enumerate(_job_steps(jv), 1):
+            if st.get("kind") in LLM_STEP_KINDS and not st.get("timeout"):
+                tmo_warn.append("⚠️ timeout 미선언: %s#%d (%s) — 기본 %ds 적용 중, 선언 권장"
+                                % (jn, n, st["kind"], _llm_default_timeout()))
+
     if bad:
         print("check: %d 건 불일치" % len(bad))
         for b in bad:
             print("  ❌ %s" % b)
         for m in warn:
             print("  " + _miss_line(m))
+        for w in tmo_warn:
+            print("  " + w)
         sys.exit(1)
     n_c = len(compiled_events(events))
     print("check: OK — 유닛 %d · 비유닛 이벤트 %d · 잡 %d · 바인딩 %d"
           % (n_c, len(events) - n_c, len(jobs), len(bindings)))
     for m in warn:
         print("  " + _miss_line(m))
+    for w in tmo_warn:
+        print("  " + w)
     if miss["missed"]:
         print("  " + _miss_summary(miss))
 
@@ -1232,6 +1258,8 @@ def _run_binding(ev, b, jobs, runner, force=False, deadline=None, stack=()):
                 run, cwd = _step_run(st, arg)
                 mk = _log_mark(label, job.get("log"))
                 stmo = st.get("timeout")
+                if not stmo and st["kind"] in LLM_STEP_KINDS:
+                    stmo = _llm_default_timeout()      # Issue979_7: 미선언 LLM 스텝도 상한이 있다
                 if left is not None:
                     stmo = min(int(stmo), left) if stmo else left
                 rc = _call_runner(runner, ev, label, run, lock="none", timeout=stmo,

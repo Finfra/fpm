@@ -36,6 +36,9 @@ CHILDREN=(
   "1|$HOOKS_DIR/pm-do-safety-context.sh"       # 위임 세션 안전 지시 — Issue351
   "2|$HOOKS_DIR/fbot-checkin.sh"               # 핀봇 출근: 매뉴얼·kv 복원 — Issue436_3
   "3|$HOOKS_DIR/lang-anchor.sh"                # 압축·재개 직후 응답 언어 한국어 재고정 — Issue747
+  "4|$HOOKS_DIR/nudge-state-reset.sh"          # 압축·재개 직후 1회 주입 상태 초기화 — Issue979_4
+  "5|$HOOKS_DIR/py-baseline-check.sh"          # 맨 python3 가 기준 3.14 미만이면 1줄 경고 - Issue1117
+  "6|$HOOKS_DIR/openclaw-inbound-context.sh"   # OpenClaw 인바운드 세션에만 접수 창구 계약 주입 - Issue1113_1
 )
 
 for spec in "${CHILDREN[@]}"; do

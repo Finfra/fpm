@@ -314,7 +314,56 @@ $inbox
 받을지·거절할지·바로 끝낼지를 \`python3 ~/.claude/hooks/fbot-inbox.py reply --id <id> --status accepted|rejected|done --body '<응답>'\` 로 답한다. 부하에게 배분할 일이면 \`fbot-lead.py dispatch --by $FBOT_ID\`.
 \`[question]\` 은 **팀원 질문**이다(prj3#Issue757 — 사람이 아니라 팀장이 받는다). L 로 정할 수 있으면 \`reply --id <id> --status done --body '<답>' --by $FBOT_ID\` — 팀원이 답을 들고 재기동된다. 위의 결정이 필요하면 그 질문을 번호 목록 평문으로 정리해 남기고 턴을 끝낸다 — 팀장이면 총괄에게, 총괄이면 의뢰한 사람에게 올라가고(prj3#Issue831) 답이 오면 재기동된다."
 
+# --- 상신 회신 (prj3#Issue1081 후속) -------------------------------------------
+# 내가 보낸 요청(상신·defer …)의 회신은 받는 쪽 요청의 result 에만 붙는다 — 상신자는 «내 앞 미처리»(위 인박스)만 받아서 자기 상신이
+#   done 으로 닫힌 것을 못 봤다(prj9t 팀장이 done 회신된 상신 4건을 계속 «H 대기» 로 보고). 조회 단일 지점 = fbot-inbox.py replies.
+#   1회 표시(result.seen_at). 상한 트림 대상이 아니다 — ctx_head 에 붙여 항상 싣는다. 실패해도 출근은 막지 않는다.
+sec_replies=""
+[ -f "$INBOX_PY" ] && sec_replies="$(python3 "$INBOX_PY" replies --bot-id "$FBOT_ID" 2>/dev/null \
+  | python3 -c '
+import json,sys
+try: r=json.load(sys.stdin)
+except Exception: sys.exit(0)
+for it in r.get("items") or []:
+    print("- `%s` → %s [%s] %s: %s" % (it["id"], it.get("to") or "?", it.get("kind") or "ask", it.get("status") or "",
+          " ".join((it.get("body") or "").split())[:600]))
+' 2>/dev/null)"
+[ -n "$sec_replies" ] && sec_replies="## 상신 회신 — 내가 보낸 요청에 달린 답 (1회 표시)
+
+$sec_replies
+
+위 건은 **회신이 끝난 것**이다 — «H 대기»·«회신 대기» 로 다시 적지 말고 회신 내용대로 상태표·후속을 갱신한다. 이후 조회: \`python3 ~/.claude/hooks/fbot-inbox.py inbox --bot-id <받는 쪽> --status done\` 또는 \`fbot-state.py request show <id>\`."
+
+# --- 사람 결정을 못 받고 mq 가 닫힌 요청 -------------------------------------------
+# 묶음 mq 를 세션이 첫 항목만 처리해 confirmed 로 닫으면 같은 mq 를 가리키던 나머지 요청은 result.needs_human 마커만 남은 채 열려 있다 —
+#   «대기 중» 으로 보이지만 아무도 묻지 않는다(2026-10-10 prj9t 사운드 예산). 조회 단일 지점 = fbot-inbox.py stale-decisions (표지 없음 —
+#   재상신하거나 done|rejected 로 닫을 때까지 매 출근 보인다). 상한 트림 대상이 아니다. 실패해도 출근은 막지 않는다.
+sec_stale=""
+[ -f "$INBOX_PY" ] && sec_stale="$(python3 "$INBOX_PY" stale-decisions --bot-id "$FBOT_ID" 2>/dev/null \
+  | python3 -c '
+import json,sys
+try: r=json.load(sys.stdin)
+except Exception: sys.exit(0)
+for it in r.get("items") or []:
+    c=it.get("closed") or {}
+    print("- `%s` [H:%s] mq %s → %s %s: %s  (요청: %s)" % (it["id"], it.get("category") or "?", it.get("mq") or "?", c.get("status") or "종결",
+          c.get("ack_ts") or "", " ".join((c.get("result") or "(결과 없음)").split())[:160], " ".join((it.get("asked") or "").split())[:100]))
+' 2>/dev/null)"
+[ -n "$sec_stale" ] && sec_stale="## 사람 결정을 못 받고 mq 가 닫힌 요청 — 대기 중이 아니다
+
+$sec_stale
+
+위 요청은 «사람 결정 대기» 마커가 가리키는 mq 가 **이미 종결**됐는데 요청은 열려 있다. mq 결과(위 요약·\`queue_done\`)에 이 요청의 결정이 있는지 확인한다.
+결정이 없으면(다른 항목만 처리하고 닫힌 경우) \`python3 ~/.claude/hooks/fbot-inbox.py reply --id <id> --status accepted --needs-human <H분류> --reask --body '<사람이 정할 것>'\` 로 재상신하고,
+결정이 있으면 \`reply --id <id> --status done|rejected\` 로 닫는다. «H 대기» 로 그대로 보고하지 않는다. 이후 조회: \`python3 ~/.claude/hooks/fbot-inbox.py stale-decisions --bot-id $FBOT_ID\`"
+
 ctx_head="$ctx"
+[ -n "$sec_replies" ] && ctx_head="$ctx
+
+$sec_replies" && ctx="$ctx_head"
+[ -n "$sec_stale" ] && ctx="$ctx
+
+$sec_stale"
 for _sec in "$sec_manual" "$sec_kv" "$sec_inbox"; do
   [ -n "$_sec" ] && ctx="$ctx
 

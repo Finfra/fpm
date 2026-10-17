@@ -543,7 +543,8 @@ def check_org(con: sqlite3.Connection) -> dict:
     names = org._declared_names() if hasattr(org, "_declared_names") else (
         sorted(f[:-4] for f in os.listdir(org.ORG_DIR) if f.endswith(".yml")) if os.path.isdir(org.ORG_DIR) else [])
     for name in names:
-        prj = None if name == "_hq" else (int(name) if name.isdigit() else None)
+        prj = None if name == "_hq" else (org.try_prj(name) if hasattr(org, "try_prj")
+                                          else (int(name) if name.isdigit() else None))   # prj3#Issue1061 접미 id
         if name != "_hq" and prj is None:
             continue                      # _template 등은 직접 해소 대상이 아니다
         got = org.resolve(prj)

@@ -13,6 +13,7 @@
 #
 # 실행: python3 services/hub/test_fbot_map_issue402.py
 """핀봇 조직도(Issue402) 단위 테스트."""
+import html
 import json
 import os
 import re
@@ -337,6 +338,7 @@ def main():
     _check_issue488()
     _check_issue494()
     _check_issue502()
+    _check_issue621()
 
     print("\n== 홈 섹션 그룹 렌더(JS) — 서빙 소스를 node 로 실제 실행 ==")
     rc = _run_js_checks()
@@ -738,6 +740,152 @@ def _check_issue488():
     _pg_sp = server.Handler._render_fbot_map(_d488(_nsp, [_fresh])).decode("utf-8")
     check("배너 — 스폰 대기 안내, 원장 종결 버튼 없음", "스폰 대기" in _pg_sp and 'class="fm-close-btn"' not in _pg_sp)
 
+    print("\n== prj3#Issue991 — 하위 배분이 진행 중인 팀장 배분은 orphaned 가 아니라 waiting_child ==")
+    _now991 = int(time.time())
+
+    def _kid991(dst, issue, pid, status="open", ago=7200):
+        return dict(_e488("LEAD", dst, issue=issue, status=status), job_id="fbotdisp-k-" + issue, ts=_now991 - ago,
+                    lineage=True, parent_dispatch_id=pid)
+    _par991 = dict(_e488("CHIEF", "LEAD", issue="PARENT"), job_id="fbotdisp-p-parent00", ts=_now991 - 7200,
+                   lineage=True, parent_dispatch_id=None)
+    _nb991 = [_n488("CHIEF", state="working"), _n488("LEAD", state="checkout", root="CHIEF"),
+              _n488("WK", state="working", root="CHIEF"), _n488("WK2", state="checkout", root="CHIEF")]
+    _dl991 = server._fbot_deadlocks(_d488(_nb991, [_par991, _kid991("WK", "KID", "fbotdisp-p-parent00")]))
+    check("팀장 퇴근 + 하위 open·대상 working → orphaned 아님", not _dl991["orphaned"])
+    check("→ waiting_child(why=하위 진행 중) 로 분류", [(e["issue"], e["why"]) for e in _dl991["waiting_child"]] == [("PARENT", "하위 진행 중")])
+    check("미종결(soft)·count 에서 빠진다", _dl991["soft_count"] == 0 and _dl991["count"] == 0)
+    _gk = _kid991("WK", "GKID", "fbotdisp-k-MID", ago=7200)
+    _mid = dict(_kid991("WK2", "MID", "fbotdisp-p-parent00", status="done"), job_id="fbotdisp-k-MID")
+    check("손자만 살아 있어도 waiting_child", len(server._fbot_deadlocks(_d488(_nb991, [_par991, _mid, _gk]))["waiting_child"]) == 1)
+    _dl991b = server._fbot_deadlocks(_d488(_nb991, [_par991, _kid991("WK", "KID", "fbotdisp-p-parent00", status="done")]))
+    check("회귀 — 하위 전부 done 이면 orphaned 유지", [e["why"] for e in _dl991b["orphaned"]] == ["대상이 퇴근함"] and not _dl991b["waiting_child"])
+    _dl991c = server._fbot_deadlocks(_d488(_nb991, [_par991, _kid991("WK", "KID", "fbotdisp-p-parent00", status="cancelled")]))
+    check("회귀 — 하위 cancelled 면 orphaned 유지", len(_dl991c["orphaned"]) == 1 and not _dl991c["waiting_child"])
+    _dl991d = server._fbot_deadlocks(_d488(_nb991, [_par991, _kid991("WK", "KID", "fbotdisp-p-parent00", status="deferred")]))
+    # prj3#Issue1023 — 하위가 보류(deferred·blocked)뿐이면 «하위 보류»(child_held): 미종결 수에 남되 종결 버튼만 숨긴다
+    check("하위가 deferred 뿐이면 orphaned 아님 → child_held(why=하위 보류)",
+          not _dl991d["orphaned"] and not _dl991d["waiting_child"] and [(e["issue"], e["why"]) for e in _dl991d["child_held"]] == [("PARENT", "하위 보류")])
+    check("child_held 는 미종결(soft)·count 에 남는다", _dl991d["soft_count"] == 1 and _dl991d["count"] == 1 and _dl991d["hard_count"] == 0)
+    _dl991d2 = server._fbot_deadlocks(_d488(_nb991, [_par991, _kid991("WK", "KID", "fbotdisp-p-parent00", status="blocked")]))
+    check("하위 blocked 뿐이어도 child_held", len(_dl991d2["child_held"]) == 1 and not _dl991d2["orphaned"])
+    _dl991d3 = server._fbot_deadlocks(_d488(_nb991, [_par991, _kid991("WK", "KID", "fbotdisp-p-parent00", status="deferred"),
+                                                    _kid991("WK", "KID2", "fbotdisp-p-parent00", status="done")]))
+    check("보류 + 종결 하위 → child_held", len(_dl991d3["child_held"]) == 1 and not _dl991d3["orphaned"])
+    _dl991d4 = server._fbot_deadlocks(_d488(_nb991, [_par991, _kid991("WK", "KID", "fbotdisp-p-parent00", status="deferred"),
+                                                    _kid991("WK", "KID2", "fbotdisp-p-parent00")]))
+    check("보류 + 활성 open·working 하위 → waiting_child 우선", len(_dl991d4["waiting_child"]) == 1 and not _dl991d4["child_held"])
+    check("하위 활성 없음·보류 없음(done)은 child_held 아님", not _dl991b["child_held"] and not _dl991c["child_held"])
+    _dl991d5 = server._fbot_deadlocks(_d488(_nb991, [_par991, _mid, _kid991("WK", "GKID", "fbotdisp-k-MID", status="deferred")]))
+    check("손자가 보류뿐이어도 child_held", len(_dl991d5["child_held"]) == 1 and not _dl991d5["orphaned"])
+    _pl1023 = server._fbot_board_payload(_d488(_nb991, [_par991, _kid991("WK", "KID", "fbotdisp-p-parent00", status="deferred")]),
+                                         {"available": True, "seats": []}, dl=_dl991d)
+    check("보드 요약 — 하위 보류는 미종결 수에 남는다", _pl1023["summary"]["unsettled"] == 1 and _pl1023["deadlocks"]["child_held"][0]["why"] == "하위 보류")
+    _pg1023 = server.Handler._render_fbot_map(_d488(_nb991, [_par991, _kid991("WK", "KID", "fbotdisp-p-parent00", status="deferred")])).decode("utf-8")
+    check("배너 — 미종결 목록에 하위 보류가 보이되 종결 버튼 없음", "하위 보류" in _pg1023 and "미종결" in _pg1023 and 'class="fm-close-btn"' not in _pg1023)
+    _src1023 = open(server.__file__, encoding="utf-8").read()
+    check("술어 단일 지점 — hub 는 prj3 fbot-org 의 child_class 를 빌려 쓴다", "child_class" in _src1023 and "prj3 sweep 의 CHILD_LIVE 와 같은 축" not in _src1023)
+    _dl991e = server._fbot_deadlocks(_d488(_nb991, [_par991, _kid991("WK2", "KID", "fbotdisp-p-parent00")]))
+    check("회귀 — 하위 open 이나 대상도 퇴근·유예 경과면 orphaned(하위 활성 아님)", len(_dl991e["orphaned"]) >= 1 and not _dl991e["waiting_child"])
+
+    print("\n== prj3#Issue992 — 재개 뒤 기동 대기(spawn_pending) 배분은 명부에 없어도 spawning ==")
+    _now992 = int(time.time())
+    _n992 = [_n488("CHIEF", state="working")]
+
+    def _sp992(resumed_ago, **kw):
+        return dict(_e488("CHIEF", "NEWWK", issue="SPENDING"), job_id="fbotdisp-s-pending0", ts=_now992 - 86400,
+                    spawn_pending=True, resumed_at=(_now992 - resumed_ago) if resumed_ago is not None else 0, **kw)
+    _dl992a = server._fbot_deadlocks(_d488(_n992, [_sp992(600)]), now=_now992)
+    check("ⓐ 재개 10분·미등록 → spawning(스폰 대기)", [e["issue"] for e in _dl992a["spawning"]] == ["SPENDING"] and not _dl992a["orphaned"])
+    check("ⓐ hard 교착 0", _dl992a["hard_count"] == 0 and _dl992a["count"] == 0)
+    _dl992b = server._fbot_deadlocks(_d488(_n992, [_sp992(3600)]), now=_now992)
+    check("ⓑ 재개 60분 → hard 유지(명부에 없음)", [e["why"] for e in _dl992b["orphaned"]] == ["명부에 없음"] and _dl992b["hard_count"] == 1 and not _dl992b["spawning"])
+    _dl992c = server._fbot_deadlocks(_d488(_n992, [_sp992(None)]), now=_now992)
+    check("재개 시각 없으면 ts(24h 전) 기준 → hard 유지", _dl992c["hard_count"] == 1 and not _dl992c["spawning"])
+    _plain992 = dict(_e488("CHIEF", "NEWWK", issue="PLAIN"), job_id="fbotdisp-s-plain000", ts=_now992 - 60)
+    check("회귀 — spawn_pending 표지 없는 미등록 open 은 종전대로 hard", server._fbot_deadlocks(_d488(_n992, [_plain992]), now=_now992)["hard_count"] == 1)
+    _n992b = [_n488("CHIEF", state="working"), _n488("NEWWK", state="checkout", root="CHIEF")]
+    _dl992d = server._fbot_deadlocks(_d488(_n992b, [_sp992(600)]), now=_now992)
+    check("등록됐으나 퇴근 상태인 spawn_pending(재개 10분) → spawning", len(_dl992d["spawning"]) == 1 and not _dl992d["orphaned"])
+    _dl992e = server._fbot_deadlocks(_d488(_n992b, [_sp992(3600)]), now=_now992)
+    check("등록됐으나 퇴근 상태인 spawn_pending(재개 60분) → soft 미종결", len(_dl992e["orphaned"]) == 1 and not _dl992e["spawning"])
+    print("\n== 몸체가 이미 떴다 퇴근한 배분(잠금 해제 기록 있음)은 유예 안이어도 스폰 대기가 아니다 ==")
+    #   2026-10-09 실측 fbotdisp-1791514968-6c3ad2ef — 팀장이 3회 출근·완료 보고 뒤 퇴근(spawned_at 해제·claim_history 로 이동).
+    #   유예 기준이 배분 ts 로 떨어져 «🚀 스폰 대기 · 출근 대기 413초» 로 떴다. 실제로는 sweep 종결 대기(미종결)였다
+    _now_rl = int(time.time())
+    _n_rl = [_n488("CHIEF", state="working"), _n488("LEAD", state="checkout", root="CHIEF")]
+    _rl = dict(_e488("CHIEF", "LEAD", issue="RELEASED"), job_id="fbotdisp-r-released", ts=_now_rl - 400, released_at=_now_rl - 90, attempts=2)   # attempts=2: 자동 재기상 상한(Issue630) — 이 절은 스폰 유예 판정만 본다
+    _dl_rl = server._fbot_deadlocks(_d488(_n_rl, [_rl]), now=_now_rl)
+    check("잠금 해제 뒤 퇴근(유예 안) → spawning 아님", not _dl_rl["spawning"])
+    check("→ soft 미종결(대상이 퇴근함)", [e["why"] for e in _dl_rl["orphaned"]] == ["대상이 퇴근함"])
+    _rs = dict(_rl, spawned_at=_now_rl - 30)
+    check("해제 뒤 재스폰(spawned_at 다시 있음) → spawning", len(server._fbot_deadlocks(_d488(_n_rl, [_rs]), now=_now_rl)["spawning"]) == 1)
+    _pg_rl = server.Handler._render_fbot_map(_d488(_n_rl, [_rl])).decode("utf-8")
+    check("배너 — 스폰 대기 문구 없음", "스폰 대기 1건" not in _pg_rl)
+    _kid_rl = dict(_e488("LEAD", "WK2", issue="KIDRL"), job_id="fbotdisp-r-kid00000", ts=_now_rl - 100,
+                   lineage=True, parent_dispatch_id="fbotdisp-r-parent00", released_at=_now_rl - 50)
+    _par_rl = dict(_e488("CHIEF", "LEAD", issue="PARRL"), job_id="fbotdisp-r-parent00", ts=_now_rl - 7200,
+                   lineage=True, parent_dispatch_id=None)
+    _dl_krl = server._fbot_deadlocks(_d488(_nb991, [_par_rl, _kid_rl]), now=_now_rl)
+    check("하위 몸체가 떴다 퇴근 → 하위 활성 아님(waiting_child 아님)", not _dl_krl["waiting_child"])
+
+    print("\n== 잠금 해제 기록 없이도 몸체가 왔다 갔으면(spawn 이후 활동) 스폰 대기가 아니다 ==")
+    #   2026-10-09 실측 fbotdisp-1791517285-3d886abb — `dispatch --spawn` 은 spawned_at 만 남기고 spawned_by 가 없어
+    #   퇴근 해제가 안 된다. 팀장이 44초 만에 출근·보고·퇴근했는데도 spawned_at 기준 10분 «🚀 스폰 대기» 로 떴다.
+    #   판정 재료 = 대상 봇의 last_active_at(상태 전이마다 갱신) — spawn 기준 시각 이후면 몸체가 이미 왔다
+    _n_ar = [_n488("CHIEF", state="working"), dict(_n488("LEAD", state="checkout", root="CHIEF"), last_active_at=_now_rl - 60)]
+    _ar = dict(_e488("CHIEF", "LEAD", issue="ARRIVED"), job_id="fbotdisp-a-arrived0", ts=_now_rl - 110, spawned_at=_now_rl - 100, attempts=2)
+    _dl_ar = server._fbot_deadlocks(_d488(_n_ar, [_ar]), now=_now_rl)
+    check("spawn 뒤 활동하고 퇴근(유예 안) → spawning 아님", not _dl_ar["spawning"])
+    check("→ soft 미종결(대상이 퇴근함)", [e["why"] for e in _dl_ar["orphaned"]] == ["대상이 퇴근함"])
+    _n_ar0 = [_n_ar[0], dict(_n_ar[1], last_active_at=_now_rl - 3600)]
+    check("활동이 spawn 이전뿐(아직 출근 전) → spawning 유지",
+          len(server._fbot_deadlocks(_d488(_n_ar0, [_ar]), now=_now_rl)["spawning"]) == 1)
+    _n_ar1 = [_n_ar[0], _n488("LEAD", state="checkout", root="CHIEF")]
+    check("last_active_at 없음(구 스키마) → 종전대로 spawning",
+          len(server._fbot_deadlocks(_d488(_n_ar1, [_ar]), now=_now_rl)["spawning"]) == 1)
+    _nb_ar = [_n488("CHIEF", state="working"), _n488("LEAD", state="checkout", root="CHIEF"),
+              dict(_n488("WK2", state="checkout", root="CHIEF"), last_active_at=_now_rl - 20)]
+    _par_ar = dict(_e488("CHIEF", "LEAD", issue="PARAR"), job_id="fbotdisp-a-parent00", ts=_now_rl - 7200)
+    _kid_ar = dict(_e488("LEAD", "WK2", issue="KIDAR"), job_id="fbotdisp-a-kid00000", ts=_now_rl - 60,
+                   spawned_at=_now_rl - 55, parent_dispatch_id="fbotdisp-a-parent00")
+    _dl_kar = server._fbot_deadlocks(_d488(_nb_ar, [_par_ar, _kid_ar]), now=_now_rl)
+    check("하위 몸체가 spawn 뒤 왔다 퇴근 → 하위 활성 아님(waiting_child 아님)", not _dl_kar["waiting_child"])
+
+    print("\n== prj1#Issue630: 자동 재기상 대기(auto_wake)는 미종결 원장에서 뺀다 ==")
+    #   prj3#Issue1085 — tick(30분)이 퇴근 대상의 open 배분을 `watch --wake` 로 깨우고 job.attempts +1, RETRY_LIMIT(2) 뒤 mq+blocked.
+    #   그 경로 안의 건은 사람이 닫을 일이 아니다. 근거 없이 오래된 attempts 0 건(자동 경로 미작동)은 종전대로 사람 몫.
+    _n630 = [_n488("CHIEF", state="working"), dict(_n488("LEAD", state="checkout", root="CHIEF"), last_active_at=_now_rl - 3 * 3600)]
+    def _e630(issue, attempts, ago_h):
+        return dict(_e488("CHIEF", "LEAD", issue=issue), job_id="fbotdisp-w-" + issue.lower(), ts=_now_rl - 4 * 3600, attempts=attempts)
+    _dl630a = server._fbot_deadlocks(_d488(_n630, [_e630("WAKE1", 1, 3)]), now=_now_rl)
+    check("(a) attempts 1 → auto_wake · orphaned/unsettled 불포함",
+          [e["issue"] for e in _dl630a["auto_wake"]] == ["WAKE1"] and not _dl630a["orphaned"] and not _dl630a["soft_orphans"]
+          and _dl630a["soft_count"] == 0 and _dl630a["count"] == 0)
+    _dl630a0 = server._fbot_deadlocks(_d488([_n630[0], dict(_n630[1], last_active_at=_now_rl - 1800)], [_e630("WAKE0", 0, 0.5)]), now=_now_rl)
+    check("(a2) attempts 0 이라도 퇴근 후 1시간 미만(첫 tick 전) → auto_wake", len(_dl630a0["auto_wake"]) == 1 and not _dl630a0["soft_orphans"])
+    _dl630b = server._fbot_deadlocks(_d488(_n630, [_e630("OLD0", 0, 3)]), now=_now_rl)
+    check("(b) attempts 0 · 퇴근 후 3시간 → soft_orphans(자동 경로 미작동 = 사람 몫)",
+          [e["issue"] for e in _dl630b["soft_orphans"]] == ["OLD0"] and not _dl630b["auto_wake"] and _dl630b["soft_count"] == 1)
+    _dl630c = server._fbot_deadlocks(_d488(_n630, [_e630("GAVEUP", 2, 3)]), now=_now_rl)
+    check("(c) attempts 2(상한) → soft_orphans 유지", [e["issue"] for e in _dl630c["soft_orphans"]] == ["GAVEUP"] and not _dl630c["auto_wake"])
+    _pg630c = server.Handler._render_fbot_map(_d488(_n630, [_e630("GAVEUP", 2, 3)])).decode("utf-8")
+    check("(c) 문구 — «사람 개입 — mq 로 올라감» + 종결 버튼 유지", "사람 개입 — mq 로 올라감" in _pg630c and 'class="fm-close-btn"' in _pg630c)
+    _pg630a = server.Handler._render_fbot_map(_d488(_n630, [_e630("WAKE1", 1, 3)])).decode("utf-8")
+    check("(a) 배너 — 🔁 자동 재기상 대기 줄(시도 1/2) · 종결 버튼 없음 · 미종결 배너 없음",
+          "자동 재기상 대기 1건" in _pg630a and "시도 1/2" in _pg630a and 'class="fm-close-btn"' not in _pg630a and "미종결 원장" not in _pg630a)
+    _pl630 = server._fbot_board_payload(_d488(_n630, [_e630("WAKE1", 1, 3)]), {"available": True, "seats": []}, dl=_dl630a)
+    check("(a) 보드 요약 — unsettled 0", _pl630["summary"]["unsettled"] == 0)
+    check("(d) 불변 — 하위 진행 중 팀장은 여전히 waiting_child(auto_wake 아님)", len(_dl991["waiting_child"]) == 1 and not _dl991.get("auto_wake"))
+    check("(d) 불변 — 하위 보류는 child_held", len(_dl991d["child_held"]) == 1 and not _dl991d.get("auto_wake"))
+
+    _dl991f = server._fbot_deadlocks(_d488(_nb991, [_par991, dict(_kid991("WK2", "KID", "fbotdisp-p-parent00", ago=30), spawned_at=_now991 - 20)]))
+    check("하위 대상이 퇴근이어도 스폰 유예 안이면 활성 → waiting_child", len(_dl991f["waiting_child"]) == 1)
+    _pl991 = server._fbot_board_payload(_d488(_nb991, [_par991, _kid991("WK", "KID", "fbotdisp-p-parent00")]),
+                                        {"available": True, "seats": []}, dl=_dl991)
+    check("보드 요약 — waiting_child 1 · 미종결 0", _pl991["summary"]["waiting_child_dispatch"] == 1 and _pl991["summary"]["unsettled"] == 0)
+    _pg991 = server.Handler._render_fbot_map(_d488(_nb991, [_par991, _kid991("WK", "KID", "fbotdisp-p-parent00")])).decode("utf-8")
+    check("배너 — 🔵 하위 진행 중 안내, 원장 종결 버튼 없음", "하위 진행 중" in _pg991 and 'class="fm-close-btn"' not in _pg991)
+
     print("\n== prj3#Issue569 — 보드 페이로드(/fbot-map.json) · 보드 셸 ==")
     _nb = [_n488("EXEC", state="working"), _n488("PM", state="checkout", root="EXEC"),
            _n488("WK", state="checkout", root="EXEC")]
@@ -759,6 +907,24 @@ def _check_issue488():
     check("extras·인박스 집계가 개체에 붙는다", _pl["bots"]["EXEC"]["inbox_open"] == 2 and _pl["bots"]["EXEC"]["escalated"] == 1 and _pl["bots"]["EXEC"]["grade"] == "active")
     check("scopes 는 본사 → prj 순, 자리 3", [sc["prj"] for sc in _pl["scopes"]] == [None, 2] and _pl["summary"]["seats"] == 3 and _pl["summary"]["vacant"] == 1)
     check("자리에 점유자 bot_id·보고선", next(st for sc in _pl["scopes"] for d in sc["depts"] for st in d["seats"] if st["addr"] == "2/ops-lead-1")["reports_to"] == "hq/hq-chief-1")
+    # Issue633 — 영숫자 prj id(`9t`)가 int prj 와 섞이면 전체뷰 스코프 정렬 키가 int/str 을
+    #   비교해 `'<' not supported` 로 터져 /fbot-map.json 이 빈 payload 를 내고 보드 조직
+    #   트리가 비어 보였다(2026-10-12 실측). 정렬은 legacy tab=org 와 같은 `_org_scope_key`
+    #   여야 한다 — 본사(None) → 숫자 → 접미(9t → 9t1) 자연 정렬.
+    _org_alnum = {"available": True, "seats": [
+        {"addr": "hq/hq-chief-1", "id": "hq-chief-1", "role": "chief", "dept": "hq", "dept_label": "본사", "source": "central",
+         "reports_to_addr": "", "vacant": False, "occupant": "EXEC", "scope_prj": None, "scope_title": "본사"},
+        {"addr": "2/ops-lead-1", "id": "ops-lead-1", "role": "lead", "dept": "ops", "dept_label": "운영부서", "source": "inherited",
+         "reports_to_addr": "hq/hq-chief-1", "vacant": False, "occupant": "PM", "scope_prj": 2, "scope_title": "obsidian"},
+        {"addr": "9/ops-lead-1", "id": "ops-lead-1", "role": "lead", "dept": "ops", "dept_label": "운영부서", "source": "inherited",
+         "reports_to_addr": "hq/hq-chief-1", "vacant": True, "occupant": "", "scope_prj": 9, "scope_title": "arigato"},
+        {"addr": "9t/ops-lead-1", "id": "ops-lead-1", "role": "lead", "dept": "ops", "dept_label": "운영부서", "source": "inherited",
+         "reports_to_addr": "hq/hq-chief-1", "vacant": True, "occupant": "", "scope_prj": "9t", "scope_title": "ftyping"},
+        {"addr": "9t1/ops-lead-1", "id": "ops-lead-1", "role": "lead", "dept": "ops", "dept_label": "운영부서", "source": "inherited",
+         "reports_to_addr": "hq/hq-chief-1", "vacant": True, "occupant": "", "scope_prj": "9t1", "scope_title": "ftyping-1"}]}
+    _pl_alnum = server._fbot_board_payload(_full, _org_alnum)
+    check("Issue633 — 영숫자 prj(9t) 섞여도 스코프 정렬(TypeError 없음) — 본사→숫자→접미 순",
+          [sc["prj"] for sc in _pl_alnum["scopes"]] == [None, 2, 9, "9t", "9t1"])
     _by = {e["job_id"]: e for e in _pl["dispatch"]}
     check("배분 체인 parent — PM→WK 의 부모는 EXEC→PM", _by["fbotdisp-2-bbbbbbbb"]["parent"] == "fbotdisp-1-aaaaaaaa")
     check("problem·recent 판정이 실린다", _by["fbotdisp-2-bbbbbbbb"]["problem"] is True and _by["fbotdisp-3-cccccccc"]["recent"] is False and _by["fbotdisp-1-aaaaaaaa"]["recent"] is True)
@@ -1200,6 +1366,31 @@ check('지도 링크의 Enter 는 아코디언이 가로채지 않는다', openB
 
 console.log('__RESULT__ ' + PASS + ' ' + FAIL);
 """
+
+
+def _check_issue621():
+    """prj1#Issue621 — 명부 표 열 폭. 워커 호칭이 작업 지시 전문(prj3#Issue1033)이면 자동 레이아웃이
+    호칭 열에 폭을 몰아주고 role·상태·career·prj·소속·지시자 열을 최소폭으로 눌러 `le/a/d` 처럼 쪼갰다.
+    원장 값이 길어도 표가 깨지지 않게 — 짧은 열은 줄바꿈 금지, 긴 열은 폭 상한 + 전문 툴팁.
+    """
+    print("\n== prj1#Issue621 — 명부 표 열 폭(짧은 열 nowrap · 긴 열 clip) ==")
+    long_title = "ISS-X① HR wake 가 정직 개체를 되살리지 않게 — " + "가나다라마바사 " * 20 + "담당 developer 워커"
+    long_task = "prj3 ISS-Y 수정: 구현 명세 그대로. " + "TDD red 먼저 " * 20
+    w = dict(_n488("W1", state="working", root="MGR"), title=long_title, role="developer",
+             career="probation", prj=3, parent="MGR", current_task=long_task)
+    d = _d488([_n488("MGR"), w], [])
+    pr = server.Handler._render_fbot_map(d, False, False, "roster").decode("utf-8")
+    tbl = pr[pr.index("<h2>명부</h2>"):pr.index("<h2>배분 원장</h2>")]
+    row = next(r for r in tbl.split("<tr") if "<code>W1</code>" in r)
+    check("짧은 열(role) 셀은 줄바꿈 금지", '<td class="fm-nw">developer</td>' in row)
+    check("짧은 열(career·prj) 셀도 줄바꿈 금지",
+          '<td class="fm-nw">probation</td>' in row and '<td class="fm-nw">prj3</td>' in row)
+    check("호칭 셀은 폭 상한(clip) + title 툴팁에 전문",
+          'class="fm-clip"' in row and ('title="%s"' % html.escape(long_title)) in row)
+    check("현재 작업 셀도 clip + title 전문",
+          ('title="%s"' % html.escape(long_task)) in row)
+    check("CSS 에 fm-nw·fm-clip 정의",
+          ".fm-nw{" in pr and ".fm-clip{" in pr)
 
 
 def _grab_line(src, prefix):

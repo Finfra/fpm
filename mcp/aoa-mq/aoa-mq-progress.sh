@@ -31,6 +31,7 @@
 #   aoa-mq-progress.sh need-done <id> (--index N|--text "<항목>") [--by <주체>]  # 사람 몫 해소 → 이력
 #   aoa-mq-progress.sh target <id> [--json]                # 대상 prj·cwd 판정 (lib 단일 지점 노출 — hub 가 부른다)
 #   aoa-mq-progress.sh retarget <id> --to prj<N> [--by <주체>]  # 대상 prj 정정 (Issue925) — 형식·매핑 검증, 이력 target_prev
+#   aoa-mq-progress.sh subject <id>                        # 주제 prj 소급 (Issue1060_1) — enqueue 와 같은 lib 판정, 없을 때만 기록
 #   aoa-mq-progress.sh launch <id> [--dry-run] [--force]   # 즉시 기동 — hub [진행] 직후 대상 cwd 에서 claude -p
 #                                                          #   rc 0 기동(또는 dry-run) · 3 거부(판정·잠금·쿨다운·게이트) · 1 오류
 #
@@ -134,7 +135,7 @@ iso_epoch() { # ISO → epoch(초). 모르면 0 — tick iso2epoch 와 같은 �
     || date -d "$1" +%s 2>/dev/null || echo 0
 }
 
-CMD="${1:-}"; [ -n "$CMD" ] || die "하위명령 필요 (claim|note|result|release|show|wait|resume|need|need-done|target|retarget|launch)"
+CMD="${1:-}"; [ -n "$CMD" ] || die "하위명령 필요 (claim|note|result|release|show|wait|resume|need|need-done|target|retarget|subject|launch)"
 shift
 ID="${1:-}"; [ -n "$ID" ] || die "$CMD 은 <id> 필요"
 shift || true
@@ -245,6 +246,19 @@ case "$CMD" in
       .target_prev = (.target // null) | .target = $to | .retargeted_ts = $ts | .retargeted_by = $by
       | if .claimed_by then .claimed_prev = .claimed_by | del(.claimed_by, .claimed_ts) else . end'
     echo "retargeted: $ID ${cur:-미상} → $TO"
+    ;;
+
+  subject)
+    # 주제 prj 소급 (Issue1060_1) — 필드 도입(f785cfd6) 전에 등록된 미종결 항목용. 판정은 enqueue 와 같은
+    #   lib `aoa_mq_subject_prj` 한 곳이고, 이미 있으면 덮지 않는다(no-op). 종결분은 기록 보존 — 거부.
+    case "$F" in "$QDONE"/*) die "종결된 항목은 subject 대상 아님: $ID" ;; esac
+    cur=$("$JQ" -r '.subject_prj // ""' "$F")
+    if [ -n "$cur" ]; then echo "already: $ID → $cur"; exit 0; fi
+    aoa_mq_subject_prj "$("$JQ" -r '.message // ""' "$F")"
+    if [ -z "$MQ_SUBJ" ]; then echo "none: $ID — 본문 머리에 prjN 없음"; exit 0; fi
+    aoa_mq_lock_acquire "${AOA_MQ_LOCK_WAIT:-10}"
+    jupd "$F" --arg s "$MQ_SUBJ" '.subject_prj = $s'
+    echo "subject: $ID → $MQ_SUBJ"
     ;;
 
   wait)
@@ -371,5 +385,5 @@ case "$CMD" in
     echo "launched: $ID → ${MQ_T_PRJ:-미상} (${MQ_T_VIA}) cwd=$MQ_T_CWD"
     ;;
 
-  *) die "알 수 없는 하위명령: $CMD (claim|note|result|release|show|wait|resume|need|need-done|target|launch)" ;;
+  *) die "알 수 없는 하위명령: $CMD (claim|note|result|release|show|wait|resume|need|need-done|target|retarget|subject|launch)" ;;
 esac

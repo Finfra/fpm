@@ -19,6 +19,7 @@ import contextlib
 import glob
 import io
 import json
+import math
 import os
 import re
 import subprocess
@@ -27,6 +28,12 @@ import sqlite3
 import sys
 import time
 import uuid
+import importlib.util as _ilp
+
+# prj3#Issue1061 — prj id 판정 단일 지점(숫자 int · 접미 `9t` str)
+_psp = _ilp.spec_from_file_location("fbot_prj", os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib/fbot-prj.py"))
+_PRJ = _ilp.module_from_spec(_psp)
+_psp.loader.exec_module(_PRJ)
 
 # ── 계약 상수 ────────────────────────────────────────────────────────────────
 
@@ -152,9 +159,14 @@ BIND_COLUMNS = (
 #   트리거 2개·백필이 전부 이 두 식을 쓴다. 갈라지는 순간 원장이 거짓이 되므로 복제 금지.
 #   `{t}` 에는 트리거면 `NEW`, 백필이면 `job` 이 들어간다.
 #   prj3#Issue863_2 — `sel%`(선택 기록 sel_event)는 owner 가 없는 비봇 기록이라 `none`. 이 분기가 없으면 lock 으로 오표기된다.
-JOB_OWNER_KIND_EXPR = ("CASE WHEN {t}.kind LIKE 'fbot%' THEN 'bot' "
+#   prj3#Issue1104 — 사람 승인 기록(`fbot_publish_approval`·`fbot_solo_approval`)은 kind 가 `fbot%` 지만 owner 가 `human[:<sid>]`
+#   라 bot FK 에 걸려 `FOREIGN KEY constraint failed` 였다. 사람 owner 는 kind 보다 먼저 가른다 — owner_kind `human` · owner_id NULL.
+_JOB_OWNER_IS_HUMAN = "({t}.owner = 'human' OR {t}.owner LIKE 'human:%')"
+JOB_OWNER_KIND_EXPR = ("CASE WHEN " + _JOB_OWNER_IS_HUMAN + " THEN 'human' "
+                       "WHEN {t}.kind LIKE 'fbot%' THEN 'bot' "
                        "WHEN {t}.kind LIKE 'sel%' THEN 'none' ELSE 'lock' END")
-JOB_OWNER_ID_EXPR = "CASE WHEN {t}.kind LIKE 'fbot%' THEN {t}.owner ELSE NULL END"
+JOB_OWNER_ID_EXPR = ("CASE WHEN " + _JOB_OWNER_IS_HUMAN + " THEN NULL "
+                     "WHEN {t}.kind LIKE 'fbot%' THEN {t}.owner ELSE NULL END")
 
 # ── 실행 형태 (Issue495) ────────────────────────────────────────────────────
 #   왜 축이 필요한가 — 같은 "봇" 이라도 **수명주기 훅이 다르다**. 세션 형태는
@@ -324,16 +336,38 @@ def body_stamp(env=None) -> dict:
     return out
 
 
-def record_event(con: sqlite3.Connection, bot_id: str, etype: str, detail: str = "", ref: str = "") -> str:
-    """전이 1건 → `fbot_event` 1행 (같은 커넥션·같은 트랜잭션). 반환 id. 실패는 조용히 "" — 기록이 본 작업을 막지 않는다."""
+def derive_label(etype: str, detail: str = "") -> str:
+    """이벤트 kind → 사람용 1줄 (prj3#Issue1012). detail 은 기계 필드(seat·uuid 약칭)라 그대로 보이면 의미 불명이다.
+    알려진 kind 만 파생하고 모르면 "" — hub 가 detail 로 폴백한다(하위 호환)."""
+    try:
+        if etype in ("body-open", "body-close", "evict"):
+            return {"body-open": "몸체 열림", "body-close": "몸체 닫힘", "evict": "몸체 인계"}[etype]
+        if etype.startswith("state:"):
+            to = etype[6:]
+            cur = (detail or "").split("→")[0].strip()
+            return f"{STATE_LABEL.get(cur, cur)} → {STATE_LABEL.get(to, to)}" if cur else STATE_LABEL.get(to, to)
+        if etype.startswith("employment:"):
+            to = etype[11:]
+            cur = (detail or "").split("→")[0].strip()
+            return f"{EMPLOYMENT_LABEL.get(cur, cur)} → {EMPLOYMENT_LABEL.get(to, to)}" if cur else EMPLOYMENT_LABEL.get(to, to)
+    except Exception:
+        pass
+    return ""
+
+
+def record_event(con: sqlite3.Connection, bot_id: str, etype: str, detail: str = "", ref: str = "", label: str = "") -> str:
+    """전이 1건 → `fbot_event` 1행 (같은 커넥션·같은 트랜잭션). 반환 id. 실패는 조용히 "" — 기록이 본 작업을 막지 않는다.
+    `label` = 사람용 1줄(선택 · 미지정이면 `derive_label` 파생 · 없으면 payload 에 싣지 않는다 — prj3#Issue1012)."""
     now = int(time.time())
     eid = f"fbotev-{now}-{uuid.uuid4().hex[:8]}"
+    label = (label or derive_label(etype, detail))[:120]
     try:
         con.execute(
             "INSERT INTO job (id, store, kind, status, payload, result, attempts, owner, lease_until, blocked_since, created_at)"
             " VALUES (?,?,?,?,?,NULL,0,?,NULL,NULL,?)",
             (eid, "fbot", "fbot_event", "done",
-             json.dumps({"type": etype, "detail": (detail or "")[:300], "ref": ref or "", **body_stamp()},
+             json.dumps({"type": etype, "detail": (detail or "")[:300], "ref": ref or "",
+                         **({"label": label} if label else {}), **body_stamp()},
                         ensure_ascii=False),
              bot_id, now))
     except sqlite3.Error:
@@ -372,6 +406,63 @@ def ensure_schema(con: sqlite3.Connection) -> None:
                     " WHERE bot_id = ?", (g, e, row[0]))
     _ensure_job_owner_split(con)
     _ensure_job_owner_fk(con)      # Issue527 — 축이 갈린 뒤에야 걸 수 있다. 순서 고정
+    _ensure_bot_prj_any(con)       # prj3#Issue1061 — 접미 prj id(`9t`)를 담는다
+
+
+_BOT_PRJ_INT_RE = re.compile(r"(\bprj\s+)INT(EGER)?\b", re.I)
+
+
+def _ensure_bot_prj_any(con: sqlite3.Connection) -> None:
+    """`bot.prj` INT → ANY 재작성 (prj3#Issue1061) — 멱등.
+
+    ___pm 의 prj id 는 `9t`·`42a` 같은 접미형을 포함하는데 STRICT `INT` 는 텍스트를 거부한다(fTyping 팀장을 못 세웠다).
+    `TEXT` 가 아니라 `ANY` 인 이유 — 기존 숫자 prj 303행과 그것을 int 로 읽는 소비처(JSON·hub)를 그대로 둔다.
+    ⚠️ STRICT `ANY` 는 형 변환을 안 하므로 `"9"` 와 `9` 가 갈린다 — 쓰는 쪽은 반드시 `fbot-prj.norm_prj` 를 거친다
+    (원장에 prj 를 쓰는 곳은 `register` 1곳).
+
+    재작성 절차는 Issue527(`_ensure_job_owner_fk`)과 같다 — FK off(BEGIN 밖)·행수 대조·foreign_key_check·실패 시 롤백.
+    DDL 은 현재 `sqlite_master` 원문에서 `prj INT` 만 바꿔 쓴다 — ADD COLUMN 으로 붙은 열(BIND_COLUMNS)을 사본으로
+    다시 적으면 한쪽만 고쳐져 갈린다. `job.owner_id` FK 는 이름(`bot`)으로 잇기 때문에 rename 뒤 그대로 살아난다."""
+    row = con.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='bot'").fetchone()
+    ddl = row[0] if row else ""
+    if not ddl or not _BOT_PRJ_INT_RE.search(ddl):
+        return                                  # 이미 ANY(또는 비 STRICT 픽스처) — 멱등 탈출
+    new_ddl = _BOT_PRJ_INT_RE.sub(r"\1ANY", ddl, count=1)
+    new_ddl = re.sub(r"^\s*CREATE\s+TABLE\s+(\"?bot\"?)", "CREATE TABLE bot_new", new_ddl, count=1, flags=re.I)
+    cols = ", ".join(r[1] for r in con.execute("PRAGMA table_info(bot)").fetchall())
+    before = con.execute("SELECT COUNT(*) FROM bot").fetchone()[0]
+    fk_base = len(con.execute("PRAGMA foreign_key_check(job)").fetchall())   # 재작성 전 위반은 이 일의 몫이 아니다 — 늘지만 않게
+    fk_was = con.execute("PRAGMA foreign_keys").fetchone()[0]
+    con.execute("PRAGMA foreign_keys=OFF")
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        # 동시 연결이 먼저 재작성했으면 손대지 않는다(잠금 획득 뒤 재확인)
+        cur = con.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='bot'").fetchone()[0]
+        if not _BOT_PRJ_INT_RE.search(cur):
+            con.execute("COMMIT")
+            return
+        con.execute("DROP TABLE IF EXISTS bot_new")
+        con.execute(new_ddl)
+        con.execute(f"INSERT INTO bot_new ({cols}) SELECT {cols} FROM bot")
+        copied = con.execute("SELECT COUNT(*) FROM bot_new").fetchone()[0]
+        if copied != before:
+            con.execute("ROLLBACK")
+            raise FbotError(f"bot 재작성 중단 — 복사 행수 불일치 {before}→{copied} (롤백함)")
+        con.execute("DROP TABLE bot")
+        con.execute("ALTER TABLE bot_new RENAME TO bot")
+        bad = len(con.execute("PRAGMA foreign_key_check(job)").fetchall())
+        if bad > fk_base:
+            con.execute("ROLLBACK")
+            raise FbotError(f"bot 재작성 중단 — FK 위반 {fk_base}→{bad}건 (롤백함)")
+        con.execute("COMMIT")
+    except Exception:
+        try:
+            con.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
+        raise
+    finally:
+        con.execute("PRAGMA foreign_keys=%s" % ("ON" if fk_was else "OFF"))
 
 
 def _ensure_job_owner_split(con: sqlite3.Connection) -> None:
@@ -786,7 +877,9 @@ def cmd_transition(args) -> int:
             _sid = getattr(args, "session_id", None) or os.environ.get("CLAUDE_CODE_SESSION_ID", "")
             if _sid and multibody_enabled() and _is_nonexec(row["role"], on_error=False):
                 mine = [b for b in open_bodies(con, args.bot_id, now) if b["session_id"] == _sid]
-                if to == "checkin" and cur != "checkout" and mine:
+                # prj3#Issue1009 ⓑ — 이미 working 인 관리직에 몸체가 합류한 세션의 `--to working`(/fbot-bind ⑤)도 같은 합류다.
+                #   «동일 상태 전이 금지» 는 상태를 바꾸려는 호출을 막는 규칙이지 합류 확인을 막는 규칙이 아니다(판정 단일 지점)
+                if mine and ((to == "checkin" and cur != "checkout") or (to == "working" and cur == "working")):
                     con.execute("COMMIT")
                     emit({"ok": True, "action": "transition", "joined": True, "from": cur, "to": cur,
                           "body": mine[0]["id"], "note": "이미 근무 중인 관리직에 몸체 합류 — 봇 상태는 몸체 집계(T15)"})
@@ -908,6 +1001,27 @@ def cmd_employment(args) -> int:
     finally:
         con.close()
     return 0
+
+
+def cmd_request_show(args) -> int:
+    """요청 단건 조회 (prj3#Issue1009 ⓕ) — 본문·상태·응답 결과·연결 배분. 요청은 테이블이 아니라 `job.kind='fbot_request'` 다."""
+    con = connect()
+    try:
+        r = con.execute("SELECT id, owner, status, payload, result, created_at FROM job"
+                        " WHERE id = ? AND kind = 'fbot_request'", (args.id,)).fetchone()
+        if r is None:
+            raise FbotError(f"요청 없음: {args.id} (job.kind='fbot_request' 의 id — 테이블이 아니다)")
+        pl, res = _res_of(r["payload"]), _res_of(r["result"])
+        disp = [{"id": d["id"], "status": d["status"], "worker": _res_of(d["payload"]).get("worker_bot_id")}
+                for d in con.execute("SELECT id, status, payload FROM job WHERE kind = 'fbot_dispatch'"
+                                     " AND json_extract(payload, '$.request_id') = ? ORDER BY created_at, id",
+                                     (args.id,)).fetchall()]
+        emit({"id": r["id"], "owner": r["owner"], "status": r["status"], "kind": pl.get("kind"),
+              "from": pl.get("from"), "prj": pl.get("prj"), "body": pl.get("body"), "payload": pl,
+              "result": res or None, "created_at": r["created_at"], "dispatches": disp})
+        return 0
+    finally:
+        con.close()
 
 
 def cmd_heartbeat(args) -> int:
@@ -1412,6 +1526,20 @@ def typing_guard(con, row, now=None) -> str:
     for p in dict.fromkeys(panes):
         if pane_human_active(p, now):
             return f"사람 세션 pane {p} 에서 입력 중 — 자동 기상 보류(요청은 인박스에 남는다)"
+    return ""
+
+
+def human_body_alive(con, row, now=None) -> str:
+    """살아 있는 **사람 세션** 몸체 — 있으면 그 사유 문자열, 없으면 빈 문자열 (prj3#Issue990).
+
+    판별 표지는 typing_guard 와 같다(새로 만들지 않는다): `bot.form == 'session'`(+ pane) 또는 몸체 원장 흐름이
+    `session:`(사람 세션 몸체, body_bind 기본 흐름). pm-do 몸체는 흐름이 요청·배분 id 라 해당 없다."""
+    now = now or int(time.time())
+    if (row["form"] if "form" in row.keys() else None) == "session" and row["tmux_target"]:
+        return f"사람 세션 결속 pane {row['tmux_target']}"
+    for b in open_bodies(con, row["bot_id"], now):
+        if str(b.get("flow") or "").startswith("session:"):
+            return f"사람 세션 몸체 {str(b.get('session_id') or '')[:8]}"
     return ""
 
 
@@ -2062,12 +2190,18 @@ def multibody_enabled() -> bool:
     return str(_policy_value("fbot_manager_multibody", "false")).lower() in ("true", "1", "yes", "on")
 
 
-def bodies_max(role) -> int:
+def bodies_max(role):
+    """관리직 몸체 상한. policy 값 `0` = 상한 없음(prj3#Issue996 — 사용자 지시 «나래 n:1 의 n 제한 해제») →
+    `math.inf` 로 내 모든 `len(bodies) >= cap` 비교가 거부하지 않게 한다. 폭주 방어선은 전역 `fbot_concurrent_limit`.
+    음수·비숫자는 오기로 보고 역할 기본값(조용히 «0 몸체» 로 읽지 않는다)."""
     v = _policy_value(f"fbot_manager_bodies_max_{role}")
     try:
-        return int(v) if v is not None else BODIES_MAX_DEFAULT.get(role, 1)
+        n = int(v) if v is not None else BODIES_MAX_DEFAULT.get(role, 1)
     except ValueError:
         return BODIES_MAX_DEFAULT.get(role, 1)
+    if n == 0:
+        return math.inf
+    return n if n > 0 else BODIES_MAX_DEFAULT.get(role, 1)
 
 
 def open_bodies(con, bot_id, now=None):
@@ -2147,7 +2281,8 @@ def body_admit(con, row, flow, now, bodies=None):
     cap = bodies_max(row["role"])
     if len(bodies) >= cap:
         raise FbotError(f"{row['bot_id']}({row['role']}) 몸체 상한 {cap} 에 닿았다 — 살아 있는 몸체 {len(bodies)}개. "
-                        "새 흐름은 인박스에서 기다린다(prj3#Issue757 T15)")
+                        "새 흐름은 인박스에서 기다린다(prj3#Issue757 T15) · 사람이 인계를 명시했으면 "
+                        "--takeover 로 대기 중 몸체 하나를 넘겨받는다(Issue994)")
     return bodies
 
 
@@ -2242,18 +2377,36 @@ def cmd_body_join(args) -> int:
     return 0 if admit else 3
 
 
-def body_bind(con, row, sid, flow, form, now, ttl, pane=None):
-    """관리직 몸체 결속 판정·기록 — 호출자의 트랜잭션 안. 반환 (action, body_id). 거부는 FbotError.
+def pick_takeover_body(bodies):
+    """상한에서 사람의 명시 인계가 넘겨받을 몸체 — 대기(waiting_input) 우선, 그중 가장 오래된 것 · 없으면 가장 오래된 몸체."""
+    if not bodies:
+        return None
+    idle = [b for b in bodies if b["state"] == "waiting_input"]
+    return min(idle or bodies, key=lambda b: (b["started_at"], b["id"]))
+
+
+def body_bind(con, row, sid, flow, form, now, ttl, pane=None, takeover=False):
+    """관리직 몸체 결속 판정·기록 — 호출자의 트랜잭션 안. 반환 (action, body_id, evicted_sid|None). 거부는 FbotError.
     같은 세션 = 재결속(reuse) · 같은 흐름의 다른 살아 있는 몸체 = 흐름 잠금 · open 몸체 수 ≥ 상한 = 거부.
-    pane 은 몸체별로 남긴다 — 출근 가드의 «기존 몸체 pane» 비교 대상(prj3#Issue843 QA ②)."""
+    pane 은 몸체별로 남긴다 — 출근 가드의 «기존 몸체 pane» 비교 대상(prj3#Issue843 QA ②).
+    Issue994 — `takeover`(사람의 명시 인계)면 상한에서 몸체 하나를 닫고 들어간다. 종전 1:1 분기만 `--takeover` 를
+    알아 몸체 원장에서는 인계 길이 없었다. 흐름 잠금은 풀지 않는다. 마커·툼스톤은 커밋 뒤 호출자(cmd_bind)가."""
     mine = sid_body(con, row["bot_id"], sid)       # prj3#Issue882 — lease 만료·reap 전도 같은 몸체(새 행 금지)
     if mine:
         body_revive(con, row, mine, now)           # 만료 되살림이면 입장 검사 — 거부는 FbotError
         con.execute("UPDATE job SET lease_until=? WHERE id=?", (now + ttl, mine["id"]))
         if pane and not mine["pane"]:
             con.execute("UPDATE job SET payload=json_set(payload,'$.pane',?) WHERE id=?", (pane, mine["id"]))
-        return "reuse", mine["id"]
+        return "reuse", mine["id"], None
     bodies = open_bodies(con, row["bot_id"], now)
+    evicted = None
+    if takeover and len(bodies) >= bodies_max(row["role"]) and not any(b["flow"] == flow for b in bodies):
+        victim = pick_takeover_body(bodies)
+        con.execute("UPDATE job SET status='closed', result=? WHERE id=?",
+                    (json.dumps({"closed_reason": "takeover", "successor": sid, "at": now}), victim["id"]))
+        record_event(con, row["bot_id"], "evict", f"몸체 인계 {(victim['session_id'] or '')[:8]} → {sid[:8]}", victim["id"])
+        evicted = victim["session_id"]
+        bodies = [b for b in bodies if b["id"] != victim["id"]]
     body_admit(con, row, flow, now, bodies)
     bid = f"fbotbody-{now}-{uuid.uuid4().hex[:8]}"
     con.execute("INSERT INTO job (id, store, kind, status, payload, result, attempts, owner, lease_until, blocked_since, created_at)"
@@ -2263,7 +2416,7 @@ def body_bind(con, row, sid, flow, form, now, ttl, pane=None):
                              **({"pane": pane} if pane else {})}, ensure_ascii=False),
                  row["bot_id"], now + ttl, now))
     record_event(con, row["bot_id"], "body-open", f"{flow} · {sid[:8]}", bid)
-    return "new", bid
+    return "new", bid, evicted
 
 
 def cmd_bind(args) -> int:
@@ -2298,11 +2451,13 @@ def cmd_bind(args) -> int:
                     f"(워커 수신은 그 팀장에게 돌려 적재된다)")
             evicted = None
             body = None
+            body_evicted = None                  # Issue994 — 몸체 원장 인계(봇 상태는 몸체 집계라 퇴근시키지 않는다)
             if args.session_id and multibody_enabled() and _is_nonexec(row["role"], on_error=False):
                 # prj3#Issue757 T15 — 관리직은 흐름마다 몸체 1. 종전 1:1 점유 판정 대신 몸체 원장이 판정한다
                 flow = (getattr(args, "flow", None) or os.environ.get("FBOT_FLOW") or f"session:{args.session_id}")
                 body = body_bind(con, row, args.session_id, flow, form, int(time.time()), lease_ttl_secs(),
-                                 args.tmux_target or None)
+                                 args.tmux_target or None, takeover=bool(getattr(args, "takeover", False)))
+                body_evicted = body[2]
             elif args.session_id:                # 지우는 것(빈 문자열)은 선점 대상이 아니다
                 verdict, holder = bind_occupancy_verdict(row, args.session_id)
                 if verdict in ("alive", "unknown") and not getattr(args, "takeover", False):
@@ -2340,10 +2495,13 @@ def cmd_bind(args) -> int:
                 con.execute(f"UPDATE bot SET {', '.join(sets)} WHERE bot_id = ?", params)
             if evicted:
                 record_event(con, args.bot_id, "evict", f"세션 인계 {evicted[:8]} → {(args.session_id or '')[:8]}")   # prj3#Issue575
+            if body_evicted:
+                project_bot(con, args.bot_id)    # 밀려난 몸체를 뺀 집계로 봇 행을 다시 사영
         except Exception:
             con.execute("ROLLBACK")
             raise
         con.execute("COMMIT")
+        evicted = evicted or body_evicted
         if evicted:
             drop_sid_marker(evicted)             # 뺏긴 세션이 lease 를 살리지 못하게
             # Issue645 — **닫는 일과 알리는 일은 다르다.** 위 한 줄은 lease 만 끊을 뿐이고,
@@ -2465,13 +2623,11 @@ def canon_issue(text: str) -> str:
 
 def _issue_prj(issue: str, prj=None):
     """이슈의 prj — **필드가 정본**, 표기 접두(`prj42#`)는 필드 없는 구형 기록의 보조."""
-    if prj not in (None, ""):
-        try:
-            return int(prj)
-        except (TypeError, ValueError):
-            pass
-    m = re.findall(r"prj(\d+)#", (issue or "").lower())
-    return int(m[-1]) if m else None
+    n = _PRJ.try_prj(prj)
+    if n is not None:
+        return n
+    m = re.findall(rf"prj({_PRJ.PRJ_TOKEN})#", (issue or "").lower())
+    return _PRJ.norm_prj(m[-1]) if m else None
 
 
 def same_issue(a: str, b: str, prj_a=None, prj_b=None) -> bool:
@@ -2487,13 +2643,99 @@ def same_issue(a: str, b: str, prj_a=None, prj_b=None) -> bool:
     return not (pa is not None and pb is not None and pa != pb)
 
 
-ISSUE_ID_RE = re.compile(r"^(prj\d+#)?Issue\d+(_\d+)*$")   # 원장 조인 키 — 이슈맵·hub 가 이 형식으로 잇는다
+ISSUE_ID_RE = re.compile(rf"^(prj{_PRJ.PRJ_TOKEN}#)?(?:Issue|Req)\d+(_\d+)*$")   # 원장 조인 키 — 이슈맵·hub 가 이 형식으로 잇는다 · Req = 업무 접수 Request.md (Issue1096)
 LINEAGE_LIVE = ("open", "blocked", "logged", "deferred")      # 미종결 배분 술어 단일 지점 — fbot-lead `active_dispatches` 도 이것을 읽는다(prj3#Issue795)
 LINEAGE_LIVE_SQL = ",".join("?" * len(LINEAGE_LIVE))           # `status IN (…)` 자리표시자 — 술어 길이가 바뀌어도 따라간다
 # prj3#Issue929 — «완료 미확인» 어휘 단일 지점. fbot-inbox(defer 검증·통지 종결)·fbot-lead(sweep 판정)·
 #   fbot-manual-review(blocked_rate 집계 제외)가 이것을 읽는다 — 세 곳에 리터럴을 두면 한쪽만 바뀌어 갈라진다
 REPORT_STATUSES = ("done", "incomplete")   # 워커 보고(defer --status)의 명시 결과 — 마지막 명시가 done 이 아니면 미확인
 UNCONFIRMED = "unconfirmed"                # 배분 `payload.blocked_by` 사유 = 인박스 통지 kind(`fbot_request.payload.kind`)
+# prj3#Issue1002 — 요청 종결·지휘 배분 children 증적이 같이 읽는 «재작업 대기» 판정. `logged`(사후 기록)는 뺀다 —
+#   그림자 행이 요청을 영구 미종결로 만들지 않게(fbot-lead `child_is_live` 와 같은 이유, prj3#Issue815)
+REWORK_LIVE = tuple(s for s in LINEAGE_LIVE if s != DISPATCH_LOGGED)
+SUBTREE_MAX = 200                          # 계보 순회 상한 — 원장 이상(순환·폭주)에 sweep 이 묶이지 않게
+
+
+def dispatch_subtree(con, roots) -> list:
+    """배분 계보 — `roots` 와 그 하위 전부(`parent_dispatch_id` 사슬)의 id, 너비 우선 (prj3#Issue1002). 상한 `SUBTREE_MAX`."""
+    out, seen, frontier = [], set(), [r for r in roots if r]
+    while frontier and len(out) < SUBTREE_MAX:
+        nxt = []
+        for d in frontier:
+            if d in seen:
+                continue
+            seen.add(d)
+            out.append(d)
+            nxt += [r[0] for r in con.execute(
+                "SELECT id FROM job WHERE kind = ? AND json_extract(payload, '$.parent_dispatch_id') = ?"
+                " ORDER BY created_at, id", (DISPATCH_KIND, d)).fetchall()]
+        frontier = nxt
+    return out[:SUBTREE_MAX]
+
+
+def _res_of(raw) -> dict:
+    try:
+        v = json.loads(raw) if raw else {}
+    except (TypeError, ValueError):
+        return {}
+    return v if isinstance(v, dict) else {}
+
+
+def rejected_unresolved(con, dispatch_id, tree=()):
+    """배분 `dispatch_id` 의 보고가 **반려된 채 풀리지 않았나** — 반려 판정 단일 지점 (prj3#Issue1002). 반환 반려 요청 id | None.
+
+    왜 (2026-10-09 실측 `fbotreq-1791472825-de0a9a5c`): 하위 배분이 회고 1개만 하고 보고 → sweep 이 그 보고를 증적으로
+      completed → 지휘 배분 `evidence: children` → 요청 done. 팀장은 그 보고를 `reply rejected`(재작업)했지만 원장은
+      «하위가 끝났다» 만 보고 «요청이 끝났다» 로 읽었다. 반려는 보고 레코드의 응답에만 있어 종결 판정이 못 봤다.
+    반려 = 그 배분의 보고(인박스 요청 · `corr_id` 또는 `dispatch_id` = 배분 id · 질문·미확인 통지 제외)의 응답 status `rejected`.
+    풀림 (마지막 반려 시각 이후) — ⓐ 같은 배분의 새 보고가 done·accepted 로 수령됨 ⓑ 그 배분의 **하위**(부모 = 반려된 배분)에
+      반려 뒤 생긴 배분이 done(재작업 완료 — 같은 계보의 무관 형제는 제외, Issue1017). 재작업이 아직 살아 있으면 요청 쪽(`rework_pending`)이 진행 중으로 잡는다.
+    호출처: fbot-inbox `close_fulfilled`(요청 종결, `rework_pending` 경유) · fbot-lead `topic_evidence` ⓔ(지휘 배분 children 증적).
+    """
+    rows = con.execute(
+        "SELECT id, payload, result, created_at FROM job WHERE kind = 'fbot_request'"
+        " AND (json_extract(payload, '$.corr_id') = ? OR json_extract(payload, '$.dispatch_id') = ?)"
+        " ORDER BY created_at, id", (dispatch_id, dispatch_id)).fetchall()
+    reps = []
+    for r in rows:
+        if (_res_of(r[1]).get("kind") or "") in ("question", UNCONFIRMED):
+            continue
+        res = _res_of(r[2])
+        reps.append((r[0], res.get("status"), int(res.get("at") or r[3] or 0), int(r[3] or 0)))
+    rejs = [x for x in reps if x[1] == "rejected"]
+    if not rejs:
+        return None
+    rid, _, rej_at, _ = max(rejs, key=lambda x: x[2])
+    if any(x[0] != rid and x[1] in ("done", "accepted") and x[3] >= rej_at for x in reps):
+        return None
+    kids = [r[0] for r in con.execute(
+        "SELECT id FROM job WHERE kind = ? AND json_extract(payload, '$.parent_dispatch_id') = ?",
+        (DISPATCH_KIND, dispatch_id)).fetchall()]
+    # prj3#Issue1017 ② — 재작업 해소는 **반려된 배분을 부모로 둔** 하위뿐. `tree`(같은 계보)의 무관 형제가 반려 뒤 끝난 것은
+    #   해소가 아니다(`tree` 인자는 호출 호환용으로 받고 쓰지 않는다)
+    for d in set(kids):
+        r = con.execute("SELECT status, created_at FROM job WHERE id = ? AND kind = ?", (d, DISPATCH_KIND)).fetchone()
+        if r and r[0] == "done" and int(r[1] or 0) >= rej_at:
+            return None
+    return rid
+
+
+def rework_pending(con, dispatch_ids):
+    """요청 종결 술어 — 연결 배분 계보(자신 + 하위 전부)에 끝나지 않은 일이 남았나 (prj3#Issue1002 ①). 반환 사유 | None.
+
+    연결 배분이 completed 여도 그 계보에 ⓐ 살아 있는 배분(재작업 배분·`reopen` 된 배분 — `REWORK_LIVE`) ⓑ 반려가 풀리지 않은
+    배분(`rejected_unresolved`)이 있으면 요청은 done 이 아니라 accepted 유지. 판정은 fbot-inbox `close_fulfilled` 가 이것만 부른다.
+    """
+    tree = dispatch_subtree(con, dispatch_ids)
+    for d in tree:
+        r = con.execute("SELECT status FROM job WHERE id = ? AND kind = ?", (d, DISPATCH_KIND)).fetchone()
+        if r and r[0] in REWORK_LIVE:
+            return f"계보 배분 {d} 진행 중({r[0]})"
+    for d in tree:
+        rej = rejected_unresolved(con, d, tree)
+        if rej:
+            return f"계보 배분 {d} 보고 반려 미해소({rej})"
+    return None
 
 
 def dispatch_lineage(con, by, explicit=None, flow=None) -> dict:
@@ -2664,7 +2906,7 @@ def cmd_dispatch_record(args) -> int:
 #   판정 3조건(송신·수신·지시형)을 **모두** 충족할 때만 `dispatch-record --source sendmessage` 1건. 하나라도 판정 불가면
 #   적지 않고 1줄 알림 — 원장 오염이 공백보다 비싸다. 입력 계약은 M1-1 실측(fbot-org 결정 2 «포그라운드 송신 식별»).
 #   단 송신·수신 **양쪽 다 봇이 아니면** 알림도 없다(Issue806) — 비봇 세션 간 대화는 원장 대상이 아니다.
-_SM_ISSUE_RE = re.compile(r"(?<![\w#])((?:prj\d+#)?Issue\d+(?:_\d+)*)")
+_SM_ISSUE_RE = re.compile(rf"(?<![\w#])((?:prj{_PRJ.PRJ_TOKEN}#)?Issue\d+(?:_\d+)*)")
 _SM_TAG = "[지시]"
 
 
@@ -2816,7 +3058,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--bot-id", required=True)
     sp.add_argument("--role", required=True)
     sp.add_argument("--title", required=True)
-    sp.add_argument("--prj", type=int, default=None, help="주 담당 prj 번호(전역봇은 생략)")
+    sp.add_argument("--prj", type=_PRJ.prj_arg, default=None, help="주 담당 prj 번호(전역봇은 생략)")
     sp.add_argument("--parent", default=None, help="스폰 부모 bot_id(상비 봇·사람 기동은 생략)")
     sp.add_argument("--career", default="probation", help=f"{'|'.join(CAREERS)} (기본 probation)")
     sp.add_argument("--icon", default=None)
@@ -2847,6 +3089,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--to", required=True, help="|".join(EMPLOYMENTS))
     sp.add_argument("--reason", default=None)
     sp.set_defaults(func=cmd_employment)
+
+    sp = sub.add_parser("request", help="인박스 요청 조회 — `request show <id>` (본문·상태·결과·연결 배분, Issue1009 ⓕ)")
+    rsub = sp.add_subparsers(dest="req_cmd", required=True)
+    rsp = rsub.add_parser("show", help="요청 단건 조회")
+    rsp.add_argument("id", help="fbotreq-… (job.kind='fbot_request')")
+    rsp.set_defaults(func=cmd_request_show)
 
     sp = sub.add_parser("heartbeat", help="lease_expires = now + TTL 갱신")
     sp.add_argument("--bot-id", default=None)
@@ -2922,7 +3170,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--by", default=None,
                     help="배분자 bot_id. 생략 시 대상의 parent_bot_id 를 쓴다")
     sp.add_argument("--issue", default=None, help="이슈 표기(ex: prj42#Issue335)")
-    sp.add_argument("--prj", type=int, default=None, help="배분된 일의 prj 번호")
+    sp.add_argument("--prj", type=_PRJ.prj_arg, default=None, help="배분된 일의 prj 번호")
     sp.add_argument("--cwd", default=None, help="배분 대상 작업 경로")
     sp.add_argument("--source", default="fpm-do", help="기록 유입 경로(기본 fpm-do)")
     sp.add_argument("--parent-dispatch", default=None,

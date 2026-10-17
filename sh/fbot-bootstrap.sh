@@ -35,10 +35,17 @@ DRY=0
 source "$REPO_DIR/sh/fbot-python.sh"
 # store.py 가 sqlite3 를 요구한다 — "실행되는 python" 이 아니라 "이 일을 할 수 있는 python" 을 고른다.
 if ! fbot_resolve_python sqlite3; then
-    err "🚨 쓸 수 있는 python 없음 — 후보 전멸: ${FBOT_PY_REJECT:-없음}"
-    err "   조치: python 을 PATH 에 두거나 FBOT_PYTHON 으로 절대경로를 지정하라"
+    if [[ -n "${FBOT_PY_WARN:-}" ]]; then
+        # FBOT_PY_ENFORCE=1 에서 기준(3.14) 미달 (Issue642)
+        err "🚨 python 기준 미달 — $FBOT_PY_WARN"
+    else
+        err "🚨 쓸 수 있는 python 없음 — 후보 전멸: ${FBOT_PY_REJECT:-없음}"
+        err "   조치: python 을 PATH 에 두거나 FBOT_PYTHON 으로 절대경로를 지정하라"
+    fi
     exit 1
 fi
+# Issue642: 기준(3.14) 미달이지만 채택됨(기본은 경고만). 정지하려면 FBOT_PY_ENFORCE=1
+if [[ -n "${FBOT_PY_WARN:-}" ]]; then warn "python 기준 미달 — $FBOT_PY_WARN"; fi
 PY=("${FBOT_PY_ARGV[@]}")
 # 채택 근거를 남긴다 (Issue436 ⓑ) — 스텁을 걸러낸 사실이 출력에 보이지 않으면 진단이 불가능하다.
 # ⚠️ `[[ ]] && cmd` 형태로 쓰면 set -e 하에서 조건 거짓일 때 rc=1 로 스크립트가 죽는다.

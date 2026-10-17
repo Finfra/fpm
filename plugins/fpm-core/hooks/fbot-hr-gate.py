@@ -42,6 +42,12 @@ import sqlite3
 import subprocess
 import sys
 import time
+import importlib.util
+
+# prj3#Issue1061 — prj id 판정 단일 지점(숫자 int · 접미 `9t` str)
+_psp = importlib.util.spec_from_file_location("fbot_prj", os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib/fbot-prj.py"))
+_PRJ = importlib.util.module_from_spec(_psp)
+_psp.loader.exec_module(_PRJ)
 
 # 경로 계약 (Issue450) — env 가 정식 설정. 미설정 시 제품 중립 기본(prj5 미클론 머신 대응).
 DEFAULT_AOA_DIR = os.path.join(os.path.expanduser("~"), ".claude", "data", "aoa")
@@ -854,7 +860,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--role", required=True)
     sp.add_argument("--title", required=True)
     sp.add_argument("--parent", default=None, help="스폰 부모 bot_id(상비 봇·사람 기동은 생략)")
-    sp.add_argument("--prj", type=int, default=None, help="주 담당 prj 번호(전역봇은 생략)")
+    sp.add_argument("--prj", type=_PRJ.prj_arg, default=None, help="주 담당 prj 번호(전역봇은 생략)")
     sp.add_argument("--career", default="probation", help="기본 probation (채용 = 수습 시작)")
     sp.add_argument("--icon", default=None)
     sp.add_argument("--color", default=None, help="생략 시 role 카탈로그 base 색")

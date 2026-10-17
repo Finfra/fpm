@@ -41,6 +41,12 @@ import os
 import re
 import subprocess
 import sys
+import importlib.util
+
+# prj3#Issue1061 — prj id 판정 단일 지점(숫자 int · 접미 `9t` str)
+_psp = importlib.util.spec_from_file_location("fbot_prj", os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib/fbot-prj.py"))
+_PRJ = importlib.util.module_from_spec(_psp)
+_psp.loader.exec_module(_PRJ)
 
 # 카탈로그 경로 — fbot-icon 스킬 소유 파일. env 는 테스트 픽스처 주입용.
 CATALOG_PATH = os.environ.get("FBOT_CATALOG") or os.path.join(
@@ -108,7 +114,26 @@ def validate_origin(value: str) -> str:
         if not part.startswith(ORIGIN_KINDS):
             raise RecruitError(
                 f"미정의 origin 종류: {part!r} — 허용 {', '.join(ORIGIN_KINDS)} (계약 §A)")
+        if part.startswith("agent:"):
+            _check_agent_origin(part)
     return v
+
+
+_AGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")   # fbot-org.AGENT_NAME_RE 와 같은 규칙(셸 안전·경로 침투 차단)
+
+
+def _check_agent_origin(part):
+    """`agent:<이름>`(글로벌) · `agent:<prj>/<이름>`(그 prj 로컬 — prj3#Issue1062). 경로 조각은 여기서 막는다 —
+    원본 경로가 이 값으로 조립되므로 `..` 하나로 projects 맵 밖 파일을 drift 기준으로 삼게 된다."""
+    body = part[6:]
+    prj, sep, name = body.partition("/")
+    if sep:
+        if _PRJ.try_prj(prj) is None:
+            raise RecruitError(f"로컬 agent 출처의 prj 형식 밖: {part!r} — `agent:<prj>/<이름>` (ex) agent:9t/team-dev)")
+    else:
+        name = body
+    if not _AGENT_NAME_RE.match(name):
+        raise RecruitError(f"agent 이름 형식 밖: {part!r} — 영숫자·`_`·`-` 만(하위 경로 불가)")
 
 
 def parse_catalog(path=None) -> dict:
@@ -207,11 +232,17 @@ def apply_home(path, role: str, prj, dept: str = "dev") -> dict:
     본거지를 1순위 후보로 낸다(plan 열린 질문 15 — prj42 슬라이드 선례)."""
     if role not in parse_catalog(path):
         raise RecruitError(f"미등재 role: {role} — 등재(register) 뒤에 본거지를 둔다")
-    set_field(path, role, "home", str(int(prj)))
-    out = _org_module().add_seat(int(prj), role, dept=dept, apply=True, note="발굴 등재 본거지")
+    org = _org_module()
+    prj = org.norm_prj(prj)                       # prj3#Issue1061 — 접미 id(`9t`)도 본거지가 된다
+    set_field(path, role, "home", str(prj))
+    # prj3#Issue1062 — 출처가 본거지 prj 의 로컬 agent 하나면 그 자리를 그 agent 로 띄운다(몸체 = 원본)
+    local = [p[6:].partition("/")[2] for p in (parse_catalog(path)[role].get("origin") or "").split("|")
+             if p.startswith("agent:") and "/" in p and org.try_prj(p[6:].partition("/")[0]) == prj]
+    ext = {"agent": local[0]} if len(local) == 1 else None
+    out = org.add_seat(prj, role, dept=dept, apply=True, note="발굴 등재 본거지", ext=ext)
     if not out.get("ok"):
         raise RecruitError(f"본거지 자리 추가 실패(prj{prj}): {out.get('error')}")
-    return {"home": int(prj), "seat": out}
+    return {"home": prj, "seat": out}
 
 
 _AUTHOR_MARK_RE = re.compile(r"^<!-- fbot-manual-review:author=\S+ sha=[0-9a-f]{16} -->\n?", re.M)  # fbot-manual-review.py AUTHOR_RE 사본
@@ -428,7 +459,14 @@ def origin_source_paths(origin: str) -> list:
     paths = []
     for part in (origin or "").split("|"):
         if part.startswith("agent:"):
-            paths.append(os.path.join(SCAR_ROOT, "agents", part[6:] + ".md"))
+            prj, sep, name = part[6:].partition("/")
+            if sep:
+                # prj3#Issue1062 — 프로젝트 로컬 agent. 경로는 fbot-org 해소 단일 지점(projects 맵) — 미등록 prj 는 원본 없음
+                p = _org_module().local_agent_path(prj, name)
+                if p:
+                    paths.append(p)
+            else:
+                paths.append(os.path.join(SCAR_ROOT, "agents", part[6:] + ".md"))
         elif part.startswith("skill:"):
             paths.append(os.path.join(SCAR_ROOT, "skills", part[6:], "SKILL.md"))
         elif part.startswith("plugin:"):
@@ -509,7 +547,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--origin", default=None,
                     help="재료 출처 — agent:N|skill:N|plugin:M/N|command:N|hook:N|web:URL|native "
                          "(생략 시 native. 복수는 '|' 구분, 공백·따옴표 불가)")
-    sp.add_argument("--home", type=int, default=None,
+    sp.add_argument("--home", type=_PRJ.prj_arg, default=None,
                     help="프로젝트 단위 발굴의 본거지 prj — 카탈로그 home= + 그 prj 조직 선언 자리 (prj3#Issue757 T13)")
     sp.add_argument("--home-dept", default="dev", help="본거지 자리 부서(기본 dev)")
     sp.add_argument("--approved-by", default=None,

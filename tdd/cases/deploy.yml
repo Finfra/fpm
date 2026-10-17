@@ -30,6 +30,16 @@ cases:
       [ -f "$f" ] && echo ok || echo "skip(번들 미보유)"
     expect: nonempty
 
+  - id: integrity-worktree-hook
+    desc: linked worktree 커밋에서 무결성 게이트가 정상 번들을 거부하지 않는다
+    why: |
+      Issue619 — 훅 env 의 GIT_DIR 때문에 매니페스트 생성기의 추적 목록이 비어
+      «removed 204» 로 거부했다(2026-10-05). SKIP_INTEGRITY 우회가 상례가 되면
+      진짜 변조를 묻는다. 임시 repo + worktree + 실제 훅으로 재현한다.
+    run: |
+      bash "$REPO_DIR/scripts/test_integrity_manifest_worktree_issue619.sh" 2>&1 | tail -1
+    expect: contains:FAIL=0
+
   - id: mirror-integrity-post-sanitize
     desc: 미러 무결성 매니페스트가 sanitize **이후** 트리에서 재생성되도록 배선돼 있다
     why: |

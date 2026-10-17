@@ -190,6 +190,62 @@ sync_dir_by_name() {  # $1=번들 디렉토리 $2=라이브 디렉토리
   done
 }
 
+# --- 원본 배치 의존 테스트 판정 — 단일 지점 (Issue625) ---
+#   디렉토리 단위 반출(skills·mcp 유닛)은 그 안의 테스트까지 싣는다. 테스트가 유닛 **밖**을 상대경로로
+#   부르면(`$HERE/../../hooks/x.sh` · `HERE.parents[2] / "commands" / "x.md"`) 라이브(~/.claude)에서는 통과해도
+#   번들 배치에서는 그 파일이 없어 FileNotFound·FAIL 이다(2026-10-09 실측: issue-map test-zero-remaining.py →
+#   commands/issue-closer-g.md · aoa-mq test-aoa-mq-{create-policy,progress}.sh → hooks/session-inbox.sh).
+#   기준: 테스트 파일(`test-*`·`test_*`)이 참조하는 경로가 **라이브 루트에는 있고 목적지 루트에는 없으면**
+#   원본 배치 의존 → 반출하지 않는다. 목록을 손으로 두지 않는 것이 의도다 — prj3 가 새 테스트를 더할 때마다
+#   목록이 낡는다(create-policy 가 정확히 그렇게 들어왔다). 목적지에 있는 파일을 부르는 테스트는 그대로 싣는다.
+#   ⚠️ 이미 반출된 사본은 지우지 않는다(원칙 2 — 동기는 삭제하지 않는다). STALE 로 고지하고 exit 1, 삭제는 git rm.
+STALE_LIST=""
+placement_dep_tests() {  # $1=라이브 유닛 디렉토리 $2=목적지 루트 → "유닛상대경로<TAB>의존경로" 줄들
+  python3 - "$GLOBAL" "$2" "$1" <<'PY'
+import os, re, sys
+live, dst, unit = sys.argv[1:4]
+rel_tok = re.compile(r'(?:\.\./)+([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+)')           # sh: $HERE/../../a/b
+py_join = re.compile(r'parents?(?:\[\d+\])?((?:\s*/\s*"[A-Za-z0-9_.-]+")+)')       # py: HERE.parents[2] / "a" / "b"
+for d, dirs, files in os.walk(unit):
+    dirs[:] = sorted(x for x in dirs if x not in ('__pycache__', '.pytest_cache'))
+    for f in sorted(files):
+        if not re.match(r'test[-_]', f):
+            continue
+        p = os.path.join(d, f)
+        try:
+            s = open(p, encoding='utf-8', errors='replace').read()
+        except OSError:
+            continue
+        refs = set(rel_tok.findall(s))
+        refs.update('/'.join(re.findall(r'"([^"]+)"', m)) for m in py_join.findall(s))
+        miss = [r for r in sorted(refs)
+                if os.path.exists(os.path.join(live, r)) and not os.path.exists(os.path.join(dst, r))]
+        if miss:
+            print(f"{os.path.relpath(p, unit)}\t{', '.join(miss)}")
+PY
+}
+# 결과를 PDT_EX(rsync 제외 인자)로 싣고, 제외·STALE 를 고지한다
+placement_dep_ex() {  # $1=라이브 유닛 디렉토리 $2=목적지 유닛 디렉토리(절대) $3=목적지 루트
+  local src="$1" dst="$2" out rel deps label
+  PDT_EX=()
+  case "$src" in "$GLOBAL"/*) ;; *) return 0 ;; esac   # 라이브(prj3) 원본 유닛만 — prj1 로컬 스킬은 같은 repo 라 해당 없음
+  if ! out="$(placement_dep_tests "$src" "$3")"; then
+    say "🚨 원본 배치 의존 테스트 판정 실패 ($src) — 판정 없이 반출하지 않는다"; exit 1
+  fi
+  [ -n "$out" ] || return 0
+  label="${src#$GLOBAL/}"
+  while IFS="$(printf '\t')" read -r rel deps; do
+    [ -n "$rel" ] || continue
+    PDT_EX+=(--exclude="/$rel")
+    if [ -e "$dst/$rel" ]; then
+      STALE_LIST="${STALE_LIST}${dst#$REPO/}/$rel"$'\n'
+      say "STALE ${dst#$REPO/}/$rel — 원본 배치 의존 테스트(→ $deps)가 목적지에 남아 있다"
+    else
+      say "↷ 반출 제외 $label/$rel → $deps (목적지에 없음 — 원본 배치 의존)"
+    fi
+  done <<< "$out"
+}
+
 # --- 1. services/hub — **동기 대상이 아니다. 실체가 하나뿐이다** (Issue465) ---
 #   종전엔 라이브 `services/hub/` 를 번들로 rsync 해 **두 벌**을 유지했고, 한쪽만 고치면
 #   조용히 갈라졌다(특히 번들만 고친 경우 — 다음 sync 가 그 수정을 덮어 없앤다).
@@ -273,7 +329,8 @@ sync_skill() {  # $1=번들 스킬명 $2=라이브 디렉토리
   local flag=""; [ "$CHECK" -eq 1 ] && flag="-n"
   local n out p
   dirty_ex "$dst"                        # Issue519 — 그 안의 미커밋 파일만 제외
-  out=$(rsync -a --checksum $flag --itemize-changes --exclude='__pycache__/' --exclude='.DS_Store' ${DIRTY_EX[@]+"${DIRTY_EX[@]}"} "$src/" "$dst/")
+  placement_dep_ex "$src" "$dst" "$BUNDLE"   # Issue625 — 번들 배치에서 못 도는 테스트는 싣지 않는다
+  out=$(rsync -a --checksum $flag --itemize-changes --exclude='__pycache__/' --exclude='.DS_Store' ${DIRTY_EX[@]+"${DIRTY_EX[@]}"} ${PDT_EX[@]+"${PDT_EX[@]}"} "$src/" "$dst/")
   n=$(printf '%s\n' "$out" | grep -c '^[>c]')
   [ "$n" -gt 0 ] || return 0
   if [ "$CHECK" -eq 0 ]; then            # Issue561 — rsync 가 새로 만든 파일(`>f+++++++`)도 기억
@@ -350,7 +407,8 @@ sync_mcp_unit() {  # $1=유닛명 — $GLOBAL/mcp/$1 → $REPO/mcp/$1
   in_scope "mcp/$name" || return 0 # Issue519
   if [ "$CHECK" -eq 1 ]; then flag="-n"; else mkdir -p "$dst"; fi
   dirty_ex "$dst"                  # Issue519 — 실발생 지점이 정확히 여기다
-  n=$(rsync -a --checksum $flag --itemize-changes "${MCP_EX[@]}" ${DIRTY_EX[@]+"${DIRTY_EX[@]}"} "$src/" "$dst/" | grep -c '^[>c]')
+  placement_dep_ex "$src" "$dst" "$REPO"   # Issue625 — `mcp/<유닛>/../../` 는 repo 루트다
+  n=$(rsync -a --checksum $flag --itemize-changes "${MCP_EX[@]}" ${DIRTY_EX[@]+"${DIRTY_EX[@]}"} ${PDT_EX[@]+"${PDT_EX[@]}"} "$src/" "$dst/" | grep -c '^[>c]')
   [ "$n" -gt 0 ] || return 0
   if [ "$CHECK" -eq 1 ]; then drift=$((drift + n)); say "DRIFT mcp/$name ($n)"
   else changed=$((changed + n)); say "mcp/$name $n 파일 갱신"; fi
@@ -442,9 +500,18 @@ live_wip_report() {  # Issue591 — HEAD 기준으로 뺀 라이브 미커밋분
 }
 live_wip_report
 
+stale_report() {  # Issue625 — 이미 반출된 원본 배치 의존 테스트. 동기는 지우지 않는다(원칙 2) → 사람이 git rm
+  [ -n "$STALE_LIST" ] || return 0
+  say "🚨 원본 배치 의존 테스트 $(printf '%s' "$STALE_LIST" | grep -c .) 건이 목적지에 남아 있다 — 번들 배치에서 FAIL 한다"
+  printf '%s' "$STALE_LIST" | while IFS= read -r p; do [ -n "$p" ] && say "   조치: git rm $p"; done
+  say "   (git rm 후 무결성 매니페스트 재생성: bash sh/gen-integrity-manifest.sh)"
+  return 1
+}
+
 if [ "$CHECK" -eq 1 ]; then
   rc=0
   blocked_report || rc=1
+  stale_report || rc=1
   if [ "$drift" -gt 0 ]; then
     say "표류 $drift 건 — 'scripts/fpm-bundle-sync.sh' 실행 필요"
     rc=1
@@ -467,5 +534,7 @@ if [ -n "$NEW_FILES" ]; then   # Issue561 — 새로 만든 파일은 미추적�
     say "   ↳ hooks/ 신규는 data/scar-manifest.yml payloads.plugin.scar.hooks[] 에도 선언 — 확인: bash sh/scar-hooks-check.sh"
   fi
 fi
-blocked_report || exit 1
-exit 0
+rc=0
+stale_report || rc=1
+blocked_report || rc=1
+exit "$rc"
