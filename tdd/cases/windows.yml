@@ -31,12 +31,20 @@ cases:
     expect: contains:ok
 
   - id: symlink-support
-    desc: 심볼릭 링크를 만들 수 있다
+    desc: 배포 트리의 심볼릭 링크 의존이 이 머신에서 깨지지 않는다 (네이티브 지원 여부 기록)
     why: |
-      설치 절차가 링크를 쓴다. Windows 는 개발자 모드 또는 관리자 권한이
-      없으면 실패하고, 그 실패가 "설치됐는데 안 도는" 상태를 만든다.
+      Windows 는 개발자 모드·관리자 권한·MSYS=winsymlinks 가 없으면 네이티브 링크를 못 만들고
+      (MSYS `ln -s` 는 조용히 복사로 폴백), git 도 core.symlinks=false 로 링크를 텍스트 파일로 받는다.
+      그래서 판정 대상은 «링크를 만들 수 있나» 가 아니라 «배포 트리가 링크에 기대는데 이 머신이 못 만드나» 다.
+      Issue637_2(jpc1 2026-10-17) — 종전 케이스는 디렉토리 안에 자기 자신을 가리키는 링크를 만들어
+      MSYS 복사 폴백이 재귀(«Too many levels of symbolic links»)로 실패했다. 측정 자체가 틀렸고,
+      설치 절차(sh/install.sh)와 미러·마켓 추적 트리에는 링크가 0건이라 실패가 가리킬 의존도 없었다.
     run: |
-      t=$(mktemp -d); ln -s "$t" "$t/lnk" 2>/dev/null && echo ok; rm -rf "$t"
+      t=$(mktemp -d); echo x > "$t/f"
+      ln -s "$t/f" "$t/lnk" 2>/dev/null; if [ -L "$t/lnk" ]; then nat=native; else nat=none; fi; rm -rf "$t"
+      n=$(git -C "$REPO_DIR" ls-files -s 2>/dev/null | grep -c '^120000')
+      if [ "$n" -gt 0 ] && [ "$nat" = none ]; then echo "FAIL 추적 심링크 ${n}건 · 네이티브 심링크 불가"
+      else echo "ok(native=$nat tracked_symlinks=$n)"; fi
     expect: contains:ok
 
   - id: line-ending

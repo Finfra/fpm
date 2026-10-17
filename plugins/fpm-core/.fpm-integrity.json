@@ -2,8 +2,8 @@
   "schema_version": 1,
   "plugin": "fpm-core",
   "version": "0.8.3",
-  "git_sha": "0971603e4b490ae3f5d29abe2f11f622abb6edf1",
-  "generated_at": "2026-10-17T13:18:28Z",
+  "git_sha": "a4efafe6d4fe88dcdf923c9b3c480551d3e3c34b",
+  "generated_at": "2026-10-17T13:45:24Z",
   "algorithm": "sha256",
   "file_count": 222,
   "files": {

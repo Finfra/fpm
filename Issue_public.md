@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: e3960ed322bf548ee180538ec4d508ed3da68e298c1f21a211a5f845e2ef2ee7
+source_sha: 564ba7ac439f141e3c289a7017148a640a54887ca8785c797609c6759e9d100b
 ---
 
 # 안내
@@ -35,6 +35,16 @@ source_sha: e3960ed322bf548ee180538ec4d508ed3da68e298c1f21a211a5f845e2ef2ee7
     1. tdd red 먼저 — `python3` 가 3.9 인 PATH 에서 hook 진입 시 원인 문구로 정지(침묵 TypeError 아님)
     2. 해석 함수 1곳 + 호출처 치환 · `tdd/run-tdd.sh` 에 하한 검사 케이스
     3. 3.14 로 전 파일 import 통과 확인(prj55 보고서 §4 방법)
+
+## Issue637: v0.8.3 GitHub 재출고 + jpc1(Windows)·host(Linux) 구현 테스트 — OS별 결과를 prj1 에 분리 누적 🚧
+* 목적: 사용자 지시(2026-10-16 10:30, 나래 세션 <commit>) *"0.8.3 github deploy 하고, jpc·host 에서 테스트 진행 … window 와 linux 의 구현 테스트 결과는 따로 관리되고 prj1 에 쌓여야 함"* — 아직 고객이 없으므로 같은 번호 0.8.3 으로 다시 내보내고, Windows·Linux 실기에서 처음부터 설치·동작을 검증한다
+* depends: Issue642, Issue639
+* 구현 명세:
+    - 637_1 출고: `FPM_SKIP_RELEASE_GATE=1 FPM_SKIP_REASON="아직 고객 없음 — 0.8.3 재출고(사용자 결정 2026-10-16)" bash scripts/fpm-sync.sh deploy 0.8.3 --with-marketplace` (미러 단독 커밋 `<commit>`(.gitignore — 공개 제외 대상)가 F5-1 에 걸리면 `FPM_FORCE_FORWARD=1`). 검증: 미러·GitHub 태그 v0.8.3·prj20 fpm-core 0.8.3·ahead 0
+    - 637_2 jpc1(Windows 10, Git Bash): `~/.claude` 로그인 정보 외 정리 → GitHub 태그 clean clone 설치 → hub·MCP·check.sh·네이티브 TDD → 실패는 TDD red 먼저 수정
+    - 637_3 host(Linux): 637_2 와 같은 절차
+    - 결과 누적: OS별 분리 — 예 `_doc_work/_release/v0.8.3/os-test/{windows,linux}/<YYYY.MM.DD_HHMM>/`(증거·로그·판정 md) + 종합 리포트 `_doc_work/report/`. 회차가 쌓여도 덮어쓰지 않는다
+    - 검증: 637_1 외부 상태 실측 · 637_2·637_3 각 OS 판정 md 존재·PASS/FAIL 근거 · 결함 수정분 테스트 green
 
 ## Issue638: host zero-base 구현 테스트 — macOS 노트북에서 빈 `~/.claude` 부터 v0.8.3 설치·동작 검증
 * 목적: 사용자 지시(2026-10-16) — jpc1·host 검증(Issue637) 성공 후 host 는 따로 작업. 이번에는 이슈만 등록

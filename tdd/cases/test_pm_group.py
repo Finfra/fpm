@@ -148,7 +148,11 @@ def main():
     except ImportError:
         print('  skip PyYAML 없음')
 
-    # ④ 실 저장소 회귀
+    # ④ 실 저장소 회귀 — groups.yml 은 개인 운영파일이라 미러에서 제외된다(publishable-policy).
+    #   소비자 clone 에서 이를 전제하면 상시 FAIL 이 되어 진짜 실패를 묻는다 → 없으면 ④ 만 skip (Issue637)
+    if not os.path.exists(os.path.join(ROOT, 'data', 'groups.yml')):
+        print('  skip ④ 실 groups.yml 없음 (미러 제외 — 저작 저장소 전용)')
+        return finish()
     env = dict(os.environ, FPM_BASE=ROOT)
     p = subprocess.run([sys.executable, PMG, '--check'], capture_output=True, text=True, env=env)
     check(p.returncode == 0, f'실 groups.yml 스키마 통과 ({p.stderr.strip()})')

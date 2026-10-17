@@ -135,7 +135,10 @@ def walk():
             full = os.path.join(root, f)
             if os.path.islink(full) or not os.path.isfile(full):
                 continue
-            rel = os.path.relpath(full, bundle)
+            # Windows 는 relpath 가 `hooks\\h1.sh` 를 낸다 — git ls-files·매니페스트 키는 항상 '/'.
+            #   정규화하지 않으면 추적 집합과 하나도 안 맞아 매니페스트가 0 파일이 되고 게이트가 무력화된다
+            #   (Issue637_2 jpc1 실측: integrity-worktree-hook ④ 변조 커밋 통과). check.sh 는 이미 정규화돼 있었다.
+            rel = os.path.relpath(full, bundle).replace(os.sep, '/')
             if TRACKED is not None and rel not in TRACKED:
                 continue
             yield rel, full

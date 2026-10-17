@@ -123,7 +123,7 @@ declared = set(ff.get("files") or [])
 actual = set()
 for root, _, files in os.walk(src):
     for f in files:
-        actual.add(os.path.relpath(os.path.join(root, f), src))
+        actual.add(os.path.relpath(os.path.join(root, f), src).replace(os.sep, '/'))   # Windows '\\' → yml 키 '/' (Issue637)
 missing = sorted(declared - actual)   # yml 에 있으나 디스크 없음
 undecl  = sorted(actual - declared)   # 디스크에 있으나 yml 미선언
 if missing or undecl:

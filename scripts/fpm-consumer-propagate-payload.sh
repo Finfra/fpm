@@ -54,6 +54,18 @@ resolve_hub_python() {
     fi
     HUB_PY_ARGV[0]="$(command -v "${HUB_PY_ARGV[0]}" 2>/dev/null || printf '%s' "${HUB_PY_ARGV[0]}")"
 }
+# systemd 유닛 인터프리터 고정 — 유닛은 머신 소유(fg1 은 수기 작성)라 덮지 않고 drop-in 으로 ExecStart 만 바꾼다.
+#   Issue637_3 fg1 실측: 유닛 `ExecStart=/usr/bin/python3` 때문에 위 해석과 무관하게 hub 가 3.10.12 로 떴다.
+pin_hub_unit() {
+    local dir="$HOME/.config/systemd/user/fpm-hub.service.d" f want
+    f="$dir/10-fpm-python.conf"
+    want="$(printf '[Service]\nExecStart=\nExecStart=%s %s\n' "${HUB_PY_ARGV[*]}" "$FPM_DIR/services/hub/server.py")"
+    if [ "$(cat "$f" 2>/dev/null)" != "$want" ]; then
+        mkdir -p "$dir" && printf '%s\n' "$want" > "$f" || { echo "FPMR hub_unit_python=FAIL(drop-in 쓰기)"; return 1; }
+        systemctl --user daemon-reload
+    fi
+    echo "FPMR hub_unit_python=${HUB_PY_ARGV[*]}"
+}
 restart_hub() {
     resolve_hub_python || return 1
     if [ -n "${FPM_PROP_RESTART_CMD:-}" ]; then eval "$FPM_PROP_RESTART_CMD"; return; fi
@@ -68,6 +80,7 @@ restart_hub() {
             wmic process call create "$py ${HUB_PY_ARGV[*]:1} $srv" >/dev/null 2>&1 ;;
         *)
             if command -v systemctl >/dev/null 2>&1 && systemctl --user cat fpm-hub >/dev/null 2>&1; then
+                pin_hub_unit || return 1
                 systemctl --user restart fpm-hub
             else   # 유닛이 없으면 pid 종료 후 절대경로 기동
                 local old

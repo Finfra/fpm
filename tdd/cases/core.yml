@@ -241,6 +241,26 @@ cases:
         "$_b" "$REPO_DIR/scripts/fpm-consumer-propagate-payload.sh" 2>/dev/null | grep '^FPMR hub_python' || echo "MISS"
     expect: contains:FPMR hub_python=python3.14
 
+  - id: propagate-payload-systemd-unit-python
+    desc: systemd 유닛으로 도는 hub 도 해석 단일 지점이 고른 인터프리터로 재기동된다
+    why: |
+      Issue637_3(fg1 실측 2026-10-17) — 페이로드가 HUB_PY_ARGV 를 고쳐도 유닛 분기는 `systemctl restart` 만 했다.
+      fg1 유닛(수기 작성)은 `ExecStart=/usr/bin/python3` 라 hub 는 계속 3.10.12 로 떴다(hub_python=python3.14 로 보고된 채).
+      유닛 파일은 머신 소유라 덮지 않고 drop-in 으로 ExecStart 만 해석 결과로 고정한다.
+    run: |
+      _d="$(mktemp -d)"; trap 'rm -rf "$_d"' EXIT
+      mk() { printf '#!/bin/sh\ncase "$*" in *version_info*) echo %s ;; esac\nexit 0\n' "$2" > "$_d/$1"; chmod +x "$_d/$1"; }
+      mk python3.14 3.14; mk python3 3.10
+      printf '#!/bin/sh\necho "$*" >> "%s/systemctl.log"\nexit 0\n' "$_d" > "$_d/systemctl"; chmod +x "$_d/systemctl"
+      _b="$(command -v bash)"
+      env -i PATH="$_d:/usr/bin:/bin" HOME="$_d" FPM_CLONE="$REPO_DIR" FPM_PROP_NO_INSTALL=1 FPM_PROP_WAIT=0 \
+        "$_b" "$REPO_DIR/scripts/fpm-consumer-propagate-payload.sh" >/dev/null 2>&1
+      f="$_d/.config/systemd/user/fpm-hub.service.d/10-fpm-python.conf"
+      if [ -f "$f" ] && grep -q "^ExecStart=/.*python3\.14 .*services/hub/server\.py" "$f" \
+         && grep -q daemon-reload "$_d/systemctl.log" && grep -q 'restart fpm-hub' "$_d/systemctl.log"; then echo PINNED
+      else echo "MISS drop-in=$([ -f "$f" ] && cat "$f" | tr '\n' '|') log=$(tr '\n' '|' < "$_d/systemctl.log" 2>/dev/null)"; fi
+    expect: contains:PINNED
+
   - id: mcp-registration-validated
     desc: 깨진 MCP 등록(스크립트 부재)을 무효로 판정한다
     why: |
@@ -424,4 +444,17 @@ cases:
       참조하고, 없는 이름·id 는 침묵하지 않고 비0 으로 드러나야 한다.
     run: |
       python3 "$REPO_DIR/tdd/cases/test_pm_group.py" | tail -1
+    expect: contains:PASS
+
+  - id: pm-group-contract-consumer
+    desc: groups.yml 이 없는 소비자 clone 에서 pm-group 계약 테스트가 거짓 FAIL 을 내지 않는다
+    why: |
+      Issue637_2·637_3(jpc1·fg1 실측 2026-10-17) — data/groups.yml 은 개인 운영파일이라 미러에서 제외된다
+      (publishable-policy exclude). 테스트 ④ «실 저장소 회귀» 가 그 파일을 전제해 소비자 3 OS 에서 상시 FAIL 5 였다.
+      상시 FAIL 은 진짜 실패를 묻는다 — 파일이 없으면 ④ 만 skip 하고 ①~③ 계약은 그대로 검사한다.
+    run: |
+      _d="$(mktemp -d)"; trap 'rm -rf "$_d"' EXIT
+      mkdir -p "$_d/sh" "$_d/tdd/cases" "$_d/data"
+      cp "$REPO_DIR/sh/pm-group" "$_d/sh/"; cp "$REPO_DIR/tdd/cases/test_pm_group.py" "$_d/tdd/cases/"
+      python3 "$_d/tdd/cases/test_pm_group.py" | tail -1
     expect: contains:PASS
