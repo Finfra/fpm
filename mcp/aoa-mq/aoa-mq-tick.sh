@@ -732,19 +732,33 @@ HTMLTAIL
   #   재노출되는 동안 Discord 는 처음 한 번만 울렸고, 정작 사람은 "messaging 이 계속
   #   전달하고 있다" 고 여겼다. 여기에 §7.5 handoff 와 **같은 백오프 패턴**을 건다 —
   #   유실 방지(재알림)와 도배 방지(간격·상한)를 한 장치로 동시에 만족시킨다.
+  # prj3#Issue1107: 위 백오프는 **전역** 카운터라 대기가 0건이 되어야만 리셋된다. 대기가 상시 20건 안팎인
+  #   운영에서는 0건이 오지 않아 카운터가 소진된 채 고정됐고, 그 뒤 올라온 [컨펌] 이 7일간 Discord 로
+  #   안 갔다(Issue676 주석이 경고한 «새 항목이 조용히 묻힘» 의 재발). → **항목별 표지**
+  #   `discord_notified_ts` 가 없는(한 번도 Discord 로 통지되지 않은) 대기 항목은 전역 백오프와
+  #   무관하게 발송한다. 백오프·상한은 «이미 통지한 항목의 재알림» 만 억제한다 — 도배 방지 계약 유지.
   ASK_NAG_STATE="$MQ_DIR/.ask_nag"          # "<last_epoch> <count>" 1줄 — 7.5 NAG_STATE 와 동형
-  ask_notify=0; anag_cnt=0
+  ask_notify=0; anag_cnt=0; ask_backoff_due=0; ask_new_items=""
   if [ "$(pol notify_on_ask false)" = "true" ]; then
     ASK_BACKOFF=$(pol ask_nag_backoff_days "0,1,3,7")
     anag_last=0
     [ -f "$ASK_NAG_STATE" ] && read -r anag_last anag_cnt < "$ASK_NAG_STATE" 2>/dev/null
     anag_last=${anag_last:-0}; anag_cnt=${anag_cnt:-0}
+    ask_new_items=$(echo "$pending_items" | while read -r mf; do
+      [ -z "$("$JQ" -r '.discord_notified_ts // empty' "$mf" 2>/dev/null)" ] && echo "$mf"
+    done)
     astep=$(printf '%s' "$ASK_BACKOFF" | cut -d, -f$((anag_cnt+1)))
     if [ -z "$astep" ]; then
-      log "Discord 질의 통지 백오프 상한 도달(${anag_cnt}회) — 상태판 갱신만, 미발송"
+      [ -z "$ask_new_items" ] && log "Discord 질의 통지 백오프 상한 도달(${anag_cnt}회) — 상태판 갱신만, 미발송"
     elif [ $(( $("$DATE" +%s) - anag_last )) -lt $(( astep * 86400 )) ]; then
-      log "Discord 질의 통지 백오프 대기(${astep}일 간격, ${anag_cnt}회 발송됨)"
+      [ -z "$ask_new_items" ] && log "Discord 질의 통지 백오프 대기(${astep}일 간격, ${anag_cnt}회 발송됨)"
     else
+      ask_backoff_due=1
+    fi
+    if [ -n "$ask_new_items" ]; then
+      ask_notify=1
+      log "Discord 질의 통지: 미통지 새 항목 $(printf '%s\n' "$ask_new_items" | grep -c .)건 — 백오프 우회"
+    elif [ "$ask_backoff_due" -eq 1 ]; then
       ask_notify=1
     fi
   fi
@@ -752,8 +766,19 @@ HTMLTAIL
     DC_ACCOUNT=$(pol discord_account "")
     DC_TARGET=$(pol discord_target "")
     if [ -n "$DC_ACCOUNT" ] && [ -n "$DC_TARGET" ]; then
-      SUMMARY=$(echo "$pending_items" | while read -r mf; do
-        "$JQ" -r '"• [\(.status)] \(.message)"' "$mf" 2>/dev/null; done | head -10)
+      # 본문 후보 순서: 새 항목 먼저. 재알림 회차(backoff_due)일 때만 이미 통지한 항목을 뒤에 붙인다 —
+      #   새 항목만으로 발송하는 회차에 기존 항목을 실으면 백오프가 막으려던 도배가 된다.
+      ask_ordered=$(
+        [ -n "$ask_new_items" ] && printf '%s\n' "$ask_new_items"
+        if [ "$ask_backoff_due" -eq 1 ]; then
+          echo "$pending_items" | while read -r mf; do
+            case $'\n'"$ask_new_items"$'\n' in *$'\n'"$mf"$'\n'*) ;; *) echo "$mf" ;; esac
+          done
+        fi)
+      ask_ordered=$(printf '%s\n' "$ask_ordered" | grep . | head -10)       # 본문은 10건 상한 — 넘친 새 항목은 표지가 없어 다음 tick 이 잇는다
+      SUMMARY=$(printf '%s\n' "$ask_ordered" | while read -r mf; do
+        mk="•"; [ -z "$("$JQ" -r '.discord_notified_ts // empty' "$mf" 2>/dev/null)" ] && mk="🆕"
+        "$JQ" -r --arg mk "$mk" '"\($mk) [\(.status)] \(.message)"' "$mf" 2>/dev/null; done)
       # 링크 블록 — advertise_url 이 없으면 **줄을 빼고 그 사실을 본문에 남긴다** (prj1#Issue469).
       #   localhost 로 때우면 폰에서 안 열리는 링크가 가고, 받는 쪽은 그것이 죽은 링크인지
       #   hub 가 꺼진 것인지 구분할 수 없다. 조용한 누락도 같은 이유로 금지.
@@ -770,8 +795,18 @@ HTMLTAIL
         --message "📬 aoa-mq 확인 요청 ($NOW_ISO)
 $SUMMARY
 $LINKS" \
-        && { printf '%s %s\n' "$("$DATE" +%s)" "$((anag_cnt+1))" > "$ASK_NAG_STATE"
-             log "Discord 질의 통지 발송(${anag_cnt}→$((anag_cnt+1))회): $DC_TARGET"; } \
+        && { if [ "$ask_backoff_due" -eq 1 ]; then
+               # 재알림 시점일 때만 전역 백오프를 전진시킨다 — 새 항목 우회 발송은 시퀀스를 소비하지 않는다
+               printf '%s %s\n' "$("$DATE" +%s)" "$((anag_cnt+1))" > "$ASK_NAG_STATE"
+               log "Discord 질의 통지 발송(${anag_cnt}→$((anag_cnt+1))회): $DC_TARGET"
+             else
+               log "Discord 질의 통지 발송(새 항목 우회, 백오프 ${anag_cnt}회 유지): $DC_TARGET"
+             fi
+             # 발송 성공분만 표지 — 본문에 실린 미통지 항목에 한한다(실패를 기록하면 영영 안 간다. 7.5 와 동일 원칙)
+             printf '%s\n' "$ask_ordered" | while read -r mf; do
+               [ -z "$("$JQ" -r '.discord_notified_ts // empty' "$mf" 2>/dev/null)" ] \
+                 && jupd "$mf" --arg ts "$NOW_ISO" '.discord_notified_ts=$ts'
+             done; } \
         || log "Discord 질의 통지 실패 — $OC_ERRTAIL (상태판 렌더는 정상, 다음 tick 재시도)"
     else
       log "Discord 통지 skip — discord_account/discord_target 미설정"

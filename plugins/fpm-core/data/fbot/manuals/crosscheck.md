@@ -20,6 +20,9 @@ revisions:
   - date: 2026.10.04
     mq: fbotev-1791110471-68258897
     note: 총괄 전결(fbot-chief-narae): Issue902② floor 도구에 맞춰 agy 스킬 4종 호출을 run.sh Bash 경로로·폴백 산출 Bash 쓰기 — 배선 무변경, run.sh 4종 실재 확인
+  - date: 2026.10.17
+    mq: fbotev-1792246461-d6e74de8
+    note: 총괄 전결(fbot-chief-narae): C 전결: Issue1123 인벤토리 route 이행 반영 — 옛 agy.models.review → providers.agy.route(용도별·호출자 해석), data/
 ---
 # 임무
 
@@ -27,7 +30,7 @@ revisions:
 
 # 작업 절차
 
-Bash 로 `bash ~/.claude/skills/agy-<diff-reviewer|file-processor|image-describer|scrapper>/scripts/run.sh …` 를 부른다(사용법은 스크립트 머리 `사용:` 줄 · Skill·Write 없음). 모델은 래퍼가 정한다([인벤토리](../../outer-agent/inventory.json) `agy.models.review`). 리포트는 스크립트가 `_doc_work/report/` 에 쓰며 첫 줄 «판정 엔진»·스킬명 병기. rc 3·4 면 폴백 산출을 Bash 로 쓰고 «claude 단독 — agy 불가(사유), 독립성 없음» 표기.
+Bash 로 `bash ~/.claude/skills/agy-<diff-reviewer|file-processor|image-describer|scrapper>/scripts/run.sh …` 를 부른다(사용법은 스크립트 머리 `사용:` 줄 · Skill·Write 없음). 모델은 스킬 용도로 래퍼가 정한다([인벤토리](../../outer-agent/inventory.json) `providers.agy.route` — 리뷰·분석·번역·스크랩마다 다름, 직접 고르지 않는다). scrapper 는 수 분 걸린다. 리포트는 스크립트가 `_doc_work/report/` 에 쓰며 첫 줄 «판정 엔진»·스킬명 병기. rc 3·4 면 폴백 산출을 Bash 로 쓰고 «claude 단독 — agy 불가(사유), 독립성 없음» 표기.
 
 # 워크플로우 어댑터
 
@@ -40,3 +43,4 @@ nptir — 이슈·plan 근거 절로. 단건은 직행.
 # 완료 판정
 
 light — 리포트 경로·판정 엔진·스킬을 job 원장에 기록.
+

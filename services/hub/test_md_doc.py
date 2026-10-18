@@ -268,6 +268,113 @@ try:
 finally:
     server._issue_map_roots = _orig_roots
 
+# --- Issue649: 등록 prj 루트의 `_doc_work/**.md` 열람 (registry 무기록) ---
+# 허용표: 등록 prj 루트 하위 · `_doc_work` 요소 포함 · 실존 일반 파일 · `.md` · 비민감 · 제외 폴더 아님 ·
+#   realpath 후에도 루트 안(symlink 탈출 차단). prj0(= ~)은 홈 직하 `_doc_work` 만.
+P649 = os.path.realpath(os.path.join(TMP, "p649"))
+PRJ_A = os.path.join(P649, "prjA")             # 등록 prj
+PRJ_B = os.path.join(P649, "prjB")             # 미등록
+HOME_X = os.path.join(P649, "home")            # prj0(= ~) 대역
+OUT_X = os.path.join(P649, "outside")          # 어느 등록 루트 밖
+for _d in (os.path.join(PRJ_A, "_doc_work", "report", "_dailyBriefing"),
+           os.path.join(PRJ_A, "_doc_work", "z_log", "daily-digest"),
+           os.path.join(PRJ_B, "_doc_work", "report"),
+           os.path.join(HOME_X, "_doc_work", "report"),
+           os.path.join(HOME_X, "other", "_doc_work", "report"),
+           OUT_X):
+    os.makedirs(_d)
+_W = lambda p, t="# t\n\n![i](img.png)\n": open(p, "w").write(t)
+A_REP = os.path.join(PRJ_A, "_doc_work", "report", "x_report.md")
+A_DAILY = os.path.join(PRJ_A, "_doc_work", "report", "_dailyBriefing", "2026.10.18.md")
+A_DIGEST = os.path.join(PRJ_A, "_doc_work", "z_log", "daily-digest", "d.md")
+A_ISSUE = os.path.join(PRJ_A, "Issue.md")
+A_DOT = os.path.join(PRJ_A, "_doc_work", "report", ".secret.md")
+A_HTM = os.path.join(PRJ_A, "_doc_work", "report", "r.htm")
+A_LINK = os.path.join(PRJ_A, "_doc_work", "report", "link.md")
+A_IMG = os.path.join(PRJ_A, "_doc_work", "report", "img.png")
+B_REP = os.path.join(PRJ_B, "_doc_work", "report", "y.md")
+H_REP = os.path.join(HOME_X, "_doc_work", "report", "h.md")
+H_SUB = os.path.join(HOME_X, "other", "_doc_work", "report", "h2.md")
+H_ISSUE = os.path.join(HOME_X, "Issue.md")
+OUT_MD = os.path.join(OUT_X, "out.md")
+for _p in (A_REP, A_DAILY, A_DIGEST, A_ISSUE, A_DOT, A_HTM, B_REP, H_REP, H_SUB, H_ISSUE, OUT_MD):
+    _W(_p)
+open(A_IMG, "wb").write(b"\x89PNG\r\n\x1a\n")
+os.symlink(OUT_MD, A_LINK)
+
+_orig_dirs, _orig_home = server._registered_project_dirs, os.environ.get("HOME")
+server._registered_project_dirs = lambda: [PRJ_A, HOME_X]
+os.environ["HOME"] = HOME_X
+try:
+    def _reg_snapshot():
+        return (open(server.HTM_REGISTRY).read(), open(server.HTM_CLEARED).read())
+    before = _reg_snapshot()
+
+    r = _get_md(f"/md-doc?path={quote(A_REP, safe='')}")
+    check("649 ⓐ 등록 prj `_doc_work/report/x.md` → 200 md 셸",
+          r._status == 200 and r.raw_headers.get("Content-Type", "").startswith("text/html"))
+    check("649 ⓐ registry·tombstone 불변(카드·prune 부작용 0)", _reg_snapshot() == before)
+    check("649 ⓐ 헤더 프로젝트 배지는 등록 prj 루트로 해소", os.path.basename(PRJ_A).encode() in r.raw)
+
+    for name, path in (("미등록 prj", B_REP), ("등록 루트 밖 /tmp 류", OUT_MD)):
+        r = _get_md(f"/md-doc?path={quote(path, safe='')}")
+        check(f"649 ⓑ {name} → 403", r.json_responses and r.json_responses[0][0] == 403)
+    for name, path in (("_dailyBriefing", A_DAILY), ("z_log 하위", A_DIGEST)):
+        r = _get_md(f"/md-doc?path={quote(path, safe='')}")
+        check(f"649 ⓒ 제외 폴더({name}) → 403", r.json_responses and r.json_responses[0][0] == 403)
+    r = _get_md(f"/md-doc?path={quote(A_ISSUE, safe='')}")
+    check("649 ⓓ `_doc_work` 밖 등록 prj md(Issue.md) → 403", r.json_responses and r.json_responses[0][0] == 403)
+    r = _get_md(f"/md-doc?path={quote(A_LINK, safe='')}")
+    check("649 ⓔ symlink 탈출 → 403", r.json_responses and r.json_responses[0][0] == 403)
+    r = _get_md(f"/md-doc?path={quote(A_DOT, safe='')}")
+    check("649 ⓕ sensitive(dotfile) → 403", r.json_responses and r.json_responses[0][0] == 403)
+    r = _get_md(f"/md-doc?path={quote(A_HTM, safe='')}")
+    check("649 ⓖ `.htm` 은 범위 밖 → 종전 403", r.json_responses and r.json_responses[0][0] == 403)
+    r = _get_htm(f"/htm-doc?path={quote(A_HTM, safe='')}")
+    check("649 ⓖ /htm-doc 로 온 `.htm` 도 종전 403", r.json_responses and r.json_responses[0][0] == 403)
+
+    # ④ prj0(= ~) — 홈 직하 `_doc_work` 만
+    r = _get_md(f"/md-doc?path={quote(H_REP, safe='')}")
+    check("649 ④ 홈 직하 `_doc_work` md → 200", r._status == 200)
+    r = _get_md(f"/md-doc?path={quote(H_SUB, safe='')}")
+    check("649 ④ 홈 하위 폴더의 `_doc_work` md(미등록 repo) → 403", r.json_responses and r.json_responses[0][0] == 403)
+    r = _get_md(f"/md-doc?path={quote(H_ISSUE, safe='')}")
+    check("649 ④ 홈 직하 Issue.md → 403", r.json_responses and r.json_responses[0][0] == 403)
+
+    # ⑥ 같은 판정 함수 — /htm-doc .md 302, /htm-res 상대 이미지
+    r = _get_htm(f"/htm-doc?path={quote(A_REP, safe='')}")
+    check("649 ⑥ /htm-doc 로 온 등록 prj md → 302 /md-doc",
+          r._status == 302 and r.raw_headers.get("Location", "").startswith("/md-doc?path="))
+    r = _get_htm(f"/htm-doc?path={quote(B_REP, safe='')}")
+    check("649 ⑥ /htm-doc 미등록 prj md → 403", r.json_responses and r.json_responses[0][0] == 403)
+
+    def _get_res(doc, rel):
+        h = _FakeHandler()
+        h._handle_htm_res(urlparse(f"/htm-res?doc={quote(doc, safe='')}&rel={quote(rel, safe='')}"))
+        return h
+    r = _get_res(A_REP, "img.png")
+    check("649 ⑥ /htm-res 등록 prj md 의 상대 이미지 → 200", r._status == 200 and r.raw.startswith(b"\x89PNG"))
+    r = _get_res(A_REP, "../../../outside/out.png")
+    check("649 ⑥ /htm-res jail 밖 → 403", r.json_responses and r.json_responses[0][0] == 403)
+    r = _get_res(B_REP, "img.png")
+    check("649 ⑥ /htm-res 미등록 prj md → 403", r.json_responses and r.json_responses[0][0] == 403)
+    check("649 ⑥ /htm-res 도 registry 불변", _reg_snapshot() == before)
+
+    # canonical 규약 md 는 종전대로 autoregister(Issue337) — 신규 분기가 가로채지 않는다
+    A_CANON = os.path.join(PRJ_A, "_doc_work", "htm", "hub_htm_1722800649_canon.md")
+    os.makedirs(os.path.dirname(A_CANON))
+    _W(A_CANON)
+    r = _get_md(f"/md-doc?path={quote(A_CANON, safe='')}")
+    reg_now = {os.path.realpath(e.get("path")) for e in server.load_registry(server.HTM_REGISTRY)}
+    check("649 canonical htm 폴더 md 는 종전 autoregister 유지",
+          r._status == 200 and os.path.realpath(A_CANON) in reg_now)
+finally:
+    server._registered_project_dirs = _orig_dirs
+    if _orig_home is None:
+        os.environ.pop("HOME", None)
+    else:
+        os.environ["HOME"] = _orig_home
+
 print()
 print(f"PASS={PASS} FAIL={FAIL}")
 sys.exit(1 if FAIL else 0)

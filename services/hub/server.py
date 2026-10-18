@@ -1275,6 +1275,45 @@ def _registered_project_dirs() -> list:
     return [t for _, t in _registered_project_entries() if os.path.isdir(t)]
 
 
+# Issue649: `/md-doc` 열람 범위 — 등록 prj 루트의 `_doc_work/` 하위 `.md` (registry 무기록).
+#   `_doc_work` 아래에서 이 이름의 폴더 안은 개인 기록·로그·백업이라 열지 않는다(종전대로 registry 등록분만).
+#   실측(2026-10-18, 등록 prj 50곳): `report/_dailyBriefing`(일일 브리핑) · `z_log/**`(잡 로그·`daily-digest`)
+#   · `backup`/`z_backup`(스냅샷·tar) · `settings-bak`. 목록은 여기 1곳 — 문서 `hub_htm.md` «GET /md-doc» 가 인용한다.
+PROJECT_DOC_EXCLUDE_DIRS = frozenset({
+    "_dailyBriefing", "z_log", "daily-digest", "backup", "z_backup", "settings-bak",
+})
+
+
+def _project_doc_root(abs_path: str) -> str:
+    """Issue649: 이 경로가 «등록 prj 루트 하위 `_doc_work/**.md`» 면 그 prj 루트(realpath), 아니면 "".
+
+    `/md-doc`·`/htm-doc`(.md → 302)·`/htm-res`(상대 이미지) 가 **이 함수 하나**로 판정한다 — 셋이 갈리면
+    보고서는 열리는데 안의 이미지가 403 으로 깨진다. registry·tombstone 에는 쓰지 않는다
+    (`/sched-result` 와 같은 등급 — 카드 목록·prune·탭 push 부작용 0).
+
+    조건(전부): `.md` · 실존 일반 파일 · `path_is_sensitive` 아님 · **realpath 가** 등록 prj 루트 하위
+    (symlink 가 루트 밖으로 새면 여기서 탈락) · 루트 아래 폴더 요소에 `_doc_work` 포함 ·
+    `_doc_work` 뒤에 제외 폴더 없음. prj0(= `~`)는 정확 일치만 등록으로 본다 — 홈 직하 `_doc_work` 만,
+    홈 아래 미등록 repo 의 `_doc_work` 는 열지 않는다. 루트가 겹치면(중첩 prj) 가장 깊은 루트."""
+    real = os.path.realpath(abs_path)
+    if not real.lower().endswith(".md") or not os.path.isfile(real) or path_is_sensitive(real):
+        return ""
+    home = os.path.realpath(os.path.expanduser("~"))
+    best = ""
+    for root in _registered_project_dirs():
+        root_r = os.path.realpath(root)
+        pref = root_r.rstrip(os.sep) + os.sep
+        if not real.startswith(pref) or len(root_r) <= len(best):
+            continue
+        dirs = real[len(pref):].split(os.sep)[:-1]
+        if "_doc_work" not in dirs or (root_r == home and dirs[0] != "_doc_work"):
+            continue
+        if PROJECT_DOC_EXCLUDE_DIRS.intersection(dirs[dirs.index("_doc_work") + 1:]):
+            continue
+        best = root_r
+    return best
+
+
 def _platform_key() -> str:
     """플랫폼 정규화 1단어 — Darwin | Windows | Linux (Issue466).
 
@@ -15179,7 +15218,8 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
                 if p:
                     reg_paths.add(p)
                     reg_paths.add(os.path.realpath(p))
-            if doc_real not in reg_paths and doc not in reg_paths:
+            # Issue649: `/md-doc` 가 연 등록 prj 산출물의 상대 이미지도 같은 판정 함수로 인가한다.
+            if doc_real not in reg_paths and doc not in reg_paths and not _project_doc_root(doc_real):
                 log(f"GET /htm-res — unauthorized doc rejected: {doc_real}")
                 self._send_json(403, {"error": "doc not authorized"})
                 return
@@ -15405,6 +15445,12 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
                 if os.path.dirname(abs_path) == os.path.realpath(TMP_OUT_DIR):
                     self._send_htm_doc_tmp_hint(abs_path)
                     return
+                # Issue649: `.md` 링크 호환 302 도 `/md-doc` 와 **같은 판정 함수** — 둘이 갈리면 302 뒤에 403.
+                if _project_doc_root(abs_path):
+                    self.send_response(302)
+                    self.send_header("Location", "/md-doc?path=" + quote(abs_path))
+                    self.end_headers()
+                    return
                 self._send_json(403, {"error": "not a registered htm doc"})
                 return
         # Issue102: htm 스킬(Issue123)이 .htm 확장자로 문서를 씀 → .html/.htm 모두 허용
@@ -15511,11 +15557,16 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             if p:
                 reg_paths.add(p)
                 reg_paths.add(os.path.realpath(p))
+        project_root = ""
         if abs_path not in reg_paths and rel not in reg_paths:
+            # Issue649: canonical 규약(`hub_htm_*`)은 종전대로 autoregister(Issue337), 그 밖의 산출물
+            #   (report·plan·task·scrap …)은 «등록 prj 루트의 `_doc_work/**.md`» 면 registry 무기록으로 연다.
             if not self._htm_doc_autoregister(abs_path):
-                log(f"GET /md-doc — unregistered path rejected: {abs_path}")
-                self._send_json(403, {"error": "not a registered md doc"})
-                return
+                project_root = _project_doc_root(abs_path)
+                if not project_root:
+                    log(f"GET /md-doc — unregistered path rejected: {abs_path}")
+                    self._send_json(403, {"error": "not a registered md doc"})
+                    return
         if not abs_path.endswith(".md"):
             self._send_json(403, {"error": "extension not allowed"})
             return
@@ -15545,8 +15596,10 @@ pre {{ background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto;
             return
         title = self._extract_html_title(abs_path) or os.path.basename(abs_path)
         # 헤더 📁 배지용 프로젝트 — registry cwd 우선, 없으면 `_doc_work/` 앞부분에서 유추
-        proj_cwd = ""
+        proj_cwd = project_root          # Issue649: 신규 분기는 판정이 낸 prj 루트가 정답(중첩 `_doc_work` 오추정 방지)
         for e in reg:
+            if proj_cwd:
+                break
             if os.path.realpath(e.get("path") or "") == abs_path:
                 proj_cwd = e.get("cwd") or ""
                 break

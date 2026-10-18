@@ -150,8 +150,10 @@ def main():
 
     # ④ 실 저장소 회귀 — groups.yml 은 개인 운영파일이라 미러에서 제외된다(publishable-policy).
     #   소비자 clone 에서 이를 전제하면 상시 FAIL 이 되어 진짜 실패를 묻는다 → 없으면 ④ 만 skip (Issue637)
-    if not os.path.exists(os.path.join(ROOT, 'data', 'groups.yml')):
-        print('  skip ④ 실 groups.yml 없음 (미러 제외 — 저작 저장소 전용)')
+    #   Projects.md 는 gitignore 라 추적 트리만 보내는 run-remote 에서는 groups.yml 만 실린다 (Issue643)
+    missing = [f for f in ('data/groups.yml', 'Projects.md') if not os.path.exists(os.path.join(ROOT, f))]
+    if missing:
+        print('  skip ④ 실 %s 없음 (미러 제외·gitignore — 저작 저장소 전용)' % '·'.join(missing))
         return finish()
     env = dict(os.environ, FPM_BASE=ROOT)
     p = subprocess.run([sys.executable, PMG, '--check'], capture_output=True, text=True, env=env)

@@ -46,6 +46,14 @@ def is_done_section(line: str) -> bool:
     return line.startswith("# ") and "완료" in line
 
 
+def has_done_section(lines) -> bool:
+    """대장에 최상위 `# …완료` 섹션이 하나라도 있는가 — 없으면 완료 판정이 불가능하다 (prj3#Issue1119).
+
+    판정 계약(`# ` 최상위 + «완료» 포함)은 `is_done_section` 그대로다 — `## ✅ 완료` 같은 한 단계 깊은 섹션은
+    넓혀 받지 않는다(`## Issue<N>: …완료…` 이슈 제목과 섞인다). 섹션이 없으면 «미완료» 가 아니라 «판정 불가»다."""
+    return any(is_done_section(ln) for ln in lines)
+
+
 def done_block(lines, issue: str):
     """완료 섹션 안의 그 이슈 블록(헤더 줄 포함 줄 목록) — 완료 섹션에 없으면 None.
 
@@ -102,7 +110,8 @@ def done_unmarked(lines, issue: str) -> bool:
 def issue_completed_in(cwd: str, issue: str):
     """그 이슈가 대상 repo(``cwd``)의 **완료 섹션**에 있고 완료 신호를 달고 있는가 (prj3#Issue644 ⑥).
 
-    3-state — True=완료 · False=미완료 · None=**판정 불가**(대장 파일 접근 불가 — `Req<N>` 은 Request.md, Issue1096).
+    3-state — True=완료 · False=미완료 · None=**판정 불가**(대장 파일 접근 불가 — `Req<N>` 은 Request.md, Issue1096 ·
+    **최상위 완료 섹션 없음** — `## ✅ 완료` 처럼 한 단계 깊은 양식 이탈, prj3#Issue1119).
     판정 규칙은 `~/.bin/fpm-do` 의 `completed_block`/`is_completed` 와 **같은 것**이다 — 둘이 갈리면
     "위임은 완료로 보는데 원장은 아니다" 같은 어긋남이 생긴다.
     """
@@ -114,13 +123,16 @@ def issue_completed_in(cwd: str, issue: str):
             lines = f.read().split("\n")
     except OSError:
         return None                      # 부재·권한 — **미완료로 단정하지 않는다**(부재와 미감지를 구별)
+    if not has_done_section(lines):
+        return None                      # 완료 섹션이 없으면 «미완료» 가 아니라 «판정 불가» — 기다려도 안 변한다(Issue1119)
     return completed_in_lines(lines, issue)
 
 
 def issue_done_unmarked(cwd: str, issue: str):
     """``done_unmarked`` 의 파일 판독판 — 3-state (prj3#Issue968).
 
-    True=완료 섹션에 있으나 완료 표기 누락 · False=그 외 · None=**판독 불가**(``issue_completed_in`` 과 같은 규칙).
+    True=완료 섹션에 있으나 완료 표기 누락 · False=그 외 · None=**판독 불가**(``issue_completed_in`` 과 같은 규칙 —
+    최상위 완료 섹션 없음 포함, Issue1119).
     완료 판정 regex 는 확장하지 않는다(Issue944) — 감지·통지용이다.
     """
     if not cwd or not issue:
@@ -130,5 +142,7 @@ def issue_done_unmarked(cwd: str, issue: str):
         with open(path, encoding="utf-8") as f:
             lines = f.read().split("\n")
     except OSError:
+        return None
+    if not has_done_section(lines):
         return None
     return done_unmarked(lines, issue)

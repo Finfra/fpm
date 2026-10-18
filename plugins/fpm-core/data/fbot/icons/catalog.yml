@@ -23,7 +23,7 @@ research: shape=magnifier base=#6E6E3A label=조사핀봇 tags=조사|선례 ori
 scout: shape=magnet base=#8A3A5F label=발굴핀봇 tags=직능|발굴 origin=native
 graphic: shape=frame base=#5F8A3A label=도해핀봇 tags=변환|개선 origin=agent:ig-maker|skill:ig-maker kind=tool origin_seen=3c4afda45666cbf2
 consult: shape=speech base=#3A6E8A label=자문핀봇 tags=선례|큐레이션 origin=agent:consultant-m origin_seen=d9c95c18540ebfe2
-crosscheck: shape=venn base=#A03A3A label=교차검증핀봇 tags=2차의견|외부LLM origin=skill:agy-diff-reviewer|skill:agy-file-processor|skill:agy-image-describer|skill:agy-scrapper kind=tool checker=true engine=agy permission_mode=floor origin_seen=3f8263a0f87ba451
+crosscheck: shape=venn base=#A03A3A label=교차검증핀봇 tags=2차의견|외부LLM origin=skill:agy-diff-reviewer|skill:agy-file-processor|skill:agy-image-describer|skill:agy-scrapper kind=tool checker=true engine=agy permission_mode=floor origin_seen=ace1df49179a4181
 release: shape=tag base=#8A5A2B label=배포핀봇 tags=배포|릴리즈 origin=native
 advisor: shape=compass base=#3A3A8A label=외부자문핀봇 tags=외부검토|codex origin=skill:codex-arch-reviewer|agent:codex-diff-reviewer|agent:codex-arch-checker|agent:codex-plan-checker|agent:codex-test-auditor|agent:codex-completion-auditor|agent:agy-visual-qa checker=true engine=codex|agy permission_mode=floor origin_seen=fd1e920ece7f4252
 contractor: shape=wrench base=#5A3A2A label=외부컨설턴트핀봇 tags=외부작업|patch origin=skill:codex-worker|agent:codex-patcher|agent:codex-migrator engine=codex origin_seen=17bdd42ec8cc215d

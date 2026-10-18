@@ -11,7 +11,10 @@
 #   설계 근거: _doc_arch/windows-port.md W4(python 이름)
 #
 # 계약 (tdd/run-tdd.sh · tdd/cases/core.yml:python3-available · python-baseline-* 와 동일)
-#   후보 순서  $FBOT_PYTHON → python3.14 → py -3.14 → python3 → python → py -3     (Issue642)
+#   후보 순서  $FBOT_PYTHON → ~/.local/bin/python3.14 → ~/.local/bin/python3 → python3.14 → py -3.14
+#              → python3 → python → py -3                                           (Issue642 · Issue646)
+#              앞의 두 절대경로는 prj3 hooks/lib/py-resolve.sh 와 같은 순서다(있을 때만). 다른 점은 둘뿐 —
+#              여기는 요구 모듈 import 를 보고(prj3 는 안 본다), `python`·`py -3` 후보가 더 있다
 #   채택 기준  실행되고, 인자로 준 모듈을 **전부** import 하는 첫 후보
 #              (Issue435 원인 정정 — "실행 가능" 만으로는 부족하다. jma 의 python3 는
 #               정상 실행되는데 pyyaml 이 없어 소비처가 죽었다. 요구 능력까지 봐야 한다)
@@ -109,6 +112,12 @@ fbot_resolve_python() {
     local -a cands=()
     # $FBOT_PYTHON 은 사용자가 못박은 절대경로다 — 최우선. 미설정이면 후보에서 뺀다.
     [[ -n "${FBOT_PYTHON:-}" ]] && cands+=("explicit|$FBOT_PYTHON")
+    # prj3 py-resolve.sh(prj3#Issue1117)와 같은 순서 — uv 기준 설치원의 절대경로는 PATH 앞에 /usr/bin 이 끼어도 3.14 를 잡는다 (Issue646).
+    # 후보 문자열은 공백으로 토큰을 편다 — HOME 에 공백이 있으면 깨지므로 그때는 뺀다(PATH 후보가 대신한다).
+    if [[ -n "${HOME:-}" && "$HOME" != *[[:space:]]* ]]; then
+        [[ -x "$HOME/.local/bin/python3.14" ]] && cands+=("pinned|$HOME/.local/bin/python3.14")
+        [[ -x "$HOME/.local/bin/python3" ]] && cands+=("check|$HOME/.local/bin/python3")
+    fi
     cands+=("pinned|python3.14" "pinned|py -3.14" "check|python3" "check|python" "check|py -3")
 
     local entry kind c reason ver

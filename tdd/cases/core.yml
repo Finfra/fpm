@@ -76,7 +76,8 @@ cases:
       printf '#!/bin/sh\nexit 49\n' > "$_d/python3.14"; chmod +x "$_d/python3.14"
       _real="$(command -v python3 || command -v python)"
       printf '#!/bin/sh\nexec %s "$@"\n' "$_real" > "$_d/python"; chmod +x "$_d/python"
-      PATH="$_d:$PATH" bash -c '. "$0/sh/fbot-python.sh"
+      # Issue646 — `~/.local/bin/python3.14` 절대경로 후보가 PATH 후보보다 앞서므로 HOME 을 비워 실물을 가린다.
+      HOME="$_d" PATH="$_d:$PATH" bash -c '. "$0/sh/fbot-python.sh"
         fbot_resolve_python || exit 1
         case "$FBOT_PY_REJECT" in *"python3(실행 불가)"*) echo rejected ;; *) echo "MISS:$FBOT_PY_REJECT" ;; esac
         "${FBOT_PY_ARGV[@]}" -c "print(\"ok\")"' "$REPO_DIR"
@@ -189,10 +190,27 @@ cases:
       _d="$(mktemp -d)"; trap 'rm -rf "$_d"' EXIT
       mk() { printf '#!/bin/sh\ncase "$*" in *version_info*) echo %s ;; esac\nexit 0\n' "$2" > "$_d/$1"; chmod +x "$_d/$1"; }
       mk python3.14 3.14; mk python3 3.10
-      env -i PATH="$_d" "$_z" -fc '. "$0/sh/fbot-python.sh"
+      env -i HOME="$_d" PATH="$_d" "$_z" -fc '. "$0/sh/fbot-python.sh"
         fbot_resolve_python || { echo "rc=$?"; exit 1; }
         echo "picked:$FBOT_PY_DISPLAY v=$FBOT_PY_VERSION below=${FBOT_PY_BELOW:-0}"' "$REPO_DIR"
     expect: contains:picked:python3.14 v=3.14 below=0
+
+  - id: python-baseline-local-bin-abs
+    desc: PATH 에 3.14 가 없어도 `~/.local/bin/python3.14` 절대경로를 PATH 의 `python3`(3.10) 보다 먼저 고른다 (prj3 py-resolve.sh 와 같은 순서)
+    why: |
+      Issue646 — prj3 py-resolve.sh(prj3#Issue1117)는 FBOT_PYTHON 다음에 `~/.local/bin/python3.14` 절대경로를 둔다
+      (PATH 앞에 /usr/bin 이 끼어도 3.14 를 잡는다 — OpenClaw, prj3#Issue1109). prj1 해석기가 이를 몰라
+      같은 호스트에서 두 해석기가 서로 다른 인터프리터를 골랐다.
+    run: |
+      _d="$(mktemp -d)"; trap 'rm -rf "$_d"' EXIT
+      mkdir -p "$_d/home/.local/bin" "$_d/bin"
+      mk() { printf '#!/bin/sh\ncase "$*" in *version_info*) echo %s ;; esac\nexit 0\n' "$3" > "$1/$2"; chmod +x "$1/$2"; }
+      mk "$_d/home/.local/bin" python3.14 3.14; mk "$_d/bin" python3 3.10
+      _b="$(command -v bash)"
+      env -i HOME="$_d/home" PATH="$_d/bin" "$_b" -c '. "$0/sh/fbot-python.sh"
+        fbot_resolve_python || { echo "rc=$?"; exit 1; }
+        echo "picked:$FBOT_PY_DISPLAY v=$FBOT_PY_VERSION below=${FBOT_PY_BELOW:-0}"' "$REPO_DIR"
+    expect: contains:.local/bin/python3.14 v=3.14 below=0
 
   # ── hub 기동 경로의 인터프리터 (Issue642 남은 것 ②③) ─────────────────────────────
   #   hub 를 띄우는 곳(sh/fpm-hub-paths.sh 를 source 하는 start·restart·deploy 재기동 + 소비자 전파 페이로드)이
@@ -247,13 +265,16 @@ cases:
       Issue637_3(fg1 실측 2026-10-17) — 페이로드가 HUB_PY_ARGV 를 고쳐도 유닛 분기는 `systemctl restart` 만 했다.
       fg1 유닛(수기 작성)은 `ExecStart=/usr/bin/python3` 라 hub 는 계속 3.10.12 로 떴다(hub_python=python3.14 로 보고된 채).
       유닛 파일은 머신 소유라 덮지 않고 drop-in 으로 ExecStart 만 해석 결과로 고정한다.
+      Windows 는 systemd 분기가 없다(페이로드가 taskkill·wmic 분기로 간다) — skip. 2차 jpc1 실측에서 MISS 로 거짓 FAIL.
+      포트는 쓰지 않는 값으로 둔다 — Windows 분기에 들어가면 9876 리스너를 taskkill 한다.
     run: |
+      case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) echo "skip(Windows — systemd 분기 없음)"; exit 0 ;; esac
       _d="$(mktemp -d)"; trap 'rm -rf "$_d"' EXIT
       mk() { printf '#!/bin/sh\ncase "$*" in *version_info*) echo %s ;; esac\nexit 0\n' "$2" > "$_d/$1"; chmod +x "$_d/$1"; }
       mk python3.14 3.14; mk python3 3.10
       printf '#!/bin/sh\necho "$*" >> "%s/systemctl.log"\nexit 0\n' "$_d" > "$_d/systemctl"; chmod +x "$_d/systemctl"
       _b="$(command -v bash)"
-      env -i PATH="$_d:/usr/bin:/bin" HOME="$_d" FPM_CLONE="$REPO_DIR" FPM_PROP_NO_INSTALL=1 FPM_PROP_WAIT=0 \
+      env -i PATH="$_d:/usr/bin:/bin" HOME="$_d" FPM_CLONE="$REPO_DIR" FPM_PROP_NO_INSTALL=1 FPM_PROP_WAIT=0 FPM_PROP_PORT=59999 \
         "$_b" "$REPO_DIR/scripts/fpm-consumer-propagate-payload.sh" >/dev/null 2>&1
       f="$_d/.config/systemd/user/fpm-hub.service.d/10-fpm-python.conf"
       if [ -f "$f" ] && grep -q "^ExecStart=/.*python3\.14 .*services/hub/server\.py" "$f" \
@@ -456,5 +477,18 @@ cases:
       _d="$(mktemp -d)"; trap 'rm -rf "$_d"' EXIT
       mkdir -p "$_d/sh" "$_d/tdd/cases" "$_d/data"
       cp "$REPO_DIR/sh/pm-group" "$_d/sh/"; cp "$REPO_DIR/tdd/cases/test_pm_group.py" "$_d/tdd/cases/"
+      python3 "$_d/tdd/cases/test_pm_group.py" | tail -1
+    expect: contains:PASS
+  - id: pm-group-contract-remote-tree
+    desc: groups.yml 은 있고 Projects.md 가 없는 원격 러너 트리에서 pm-group 계약 테스트가 거짓 FAIL 을 내지 않는다
+    why: |
+      Issue643(jma run-remote 실측 2026-10-17) — run-remote 는 git 추적 트리만 보낸다. data/groups.yml 은
+      추적이라 실리고 Projects.md 는 gitignore 라 빠진다. ④ 가드가 groups.yml 만 보면 ④ 로 들어가
+      `Projects.md 없음` 으로 FAIL 5 — 저작 머신(jm4)에서만 녹색인 케이스가 된다. 둘 중 하나라도 없으면 ④ 만 skip.
+    run: |
+      _d="$(mktemp -d)"; trap 'rm -rf "$_d"' EXIT
+      mkdir -p "$_d/sh" "$_d/tdd/cases" "$_d/data"
+      cp "$REPO_DIR/sh/pm-group" "$_d/sh/"; cp "$REPO_DIR/tdd/cases/test_pm_group.py" "$_d/tdd/cases/"
+      cp "$REPO_DIR/data/groups.yml" "$_d/data/"
       python3 "$_d/tdd/cases/test_pm_group.py" | tail -1
     expect: contains:PASS
