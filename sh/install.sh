@@ -405,6 +405,9 @@ for RC in "${RC_FILES[@]}"; do
     fi
 done
 
+# ── 1b. 경로 런처(v/z …)와 겹치는 사용자 alias 안내 (Issue653) — 읽기 전용, 설치를 막지 않는다 ──
+[[ -f "$REPO_DIR/sh/fpm-launcher-check.sh" ]] && bash "$REPO_DIR/sh/fpm-launcher-check.sh" || true
+
 # ── 2. __pmBasePath.txt 생성 ──────────────────────────────────
 mkdir -p "$INFO_DIR"
 echo "$REPO_DIR/projects" > "$BASEPATH_FILE"

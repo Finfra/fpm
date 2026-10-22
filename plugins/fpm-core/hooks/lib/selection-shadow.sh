@@ -25,3 +25,18 @@ sel_shadow() {
   fi
   return 0
 }
+
+# sel_judge <kind> <text> <static> — enforce kind 의 적용 라벨을 **동기**로 받아 stdout 에 낸다 (prj3#Issue1145)
+#   동기 hook 은 직접 부르지 않는다는 원칙의 좁은 예외 — 호출자가 «출력을 실제로 낼 때만» 1회 부른다(세션 dedup 통과분).
+#   kind 의 timeout_ms 가 지연 상한이고, 어떤 실패(빈 출력·rc≠0·python 없음)도 static 을 낸다. SELECTION_SPAWN_CMD 대역은 shadow 와 같다.
+sel_judge() {
+  local kind="$1" text="$2" static="$3" out=""
+  if [ -n "${SELECTION_SPAWN_CMD:-}" ]; then
+    out=$("$SELECTION_SPAWN_CMD" judge --kind "$kind" --text "$text" --static "$static" --label-only </dev/null 2>/dev/null) || out=""
+  else
+    out=$(python3 "$_SEL_PY" judge --kind "$kind" --text "$text" --static "$static" --label-only </dev/null 2>/dev/null) || out=""
+  fi
+  out="${out%%$'\n'*}"
+  printf '%s' "${out:-$static}"
+  return 0
+}

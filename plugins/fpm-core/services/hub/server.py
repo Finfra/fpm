@@ -4136,7 +4136,19 @@ th:hover{color:var(--accent)}
 /* Issue501: 종전 `max-width:min(46vw,640px)` 은 **상한**이라 다른 열이 좁아져도 본문이
    넓어지지 않았다. auto table layout 에서 `width:100%` 를 준 셀이 잉여 폭을 가져간다 —
    나머지 열은 모두 nowrap 이라 각자의 최소 폭은 그대로 보장된다 */
-td.msg{width:100%}
+td.msg{width:100%;min-width:24rem;overflow-wrap:anywhere}   /* Issue656: 최소 폭 확보 + 안쪽 줄바꿈 — 긴 id·경로·decide 줄이 min-content 를 키워 표가 넘치던 것을 막는다 */
+td.msg ul.need li>span{min-width:0}
+/* Issue656_2: 자동 레이아웃은 내용(nowrap 칩·긴 출처·승인 줄)의 최소 폭 합이 창보다 크면 표가 넘쳐 sticky 처리 열이 내용 열을 덮었다.
+   고정 레이아웃 — 메타 열은 폭을 못 박고 내용 열이 나머지를 전부 먹는다. 열 안쪽은 줄바꿈으로 흡수하므로 표는 창 폭을 넘지 않는다 */
+table.mqq{table-layout:fixed;min-width:60rem}   /* Issue657: 표 최소 폭 — 창이 더 좁으면 아래 래퍼가 가로 스크롤(내용 열을 행 아래로 내리지 않는다) */
+.mqwrap{overflow-x:auto;max-width:100%}
+table.mqq th{white-space:normal}
+table.mqq th:nth-child(1){width:6.2rem}
+table.mqq th:nth-child(2){width:9.5rem}
+table.mqq th:nth-child(3){width:6.4rem}
+table.mqq th:nth-child(4){width:11rem}
+table.mqq th:nth-child(6){width:12.5rem}
+table.mqq td{overflow-wrap:anywhere}
 /* 처리 열은 창이 좁아도 화면 밖으로 밀리지 않게 붙여 둔다 — 밀리면 버튼을 아예 못 찾는다 */
 th:last-child,td:last-child{position:sticky;right:0;background:var(--bg);white-space:nowrap;box-shadow:-6px 0 6px -6px rgba(0,0,0,.25)}
 .id{font-family:ui-monospace,Menlo,monospace;font-size:.74rem;color:var(--dim);white-space:nowrap}
@@ -4154,11 +4166,13 @@ td.due2 i{display:block;font-style:normal;font-size:.7rem;color:var(--dim);opaci
 /* Issue500: 질의는 값이 거의 늘 0 이라 단독 열일 값어치가 없다 — 출처 아래로 내린다 */
 /* Issue501: `nowrap` 은 유지한다 — 줄바꿈은 srcCell() 이 넣은 <br> 로만 일어나야 하고,
    조각 **안쪽**(`fbot-lead-sremsa`)이 임의 위치에서 깨지면 오히려 읽기 어렵다 */
-td.srcq{white-space:nowrap}
+/* Issue656: nowrap 을 풀어 폭이 모자랄 때 접히게 한다(공백·`@` 에서만 — overflow-wrap:normal).
+   종전 nowrap 은 내용 열을 최소 폭으로 눌러 표가 가로로 넘치는 직접 원인이었다 */
+td.srcq{max-width:13rem;overflow-wrap:normal}
 td.srcq .from{font-size:.72rem;color:var(--dim)}
 td.srcq .q{display:block;margin-top:.22rem;font-size:.72rem;color:var(--dim)}
 /* Issue498: 상태·유형은 늘 같이 읽히고 값이 짧다 — 열을 합쳐 2줄로 쌓는다 */
-td.stty{white-space:nowrap}
+td.stty{overflow-wrap:normal}   /* Issue656: 칩(.st·.ball·.wip)은 각자 nowrap — 칩 사이에서만 접힌다 */
 td.stty .ty{display:block;margin-top:.22rem;font-size:.72rem;color:var(--dim)}
 th .k2{color:var(--dim);font-weight:400}
 th .k2:hover{color:var(--accent)}
@@ -4213,8 +4227,12 @@ td.msg .prog code{font-family:ui-monospace,Menlo,monospace;font-size:.72rem;
  background:var(--card);padding:.02rem .26rem;border-radius:3px}
 td.msg .prog a{color:var(--accent)}
 /* Issue565: 내용 본문 = 문서 뷰(/mq-doc) 진입점. 누른다는 것이 보이되 표 전체가 링크처럼 번쩍이지 않게 hover 만 */
-td.msg .mbody{cursor:pointer;border-radius:4px;margin:-.1rem -.25rem;padding:.1rem .25rem;
- display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;line-clamp:3;overflow:hidden}   /* Issue616_7: 긴 본문은 3줄까지 — 전문은 클릭(문서 보기) */
+td.msg .mbody{cursor:pointer;border-radius:4px;margin:-.1rem -.25rem;padding:.1rem .25rem}
+/* Issue616_7: 긴 본문은 3줄까지 — 전문은 클릭(문서 보기). Issue657: 제목(.mtitle)은 본문과 한 문단 — 굵게만 구분하고 줄은 나누지 않으며,
+   클램프는 문단 전체(.mbody 단일 자식 .mtxt)에 건다 */
+td.msg .mbody{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;line-clamp:3;overflow:hidden}
+td.msg .mrest{white-space:pre-line}
+td.msg .mtitle{font-weight:600}
 td.msg .mbody:hover{background:var(--card);box-shadow:inset 0 0 0 1px var(--line)}
 /* Issue565: 큐 행 📋 는 액션 묶음 왼쪽 — .acts 는 grid 블록이라 flex 로 한 줄에 세운다(Issue558 잡 행과 같은 자리) */
 .qacts{display:flex;gap:.3rem;align-items:flex-start;justify-content:flex-end}
@@ -4392,10 +4410,23 @@ tr.paused td{opacity:.62}
 .form .stepr input{flex:none}
 .stepr .sn{width:1.4rem;color:var(--dim);font-size:.72rem;text-align:right}
 /* Issue616_3: 375px 가로 넘침 — 표는 자체 가로 스크롤, 검색창 최소 폭 해제 */
+/* Issue657: 좁은 창은 카드가 아니라 메타 열을 줄인다 — 내용 열이 남는 폭을 받고 표 형태·열 순서는 그대로.
+   표가 래퍼 안에서 가로 스크롤되는 구간(≈1000px 이하)에서는 처리 열 sticky 를 푼다 — 붙여 두면 내용 열 끝을 덮는다 */
+@media(max-width:1200px){
+table.mqq th:nth-child(2){width:8.2rem}
+table.mqq th:nth-child(3){width:5.8rem}
+table.mqq th:nth-child(4){width:8.5rem}
+table.mqq th:nth-child(6){width:11rem}
+}
+@media(max-width:1010px){
+table.mqq th:last-child,table.mqq td:last-child{position:static;box-shadow:none;background:none}
+}
 @media(max-width:600px){
 body{padding:.6rem .7rem}
 .bar input[type=search]{min-width:0;width:100%}
 table{display:block;max-width:100%;overflow-x:auto}
+table.mqq{display:table}   /* Issue657: 큐 표는 래퍼(.mqwrap)가 스크롤 — 표 자체는 표 형태 유지 */
+table.mqq .acts{grid-template-columns:repeat(2,auto)}
 }
 </style></head><body>
 <!--HUB_NAV-->
@@ -4429,14 +4460,14 @@ table{display:block;max-width:100%;overflow-x:auto}
   <b>취소</b>=하지 않음(dismissed). 진행 외에는 누르면 목록에서 빠진다.
 </div>
 
-<table><thead><tr>
+<div class="mqwrap"><table class="mqq"><thead><tr>
   <th data-k="id" title="클릭 → 정렬 (다시 누르면 방향 반전)">ID<i class="si"></i></th>
   <th data-k="status" title="클릭 → 정렬 (다시 누르면 방향 반전)">상태<i class="si"></i> <span class="k2" data-k="type">/ 유형<i class="si"></i></span></th>
   <th data-k="due_ts" title="클릭 → 정렬 (다시 누르면 방향 반전)">마감<i class="si"></i></th>
   <th data-k="source" title="클릭 → 정렬 (다시 누르면 방향 반전)">프로젝트 / 보낸 곳<i class="si"></i> <span class="k2" data-k="ask_count">/ 질의<i class="si"></i></span></th>
   <th data-k="message" title="클릭 → 정렬 (다시 누르면 방향 반전)">내용<i class="si"></i></th>
   <th class="nosort">처리</th>
-</tr></thead><tbody id="rows"></tbody></table>
+</tr></thead><tbody id="rows"></tbody></table></div>
 
 
 </div><!-- /pane-q -->
@@ -4701,8 +4732,24 @@ function mergedBadge(x){
   const tip=(x.group?`묶음 ${x.group}\n`:"")+m.map(e=>`${e.ts||""} ${e.source||""}`).join("\n");
   return `<span class="mrg" title="${esc(tip)}">➕ 병합 ${m.length}</span>`;
 }
+// Issue656_2: 제목이 먼저 보여야 한다 — 본문 첫 줄의 ` — ` 앞(90자 이내, 선두 [태그] 포함)을 굵게 하고
+//   나머지는 같은 문단에 이어 3줄까지(Issue657: 줄 분리 철회). 서버 `_mq_message_md`(문서 뷰)의 제목 판정과 같은 기준이다.
+//   제목으로 뗄 거리가 없는 한 줄 짧은 본문은 종전처럼 본문뿐이다(래퍼 안은 원문 그대로).
+function msgSplit(msg){
+  const text=String(msg==null?"":msg).replace(/\r\n/g,"\n").trim();
+  const nl=text.indexOf("\n");
+  const head=(nl<0?text:text.slice(0,nl)).trim(), more=nl<0?"":text.slice(nl+1).trim();
+  const i=head.indexOf(" — ");
+  if(i>0&&i<=90) return {title:head.slice(0,i).trim(), rest:[head.slice(i+3).trim(),more].filter(Boolean).join("\n")};
+  if(more&&head.length<=90) return {title:head, rest:more};
+  return {title:"", rest:text};
+}
+function msgInner(msg){
+  const p=msgSplit(msg);
+  return p.title?`<span class="mtxt"><b class="mtitle">${esc(p.title)}</b> <span class="mrest">${esc(p.rest)}</span></span>`:esc(p.rest);
+}
 function msgCell(x){
-  return mergedBadge(x)+`<div class="mbody" data-id="${esc(x.id)}" onclick="mqDocClick(event,this)" title="클릭 → 문서로 보기">${esc(x.message||"")}</div>`
+  return mergedBadge(x)+`<div class="mbody" data-id="${esc(x.id)}" onclick="mqDocClick(event,this)" title="클릭 → 문서로 보기">${msgInner(x.message)}</div>`
     + progLine("who","집은 주체",x.claimed_by,x.claimed_ts,whoHtml(x))
     + progLine("now","진행",x.progress,x.progress_ts,null)
     + progLine("res","결과",x.result,x.result_ts,resultHtml(x.result))

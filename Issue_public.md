@@ -2,7 +2,7 @@
 name: Issue_public
 description: "fpm 공개용 이슈 근거 요약 — Issue.md 에서 제목·목적·구현 명세만 추출한 파생본"
 generator: scripts/fpm-issue-digest.sh
-source_sha: 34fce854411603b89f178edff21a1bfd16d16cd75b394f3c690dcb8072034895
+source_sha: 5f3c6265419866f3c70829e279aae0a2877d844976463e52d07296ba95dac4fc
 ---
 
 # 안내
@@ -28,13 +28,67 @@ source_sha: 34fce854411603b89f178edff21a1bfd16d16cd75b394f3c690dcb8072034895
 
 # 이슈 근거
 
-## Issue648: 다음 출고 준비 — 태그판 미반영분(Issue637 ⑤ 케이스 수정) + 번들 드리프트 5건(tdd bundle-in-sync FAIL) 해소 · 출고 버전·핀 이동은 사용자 감독
+## Issue661: prj3#Issue1140_4 정합 — scar-layering-design 소유 축 포인터(D11)·번들 구성원 목록 단일화(D12) (등록: 2026-10-22, 출처: fbot-lead-claude 위임 fbotreq-<commit>-<commit> (사용자 승인 2026-10-22 D11·D12))
+* 목적: prj3 가 세운 SCAR **소유 축**(`scar-ownership-arch.md`)을 prj1 설계에도 잇고, 번들 구성원 목록이 prj1 `data/scar-manifest.yml`(목록 정본)·prj3 `data/scar-ownership.yml`(분류 정본) 두 곳으로 갈린 상태를 장기적으로 하나로 모은다 — prj3#Issue1140_4(D11·D12) 위임, 사용자 승인 2026-10-22
+* 구현 명세:
+  - D11 1절 추가 → D12 방향 결정(근거·대안 비교를 `_doc_arch/` 해당 절에 기록) → prj1 측 반영(manifest·sync 스크립트·검사) → 예외 건수 전후 대조
+  - 검증: `bash scripts/fpm-bundle-sync.sh --check` rc · manifest drift pre-commit 게이트 통과 · 관련 tdd(bundle-in-sync 등) green. 감축 주장은 `known.*` 건수 실측으로만
+  - 번들 핀(`data/releases/bundle-live-ref`)·출고는 범위 밖(H:배포) — 손대지 않는다
+
+## Issue660: 버전 사고 재발 원인 — 태그 존재=출고 끝으로만 읽는 auto 가 재출고 중인 라인에서 다음 patch(0.8.4)를 계산 (R1 증거 오귀속·deploy 승인 게이트 충돌)
+* 목적: 재출고(같은 번호)를 사람이 정했는데도 도구가 «다음 patch» 로 흘러 버전이 어긋나는 사고를 구조적으로 끊는다 — 사용자 지시(2026-10-22): *«0.8.3 으로 고정하고 재출시, 버전 사고 원인 파악 후 해결»*
+* 구현 명세: `scripts/fpm-sync.sh` `line_reopened()` 신설 + `deploy_target_version` auto — reopen 에 VERSION 이 있으면 VERSION 그대로(next-version·R1·R2·deploy 가 같은 계산 공유). patch|minor|major 명시는 불변 · `scripts/test_deploy_line_close_issue601.sh` ⑪(reopen 선언·무관 버전·해제 4케이스, red 21/1 → green 22/0)
+
+## Issue659: native-windows 출고 행 실행 수단 — run-remote.sh Windows(cmd 로그인 셸·심링크 전개) 지원
+* 목적: 출고 재생목록 6행 `native-windows` 가 «실행 수단 없음(—)» 이라 모든 R1 증거가 `partial` 이던 것을 해소한다 — Windows 네이티브(jpc1)에서 core·windows 케이스와 샌드박스 install·check 를 `tdd/run-remote.sh` 로 돌린다
+* 구현 명세: `tdd/run-remote.sh` Windows 분기(rrun·RSHELL·RDX·심링크 전개·EXPECT_TREE) · `tdd/cases/deploy.yml` `hub-single-source` 의 원격 네이티브 skip · `tdd/release.md` 6행 실행 수단 · 검증 `bash scripts/test_run_remote.sh`(33/33) + `bash tdd/run-remote.sh --machine win-pc`
+
+## Issue657: hub /mq 큐 표 — 카드형 전환·제목 분리 철회: 내용은 열로 유지, 제목은 본문과 한 흐름 (Issue656 후속) (등록: 2026-10-21, 출처: prj6 세션 사용자 지적 2026-10-21 — Issue656 결과 스크린샷(창 ≈1150px) «내용 컬럼이 하부 로우처럼 작동·제목만 다른 줄 분리 불가»)
+* 목적: `/mq` 큐 표에서 **내용은 끝까지 «열»** 이다 — 창이 좁아져도 행 아래로 내려가는 카드형이 되지 않고, 제목은 본문과 **같은 흐름**(한 문단)으로 이어진다
+* depends: Issue656
+* 구현 명세:
+  * 창 폭 1500·1220·1150·1000px 4종 캡처 — 모두 «내용 열이 행 안에서 우측 열로» 보이고, 제목과 본문이 같은 문단이며, 처리 열이 내용을 가리지 않음
+  * `test_mq_table_layout_issue656.py`·`test_mq_title_issue656.js` 중 카드·제목 분리를 단언한 항목은 새 계약으로 갱신(기존 테스트를 지워 통과시키지 말고 의도 변경을 커밋 메시지에 명시)
+
+## Issue653: 에디터 런처(v/z) 사용자 alias 충돌 시 매 쉘 시작 경고 — host 의 구 dotfile alias(v=vscode·z=zshz) 가 fpm 런처와 겹쳐 노이즈 (해결: 2026-10-21, commit: <commit>, <commit>, <commit>) ✅
+* 목적: 소비자 머신(host)에서 쉘을 열 때마다 `⚠️ fpm: alias 'v'·'z' 이 이미 있어 …` 가 뜨고, clear→재설치 판정이 쉘 시작을 보지 않아 재발을 못 잡는 문제를 없앤다. 다음 host·host clear 뒤에도 새 쉘이 조용히 뜬다
+* 구현 명세:
+    - `sh/fpm_editors.sh` — 사용자 alias 충돌 시 조용히 양보 (`FPM_EDITORS_VERBOSE=1` 이면 경고)
+    - `sh/fpm-launcher-check.sh` 신설 + `install.sh` 1b 단계 — 겹치는 alias 줄을 **알리기만** (dotfile 무수정)
+    - `scripts/os-test-payload.sh` `shell_startup=ok|FAIL(zsh:N,bash:M)` · `scripts/os-test-restore-payload.sh` 새 쉘 경고를 `restore_verdict` BAD 에 포함 (함수 본문 동일 — 테스트가 일치 검증)
+    - 테스트 `scripts/test_editor_launcher_conflict_issue653.sh`(18) · `scripts/test_launcher_check_issue653.sh`(15) + `tdd/playlist.md` 94행 + `_doc_arch/editor-abstraction-design.md` 갱신
+    - host 즉시 조치(사용자 지시): `~/.sh_aliases` 의 `alias v=vscode` 삭제 · `~/.zshrc` fpm 블록 앞뒤로 `z` alias 보존/복원 (백업 `*.bak-2026.10.21_184943`). Zed 미설치라 z 는 점프 유지
+
+## Issue652: OS 테스트 clear·복귀·긴급복구 절차 영속화 — scripts/os-test-{payload,restore-payload,ctl}.sh + F-4 절 (host·host·jpc1) ✅
+* 목적: OS 테스트(zero-base clear)가 끝나도 서버가 테스트 상태로 남는 사고를 막는다 — 2026-10-18 host clear test 후 prj3(`~/.claude`)·prj1(`~/_git/fpm`)이 복구되지 않아 사흘 뒤 긴급 복구했다. 복구 절차는 문서·스크립트 어디에도 없었고(F-3 ④ 는 gateway 만), clear 페이로드는 휘발 폴더(`_doc_work/_release/v0.8.3/`)에 있었다
+* 구현 명세:
+  - `scripts/os-test-payload.sh` — 릴리스 폴더에서 승격(git mv). step 1 에 `fpm-local-<stamp>.tar.gz`(fpm 의 untracked+ignored 파일) 추가, 실패 시 `~/.claude` 를 비우지 않고 중단. 백업·`.bak` 이름은 `claude-backup-<stamp>`·`fpm.bak-<stamp>`(복구 glob 은 구 `-637-` 도 받는다)
+  - `scripts/os-test-restore-payload.sh` — 대상 머신에서 도는 복귀. 인자 없음 = plan(읽기 전용, 스탬프별 missing/differs 표, rc 2) · `--stamp S` = 복원 · `--dry-run`. 정책: 설정 파일은 missing/differs 면 복원(현재본은 `~/fpm-restore-safety-<시각>/` 보관), volatile(projects·session-env·history·telemetry 등)·`.credentials.json`·`.git`(존재 시)은 missing 일 때만. fpm 은 detached 면 `main` 복귀 + 로컬 파일 복원. `.bak`·tar 는 지우지 않음. 판정 `restore_verdict=ok|FAIL`
+  - `scripts/os-test-ctl.sh plan|restore|clear <host>` — 접속(ssh 별칭 → tailscale IP 폴백 → 기동 명령) + `clear` 는 payload 후 **항상** restore(`--keep` 예외). 호스트명은 파일에 쓰지 않는다(`tdd/remote.local.sh` 규약 재사용)
+  - 테스트 `scripts/test_os_test_restore_issue652.sh`·`scripts/test_os_test_ctl_issue652.sh` + `tdd/playlist.md` 행 + `_doc_arch/fpm-release-test.md` F-4 절
+  - 검증: 샌드박스 단위(red→green) → 읽기 전용 실서버 plan(host) → **host 실 clear→복귀 왕복 → 소비자 전파 → 출고 검증** (사용자 지시 2026-10-21 — host 왕복은 이번 범위 밖)
+
+## Issue656: hub /mq 예약 큐 표 가독성 — 내용 열 너비 부족(우측 잘림)·줄바꿈 없음 (등록: 2026-10-21, 출처: prj6 INBOX.md L24 «보기가 어렵다» + 사용자 스크린샷 2026-10-21 (host:9876/mq)) ✅
+* 목적: `/mq` 큐 탭 표에서 **내용 열이 읽히게** 한다 — 사용자 지적 ① 컬럼 너비 문제 ② 적절한 줄바꿈 필요
+* 구현 명세:
+  * `/mq` 를 폭 1280·1000·760 px 3종으로 캡처(ego-browser)해 내용 열이 잘리지 않고 처리 버튼과 겹치지 않음을 전후 비교
+  * 긴 컨펌 본문(예 213430-001·144942-001)이 열 안에서 줄바꿈되어 전문이 읽힘
+
+## Issue650: 소비자 전파 clone 갱신 실패 은폐 — 전파 페이로드 `git pull --ff-only` 가 zero-base(태그 detached) clone 에서 FAIL 인데 같은 버전 번호라 clone_version 만 보면 성공처럼 보인다 (해결: 2026-10-18) ✅
+* 목적: 3차 재출고(Issue648) 전파에서 host·host·jpc1 전부 `FPMR clone_pull=FAIL` 이었는데 드라이버는 ✅ 를 냈다 — 소비자 clone 이 zero-base 가 받은 태그 detached 라 인자 없는 `git pull --ff-only` 가 실패하고, 같은 버전 번호(0.8.3)라 `clone_version` 도 그대로여서 **갱신 실패가 성공처럼** 보였다. clone 의 `services/hub/server.py` 를 hub 가 돌리므로 구판 hub 가 남는다
+* depends: Issue648
+* 구현 명세:
+  - `scripts/fpm-consumer-propagate-payload.sh` ① — `pull --ff-only origin main`(detached 도 갱신) + `FPMR clone_head=<짧은 해시>` 보고
+  - `scripts/fpm-consumer-propagate.sh` — ssh rc 0 이어도 FPMR 줄에 `=FAIL` 이 있으면 ❌
+  - 검증: red 먼저 — `bash scripts/test_propagate_clone_pull_issue650.sh`(임시 bare origin · detached clone · 더러운 트리) FAIL → PASS · 재생목록 93
+
+## Issue648: 다음 출고 준비 — 태그판 미반영분(Issue637 ⑤ 케이스 수정) + 번들 드리프트 5건(tdd bundle-in-sync FAIL) 해소 · 출고 버전·핀 이동은 사용자 감독 (해결: 2026-10-18) ✅
 * 목적: Issue637 이 남긴 «태그판에 안 실린 것» 을 한 번의 출고로 해소한다 — 소비자가 받는 v0.8.3 은 케이스 수정 전 판이고, 번들은 prj3 가 태그 이후 진행한 만큼 표류한다
 * depends: Issue637
 * 구현 명세:
-    - ① 출고 버전 결정(v0.8.3 재출고 vs v0.8.4) — 사용자 결정. 버전 올림·핀 이동·태그는 감독하에만(memory)
-    - ② 결정 후: prj3 쪽 커밋 정리 → `scripts/fpm-bundle-sync.sh` → `bundle-in-sync` green → deploy 체인(Issue637 637_1 절차) → 3 OS 재검증(Issue644 단계 포함)
-    - 검증: 전체 tdd FAIL 0 · Windows 태그판 tdd FAIL 0 · 미러·GitHub 태그·prj20 일치
+  - ① 출고 버전 결정(v0.8.3 재출고 vs v0.8.4) — 사용자 결정. 버전 올림·핀 이동·태그는 감독하에만(memory)
+  - ② 결정 후: prj3 쪽 커밋 정리 → `scripts/fpm-bundle-sync.sh` → `bundle-in-sync` green → deploy 체인(Issue637 637_1 절차) → 3 OS 재검증(Issue644 단계 포함)
+  - 검증: 전체 tdd FAIL 0 · Windows 태그판 tdd FAIL 0 · 미러·GitHub 태그·prj20 일치
 
 ## Issue649: hub /md-doc 열람 권한을 «registry 등록» 이 아니라 «등록 prj 루트의 _doc_work 하위 md» 로 판정 — 수동 등록 없이도 등록 프로젝트 산출물이 열리게 (등록: 2026-10-18, 출처: prj3 세션 사용자 지시 2026-10-18 — prj7 보고서 /md-doc 403 실측 ) (해결: 2026-10-18, commit: <commit>) ✅
 * 목적: 등록 프로젝트가 만든 `_doc_work/` 산출 md 가 수동 등록 없이 `/md-doc` 으로 열리게 한다 — 지금은 `_doc_work/htm/hub_htm_*` 규약 밖이면 전부 `403 not a registered md doc` 이라, 산출물을 만들 때마다 `/register-doc` 을 손으로 쳐야 한다(재발 구조)

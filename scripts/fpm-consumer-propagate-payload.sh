@@ -20,7 +20,11 @@ echo "FPMR host=$(hostname) os=$(uname -s)"
 
 # ① clone — 소비자 hub 는 clone 의 services/hub/server.py 를 돌린다
 if [ "${FPM_PROP_NO_INSTALL:-0}" != 1 ]; then
-    if git -C "$FPM_DIR" pull --ff-only >/dev/null 2>&1; then echo "FPMR clone_pull=ok"; else echo "FPMR clone_pull=FAIL"; fi
+    # Issue650: zero-base 재구성 clone 은 태그를 detached 로 받아 추적 브랜치가 없다 — 인자 없는 `pull --ff-only` 는
+    #   실패했고, 같은 버전 번호로 재출고하면 clone_version 이 그대로라 갱신 실패가 성공처럼 보였다. 브랜치를 명시하고
+    #   헤드를 함께 보고한다(실패해도 «어느 커밋에 남았는가» 가 보이게).
+    if git -C "$FPM_DIR" pull --ff-only origin main >/dev/null 2>&1; then echo "FPMR clone_pull=ok"; else echo "FPMR clone_pull=FAIL"; fi
+    echo "FPMR clone_head=$(git -C "$FPM_DIR" rev-parse --short HEAD 2>/dev/null || echo ?)"
     # ② plugin 재설치 — claude 를 못 찾으면 «생략» 을 성공으로 말하지 않는다
     if command -v claude >/dev/null 2>&1; then
         claude plugin marketplace update "$MKT" >/dev/null 2>&1 || true

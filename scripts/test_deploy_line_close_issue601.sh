@@ -11,6 +11,7 @@
 #   ⑦ next-version CLI 인자 생략 = auto (R1 드라이버 --version 기본값과 같은 계산)
 #   ⑧ 소스 태그: v$NEW 를 HEAD 에 만든다 · 다른 커밋에 이미 있으면 옮기지 않고 경고
 #   ⑨ GitHub Release: 미러 origin 에서 저장소를 읽어 `gh release create v$NEW -R <owner/repo> --verify-tag` 를 조립 · 이미 있으면 skip · gh 실패는 경고(출고 성공은 유지)
+#   ⑪ (Issue660) releaseLine.reopen 에 VERSION 이 선언돼 있으면 auto 는 다음 patch 가 아니라 VERSION 그대로 — 사람이 «이 라인은 계속 진행» 이라 선언한 번호로 R1·deploy 가 일치
 #   ⑩ do_deploy 배선(정적): 기본 레벨 auto · 미러 태그 뒤 소스 태그 · push 성공 경로에서만 Release · 완료 로그에 다음 라인 안내
 #
 # 격리: 임시 git repo 2개(소스·미러). 대상 함수는 실물 scripts/fpm-sync.sh 에서 **추출**해 eval 한다(재구현 금지).
@@ -30,7 +31,7 @@ echo "[test_deploy_line_close_issue601]"
 export GIT_CONFIG_GLOBAL=/dev/null   # 사용자 전역 gitignore·hook 격리 (전역 Icon? 무시 규칙이 fixture 를 삼킨 선례)
 
 FUNCS="$SB/funcs.sh"
-for fn in next_patch_version version_released deploy_target_version src_tag_release gh_release_create; do
+for fn in next_patch_version version_released line_reopened deploy_target_version src_tag_release gh_release_create; do
     awk -v f="$fn" '$0 ~ "^"f"\\(\\) \\{" {p=1} p {print} p && /^}/ {p=0}' "$SYNC" >> "$FUNCS"
 done
 
@@ -80,6 +81,22 @@ check "② auto · 미러 태그 v0.1.0 → 다음 patch 0.1.1" "$rc:$out" "0:0.
 # ── ⑤ 출고된 VERSION 에 minor → 라인 전환 ──
 out="$(run deploy_target_version minor 2>&1)"; rc=$?
 check "⑤ minor · 출고된 VERSION → 0.2.0" "$rc:$out" "0:0.2.0"
+G "$D" tag -d v0.1.0 >/dev/null
+
+# ── ⑪ reopen 선언 = 라인 진행 중 → auto 는 VERSION 그대로 (Issue660) ──
+G "$D" tag v0.1.0
+G "$S" config --add releaseLine.reopen 0.1.0
+out="$(run deploy_target_version auto 2>&1)"; rc=$?
+check "⑪ auto · 출고됨 + reopen 선언 → VERSION 그대로 0.1.0" "$rc:$out" "0:0.1.0"
+out="$(run deploy_target_version patch 2>&1)"; rc=$?
+check "⑪ patch 명시는 reopen 과 무관 → 0.1.1" "$rc:$out" "0:0.1.1"
+G "$S" config --unset-all releaseLine.reopen
+out="$(run deploy_target_version auto 2>&1)"; rc=$?
+check "⑪ reopen 해제 → 다시 다음 patch 0.1.1" "$rc:$out" "0:0.1.1"
+G "$S" config --add releaseLine.reopen 0.9.9
+out="$(run deploy_target_version auto 2>&1)"; rc=$?
+check "⑪ 다른 버전 reopen 은 무관 → 0.1.1" "$rc:$out" "0:0.1.1"
+G "$S" config --unset-all releaseLine.reopen
 G "$D" tag -d v0.1.0 >/dev/null
 
 # ── ⑦ next-version CLI 인자 생략 = auto ──

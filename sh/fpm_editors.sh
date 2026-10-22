@@ -103,9 +103,12 @@ _fpm_editor_open() {
 # --- 경로 런처 (short_launchers 로 opt-out, 기존 정의 있으면 덮지 않음) ---
 _fpm_define_launcher() {
     local name="$1" body="$2"
-    # 기존 함수·alias 가 있으면 덮지 않고 경고 (사용자 정의 우선)
+    # 사용자 alias 가 있으면 덮지 않는다 (사용자 정의 우선). 의도된 선택이라 새 쉘마다 경고하지 않는다 —
+    # 구 dotfile 의 `alias v=vscode`·zsh z 플러그인을 가진 머신(jma)에서 쉘을 열 때마다 두 줄이 떴다 (Issue653).
+    # 왜 런처가 없는지 진단하려면 FPM_EDITORS_VERBOSE=1 로 다시 source 한다
     if alias "$name" >/dev/null 2>&1; then
-        echo "⚠️  fpm: alias '$name' 이 이미 있어 런처를 정의하지 않음 (alias 제거 후 재로드 권장)" >&2
+        [ "${FPM_EDITORS_VERBOSE:-0}" = 1 ] && \
+            echo "⚠️  fpm: alias '$name' 이 이미 있어 런처를 정의하지 않음 (alias 제거 후 재로드하면 fpm 런처 사용)" >&2
         return 0
     fi
     eval "$body"

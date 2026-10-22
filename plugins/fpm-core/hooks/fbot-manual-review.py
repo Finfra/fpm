@@ -626,12 +626,42 @@ def origin_drift(role):
     if not origin or origin == "native":
         return None                     # 원본이 없으면 drift 라는 개념이 성립하지 않는다
     cur = r.origin_digest(origin)
+    delegate = f.get("origin_mode") == "delegate"
     if cur is None:
+        # prj3#Issue1143 — 위임형은 원본이 사라진 것(rename·삭제)만큼은 신호로 남긴다. 위임 대상이 없어졌는데
+        #   «정본은 agent 정의» 문구만 남으면 매뉴얼이 허공을 가리킨다. 로컬 출처가 있을 때만(web: 은 판정 불가)
+        if delegate and r.origin_source_paths(origin):
+            return (origin, f.get("origin_seen") or "", "삭제")
         return None                     # web: 출처 — 로컬에 원본이 없어 판정 불가(계약 §A)
+    if delegate:
+        return None                     # 위임형은 내용 변경이 신호가 아니다 — 기준선만 `sync_delegate_baseline` 이 올린다
     seen = f.get("origin_seen") or ""
     # 미기입(미대조)도 drift 다 — *"아직 아무도 원본과 대조하지 않았다"* 는 사실이
     #   침묵으로 사라지면 안 된다. apply·reject 가 대조 시점에 기준선을 잡는다.
     return (origin, seen, cur) if cur != seen else None
+
+
+def sync_delegate_baseline(role):
+    """prj3#Issue1143 — 위임형(`origin_mode=delegate`) role 의 기준선을 현재 원본 해시로 올린다. 올렸으면 새 해시, 아니면 None.
+
+    위임형 매뉴얼은 본문이 «정본은 agent 정의» 로 위임만 해 원본이 바뀌어도 반영할 본문이 없다. 신호를 내지 않되
+      기준선을 놓아 두면 위임형 해제 시 묵은 drift 가 한꺼번에 터지므로 review 가 따라 올린다(쓰기라 dry-run 제외)."""
+    r = _recruit_mod()
+    if r is None:
+        return None
+    try:
+        f = r.parse_catalog().get(role) or {}
+        origin = f.get("origin")
+        if f.get("origin_mode") != "delegate" or not origin or origin == "native":
+            return None
+        cur = r.origin_digest(origin)
+        if cur is None or cur == (f.get("origin_seen") or ""):
+            return None                 # 원본 부재(신호는 origin_drift 몫)·이미 최신
+        r.set_field(r.CATALOG_PATH, role, "origin_seen", cur)
+        return cur
+    except Exception as e:
+        print("⚠️ 위임형 origin_seen 갱신 실패(%s): %s" % (role, e), file=sys.stderr)
+        return None
 
 
 def evaluate(role, st, obs_fail, completion, drift=None, oversize=None, hobs=None, kind=None):
@@ -869,6 +899,8 @@ def cmd_review(args):
     made, skipped = [], []
     for role in roles:
         st = stats.get(role, empty)
+        if not args.dry_run:
+            sync_delegate_baseline(role)   # prj3#Issue1143 — 위임형은 신호 없이 기준선만 따라간다
         kind = role_kind(role)         # 분류 판정은 role 당 한 번 — 판정(evaluate)과 표(render_draft)가 같은 값을 본다
         text = read_text(manual_path(role))
         fm, _ = parse_frontmatter(text)

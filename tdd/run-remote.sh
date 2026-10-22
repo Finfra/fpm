@@ -65,7 +65,7 @@ cleanup() {
   if [ -n "$RD" ]; then
     # 삭제 대상이 우리가 만든 형식일 때만 지운다 — 빈 값·엉뚱한 경로로 rm -rf 가 나가지 않게
     case "$RD" in
-      */fpm-remote.*) "$SSH" "${SO[@]}" "$TARGET" "rm -rf '$RD'" >/dev/null 2>&1 \
+      */fpm-remote.*) rrun "rm -rf '$RD'" >/dev/null 2>&1 \
                         || echo "⚠️ 원격 정리 실패: $MACHINE:$RD — 수동 삭제 필요" ;;
       *) echo "⚠️ 원격 경로가 예상 형식이 아니라 지우지 않음: $RD" ;;
     esac
@@ -101,8 +101,24 @@ eval "TARGET=\${FPM_TDD_SSH_$KEY:-}"; TARGET="${TARGET:-$MACHINE}"
 eval "WAKE=\${FPM_TDD_WAKE_$KEY:-}"
 [ -z "$WAKE" ] && [ -n "${FPM_TDD_WAKE_CMD:-}" ] && WAKE="$FPM_TDD_WAKE_CMD $MACHINE"
 
+# 원격 셸 — Windows 의 ssh 로그인 셸은 cmd 다(`;`·`$VAR`·작은따옴표가 bash 로 해석되지 않고, 인자 bash 는
+#   WSL 스텁이 먼저 잡힌다). Git Bash 를 풀경로로 부르고 **스크립트는 stdin 으로** 보낸다 — cmd 인자에 `|`·따옴표를 넣으면 깨진다
+#   (scripts/fpm-post-release.sh 의 `:win` 과 같은 방식). 덮어쓰기: FPM_TDD_SHELL_<id>='<원격 셸 명령>'
+eval "RSHELL=\${FPM_TDD_SHELL_$KEY:-}"
+if [ -z "$RSHELL" ]; then
+  if [ "$PLATFORM" = windows ]; then RSHELL='"C:\Program Files\Git\bin\bash.exe" -l -s'; else RSHELL='bash -s'; fi
+fi
+rrun() {  # $1 = 원격에서 돌릴 bash 스크립트 문자열 — 로그인 셸 소음이 섞일 수 있어 호출자가 tail 한다
+  if [ "$PLATFORM" = windows ]; then
+    printf '%s\n' "$1" | "$SSH" "${SO[@]}" "$TARGET" "$RSHELL" 2>&1 | grep -v -E 'post-quantum|store now|upgraded|fpm.sh: No such'
+    return "${PIPESTATUS[1]}"
+  fi
+  "$SSH" "${SO[@]}" "$TARGET" "$1"
+}
+
 # ── ① 기동 ──
-reach() { "$SSH" "${SO[@]}" "$TARGET" true >/dev/null 2>&1; }
+# `true` 는 cmd 에 없다 — `cd .` 는 sh·cmd 양쪽에서 rc 0
+reach() { "$SSH" "${SO[@]}" "$TARGET" 'cd .' >/dev/null 2>&1; }
 if ! reach; then
   [ -n "$WAKE" ] || finish partial "ssh 무응답 — 기동 명령 미설정(FPM_TDD_WAKE_$KEY)" 3
   echo "… $MACHINE ssh 무응답 — 기동 명령 실행"
@@ -120,17 +136,34 @@ mkdir -p "$LT/src"
 git -C "$REPO" archive "$SHA" | tar -x -C "$LT/src" || finish fail "후보 트리 추출 실패" 1
 # add -f: 원본에서 추적 중인 파일이 트리 안 .gitignore 에 걸려도 빠지지 않게(트리 동일성 조건)
 # hooksPath=/dev/null: 전역 hook(graphify·tagcheck 등)이 임시 repo 에서 돌지 않게
+# Windows 소비자는 심볼릭 링크를 못 받는다(windows-port W2 — 개발자 모드 없이는 git 이 링크를 텍스트 파일로 만든다).
+#   미러는 반출 시 services/hub 링크를 실파일로 펴서 내보낸다(fpm-sync.sh · Issue465) — 소비자 경로와 같게 후보도 편다.
+#   안 펴면 «저작 트리의 링크» 를 Windows 가 못 푸는 것이 후보의 결함으로 잡힌다(2026.10.21 jpc1 실측: hub 하위 케이스 4건 FAIL)
+EXPECT_TREE="$TREE"
+if [ "$PLATFORM" = windows ]; then
+  git -C "$REPO" ls-tree -r "$SHA" | while IFS=$'\t' read -r meta path; do
+    case "$meta" in 120000*) _t="$LT/src/$path"
+      [ -L "$_t" ] && cp -RL "$_t" "$_t.fpm-mat" && rm "$_t" && mv "$_t.fpm-mat" "$_t" ;; esac
+  done
+fi
 ( cd "$LT/src" && git init -q && git add -A -f . \
   && GIT_AUTHOR_NAME=fpm-remote GIT_AUTHOR_EMAIL=fpm-remote@localhost \
      GIT_COMMITTER_NAME=fpm-remote GIT_COMMITTER_EMAIL=fpm-remote@localhost \
      git -c core.hooksPath=/dev/null -c commit.gpgsign=false commit -q -m "fpm remote candidate $SHA" ) \
   || finish fail "후보 단일 커밋 구성 실패" 1
-[ "$(git -C "$LT/src" rev-parse 'HEAD^{tree}')" = "$TREE" ] || finish fail "재구성 트리 ≠ 후보 트리" 1
+if [ "$PLATFORM" = windows ]; then EXPECT_TREE="$(git -C "$LT/src" rev-parse 'HEAD^{tree}')"   # 링크를 편 트리 — 후보와 다른 것이 정상
+else [ "$(git -C "$LT/src" rev-parse 'HEAD^{tree}')" = "$TREE" ] || finish fail "재구성 트리 ≠ 후보 트리" 1; fi
 git -C "$LT/src" bundle create "$LT/c.bundle" HEAD >/dev/null 2>&1 || finish fail "bundle 생성 실패" 1
 
-RD="$("$SSH" "${SO[@]}" "$TARGET" 'mktemp -d "${TMPDIR:-/tmp}/fpm-remote.XXXXXX"' 2>/dev/null | tail -1 | tr -d '\r')"
+# Windows 는 Git Bash 의 /tmp 가 scp(Windows OpenSSH) 에게는 C:/Users/…/Temp 다 — cygpath -m 으로 한 번 더 받는다
+if [ "$PLATFORM" = windows ]; then
+  _o="$(rrun 'RD=$(mktemp -d "${TMPDIR:-/tmp}/fpm-remote.XXXXXX"); echo "$RD"; cygpath -m "$RD"' 2>/dev/null | tr -d '\r' | tail -2)"
+  RD="$(printf '%s\n' "$_o" | sed -n 1p)"; RDX="$(printf '%s\n' "$_o" | sed -n 2p)"
+else
+  RD="$(rrun 'mktemp -d "${TMPDIR:-/tmp}/fpm-remote.XXXXXX"' 2>/dev/null | tail -1 | tr -d '\r')"; RDX="$RD"
+fi
 case "$RD" in */fpm-remote.*) ;; *) RD=""; finish partial "원격 임시 디렉토리 생성 실패" 3 ;; esac
-"$SCP" -q "${SO[@]}" "$LT/c.bundle" "$TARGET:$RD/c.bundle" >/dev/null 2>&1 \
+"$SCP" -q "${SO[@]}" "$LT/c.bundle" "$TARGET:$RDX/c.bundle" >/dev/null 2>&1 \
   || finish partial "번들 전송 실패" 3
 
 # ── ③ 실행 — 원격 스크립트는 stdin 으로 보낸다(후보 트리에 없어도 돈다) ──
@@ -141,7 +174,7 @@ RD="$1"; export FPM_RELEASE_CANDIDATE="$2"
 # 원격 네이티브 실행 표식 — 이 머신의 ~/.claude 는 저작 라이브 소스가 아니다(케이스 bundle-in-sync 가 본다)
 export FPM_TDD_NATIVE_REMOTE=1
 cd "$RD" || exit 20
-git clone -q c.bundle src >"$RD/clone.log" 2>&1 || { echo "FPMR clone=fail"; exit 21; }
+git -c core.autocrlf=input clone -q c.bundle src >"$RD/clone.log" 2>&1 || { echo "FPMR clone=fail"; exit 21; }
 cd src
 echo "FPMR tree=$(git rev-parse 'HEAD^{tree}') history=$(git rev-list --count HEAD)"
 bash tdd/run-tdd.sh >"$RD/tdd.log" 2>&1; t=$?
@@ -157,12 +190,17 @@ sb() { env HOME="$SBX" FPM_BACKUP_DIR="$SBX/backup" AOA_MEMORY_DIR="$SBX/.claude
 echo "FPMR sandbox_fail=$f"
 [ "$t" -eq 0 ] && [ "$f" -eq 0 ]
 REMOTE
-"$SSH" "${SO[@]}" "$TARGET" "bash -s -- '$RD' '$SHA'" <<<"$PAYLOAD" >"$LT/remote.out" 2>&1; prc=$?
+if [ "$PLATFORM" = windows ]; then
+  # cmd 는 작은따옴표를 벗기지 않는다 — 경로·SHA 는 공백이 없으니 따옴표 없이 넘긴다
+  "$SSH" "${SO[@]}" "$TARGET" "$RSHELL -- $RD $SHA" <<<"$PAYLOAD" 2>&1 | grep -v -E 'post-quantum|store now|upgraded|fpm.sh: No such' >"$LT/remote.out"; prc=${PIPESTATUS[0]}
+else
+  "$SSH" "${SO[@]}" "$TARGET" "bash -s -- '$RD' '$SHA'" <<<"$PAYLOAD" >"$LT/remote.out" 2>&1; prc=$?
+fi
 
 # ── ④ 회수 ──
 RES="$RES_ROOT/remote-$(date +%Y%m%d_%H%M%S)-$MACHINE"
 mkdir -p "$RES" && cp "$LT/remote.out" "$RES/remote.out"
-"$SCP" -q "${SO[@]}" "$TARGET:$RD/*.log" "$RES/" >/dev/null 2>&1 \
+"$SCP" -q "${SO[@]}" "$TARGET:$RDX/*.log" "$RES/" >/dev/null 2>&1 \
   || echo "⚠️ 원격 로그 회수 실패 — 판정은 remote.out 기준"
 
 # awk 로 토큰 단위 조회 — BSD sed 는 \b 를 모른다(macOS 에서 조용히 빈 값이 됐다)
@@ -172,7 +210,7 @@ R_TREE="$(kv tree)"; R_HIST="$(kv history)"; R_TDD="$(kv tdd_rc)"; R_SBX="$(kv s
 # ssh 자체가 끊기면 rc 255 — 머신 문제이지 후보의 실패가 아니다(PASS 로도 FAIL 로도 세지 않는다)
 [ "$prc" -eq 255 ] && [ -z "$R_TDD" ] && finish partial "원격 실행 중 ssh 끊김(rc 255)" 3
 [ -n "$R_TREE" ] || finish fail "원격 clone 실패 — $RES/clone.log" 1
-TREE_OK=ok; [ "$R_TREE" = "$TREE" ] || TREE_OK="불일치"
+TREE_OK=ok; [ "$R_TREE" = "$EXPECT_TREE" ] || TREE_OK="불일치"
 SUM="tree=$TREE_OK history=${R_HIST:-?} tdd_rc=${R_TDD:-?} sandbox_fail=${R_SBX:-?}"
 [ "$TREE_OK" = ok ] || finish fail "$SUM — 원격 트리가 후보와 다르다" 1
 [ "${R_HIST:-}" = 1 ] || finish fail "$SUM — 이력이 함께 반출됐다" 1

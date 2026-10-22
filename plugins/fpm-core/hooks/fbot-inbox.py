@@ -272,6 +272,22 @@ def _lock_body_ended(con, bot_id, lock_at):
 NON_FLOW_KINDS = ("defer", "question", "unconfirmed")
 
 
+# prj3#Issue1152 — 인박스 기상 합치기. 요청 1건 = 기상 1회는 세션 시작 비용(≈50k 토큰)을 요청마다 낸다. 실측(2026-10-16~19,
+#   기상 596회): 긴급을 즉시로 두고 N분 trailing 창으로 묶으면 N=3 → 41% 감소, 추가 지연 p90 = N. 기본 180초, 0 이면 종전(즉시).
+WAKE_DEBOUNCE = int(os.environ.get("FBOT_WAKE_DEBOUNCE_SECS") or 180)
+DEBOUNCE_KEY = "wake_debounce_due"
+DEBOUNCE_STALE = 120      # due 를 이만큼 넘겨도 표지가 남아 있으면 flusher 가 죽은 것 — 새로 건다(tick 안전망 전까지 방치 금지)
+URGENT_KINDS = ("ask", "question", "decision")
+
+
+def is_urgent(req_kind, body="", from_human=False):
+    """긴급 한 줄 정의 — **사람이 기다리는 요청(사람 발신·kind ask/question/decision)과 📕 이슈는 즉시 기상한다**.
+    📕 본문 판정은 defer·unconfirmed 보고 본문의 언급을 긴급으로 읽지 않도록 뺀다(보고가 📕 를 인용할 뿐 급한 것이 아니다)."""
+    if (req_kind or "ask") in URGENT_KINDS or from_human:
+        return True
+    return req_kind not in ("defer", "unconfirmed") and "📕" in (body or "")
+
+
 def opens_flow(req_kind):
     return (req_kind or "ask") not in NON_FLOW_KINDS
 
@@ -398,6 +414,135 @@ def wake_and_spawn(bot_id, reason="", spawn=True, lock_since=None, flow=None):
         return {"error": f"{type(e).__name__}: {e}"[:300]}, {"skipped": "error"}
 
 
+def _launch_flusher(bot_id, delay):
+    """창 끝에 `wake-flush` 를 부를 분리 프로세스를 건다 — tick(15~30분 주기)은 창 길이(분 단위)를 못 지켜 flush 담당이 될 수 없다.
+    임시 원장(테스트)에서는 실제 프로세스를 걸지 않는다(prj3#Issue993 와 같은 이유)."""
+    import subprocess
+    if _scratch_ledger():
+        return {"ok": False, "error": "임시 원장에서 실 flusher 기동 금지 — 테스트는 _launch_flusher 를 바꿔 관측한다"}
+    try:
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("FBOT_ID", "FBOT_TASK", "FBOT_FLOW", "CLAUDE_CODE_", "PM_DO_"))}
+        subprocess.Popen([sys.executable, os.path.abspath(__file__), "wake-flush", "--bot-id", bot_id, "--delay", str(int(delay))],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, env=env,
+                         start_new_session=True)
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"[:200]}
+
+
+# prj3#Issue1153 — 프로젝트 일일 비용 가드(판정 정본 hooks/lib/fbot-cost-guard.py). 발동한 팀의 **비긴급** 기상은 창을
+#   `wake_hold_secs` 로 늘려 합친다 — 긴급(ask·question·decision·사람 발신·📕)은 이 함수 앞에서 이미 즉시 기상이라 막히지 않는다.
+#   차단이 아니라 대기: 창이 끝나면 flush 가 미응답 요청을 깨운다. 판정 실패는 0(= 가드 아님, 종전 창).
+_COST_GUARD_SEND = None      # 테스트 주입 지점 — None 이면 aoa-mq helper
+
+
+def _cost_guard_path():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib", "fbot-cost-guard.py")
+
+
+def _cost_guard_window(prj):
+    """발동 시 대기 창(초), 아니면 0. 알림은 (프로젝트, 날짜)당 mq 1회."""
+    if prj is None:
+        return 0
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("fbot_cost_guard", _cost_guard_path())
+        g = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(g)
+        key = g.proj_key_for_prj(prj)
+        v = g.judge(key)
+        if not v["over"]:
+            return 0
+        pol = g.policy()
+        g.alert_over(v, f"비긴급 인박스 기상은 {int(pol['wake_hold_secs'])}초 창으로 대기", send=_COST_GUARD_SEND)
+        return int(pol["wake_hold_secs"])
+    except Exception as e:  # noqa: BLE001
+        _wake_log(f"cost-guard 판정 실패(종전 창): {type(e).__name__}: {e}"[:200])
+        return 0
+
+
+def wake_debounced(bot_id, reason="", spawn=True, flow=None, req_kind="ask", body="", from_human=False):
+    """`send` 의 기상 진입점(prj3#Issue1152) — 긴급이 아니고 **깨울 몸체가 없는** 매니저면 창 첫 건이 flusher 를 걸고 스폰은 미룬다.
+    창 안 후속 요청은 타이머를 더 걸지 않는다(표지 due 가 살아 있음). 긴급·창 0·살아 있는 몸체·`spawn=False` 는 종전 `wake_and_spawn`.
+    flusher 기동 실패는 즉시 폴백이다 — 요청 지연·유실보다 비용 한 번이 낫다."""
+    if not spawn or is_urgent(req_kind, body, from_human):
+        return wake_and_spawn(bot_id, reason=reason, spawn=spawn, flow=flow)
+    try:
+        con = _con()
+        try:
+            row = con.execute("SELECT * FROM bot WHERE bot_id=?", (bot_id,)).fetchone()
+        finally:
+            con.close()
+        if not row or not _org().is_manager(row["role"]) or not _wakeable(row)[0]:
+            return wake_and_spawn(bot_id, reason=reason, spawn=spawn, flow=flow)   # 몸체가 살아 있거나 매니저 아님 — 종전 판정
+        window = _cost_guard_window(row["prj"])         # prj3#Issue1153 — 일일 비용 가드 발동 시 창 연장(0 이면 가드 아님)
+        if window <= 0:
+            window = WAKE_DEBOUNCE
+        if window <= 0:
+            return wake_and_spawn(bot_id, reason=reason, spawn=spawn, flow=flow)   # 창 0 + 가드 비발동 — 종전 즉시
+        now = int(time.time())
+        ns = f"fbot:{bot_id}"
+        con = _con()
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            r = con.execute("SELECT value FROM kv WHERE ns=? AND key=?", (ns, DEBOUNCE_KEY)).fetchone()
+            due = int(r[0] or 0) if r else 0
+            if due and now < due + DEBOUNCE_STALE:
+                con.execute("ROLLBACK")
+                return ({"skipped": "debounced", "due": due, "reason": "창 안 후속 요청 — 첫 건의 타이머가 함께 깨운다"},
+                        {"skipped": "debounced", "due": due})
+            due = now + window
+            con.execute("INSERT INTO kv(ns,key,value,updated_at,updated_by) VALUES(?,?,?,?,?)"
+                        " ON CONFLICT(ns,key) DO UPDATE SET value=excluded.value,"
+                        " updated_at=excluded.updated_at, updated_by=excluded.updated_by",
+                        (ns, DEBOUNCE_KEY, str(due), now, "fbot-inbox"))
+            con.execute("COMMIT")
+        except Exception:
+            try:
+                con.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
+        finally:
+            con.close()
+        res = _launch_flusher(bot_id, window)
+        if not res.get("ok"):
+            _clear_debounce(bot_id)
+            _wake_log(f"debounce {bot_id} — flusher 기동 실패({res.get('error')}) → 즉시 기상")
+            return wake_and_spawn(bot_id, reason=reason, spawn=spawn, flow=flow)
+        con = _con()
+        try:
+            _state().record_event(con, bot_id, "wake-debounced", f"{window}s 창 · {reason[:60]}")
+        finally:
+            con.close()
+        _wake_log(f"debounce {bot_id} — {reason[:60]} → {window}s 뒤 flush")
+        return ({"skipped": "debounced", "due": due, "reason": f"{window}s 창 — 긴급 아님"},
+                {"skipped": "debounced", "due": due})
+    except Exception:   # 디바운스 판정 실패는 종전 즉시 기상으로 — 적재도 지연도 막지 않는다
+        return wake_and_spawn(bot_id, reason=reason, spawn=spawn, flow=flow)
+
+
+def _clear_debounce(bot_id):
+    con = _con()
+    try:
+        con.execute("DELETE FROM kv WHERE ns=? AND key=?", (f"fbot:{bot_id}", DEBOUNCE_KEY))
+        con.commit()
+    finally:
+        con.close()
+
+
+def wake_flush(bot_id, delay=None):
+    """창 끝 — flusher 가 부른다. 표지를 지우고 **미응답 요청이 남았을 때만** 깨운다(긴급 즉시 기상이 이미 처리했으면 스폰 0)."""
+    time.sleep(WAKE_DEBOUNCE if delay is None else delay)
+    _clear_debounce(bot_id)
+    if bot_id not in wake_pending(apply=False)["candidates"]:
+        _wake_log(f"debounce-flush {bot_id} — 깨울 미응답 요청 없음(이미 처리·몸체 생존)")
+        return {"ok": True, "action": "wake-flush", "bot_id": bot_id, "skipped": "no_pending"}
+    wk, sp = wake_and_spawn(bot_id, reason="debounce flush")
+    _wake_log(f"debounce-flush {bot_id} → spawn={'ok' if sp.get('ok') else sp.get('skipped') or sp.get('error')}")
+    return {"ok": True, "action": "wake-flush", "bot_id": bot_id, "wake": wk, "spawn": sp}
+
+
 REWAKE_WAIT = int(os.environ.get("FBOT_REWAKE_WAIT") or 30)   # 전 몸체가 창을 비울 때까지 대기 상한(초)
 WAKE_LOG = os.environ.get("FBOT_WAKE_LOG") or os.path.join(   # 🧪 FBOT_WAKE_LOG 는 테스트 주입구(실로그 오염 방지)
     os.path.expanduser("~"), ".claude", "data", "fbot", "logs", "inbox-wake.log")
@@ -488,6 +633,24 @@ def wake_pending(apply=False):
             if sp.get("ok"):
                 out["woken"].append(b)
     return out
+
+
+WAKE_NEED_TAIL = 600   # Jev 에 보내는 요청 본문 앞부분 — 요청의 용무는 앞에 있다
+
+
+def wake_need_shadow(rid, body, req_kind="ask"):
+    """Jev shadow 판정(prj3#Issue1156) — «이 요청에 LLM 몸체가 필요한가». 분리 프로세스로 띄우고 바로 돌아온다.
+
+    기상 흐름은 바뀌지 않는다 — static 은 현행(모든 기상이 LLM 몸체를 띄운다 = yes)이고 Jev 는 원장 기록만 남긴다(kind `wake.need`).
+    판정 분포를 요청 id(`corr`)로 실제 기상 결과(wake 이벤트)와 대조한다. 어떤 실패도 `send` 를 막지 않는다."""
+    try:
+        text = (body or "").strip()[:WAKE_NEED_TAIL]
+        if not text:
+            return False
+        sel = _mod("fbot_inbox_selection", os.path.join("lib", "selection.py"))
+        return sel.spawn_shadow("wake.need", text, static="yes", context=f"request kind: {req_kind or 'ask'}", corr=rid)
+    except Exception:
+        return False
 
 
 def send(to, body, from_bot="", from_session="", req_kind="ask", prj=None, corr_id=None, spawn=True,
@@ -611,8 +774,11 @@ def send(to, body, from_bot="", from_session="", req_kind="ask", prj=None, corr_
     finally:
         con.close()
     # 적재 커밋·커넥션 반납 **뒤** 기상 — HR 게이트·reap 이 같은 DB 에 쓰므로 잠금을 쥔 채 부르지 않는다
-    out["wake"], out["spawn"] = wake_and_spawn(to, reason=f"요청 {rid}", spawn=spawn,
-                                               flow=rid if opens_flow(req_kind) else None)
+    out["wake"], out["spawn"] = wake_debounced(to, reason=f"요청 {rid}", spawn=spawn,
+                                               flow=rid if opens_flow(req_kind) else None,
+                                               req_kind=req_kind, body=body, from_human=from_human)
+    if spawn and (out["wake"] or {}).get("skipped") != "not_manager":
+        wake_need_shadow(rid, body, req_kind)
     return out
 
 
@@ -2507,6 +2673,9 @@ def main(argv=None):
     s8 = sub.add_parser("rewake", help="퇴근 재기상 — 출근 후 도착 미응답이 남으면 다시 깨운다 (퇴근 훅, Issue748)")
     s8.add_argument("--bot-id", required=True)
     s8.add_argument("--wait", type=int, default=None, help="전 몸체 창이 빌 때까지 대기 상한(초)")
+    sf = sub.add_parser("wake-flush", help="디바운스 창 끝 — 미응답이 남았으면 깨운다 (flusher 가 호출, Issue1152)")
+    sf.add_argument("--bot-id", required=True)
+    sf.add_argument("--delay", type=int, default=None, help="대기(초) — 기본은 창 길이")
     s6 = sub.add_parser("wake-pending", help="미응답 요청이 있는 퇴근 매니저 일괄 기상 (tick 안전망, Issue734)")
     s6.add_argument("--apply", action="store_true")
     s2 = sub.add_parser("inbox", help="인박스 조회")
@@ -2567,6 +2736,8 @@ def main(argv=None):
         out = defer(a.from_bot, a.from_session, a.body, a.transcript, spawn=not a.no_spawn, status=a.status, note=a.note, dispatch=a.dispatch)
     elif a.cmd == "wake-pending":
         out = wake_pending(a.apply)
+    elif a.cmd == "wake-flush":
+        out = wake_flush(a.bot_id, a.delay)
     elif a.cmd == "rewake":
         out = rewake(a.bot_id, a.wait)
     elif a.cmd == "inbox":

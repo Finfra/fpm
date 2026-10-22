@@ -85,6 +85,11 @@ ORIGIN_KINDS = (
 #   «정상» 인지 «방치» 인지 구별되지 않던 것이 재분류가 답하는 질문이다.
 KIND_VALUES = ("bot", "tool")
 
+# 원본 반영 방식 — `delegate` = 매뉴얼 본문이 «임무·경계의 정본은 원본(agent 정의)» 로 위임만 한다(prj3#Issue1143).
+#   원본 내용이 바뀌어도 반영할 본문 차이가 없어 개정 루프(fbot-manual-review `origin_drift`)가 신호를 내지 않고
+#   기준선만 따라간다. 부재 = `self`(본문이 원본을 인용한다 — 종전 판정). 원본 삭제·rename 은 위임형도 신호.
+ORIGIN_MODE_VALUES = ("self", "delegate")
+
 
 def validate_origin(value: str) -> str:
     """origin 값 검증 — 형식 위반은 fail-loud (prj3#Issue589).
@@ -103,7 +108,7 @@ def validate_origin(value: str) -> str:
     #   오판시킨다. hr-gate 는 행 전체를 `"status=archived" not in line` 으로 보므로
     #   `web:…?status=archived` 같은 정상 URL 하나로 그 role 이 아카이브 취급된다.
     for k in ("status=", "manager=", "shape=", "base=", "label=", "tags=", "origin=",
-              "kind="):
+              "kind=", "origin_mode="):
         if k in v:
             raise RecruitError(
                 f"origin 값에 예약 키 {k!r} 불가: {value!r} — 소비처가 행 전체를 "
@@ -362,6 +367,28 @@ def cmd_set_kind(args) -> int:
     return 0
 
 
+def cmd_set_origin_mode(args) -> int:
+    """role 의 원본 반영 방식 기입 — `delegate` 는 위임형 매뉴얼 표시 (prj3#Issue1143).
+
+    표시만 바뀐다 — origin·origin_seen 은 그대로고, 개정 루프가 위임형의 내용 drift 를 신호로 삼지 않을 뿐이다.
+    기본값 `self` 는 필드 부재로 표현한다(set-kind 와 같은 이유).
+    """
+    roles = parse_catalog()
+    if args.role not in roles:
+        raise RecruitError(f"미등재 role: {args.role!r} — 허용값 {', '.join(sorted(roles))}")
+    if args.mode not in ORIGIN_MODE_VALUES:
+        raise RecruitError(
+            f"미정의 반영 방식: {args.mode!r} — 허용 {', '.join(ORIGIN_MODE_VALUES)} "
+            "(`self` 는 기본값이라 필드를 지운다)")
+    origin = roles[args.role].get("origin")
+    if args.mode == "delegate" and (not origin or origin == "native"):
+        raise RecruitError(f"위임할 원본이 없다: {args.role} origin={origin!r} — delegate 는 로컬 원본이 있는 role 만")
+    set_field(CATALOG_PATH, args.role, "origin_mode", None if args.mode == "self" else args.mode)
+    emit({"ok": True, "action": "set-origin-mode", "role": args.role, "mode": args.mode,
+          "note": "표시만 바뀐다 — delegate 는 원본 내용 변경을 신호로 내지 않고 기준선만 따라간다(삭제·rename 은 신호)"})
+    return 0
+
+
 def cmd_set_origin(args) -> int:
     """기존 role 의 출처를 기입·갱신한다 (prj3#Issue589).
 
@@ -529,6 +556,7 @@ def cmd_list(args) -> int:
           "roles": [{"role": r, "label": f.get("label", ""),
                      "status": f.get("status", "active"),
                      "kind": f.get("kind", "bot"),
+                     "origin_mode": f.get("origin_mode", "self"),
                      "origin": f.get("origin"), "origin_seen": f.get("origin_seen"),
                      "core": r in CORE_ROLES} for r, f in sorted(roles.items())]})
     return 0
@@ -582,6 +610,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--kind", required=True, choices=KIND_VALUES,
                     help="tool=도구 래핑(배분 0 이 정상) · bot=공정 role(필드 제거)")
     sp.set_defaults(func=cmd_set_kind)
+
+    sp = sub.add_parser("set-origin-mode",
+                        help="원본 반영 방식 — delegate=위임형 매뉴얼(내용 drift 미신호, prj3#Issue1143)")
+    sp.add_argument("--role", required=True)
+    sp.add_argument("--mode", required=True, choices=ORIGIN_MODE_VALUES,
+                    help="delegate=본문이 원본에 위임 · self=본문이 원본을 인용(필드 제거)")
+    sp.set_defaults(func=cmd_set_origin_mode)
 
     sp = sub.add_parser("list", help="카탈로그 전체 + status")
     sp.set_defaults(func=cmd_list)

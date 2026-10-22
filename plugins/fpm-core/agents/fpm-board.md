@@ -1,6 +1,6 @@
 ---
 name: fpm-board
-description: tmux 기반 dashboard 에이전트. window 1:1 매칭으로 백그라운드 runner 가동, data 파일 주기 갱신. 순수 모니터링(단일 worker) + 큐 오케스트레이션(DAG) 2모드. 트리거 — "..board <topic>" (deprecated alias "..dashboard")
+description: "tmux 기반 dashboard 에이전트 — window 1:1 로 백그라운드 runner 가동, data 파일 주기 갱신. 모니터링(단일 worker)·큐 오케스트레이션(DAG) 2모드. 트리거 — \"..board <topic>\""
 date: 2026-05-31
 # runner 가동·DAG 오케스트레이션·주기 갱신 (Issue322/M5)
 model: sonnet

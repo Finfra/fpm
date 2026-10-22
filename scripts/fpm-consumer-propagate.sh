@@ -71,7 +71,8 @@ fail=0
 for s in "${HOSTS[@]}"; do
     h="${s%%:*}"; log="$EV/propagate-$h.log"; rc="$(cat "$log.rc" 2>/dev/null || echo 1)"; rm -f "$log.rc"
     line="$(grep -h '^FPMR' "$log" 2>/dev/null | tr '\n' ' ')"
-    if [ "$rc" = 0 ]; then echo "✅ $h — $line"; else echo "❌ $h (rc=$rc) — $line"; fail=1; fi
+    # Issue650: ssh rc 만 보면 페이로드 안의 단계 실패(`clone_pull=FAIL` 등)가 ✅ 로 묻힌다 — FPMR 줄의 `=FAIL` 도 실패로 센다
+    if [ "$rc" = 0 ] && ! printf '%s' "$line" | grep -q -E '=FAIL'; then echo "✅ $h — $line"; else echo "❌ $h (rc=$rc) — $line"; fail=1; fi
 done
 [ "$fail" = 0 ] && echo "다음: bash scripts/fpm-ship-verify.sh --tag $TAG" || echo "FAIL 머신이 있다 — 출고를 «완료» 로 닫지 않는다 (Issue607·609)"
 exit "$fail"

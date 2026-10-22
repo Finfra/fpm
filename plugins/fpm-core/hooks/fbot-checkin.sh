@@ -283,6 +283,12 @@ sec_manual=""
 [ -n "$manual" ] && sec_manual="## 작업 매뉴얼 ($role)
 
 $manual"
+# prj3#Issue1150 — 매니저(총괄·팀장) 명령 치트시트. 기상 몸체가 `-h` 를 466회/2일 재학습하던 것(호출당 ≈13k 가중)을 끊는다.
+#   본문은 data/fbot/cheatsheet-manager.md 한 곳(20줄 이내) — 여기서 복제하지 않는다. 파일 부재는 skip(fail-soft)
+sec_cheat=""
+case "$role" in
+  chief|lead) [ -r "$_HOOKS_SELF/../data/fbot/cheatsheet-manager.md" ] && sec_cheat="$(cat "$_HOOKS_SELF/../data/fbot/cheatsheet-manager.md" 2>/dev/null)" ;;
+esac
 sec_kv=""
 [ -n "$kv" ] && sec_kv="## 복원된 봇별 상태 (registry.kv ns=\`fbot:$FBOT_ID\`)
 
@@ -364,7 +370,7 @@ $sec_replies" && ctx="$ctx_head"
 [ -n "$sec_stale" ] && ctx="$ctx
 
 $sec_stale"
-for _sec in "$sec_manual" "$sec_kv" "$sec_inbox"; do
+for _sec in "$sec_manual" "$sec_cheat" "$sec_kv" "$sec_inbox"; do
   [ -n "$_sec" ] && ctx="$ctx
 
 $_sec"
@@ -376,16 +382,17 @@ done
 #   그대로). 넘치면 인박스 → kv → 매뉴얼 순으로 빼고 조회 안내를 남긴다 — topic 우선. 글자 수는 python 으로 잰다(bash
 #   `${#var}` 는 로캘이 C 면 바이트를 센다). 실패하면 자르지 않은 글 그대로(fail-open).
 if [ -n "$brief" ]; then
-  _fit=$(HEAD="$ctx_head" S1="$sec_manual" S2="$sec_kv" S3="$sec_inbox" MAX="${FBOT_CHECKIN_CTX_MAX:-8000}" \
+  _fit=$(HEAD="$ctx_head" S1="$sec_manual" S2="$sec_kv" S3="$sec_inbox" S4="$sec_cheat" MAX="${FBOT_CHECKIN_CTX_MAX:-8000}" \
          BOT="$FBOT_ID" ROLE="$role" DBP="$DB" python3 -c '
 import os
 mx = int(os.environ.get("MAX") or 8000)
 head = os.environ.get("HEAD", "")
-secs = [os.environ.get(k, "") for k in ("S1", "S2", "S3")]
+secs = [os.environ.get(k, "") for k in ("S1", "S2", "S3", "S4")]
 bot, role, dbp = os.environ.get("BOT", ""), os.environ.get("ROLE", ""), os.environ.get("DBP", "")
 hint = ["작업 매뉴얼 — `python3 ~/.claude/hooks/fbot-manual-review.py inject --role %s`" % role,
         "복원된 kv — `sqlite3 %s \"SELECT key, value FROM kv WHERE ns=%s\"`" % (dbp, chr(39) + "fbot:" + bot + chr(39)),
-        "인박스 — `python3 ~/.claude/hooks/fbot-inbox.py pending --bot-id %s`" % bot]
+        "인박스 — `python3 ~/.claude/hooks/fbot-inbox.py pending --bot-id %s`" % bot,
+        "명령 치트시트 — `cat ~/.claude/data/fbot/cheatsheet-manager.md`"]
 drop = []
 def render():
     out = "\n\n".join([head] + [s for s in secs if s])
@@ -393,7 +400,7 @@ def render():
         out += ("\n\n> 출근 컨텍스트 상한 %d자 — 배분 지시 전문이 우선이라 아래 절을 생략했다(prj3#Issue931). 필요하면 조회:\n" % mx
                 + "\n".join("> - " + hint[i] for i in drop))
     return out
-for i in (2, 1, 0):
+for i in (2, 1, 3, 0):
     if len(render()) <= mx:
         break
     if secs[i]:

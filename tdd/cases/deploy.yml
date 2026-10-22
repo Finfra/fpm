@@ -285,6 +285,8 @@ cases:
       #   — 미러 clone(3 OS P1)에선 NOT-A-SYMLINK 가 설계대로라 저작 트리에서만 판정한다
       [ -f scripts/fpm-sync.sh ] || { echo "skip(저작 머신 전용 — 미러는 실파일)"; exit 0; }
       want="../plugins/fpm-core/services/hub"
+      # 원격 네이티브 러너는 링크를 못 받는 플랫폼(Windows)에 후보를 미러와 같이 실파일로 펴서 보낸다(tdd/run-remote.sh)
+      [ -L services/hub ] || { [ "${FPM_TDD_NATIVE_REMOTE:-}" = 1 ] && [ -d services/hub ] && { echo "skip(원격 네이티브 — 이 플랫폼은 링크를 실파일로 받는다)"; exit 0; }; }
       [ -L services/hub ] || { echo "NOT-A-SYMLINK(2원화 부활)"; exit 0; }
       [ "$(readlink services/hub)" = "$want" ] || { echo "WRONG-TARGET:$(readlink services/hub)"; exit 0; }
       [ -f plugins/fpm-core/services/hub/server.py ] || { echo "DANGLING(유일 실체 부재)"; exit 0; }

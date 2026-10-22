@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.realpath(__file__))  # services/hub 심링크 경유 실행에서도 REPO 가 맞도록 (Issue659 — release-check 가 링크 경로로 돌린다)
 sys.path.insert(0, HERE)
 import server  # noqa: E402
 

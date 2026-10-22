@@ -31,10 +31,10 @@ fileops: shape=broom base=#7A5A6E label=파일작업핀봇 tags=정리|삭제 or
 developer: shape=brackets base=#2A3A3A label=개발핀봇 tags=구현|fix origin=skill:dev-g|skill:tdd-workflow origin_seen=d1f96b3757d254bb
 manual: shape=book base=#3D2B4F label=매뉴얼핀봇 tags=매뉴얼|개정 origin=native
 deck-review: shape=grid base=#8A5A3A label=덱검수핀봇 tags=검수|보완 home=42 origin=skill:ppt-check|skill:slide-compare|agent:agy-visual-qa|agent:slide-tuner|agent:m2slide2ppt origin_seen=2ad400dc6b0848c6
-ftyping-art: shape=tag base=#40795E label=아트·UI팀핀봇 tags=로컬agent|ftyping home=9t origin=agent:9t/team-art origin_seen=dedddbe789a1b07e
-ftyping-audio: shape=speech base=#944E9C label=사운드팀핀봇 tags=로컬agent|ftyping home=9t origin=agent:9t/team-audio origin_seen=d2bd4b70f8dc88ac
-ftyping-design: shape=wrench base=#6E3A9E label=기획팀핀봇 tags=로컬agent|ftyping home=9t origin=agent:9t/team-design origin_seen=eaf59acccab07d33
-ftyping-direction: shape=wrench base=#373056 label=디렉션팀핀봇 tags=로컬agent|ftyping home=9t origin=agent:9t/team-direction origin_seen=40f1c5b9d20c1e38
-ftyping-narrative: shape=tag base=#3C6D79 label=시나리오팀핀봇 tags=로컬agent|ftyping home=9t origin=agent:9t/team-narrative origin_seen=e615aac4360c6481
-ftyping-publishing: shape=compass base=#6B8667 label=퍼블리싱팀핀봇 tags=로컬agent|ftyping home=9t origin=agent:9t/team-publishing origin_seen=edb33ac1fec6b84e
-ftyping-ui: shape=wrench base=#794D70 label=UI팀핀봇 tags=로컬agent|ftyping home=9t origin=agent:9t/team-ui origin_seen=6f83aac8e9bd2c55
+ftyping-art: shape=tag base=#40795E label=아트·UI팀핀봇 tags=로컬agent|ftyping home=9t origin=agent:9t/team-art origin_seen=1d02570cc4f6486f origin_mode=delegate
+ftyping-audio: shape=speech base=#944E9C label=사운드팀핀봇 tags=로컬agent|ftyping home=9t origin=agent:9t/team-audio origin_seen=3dc274c5dac4c6f3 origin_mode=delegate
+ftyping-design: shape=wrench base=#6E3A9E label=기획팀핀봇 tags=로컬agent|ftyping home=9t origin=agent:9t/team-design origin_seen=a7d84d8cd09532d3 origin_mode=delegate
+ftyping-direction: shape=wrench base=#373056 label=디렉션팀핀봇 tags=로컬agent|ftyping home=9t origin=agent:9t/team-direction origin_seen=e339b185b0af5c25 origin_mode=delegate
+ftyping-narrative: shape=tag base=#3C6D79 label=시나리오팀핀봇 tags=로컬agent|ftyping home=9t origin=agent:9t/team-narrative origin_seen=eaa023125b0164cf origin_mode=delegate
+ftyping-publishing: shape=compass base=#6B8667 label=퍼블리싱팀핀봇 tags=로컬agent|ftyping home=9t origin=agent:9t/team-publishing origin_seen=d945ca074573507a origin_mode=delegate
+ftyping-ui: shape=wrench base=#794D70 label=UI팀핀봇 tags=로컬agent|ftyping home=9t origin=agent:9t/team-ui origin_seen=fae8f896e4c7cae2 origin_mode=delegate

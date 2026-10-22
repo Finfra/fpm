@@ -22,11 +22,12 @@ machines:
     role: 소비자
     status: active
 
-  - id: win11
+  - id: win-pc
     platform: windows
-    role: 소비자 (예정)
-    status: planned
+    role: 소비자 · 원격 검증 (Windows 10 · Git Bash)
+    status: active
     notes: |
-      아직 실측하지 않았다. 셸이 Git Bash / MSYS2 / WSL 중 무엇이냐에 따라
-      `uname -s` 가 MINGW64_NT / MSYS_NT / Linux 로 갈린다 — 도입 시 먼저 판정하고
-      cases/windows.yml 의 미검증 항목을 실측으로 채운다.
+      셸 실측(2026.10.21): ssh 로그인 셸은 cmd, 실행 셸은 Git Bash(MSYS_NT-10.0 — `uname -s`).
+      cmd 의 `bash` 는 WSL 스텁이라 Git Bash 를 풀경로로 부르고 스크립트는 stdin 으로 보낸다.
+      Git Bash 의 /tmp 는 scp 에게 C:/Users/…/Temp 다 — `cygpath -m` 으로 변환한다. clone 은 core.autocrlf=input (W1).
+      개발자 모드 미설정이라 symlink-support 는 «추적 심링크 0건» 일 때만 ok (windows-port.md W2).

@@ -16,7 +16,7 @@
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-PAYLOAD="${1:-$REPO/_doc_work/_release/v0.8.3/os-test/os-test-payload.sh}"
+PAYLOAD="${1:-$REPO/scripts/os-test-payload.sh}"
 SB="$(mktemp -d "${TMPDIR:-/tmp}/ext-svc.XXXXXX")"
 trap 'rm -rf "$SB"' EXIT
 PASS=0; FAIL=0

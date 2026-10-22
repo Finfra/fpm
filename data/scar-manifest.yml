@@ -160,6 +160,7 @@ payloads:
         - lib/decision-question.py   # 질문 판정 단일 지점 (prj3#Issue749 · prj1#Issue561)
         - lib/fbot-ident.py   # 봇 신원 확인 — fbot-state·lead·inbox 가 import (prj3#Issue832 · prj1#Issue591)
         - lib/fbot-prj.py   # prj id 판정 단일 지점(영숫자 9t) — 핀봇 훅이 import (prj3#Issue1061 · prj1#Issue628)
+        - lib/fbot-cost-guard.py   # 핀봇 비용 가드 — fbot-lead·inbox 가 import (prj3 동기, prj1#Issue659 번들 재동기)
         - lib/hub-context.sh
         - lib/hub-instruction.py
         - lib/issue-completion.py   # 이슈 완료 판정 (번들 동기 반입)

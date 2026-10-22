@@ -2730,6 +2730,73 @@ def cmd_pending(args) -> int:
     return 0
 
 
+def pending_view(cwd: str) -> dict:
+    """펜딩 큐 뷰의 구조화 본문 — `wake` 용(prj3#Issue1150). 판정은 `load_issue_map`·`classify` 한 곳, 읽기 전용."""
+    cwd = os.path.abspath(os.path.expanduser(cwd))
+    if not os.path.isdir(cwd):
+        raise FbotError(f"디렉토리 아님: {cwd}")
+    data = load_issue_map(cwd)
+    startable, blocked = classify(data["issues"])
+    slim = lambda it: {"id": it["id"], "title": it.get("title", ""), "section": it.get("section", "?")}   # noqa: E731
+    return {"root": data["root"], "workflow": load_workflow(cwd),
+            "startable": [slim(it) for it in startable],
+            "blocked": [dict(slim(it), blocked_by=it.get("blocked_by") or []) for it in blocked]}
+
+
+def _wake_section(fn):
+    """한 절의 실패가 나머지를 막지 않는다 — 그 절만 `{"error": …}`(침묵 빈 값 금지: 오류는 오류로 드러난다)."""
+    try:
+        return fn()
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
+def cmd_wake(args) -> int:
+    """기상 1회 순찰을 **읽기 전용 1회 호출**로(prj3#Issue1150) — sweep(dry-run)·status·inbox·pending·brief.
+
+    팀장 기상 몸체가 이 다섯을 따로 부르며 호출당 ≈13k 가중을 냈다(fTyping 10-16~17). 여기서는 원장·파일을 쓰지 않는다:
+    sweep 은 `dry_run=True` 판정(완료 전이·통지·재개 기동 없음 — 실제 전이가 필요하면 `sweep` 을 따로 부른다).
+    """
+    bot = args.bot or os.environ.get("FBOT_ID") or None
+
+    def _sweep():
+        out = run_sweep(dry_run=True)
+        try:
+            out["quota_resume_targets"] = resume_quota_blocked(dry_run=True)["resumed"]
+        except Exception as e:  # noqa: BLE001
+            out["quota_resume_targets_error"] = f"{type(e).__name__}: {e}"
+        return out
+
+    def _inbox():
+        out = _inbox_mod().pending(bot, None)
+        out.pop("ok", None); out.pop("action", None)
+        return out
+
+    def _brief():
+        con = connect()
+        try:
+            return brief_lines(con, bot)
+        finally:
+            con.close()
+
+    def _status():
+        # 기상에는 집계만 — 취소·우회·무배분의 `recent` 목록과 가드 표는 빼고(≈7KB), 필요하면 `status` 를 따로 부른다
+        out = status_payload()
+        out.pop("pattern_guards", None)
+        for k in ("cancelled", "solo", "nodelegate"):
+            if isinstance(out.get(k), dict):
+                out[k].pop("recent", None)
+        return out
+
+    emit({"ok": True, "action": "wake", "bot": bot,
+          "sweep": _wake_section(_sweep),
+          "status": _wake_section(_status),
+          "inbox": _wake_section(_inbox),
+          "pending": _wake_section(lambda: pending_view(args.cwd)),
+          "brief": _wake_section(_brief)})
+    return 0
+
+
 def _is_nonexec(role) -> bool:
     """관리직(총괄·팀장) 판정 — 카탈로그 `nonexec` 단일 지점(fbot-org.is_nonexec, prj3#Issue757).
     해소기 적재 실패는 False — 모르면 종전 동작(워커 취급)으로 둔다."""
@@ -2910,6 +2977,34 @@ def model_for(role, override=None, agent_model=None) -> str:
     return m
 
 
+def wake_pilot_model(worker, role=None):
+    """기상 몸체 시범 모델 — 대상 봇이 아니거나 기간이 끝났거나 하한 아래면 None (prj3#Issue1151).
+
+    정책 `fbot.wake_pilot`: `bots`(봇 id 목록 — 시범 대상 팀) · `model`(별칭) · `until`(YYYY-MM-DD, 이 날부터 해제).
+    기상 트리거(`_spawn_commands(mode="wake")`)만 부른다. 원복 = bots 에서 빼기, 방치해도 until 에서 자동 해제.
+    판정 실패(형식 오류·별칭 밖·fable)는 전부 None — 시범이 몸체 기동을 막거나 비싼 쪽으로 새지 않는다.
+    하한(`fbot.floors`) 아래로는 내리지 않는다(총괄 opus 하한 보존)."""
+    fb = _model_tier().get("fbot")
+    wp = fb.get("wake_pilot") if isinstance(fb, dict) else None
+    if not isinstance(wp, dict):
+        return None
+    bots = wp.get("bots")
+    m = wp.get("model")
+    if not isinstance(bots, list) or worker not in bots or m not in MODEL_ALIASES or m == "fable":
+        return None
+    try:
+        import datetime
+        if datetime.date.today() >= datetime.date.fromisoformat(str(wp.get("until"))):
+            return None
+    except (ValueError, TypeError):
+        return None
+    floors = fb.get("floors") if isinstance(fb.get("floors"), dict) else {}
+    lo = floors.get(role or "")
+    if lo in _TIER_ORDER and m in _TIER_ORDER and _TIER_ORDER.index(m) < _TIER_ORDER.index(lo):
+        return None
+    return m
+
+
 # prj3#Issue863_6 — 배분 몸체 모델에 Jev 선택 연결. 사용자 결정 2026-10-02(D3 재결정): «팀장 몸체는 Jev 로 sonnet 하향 허용».
 #   Jev 를 부르는 직능은 `data/selection.yml` `dispatch.jev_roles` 목록뿐 — 배분 topic 이 외부(TypeSafe)로 나가는 범위가 곧
 #   이 목록이다(selection-arch §외부 전송 경계). 하한·상한은 selection.py clamp 가 model-tier `fbot.floors`·직능 선언 티어로 건다.
@@ -3024,6 +3119,62 @@ def cut_floor_model(role, override, model, meta, cut):
     return target, meta
 
 
+# prj3#Issue1153 — 프로젝트 일일 비용 가드. 폭주 가드(위 judge_demand_guard)는 배분 **건수**만 봐서 하루 182M·272M 몰림을 못 막았다.
+#   판정은 hooks/lib/fbot-cost-guard.py 한 곳(일별 캐시·평시 분포 상위 백분위·주간 % 선택 반영). 여기는 소비처 — **차단이 아니라 강등**:
+#   발동한 프로젝트의 몸체 모델을 정책 `demote_to`(sonnet) 상한으로 **낮추기만** 한다(올리지 않고, `--model` 명시·직능 하한
+#   `fbot.floors` 는 보존). 대기 쪽 소비처는 fbot-inbox `wake_debounced`(비긴급 기상 창 연장). 발동 알림은 (프로젝트, 날짜)당 mq 1회.
+#   판정·알림 실패는 전부 종전 동작(가드 결함이 배분·기동을 막지 않는다).
+_COST_GUARD_MOD = None
+_COST_GUARD_SEND = None      # 테스트 주입 지점 — None 이면 aoa-mq helper
+
+
+def _cost_guard_mod():
+    global _COST_GUARD_MOD
+    if _COST_GUARD_MOD is None:
+        import importlib.util
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib", "fbot-cost-guard.py")
+        spec = importlib.util.spec_from_file_location("fbot_cost_guard", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _COST_GUARD_MOD = mod
+    return _COST_GUARD_MOD
+
+
+def cost_guard_model(role, override, model, meta, cwd):
+    """(별칭, meta) — 일일 비용 가드가 발동한 프로젝트면 몸체 모델을 `demote_to` 로 낮춘다 (prj3#Issue1153).
+
+    낮추기만: 이미 같거나 낮은 티어·티어 밖 값(fable)·`--model` 명시(override)는 그대로. 직능 하한(`fbot.floors` — chief opus)이
+    `demote_to` 보다 높으면 하한이 이긴다. 낮췄으면 `meta.reason = cost_guard` — 원장 `model_reason` 으로 남는다."""
+    meta = dict(meta or {})
+    if override or model not in _TIER_ORDER or not cwd:
+        return model, meta
+    try:
+        g = _cost_guard_mod()
+        v = g.judge(g.proj_key(cwd))
+        if not v["over"]:
+            return model, meta
+        pol = g.policy()
+        fb = _model_tier().get("fbot")
+        floors = fb.get("floors") if isinstance(fb, dict) and isinstance(fb.get("floors"), dict) else {}
+        target = pol["demote_to"] if pol["demote_to"] in _TIER_ORDER else CUT_FLOOR_DEFAULT
+        lo = floors.get(role or "")
+        if lo in _TIER_ORDER and _TIER_ORDER.index(lo) > _TIER_ORDER.index(target):
+            target = lo
+        lowered = _TIER_ORDER.index(model) > _TIER_ORDER.index(target)
+        res = g.alert_over(v, f"몸체 모델 {target} 상한으로 강등" if lowered else "몸체 모델은 이미 상한 이하 — 비긴급 기상은 대기",
+                           send=_COST_GUARD_SEND)
+        if res.startswith("error"):
+            print(f"[fbot-lead] 비용 가드 알림 실패(강등은 진행): {res}", file=sys.stderr)
+        if not lowered:
+            return model, meta
+        meta["reason"] = "cost_guard"
+        meta["cost_guard"] = v["reason"]
+        return target, meta
+    except Exception as e:  # noqa: BLE001
+        print(f"[fbot-lead] 비용 가드 판정 실패(종전 동작): {type(e).__name__}: {e}", file=sys.stderr)
+        return model, meta
+
+
 def _issue_title(cwd, ident) -> str:
     """Jev 질문용 — 대상 repo 장부의 `## Issue<N>: 제목` 한 줄(없으면 식별자만). 본문은 보내지 않는다.
     `Req<N>` 은 업무 접수대장 Request.md 에서 찾는다 (prj3#Issue1096)."""
@@ -3111,6 +3262,9 @@ def _spawn_commands(worker: str, ident: str, cwd: str, prj, mode: str = "dispatc
     pa = (f"--approve publish --approval-id {publish_approval} "
           if publish_approval and PUBLISH_APPROVAL_ID_RE.fullmatch(publish_approval) else "")   # prj3#Issue1043
     mdl = _body_model(role or _role_of(worker), model, worker)              # Issue849 — 별칭만 나온다(셸 안전)
+    if mode == "wake" and not model:                                         # Issue1151 — 기상 시범(대상 팀·기간 한정)
+        mdl = wake_pilot_model(worker, role or _role_of(worker)) or mdl
+        mdl = cost_guard_model(role or _role_of(worker), None, mdl, {}, cwd)[0]       # Issue1153 — 일일 비용 가드(강등)
     menv = f"FBOT_MODEL={mdl} "
     # 이슈가 아닌 topic 워커 배분은 fpm-do 변환을 끈다 — topic 이 `/issue-*` 로 바뀌는 것은 오변환이다(resolve_cmd 가
     #   `ioreg`·`fixture` 같은 부분 문자열에 걸린다 — 🌱 후보). 변환 몫은 이슈형 식별자 배분에만 잡는다.
@@ -4309,6 +4463,8 @@ def spawn_dispatch(job_id, by=None, unattended=False) -> dict:
                 _pm = model_for(role, None, _am)
             except ValueError:
                 pass
+    if not pl.get("model_override"):                  # prj3#Issue1153 — 승격 시점의 일일 비용 가드(강등)
+        _pm = cost_guard_model(role, None, _pm, {}, pl.get("cwd"))[0]
     next_step = _spawn_commands(wid, ident, pl.get("cwd") or "", prj, role=role, disp_id=job_id, model=_pm)
     spawned = _spawn_now(next_step)
     now = int(time.time())
@@ -4617,6 +4773,7 @@ def cmd_dispatch(args) -> int:
             body_model, _mmeta = _bm, {"source": "agent", "reason": "agent_model", "static": _bm}
     body_model, _mmeta = cut_floor_model(args.role, _mo, body_model, _mmeta, not _mo and prompt_cut(
         bot_id, ident, cwd, prj, args.role, job_id, body_model))
+    body_model, _mmeta = cost_guard_model(args.role, _mo, body_model, _mmeta, cwd)   # prj3#Issue1153 — 일일 비용 가드(강등)
     # 계약 §레지스트리 스키마: "어느 prj 일을 했나" 는 **작업 기록**이 답한다 — bot.prj(주 담당)와
     #   축이 다르므로 배분 원장에도 남긴다(겸임은 기록 레벨에서 표현된다).
     payload = {"issue": ident, "ident_kind": ident_kind, "role": args.role, "model": body_model,
@@ -5555,6 +5712,12 @@ def cmd_topic(args) -> int:
 
 def cmd_status(args) -> int:
     """이번 달 배분 수·상한·활성 배분 목록 + 취소 집계(Issue446 — 완료와 분리)."""
+    emit({"ok": True, "action": "status", **status_payload()})
+    return 0
+
+
+def status_payload() -> dict:
+    """status 본문 — `status`·`wake` 공용 단일 지점(prj3#Issue1150). 읽기 전용."""
     pol = load_policy()
     month = month_key()
     con = connect()
@@ -5571,8 +5734,8 @@ def cmd_status(args) -> int:
     #   않는다. 예산은 이미 쓴 것이고 성과는 아니다. 그 둘을 동시에 성립시키는 유일한
     #   표현이 "따로 세어 따로 보여주기" 다 (Issue446).
     month_cancels = [c for c in cancels if month_key(c["cancelled_at"]) == month]
-    emit({
-        "ok": True, "action": "status", "month": month,
+    return {
+        "month": month,
         "dispatch": {"ns": DISPATCH_NS, "spent": spent,
                      "limit": pol["fbot_dispatch_monthly_limit"],
                      "remaining": max(pol["fbot_dispatch_monthly_limit"] - spent, 0),
@@ -5626,8 +5789,7 @@ def cmd_status(args) -> int:
                        for b in sorted({x["bot"] for x in nodel["nodelegate"]})},
             "recent": nodel["nodelegate"][-5:][::-1],
         },
-    })
-    return 0
+    }
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
@@ -5827,6 +5989,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--bot-id", default=None, help="몸체 bot_id (생략 시 FBOT_ID)")
     sp.add_argument("--json", action="store_true", help="판정 결과(job_id·topic_cut·qa)까지 JSON 으로")
     sp.set_defaults(func=cmd_checkin_brief)
+
+    sp = sub.add_parser("wake", help="기상 순찰 1회 호출 — sweep(dry-run)·status·inbox·pending·brief 를 읽기 전용 JSON 한 벌로 (prj3#Issue1150)")
+    sp.add_argument("--bot", default=None, help="bot_id (생략 시 FBOT_ID) — inbox·brief 의 기준")
+    sp.add_argument("--cwd", default=os.getcwd(), help="pending 대상 프로젝트 루트(기본 현재 디렉토리)")
+    sp.set_defaults(func=cmd_wake)
 
     sp = sub.add_parser("brief", help="봇 기준 한 번에 30줄 — 나·내가 낸 배분·내게 온 배분·인박스·완료 감지 (prj3#Issue779_7)")
     sp.add_argument("--bot", default=None, help="bot_id (생략 시 FBOT_ID, 그것도 없으면 조직 요약)")
